@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page_title or "TAES Operations Portal" }}</title>
+  <title>{{ page_title or "GREMLIN" }}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -12,12 +12,13 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/sidebar.css') }}">
 </head>
 <body>
-  <div class="app-layout">
+  <div class="app-layout" id="appLayout">
     {% include "topbar.html" %}
     {% include "sidebar.html" %}
     <main class="content" role="main">
       {% block content %}{% endblock %}
     </main>
   </div>
+  <script defer src="{{ url_for('static', filename='js/layout.js') }}"></script>
 </body>
 </html>

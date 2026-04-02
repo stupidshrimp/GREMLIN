@@ -1,9 +1,19 @@
 <header class="topbar">
   <div class="brand-group">
-    <span class="brand-badge">RET</span>
+    <button
+      class="sidebar-toggle"
+      id="sidebarToggle"
+      type="button"
+      aria-label="Toggle sidebar"
+      aria-controls="primarySidebar"
+      aria-expanded="true"
+    >
+      ☰
+    </button>
+    <img class="brand-logo" src="{{ url_for('static', filename='img/logo1.jpg') }}" alt="GREMLIN logo">
     <div class="brand-copy">
-      <strong>Reliability Engineering Tools</strong>
-      <span>{{ page_title or "Dashboard" }}</span>
+      <strong>GREMLIN</strong>
+      <span>Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</span>
     </div>
   </div>
 </header>

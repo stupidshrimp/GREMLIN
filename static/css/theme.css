@@ -27,7 +27,7 @@ body {
 .app-layout {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 290px 1fr;
+  grid-template-columns: var(--sidebar-width, 290px) 1fr;
   grid-template-rows: 74px 1fr;
   grid-template-areas:
     "topbar topbar"
@@ -37,11 +37,21 @@ body {
 .topbar { grid-area: topbar; }
 .sidebar { grid-area: sidebar; }
 
+body {
+  --sidebar-width: 290px;
+}
+
+body.sidebar-collapsed {
+  --sidebar-width: 84px;
+}
+
+
 .content {
   grid-area: content;
   padding: 2rem;
   display: grid;
   gap: 1.2rem;
+  transition: padding 220ms ease;
 }
 
 h1 {
