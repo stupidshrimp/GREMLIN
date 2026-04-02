@@ -1,0 +1,9 @@
+<aside class="sidebar">
+  <nav>
+    <ul>
+    {% for link in nav_links %}
+      <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+    {% endfor %}
+    </ul>
+  </nav>
+</aside>
