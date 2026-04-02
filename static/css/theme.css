@@ -28,6 +28,7 @@ body {
   min-height: 100vh;
   display: grid;
   grid-template-columns: var(--sidebar-width, 290px) 1fr;
+  transition: grid-template-columns 240ms ease;
   grid-template-rows: 74px 1fr;
   grid-template-areas:
     "topbar topbar"
@@ -35,7 +36,11 @@ body {
 }
 
 .topbar { grid-area: topbar; }
-.sidebar { grid-area: sidebar; }
+.sidebar {
+  grid-area: sidebar;
+  width: var(--sidebar-width, 290px);
+  transition: width 240ms ease;
+}
 
 body {
   --sidebar-width: 290px;

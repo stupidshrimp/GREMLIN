@@ -16,25 +16,6 @@
   min-width: 0;
 }
 
-.sidebar-toggle {
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  border-radius: 10px;
-  width: 2.25rem;
-  height: 2.25rem;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  font-size: 1rem;
-  transition: background-color 180ms ease, transform 180ms ease;
-}
-
-.sidebar-toggle:hover {
-  background: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px);
-}
-
 .brand-logo {
   width: 2.25rem;
   height: 2.25rem;
