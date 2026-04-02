@@ -1,10 +1,11 @@
 <aside class="sidebar" aria-label="Primary">
   <nav>
-    <p class="sidebar-heading">Navigation</p>
     <ul>
     {% for link in nav_links %}
       <li>
-        <a href="{{ link.url }}" class="{% if request.path == link.url %}active{% endif %}">{{ link.label }}</a>
+        <a href="{{ link.url }}" class="nav-icon {% if request.path == link.url %}active{% endif %}" title="{{ link.label }}">
+          <span>{{ link.label[0] }}</span>
+        </a>
       </li>
     {% endfor %}
     </ul>

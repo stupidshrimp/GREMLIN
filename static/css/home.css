@@ -1,1 +1,174 @@
-/* Placeholder stylesheet for Transfer starter. */
+.incident-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.app-chip {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid #343b46;
+  color: #cdd5de;
+  font-size: 0.74rem;
+  margin-bottom: 0.35rem;
+}
+
+.header-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(72px, auto));
+  gap: 1rem;
+}
+
+.header-stats span,
+.severity-card span,
+.metrics-side span {
+  font-size: 0.72rem;
+  color: #8f99a5;
+  display: block;
+}
+
+.header-stats strong,
+.severity-card strong,
+.metrics-side strong {
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.severity-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.severity-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.critical strong { color: #ff516e; }
+.high strong { color: #ff8f42; }
+.medium strong { color: #f2c14f; }
+.low strong { color: #74a6ff; }
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 2.1fr 1fr;
+  gap: 0.9rem;
+}
+
+.chart-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.chart-card h2,
+.bottom-panel h2 {
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.legend {
+  display: flex;
+  gap: 0.65rem;
+  color: #9ea8b3;
+  font-size: 0.74rem;
+}
+
+.fake-chart {
+  height: 220px;
+  border-radius: 8px;
+  border: 1px solid #2e3440;
+  background:
+    linear-gradient(180deg, rgba(255, 190, 65, 0.65), rgba(255, 121, 168, 0.55) 45%, rgba(114, 114, 255, 0.4) 82%, rgba(20, 24, 31, 0.9) 100%),
+    repeating-linear-gradient(to top, rgba(255,255,255,0.05), rgba(255,255,255,0.05) 1px, transparent 1px, transparent 36px),
+    linear-gradient(180deg, #151a23, #10141b);
+}
+
+.metrics-side {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.memory .meter {
+  margin: 0.45rem 0;
+  height: 18px;
+  border-radius: 4px;
+  background: #11161e;
+  border: 1px solid #313947;
+  overflow: hidden;
+}
+
+.memory .meter i {
+  display: block;
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    #f8c046,
+    #f8c046 3px,
+    #e8ad34 3px,
+    #e8ad34 5px
+  );
+}
+
+.memory small { color: #99a4af; }
+
+.bottom-panel {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr;
+  gap: 0.9rem;
+}
+
+.trace-list ul {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.trace-list li {
+  font-size: 0.78rem;
+  color: #afb7c0;
+  border-bottom: 1px solid #2b313d;
+  padding-bottom: 0.4rem;
+}
+
+.bars {
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.bars span {
+  display: block;
+  height: 12px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #7e69ff, #f06da5);
+}
+
+.logs pre {
+  margin: 0.65rem 0 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #313845;
+  background: #0d1118;
+  color: #98a2ad;
+  font-size: 0.73rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1200px) {
+  .bottom-panel { grid-template-columns: 1fr; }
+  .header-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .severity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .main-grid,
+  .incident-header { grid-template-columns: 1fr; display: grid; }
+}
