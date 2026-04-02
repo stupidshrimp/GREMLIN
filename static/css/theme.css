@@ -1,15 +1,15 @@
 :root {
-  --forest-950: #062b1c;
-  --forest-900: #0a3a27;
-  --forest-800: #115337;
-  --forest-700: #1f6b49;
-  --forest-500: #2c8a5f;
-  --forest-200: #bfe3cf;
-  --forest-100: #e5f5ec;
+  --forest-950: #1d2731;
+  --forest-900: #243342;
+  --forest-800: #2f4455;
+  --forest-700: #3f5e77;
+  --forest-500: #55748f;
+  --forest-200: #d6e0e8;
+  --forest-100: #edf2f6;
   --surface: #ffffff;
-  --text: #0d261b;
-  --muted: #4a6b5a;
-  --border: #cfe7d9;
+  --text: #1a2a38;
+  --muted: #5e7082;
+  --border: #d7e1e8;
 }
 
 * { box-sizing: border-box; }
@@ -19,9 +19,9 @@ body {
   font-family: "Inter", "Segoe UI", Tahoma, Arial, sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at 15% -20%, rgba(44, 138, 95, 0.22), transparent 40%),
-    radial-gradient(circle at 85% 10%, rgba(17, 83, 55, 0.14), transparent 35%),
-    #f7fcf9;
+    radial-gradient(circle at 15% -20%, rgba(85, 116, 143, 0.12), transparent 40%),
+    radial-gradient(circle at 85% 10%, rgba(47, 68, 85, 0.09), transparent 35%),
+    #f7f9fc;
 }
 
 .app-layout {
@@ -44,10 +44,6 @@ body {
 
 body {
   --sidebar-width: 290px;
-}
-
-body.sidebar-collapsed {
-  --sidebar-width: 84px;
 }
 
 
