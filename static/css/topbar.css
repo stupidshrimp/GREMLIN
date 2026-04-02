@@ -2,11 +2,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1.5rem;
-  background: linear-gradient(90deg, #10253f, #1b365d 55%, #224775);
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(90deg, #062b1c 0%, #0a3a27 45%, #115337 100%);
   color: #fff;
-  border-bottom: 3px solid #ff8a00;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 8px 24px rgba(6, 43, 28, 0.25);
 }
 
 .brand-group {
@@ -16,13 +16,13 @@
 }
 
 .brand-badge {
-  background: #ff8a00;
-  color: #10253f;
-  font-weight: 700;
+  background: #ffffff;
+  color: #0a3a27;
+  font-weight: 800;
   letter-spacing: 0.08em;
   border-radius: 999px;
-  padding: 0.2rem 0.65rem;
-  font-size: 0.78rem;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
 }
 
 .brand-copy {
@@ -32,10 +32,11 @@
 }
 
 .brand-copy strong {
-  font-size: 1rem;
+  font-size: 1.02rem;
+  letter-spacing: 0.01em;
 }
 
 .brand-copy span {
   font-size: 0.82rem;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.8);
 }

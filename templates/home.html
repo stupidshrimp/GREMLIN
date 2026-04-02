@@ -1,6 +1,31 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Home</h1>
-<div class="placeholder-box"></div>
+<section class="hero glass-card fade-in-up">
+  <p class="eyebrow">Reliability Engineering Platform</p>
+  <h1>Build confidence in every product lifecycle.</h1>
+  <p class="hero-copy">
+    A modern toolkit for life data analysis, metrics intelligence, and standards-aligned documentation.
+    Designed for engineering teams that need fast insights and clear decisions.
+  </p>
+  <div class="hero-actions">
+    <a class="btn-primary" href="/life-data-analysis">Explore Analysis</a>
+    <a class="btn-secondary" href="/metrics">View Metrics</a>
+  </div>
+</section>
+
+<section class="card-grid">
+  <article class="glass-card tile slide-in">
+    <h2>Life Data Analysis</h2>
+    <p>Model failure distributions, compare cohorts, and estimate reliability with confidence bounds.</p>
+  </article>
+  <article class="glass-card tile slide-in">
+    <h2>Metrics</h2>
+    <p>Monitor MTBF, MTTR, failure rate trends, and SLA health in a consolidated command view.</p>
+  </article>
+  <article class="glass-card tile slide-in">
+    <h2>Standards & Documentation</h2>
+    <p>Keep workflows aligned to industry standards with living documentation and reusable templates.</p>
+  </article>
+</section>
 {% endblock %}
