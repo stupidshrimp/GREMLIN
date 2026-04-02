@@ -3,7 +3,40 @@
   border-right: 1px solid rgba(255, 255, 255, 0.16);
   padding: 1rem 0.8rem;
   overflow-y: auto;
+  overflow-x: hidden;
   transition: padding 220ms ease;
+}
+
+.sidebar-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 12px;
+  width: 100%;
+  min-height: 2.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  margin-bottom: 1rem;
+  transition: background-color 180ms ease, transform 180ms ease;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.sidebar-toggle-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.sidebar-toggle-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .sidebar-heading {
@@ -27,16 +60,30 @@
 }
 
 .sidebar a {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
   color: rgba(255, 255, 255, 0.9);
   text-decoration: none;
   border-radius: 12px;
   padding: 0.62rem 0.75rem;
   font-size: 0.92rem;
+  min-height: 2.5rem;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.nav-icon {
+  width: 1.3rem;
+  flex: 0 0 1.3rem;
+  text-align: center;
+  font-size: 1.05rem;
+}
+
+.nav-label {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  transition: opacity 130ms ease;
 }
 
 .sidebar a:hover {
@@ -56,41 +103,38 @@ body.sidebar-collapsed .sidebar {
   padding-right: 0.35rem;
 }
 
-body.sidebar-collapsed .sidebar-heading {
+body.sidebar-collapsed .sidebar-toggle {
+  padding-inline: 0;
+}
+
+body.sidebar-collapsed .sidebar-toggle-label,
+body.sidebar-collapsed .sidebar-heading,
+body.sidebar-collapsed .nav-label {
   opacity: 0;
+  width: 0;
   pointer-events: none;
 }
 
 body.sidebar-collapsed .sidebar a {
-  text-indent: -9999px;
-  position: relative;
-  min-height: 2.5rem;
+  justify-content: center;
+  padding-inline: 0.35rem;
 }
 
-body.sidebar-collapsed .sidebar a::after {
-  content: "•";
-  text-indent: 0;
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 1.1rem;
+body.sidebar-collapsed .sidebar a:hover {
+  transform: none;
 }
 
 @media (max-width: 900px) {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid rgba(6, 43, 28, 0.15);
+    transition: max-height 220ms ease, padding 220ms ease, border-bottom-width 220ms ease;
   }
 
   .sidebar ul {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 0.4rem;
-  }
-
-  body.sidebar-collapsed .sidebar-heading {
-    display: none;
   }
 
   body.sidebar-collapsed .sidebar {
