@@ -3,7 +3,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1.25rem;
-  background: linear-gradient(90deg, #062b1c 0%, #0a3a27 45%, #115337 100%);
+  background: linear-gradient(90deg, #041f14 0%, #0a3a27 45%, #115337 100%);
   color: #fff;
   border-bottom: 1px solid rgba(255, 255, 255, 0.24);
   box-shadow: 0 8px 24px rgba(6, 43, 28, 0.25);
@@ -13,30 +13,54 @@
   display: flex;
   align-items: center;
   gap: 0.85rem;
+  min-width: 0;
 }
 
-.brand-badge {
-  background: #ffffff;
-  color: #0a3a27;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  border-radius: 999px;
-  padding: 0.25rem 0.7rem;
-  font-size: 0.75rem;
+.sidebar-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 10px;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background-color 180ms ease, transform 180ms ease;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.brand-logo {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 9px;
+  object-fit: cover;
+  box-shadow: 0 8px 20px rgba(6, 43, 28, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.24);
 }
 
 .brand-copy {
   display: flex;
   flex-direction: column;
   line-height: 1.1;
+  min-width: 0;
 }
 
 .brand-copy strong {
   font-size: 1.02rem;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.08em;
 }
 
 .brand-copy span {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(70vw, 980px);
 }
