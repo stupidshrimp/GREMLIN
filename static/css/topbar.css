@@ -1,1 +1,41 @@
-/* Placeholder stylesheet for Transfer starter. */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(90deg, #10253f, #1b365d 55%, #224775);
+  color: #fff;
+  border-bottom: 3px solid #ff8a00;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.brand-badge {
+  background: #ff8a00;
+  color: #10253f;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.brand-copy strong {
+  font-size: 1rem;
+}
+
+.brand-copy span {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.75);
+}

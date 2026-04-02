@@ -1,1 +1,60 @@
-/* Sidebar styles included in theme.css for starter layout. */
+.sidebar {
+  background: #f9fbff;
+  border-right: 1px solid #dbe3ef;
+  padding: 1rem 0.75rem;
+  overflow-y: auto;
+}
+
+.sidebar-heading {
+  margin: 0 0 0.75rem;
+  padding: 0 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.sidebar a {
+  display: block;
+  color: #1e293b;
+  text-decoration: none;
+  border-radius: 9px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.92rem;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.sidebar a:hover {
+  background: #e9f0fb;
+  color: #10253f;
+  transform: translateX(2px);
+}
+
+.sidebar a.active {
+  background: #10253f;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+@media (max-width: 1024px) {
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #dbe3ef;
+  }
+
+  .sidebar ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.35rem;
+  }
+}
