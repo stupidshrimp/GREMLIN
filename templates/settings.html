@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Settings</h1>
-<div class="placeholder-box"></div>
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Settings</p>
+  <h1>Configure your reliability workspace.</h1>
+  <p>Manage preferences for theme behavior, report defaults, and collaboration permissions.</p>
+</section>
+
+<section class="card-grid two-col">
+  <article class="glass-card tile slide-in">
+    <h2>User Preferences</h2>
+    <p>Personalize dashboard density, notification cadence, and data refresh behavior.</p>
+  </article>
+  <article class="glass-card tile slide-in">
+    <h2>System Configuration</h2>
+    <p>Set package defaults, reliability model presets, and controlled vocabulary for teams.</p>
+  </article>
+</section>
 {% endblock %}

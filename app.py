@@ -1,32 +1,31 @@
-from pathlib import Path
-from flask import Flask, render_template, abort
+from flask import Flask, render_template
 
 app = Flask(__name__)
 
-TEMPLATE_DIR = Path(__file__).parent / "templates"
+PAGES = [
+    {"route": "/", "template": "home.html", "title": "Home"},
+    {
+        "route": "/life-data-analysis",
+        "template": "life_data_analysis.html",
+        "title": "Life Data Analysis",
+    },
+    {"route": "/metrics", "template": "metrics.html", "title": "Metrics"},
+    {
+        "route": "/standards-and-documentation",
+        "template": "standards_and_documentation.html",
+        "title": "Standards and Documentation",
+    },
+    {"route": "/settings", "template": "settings.html", "title": "Settings"},
+]
 
-
-def _discover_pages() -> list[dict[str, str]]:
-    pages = []
-    for template in sorted(TEMPLATE_DIR.rglob("*.html")):
-        rel = template.relative_to(TEMPLATE_DIR).as_posix()
-        if rel in {"base.html", "sidebar.html", "topbar.html"} or rel.startswith("inspections/partials/"):
-            continue
-        route = "/" if rel == "home.html" else "/" + rel.removesuffix(".html")
-        title = rel.removesuffix(".html").replace("_", " ").replace("/", " / ").title()
-        pages.append({"route": route, "template": rel, "title": title})
-    return pages
-
-
-PAGES = _discover_pages()
 NAV_LINKS = [{"label": page["title"], "url": page["route"]} for page in PAGES]
 
 for page in PAGES:
+
     def _view(t=page["template"], title=page["title"]):
         return render_template(t, page_title=title, nav_links=NAV_LINKS)
 
-    endpoint = "page_" + page["route"].strip("/").replace("/", "_").replace("-", "_")
-    endpoint = endpoint or "page_home"
+    endpoint = "page_" + ("home" if page["route"] == "/" else page["route"].strip("/").replace("-", "_"))
     app.add_url_rule(page["route"], endpoint, _view)
 
 

@@ -1,75 +1,175 @@
 :root {
-  --taes-bg: #f4f7fb;
-  --taes-surface: #ffffff;
-  --taes-border: #dbe3ef;
-  --taes-navy: #10253f;
-  --taes-navy-2: #1b365d;
-  --taes-text: #0f172a;
-  --taes-muted: #64748b;
-  --taes-accent: #ff8a00;
+  --forest-950: #062b1c;
+  --forest-900: #0a3a27;
+  --forest-800: #115337;
+  --forest-700: #1f6b49;
+  --forest-500: #2c8a5f;
+  --forest-200: #bfe3cf;
+  --forest-100: #e5f5ec;
+  --surface: #ffffff;
+  --text: #0d261b;
+  --muted: #4a6b5a;
+  --border: #cfe7d9;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
   font-family: "Inter", "Segoe UI", Tahoma, Arial, sans-serif;
-  color: var(--taes-text);
-  background: var(--taes-bg);
+  color: var(--text);
+  background:
+    radial-gradient(circle at 15% -20%, rgba(44, 138, 95, 0.22), transparent 40%),
+    radial-gradient(circle at 85% 10%, rgba(17, 83, 55, 0.14), transparent 35%),
+    #f7fcf9;
 }
 
 .app-layout {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 280px 1fr;
-  grid-template-rows: 68px 1fr;
+  grid-template-columns: 290px 1fr;
+  grid-template-rows: 74px 1fr;
   grid-template-areas:
     "topbar topbar"
     "sidebar content";
 }
 
-.topbar {
-  grid-area: topbar;
-}
-
-.sidebar {
-  grid-area: sidebar;
-}
+.topbar { grid-area: topbar; }
+.sidebar { grid-area: sidebar; }
 
 .content {
   grid-area: content;
   padding: 2rem;
+  display: grid;
+  gap: 1.2rem;
 }
 
 h1 {
-  margin: 0 0 1rem;
-  font-size: clamp(1.4rem, 1.1rem + 1.1vw, 2rem);
-  color: var(--taes-navy-2);
+  margin: 0.2rem 0 0.9rem;
+  font-size: clamp(1.8rem, 1.4rem + 1.2vw, 2.5rem);
+  color: var(--forest-900);
 }
 
-.placeholder-box {
-  min-height: 280px;
-  border: 1px solid var(--taes-border);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(16, 37, 63, 0.02), transparent 30%),
-    var(--taes-surface);
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.05);
+h2 {
+  margin-top: 0;
+  color: var(--forest-800);
 }
 
-@media (max-width: 1024px) {
+p { margin: 0; line-height: 1.6; color: var(--muted); }
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--forest-700);
+}
+
+.glass-card {
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.93), rgba(229, 245, 236, 0.85));
+  box-shadow: 0 20px 45px rgba(6, 43, 28, 0.1);
+  backdrop-filter: blur(8px);
+  border-radius: 18px;
+  padding: 1.35rem;
+}
+
+.hero-copy { max-width: 75ch; }
+
+.hero-actions {
+  margin-top: 1.2rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn-primary,
+.btn-secondary {
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.6rem 1rem;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.btn-primary {
+  background: var(--forest-800);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(10, 58, 39, 0.24);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  background: var(--forest-700);
+}
+
+.btn-secondary {
+  border: 1px solid var(--forest-800);
+  color: var(--forest-800);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.btn-secondary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(10, 58, 39, 0.14);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.card-grid.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tile {
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+
+.tile:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 24px 48px rgba(6, 43, 28, 0.16);
+}
+
+.fade-in-up {
+  animation: fadeInUp 560ms ease-out both;
+}
+
+.slide-in {
+  animation: slideIn 620ms ease-out both;
+}
+
+.card-grid .slide-in:nth-child(2) { animation-delay: 90ms; }
+.card-grid .slide-in:nth-child(3) { animation-delay: 160ms; }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(18px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 1100px) {
+  .card-grid,
+  .card-grid.two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
   .app-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: 68px auto 1fr;
+    grid-template-rows: 74px auto 1fr;
     grid-template-areas:
       "topbar"
       "sidebar"
       "content";
   }
 
-  .content {
-    padding: 1.25rem;
-  }
+  .content { padding: 1rem; }
 }
