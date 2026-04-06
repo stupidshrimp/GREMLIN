@@ -33,13 +33,38 @@ NAV_LINKS = [
     for page in PAGES
 ]
 
-for page in PAGES:
 
-    def _view(t=page["template"], title=page["title"]):
-        return render_template(t, page_title=title, nav_links=NAV_LINKS)
+@app.route("/")
+def home():
+    return render_template("home.html", page_title="Home", nav_links=NAV_LINKS)
 
-    endpoint = "page_" + ("home" if page["route"] == "/" else page["route"].strip("/").replace("-", "_"))
-    app.add_url_rule(page["route"], endpoint, _view)
+
+@app.route("/life-data-analysis")
+def life_data_analysis():
+    return render_template(
+        "life_data_analysis.html",
+        page_title="Life Data Analysis",
+        nav_links=NAV_LINKS,
+    )
+
+
+@app.route("/metrics")
+def metrics():
+    return render_template("metrics.html", page_title="Metrics", nav_links=NAV_LINKS)
+
+
+@app.route("/standards-and-documentation")
+def standards_and_documentation():
+    return render_template(
+        "standards_and_documentation.html",
+        page_title="Standards and Documentation",
+        nav_links=NAV_LINKS,
+    )
+
+
+@app.route("/settings")
+def settings():
+    return render_template("settings.html", page_title="Settings", nav_links=NAV_LINKS)
 
 
 @app.errorhandler(404)
