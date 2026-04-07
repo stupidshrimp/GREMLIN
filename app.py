@@ -1,5 +1,10 @@
 from flask import Flask, render_template
 
+from repositories.analysis_repo import AnalysisRepository
+from repositories.failure_repo import FailureRepository
+from repositories.metrics_repo import MetricsRepository
+from services.reliability_service import ReliabilityService
+
 app = Flask(__name__)
 
 ICONS = {
@@ -27,6 +32,15 @@ PAGES = [
     },
     {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
 ]
+
+
+
+# Placeholder service wiring. Replace with dependency-injected instances and real DB connections.
+reliability_service = ReliabilityService(
+    metrics_repo=MetricsRepository(),
+    failure_repo=FailureRepository(),
+    analysis_repo=AnalysisRepository(),
+)
 
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
@@ -62,15 +76,23 @@ def perform_analysis():
 
 @app.route("/life-data-analysis/failure-classification")
 def failure_classification():
+    classification_data = reliability_service.get_failure_classification_data()
     return render_template(
         "failure_classification.html",
         page_title="Failure Classification",
         nav_links=NAV_LINKS,
+        classification_data=classification_data,
     )
 
 @app.route("/metrics")
 def metrics():
-    return render_template("metrics.html", page_title="Metrics", nav_links=NAV_LINKS)
+    metrics_data = reliability_service.get_metrics_dashboard_data()
+    return render_template(
+        "metrics.html",
+        page_title="Metrics",
+        nav_links=NAV_LINKS,
+        metrics_data=metrics_data,
+    )
 
 
 @app.route("/standards-and-documentation")
