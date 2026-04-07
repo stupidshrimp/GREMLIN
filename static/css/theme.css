@@ -184,3 +184,49 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 
   .content { padding: 1rem; }
 }
+
+.life-data-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.life-data-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
+  min-height: 220px;
+  position: relative;
+  overflow: hidden;
+}
+
+.life-data-card h2,
+.life-data-card p {
+  transition: transform 240ms ease, opacity 240ms ease;
+}
+
+.card-hover-copy {
+  margin-top: auto;
+  opacity: 0;
+  max-height: 0;
+  transform: translateY(10px);
+  transition: opacity 260ms ease, transform 260ms ease, max-height 260ms ease;
+}
+
+.life-data-card:hover .card-hover-copy,
+.life-data-card:focus-visible .card-hover-copy {
+  opacity: 1;
+  max-height: 120px;
+  transform: translateY(0);
+}
+
+.life-data-card:hover > p,
+.life-data-card:focus-visible > p {
+  opacity: 0.55;
+  transform: translateY(-3px);
+}
+
+.life-data-card:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
+}

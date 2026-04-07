@@ -3,18 +3,33 @@
 {% block content %}
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Life Data Analysis</p>
-  <h1>Analyze product life behavior with precision.</h1>
-  <p>Use Weibull, lognormal, and exponential model workflows to estimate reliability over mission time.</p>
+  <h1>Choose a reliability workflow.</h1>
+  <p>Open a module below to perform life data analysis tasks, classify observed failures, or reference standards.</p>
 </section>
 
-<section class="card-grid two-col">
-  <article class="glass-card tile slide-in">
-    <h2>Distribution Fitting</h2>
-    <p>Fit multiple models and compare AIC/BIC values to identify best-fit failure behavior.</p>
-  </article>
-  <article class="glass-card tile slide-in">
-    <h2>Censoring Support</h2>
-    <p>Handle right-, left-, and interval-censored observations without compromising model quality.</p>
-  </article>
+<section class="card-grid life-data-card-grid">
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+    <h2>Perform an Analysis</h2>
+    <p>Run life distribution fitting and compare model confidence quickly.</p>
+    <div class="card-hover-copy">
+      <p>Includes guided setup, model summaries, and reliability projection outputs for mission-time planning.</p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('failure_classification') }}">
+    <h2>Failure Classification</h2>
+    <p>Tag and categorize failure modes for deeper reliability insight.</p>
+    <div class="card-hover-copy">
+      <p>Review failure patterns by subsystem, assign severity labels, and identify recurring root-cause trends.</p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
+    <h2>Standards and Documentation</h2>
+    <p>Open key standards references and documentation artifacts.</p>
+    <div class="card-hover-copy">
+      <p>Jump to approved test standards, internal procedures, and documentation templates used by your team.</p>
+    </div>
+  </a>
 </section>
 {% endblock %}
