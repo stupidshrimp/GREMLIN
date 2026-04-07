@@ -31,6 +31,7 @@ PAGES = [
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
     for page in PAGES
+    if page["route"] != "/standards-and-documentation"
 ]
 
 
@@ -47,6 +48,25 @@ def life_data_analysis():
         nav_links=NAV_LINKS,
     )
 
+
+
+
+@app.route("/life-data-analysis/perform-analysis")
+def perform_analysis():
+    return render_template(
+        "perform_analysis.html",
+        page_title="Perform an Analysis",
+        nav_links=NAV_LINKS,
+    )
+
+
+@app.route("/life-data-analysis/failure-classification")
+def failure_classification():
+    return render_template(
+        "failure_classification.html",
+        page_title="Failure Classification",
+        nav_links=NAV_LINKS,
+    )
 
 @app.route("/metrics")
 def metrics():
