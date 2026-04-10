@@ -10,6 +10,12 @@ This module should contain only API communication concerns:
 from dataclasses import dataclass
 from typing import Any
 
+from flask.cli import load_dotenv
+import os
+
+load_dotenv()
+api_key = os.getenv("LIMBLE_API_KEY")
+client_id = os.getenv("LIMBLE_API_CLIENTID")
 
 @dataclass
 class LimbleConfig:
