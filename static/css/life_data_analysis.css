@@ -57,6 +57,43 @@
 
 .lda-hint { color: var(--muted); font-size: 0.86rem; }
 
+/* Asset Number combobox: a real dropdown rendered below the search input so the
+   full asset list is searchable (the native <datalist> capped results, which is
+   why higher asset numbers appeared "missing"). */
+.lda-combobox { position: relative; }
+.lda-combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(6, 43, 28, 0.2);
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 50;
+  display: grid;
+  gap: 2px;
+}
+.lda-combobox-option {
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--text);
+  display: grid;
+  gap: 0.1rem;
+}
+.lda-combobox-option:hover,
+.lda-combobox-option.is-active { background: var(--forest-100); }
+.lda-combobox-option .lda-combobox-number { font-weight: 600; color: var(--forest-900); }
+.lda-combobox-option .lda-combobox-name { font-size: 0.8rem; color: var(--muted); }
+.lda-combobox-empty { padding: 0.5rem 0.6rem; color: var(--muted); font-size: 0.86rem; }
+
 /* Buttons rendered as <button> reuse theme btn classes */
 button.btn-primary,
 button.btn-secondary {

@@ -23,6 +23,9 @@
   const state = {
     assets: [],
     assetByNumber: new Map(),
+    assetFiltered: [],
+    assetDropdownOpen: false,
+    assetActiveIndex: -1,
     selectedAsset: null,
     paretoRows: [],
     paretoMetric: "downtime_hours",
@@ -161,19 +164,23 @@
   }
 
   // ---- asset selection ------------------------------------------------------
+  // The asset list is filtered entirely in the browser against state.assets, so
+  // every mapped Asset Number is searchable regardless of how many exist. (The
+  // previous native <datalist> silently capped its suggestions, which made
+  // higher asset numbers appear to be missing from the search.)
+  const ASSET_DROPDOWN_LIMIT = 50;
+
+  function setAssetOptions(assets) {
+    state.assets = assets || [];
+    state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
+  }
+
   async function loadAssets() {
     const hint = $("lda-asset-hint");
     try {
       const data = await getJson(`${API}/assets`);
-      state.assets = data.assets || [];
-      state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
-      const list = $("lda-asset-list");
-      list.innerHTML = "";
-      state.assets.forEach((asset) => {
-        const option = el("option", { value: asset.asset_number });
-        if (asset.asset_name) option.label = asset.asset_name;
-        list.appendChild(option);
-      });
+      setAssetOptions(data.assets || []);
+      if (state.assetDropdownOpen) renderAssetDropdown();
       hint.textContent = state.assets.length
         ? `${state.assets.length} Asset Number(s) available. Type to search.`
         : "No mapped CMMS Asset Numbers were found in the database.";
@@ -183,8 +190,117 @@
     }
   }
 
+  function filterAssets(query) {
+    const q = (query || "").trim().toLowerCase();
+    if (!q) return state.assets;
+    return state.assets.filter((asset) => {
+      const number = String(asset.asset_number || "").toLowerCase();
+      const name = String(asset.asset_name || "").toLowerCase();
+      return number.includes(q) || name.includes(q);
+    });
+  }
+
+  function renderAssetDropdown() {
+    const list = $("lda-asset-list");
+    list.innerHTML = "";
+    if (!state.assets.length) {
+      list.appendChild(el("li", { class: "lda-combobox-empty", text: "No Asset Numbers available." }));
+      state.assetFiltered = [];
+      return;
+    }
+    const query = currentAssetValue();
+    const matches = filterAssets(query);
+    state.assetFiltered = matches.slice(0, ASSET_DROPDOWN_LIMIT);
+    if (!matches.length) {
+      list.appendChild(el("li", { class: "lda-combobox-empty", text: `No Asset Numbers match "${query}".` }));
+      return;
+    }
+    state.assetFiltered.forEach((asset, index) => {
+      list.appendChild(
+        el(
+          "li",
+          {
+            class: "lda-combobox-option" + (index === state.assetActiveIndex ? " is-active" : ""),
+            role: "option",
+            // Use mousedown so selection happens before the input's blur closes
+            // the list; preventDefault keeps focus on the input.
+            onmousedown: (event) => {
+              event.preventDefault();
+              chooseAsset(asset);
+            },
+          },
+          [
+            el("span", { class: "lda-combobox-number", text: asset.asset_number }),
+            asset.asset_name ? el("span", { class: "lda-combobox-name", text: asset.asset_name }) : null,
+          ]
+        )
+      );
+    });
+    if (matches.length > state.assetFiltered.length) {
+      list.appendChild(
+        el("li", {
+          class: "lda-combobox-empty",
+          text: `Showing first ${state.assetFiltered.length} of ${matches.length} matches. Keep typing to narrow.`,
+        })
+      );
+    }
+  }
+
+  function openAssetDropdown() {
+    renderAssetDropdown();
+    $("lda-asset-list").hidden = false;
+    $("lda-asset").setAttribute("aria-expanded", "true");
+    state.assetDropdownOpen = true;
+  }
+
+  function closeAssetDropdown() {
+    $("lda-asset-list").hidden = true;
+    $("lda-asset").setAttribute("aria-expanded", "false");
+    state.assetDropdownOpen = false;
+    state.assetActiveIndex = -1;
+  }
+
+  function chooseAsset(asset) {
+    $("lda-asset").value = asset.asset_number;
+    closeAssetDropdown();
+    evaluateAssetSelection();
+  }
+
+  function moveAssetActive(delta) {
+    const count = state.assetFiltered.length;
+    if (!count) return;
+    let index = state.assetActiveIndex + delta;
+    if (index < 0) index = count - 1;
+    if (index >= count) index = 0;
+    state.assetActiveIndex = index;
+    renderAssetDropdown();
+    const active = $("lda-asset-list").querySelectorAll(".lda-combobox-option")[index];
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+
+  function onAssetKeydown(event) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!state.assetDropdownOpen) openAssetDropdown();
+      moveAssetActive(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!state.assetDropdownOpen) openAssetDropdown();
+      moveAssetActive(-1);
+    } else if (event.key === "Enter") {
+      if (state.assetDropdownOpen && state.assetActiveIndex >= 0) {
+        event.preventDefault();
+        chooseAsset(state.assetFiltered[state.assetActiveIndex]);
+      }
+    } else if (event.key === "Escape") {
+      closeAssetDropdown();
+    }
+  }
+
   let assetDebounce = null;
   function onAssetInput() {
+    state.assetActiveIndex = -1;
+    openAssetDropdown();
     if (assetDebounce) clearTimeout(assetDebounce);
     assetDebounce = setTimeout(evaluateAssetSelection, 300);
   }
@@ -226,15 +342,8 @@
     beginLoading("Refreshing CMMS mapping…");
     try {
       const data = await postJson(`${API}/refresh-mapping`, {});
-      state.assets = data.assets || [];
-      state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
-      const list = $("lda-asset-list");
-      list.innerHTML = "";
-      state.assets.forEach((asset) => {
-        const option = el("option", { value: asset.asset_number });
-        if (asset.asset_name) option.label = asset.asset_name;
-        list.appendChild(option);
-      });
+      setAssetOptions(data.assets || []);
+      if (state.assetDropdownOpen) renderAssetDropdown();
       showBanner(`Refreshed ${data.mapped || 0} mapped CMMS row(s). ${state.assets.length} Asset Number(s) available.`, "success");
       // Re-evaluate the current asset in case its data changed.
       evaluateAssetSelection();
@@ -1369,7 +1478,17 @@
     const assetInput = $("lda-asset");
     if (!assetInput) return;
     assetInput.addEventListener("input", onAssetInput);
-    assetInput.addEventListener("change", evaluateAssetSelection);
+    assetInput.addEventListener("keydown", onAssetKeydown);
+    assetInput.addEventListener("focus", openAssetDropdown);
+    // Commit a manually edited value synchronously on blur so actions clicked
+    // immediately after typing (Perform/Disposition/Calculate) run against the
+    // current asset rather than the previous one still held by the input debounce.
+    assetInput.addEventListener("blur", evaluateAssetSelection);
+    // Close the dropdown when clicking anywhere outside the combobox.
+    document.addEventListener("mousedown", (event) => {
+      const combobox = $("lda-asset-combobox");
+      if (combobox && !combobox.contains(event.target)) closeAssetDropdown();
+    });
     $("lda-perform").addEventListener("click", performAnalysis);
     $("lda-disposition-wo").addEventListener("click", () => openDisposition("wo"));
     $("lda-disposition-pm").addEventListener("click", () => openDisposition("pm"));
