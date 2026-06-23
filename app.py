@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import tempfile
@@ -231,7 +232,21 @@ def settings():
 @life_data_api
 def api_assets():
     service = _service_or_api_error()
+    # Auto-map only happens when the mapped table is empty, so an already-populated
+    # database does not silently pick up later Limble syncs. Allow the client to
+    # request an explicit re-map (mirroring the desktop "Refresh CMMS mapping"
+    # action) before reading the asset list.
+    if request.values.get("refresh") in ("1", "true", "yes"):
+        service.refresh_mapped_cmms_records()
     return jsonify({"assets": service.asset_number_options()})
+
+
+@app.route("/life-data-analysis/api/refresh-mapping", methods=["POST"])
+@life_data_api
+def api_refresh_mapping():
+    service = _service_or_api_error()
+    mapped = service.refresh_mapped_cmms_records()
+    return jsonify({"mapped": int(mapped or 0), "assets": service.asset_number_options()})
 
 
 @app.route("/life-data-analysis/api/summary")
@@ -320,11 +335,21 @@ def api_download_disposition_excel():
     asset_number = _required_asset()
     kind = _disposition_kind()
     safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
+    # Build the workbook in a temp file, then serve it from memory and delete the
+    # temp file immediately so repeated downloads never orphan files on disk.
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_{kind}_")
     os.close(fd)
-    service.export_disposition_excel(asset_number, kind, path)
+    try:
+        service.export_disposition_excel(asset_number, kind, path)
+        with open(path, "rb") as handle:
+            workbook_bytes = handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     return send_file(
-        path,
+        io.BytesIO(workbook_bytes),
         as_attachment=True,
         download_name=f"{safe_asset}_{kind}_dispositions.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

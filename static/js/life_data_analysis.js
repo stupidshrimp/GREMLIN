@@ -214,6 +214,29 @@
     $("lda-workspace").innerHTML = "";
   }
 
+  async function refreshMapping() {
+    beginLoading("Refreshing CMMS mapping…");
+    try {
+      const data = await postJson(`${API}/refresh-mapping`, {});
+      state.assets = data.assets || [];
+      state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
+      const list = $("lda-asset-list");
+      list.innerHTML = "";
+      state.assets.forEach((asset) => {
+        const option = el("option", { value: asset.asset_number });
+        if (asset.asset_name) option.label = asset.asset_name;
+        list.appendChild(option);
+      });
+      showBanner(`Refreshed ${data.mapped || 0} mapped CMMS row(s). ${state.assets.length} Asset Number(s) available.`, "success");
+      // Re-evaluate the current asset in case its data changed.
+      evaluateAssetSelection();
+    } catch (err) {
+      showBanner(err.message, "error");
+    } finally {
+      endLoading();
+    }
+  }
+
   // ---- readiness summary ----------------------------------------------------
   async function refreshSummary() {
     if (!state.selectedAsset) return;
@@ -1303,6 +1326,7 @@
     $("lda-disposition-wo").addEventListener("click", () => openDisposition("wo"));
     $("lda-disposition-pm").addEventListener("click", () => openDisposition("pm"));
     $("lda-calculate-all").addEventListener("click", calculateAll);
+    $("lda-refresh-mapping").addEventListener("click", refreshMapping);
     $("lda-pareto-toggle").addEventListener("change", (event) => {
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
