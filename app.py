@@ -436,6 +436,8 @@ def api_parameter_adjustment():
         eta = float(payload.get("eta"))
     except (TypeError, ValueError):
         raise LifeDataApiError("Adjusted beta, eta, and the source result id are required.", status_code=400)
+    if not (math.isfinite(beta) and math.isfinite(eta) and beta > 0 and eta > 0):
+        raise LifeDataApiError("Adjusted beta and eta must both be finite and greater than zero.", status_code=400)
     reason = str(payload.get("reason") or "")
     adjustment_id = service.save_parameter_adjustment(result_id, beta, eta, reason)
     return jsonify({"parameter_adjustment_id": adjustment_id})

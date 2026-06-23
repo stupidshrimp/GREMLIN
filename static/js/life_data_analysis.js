@@ -68,6 +68,14 @@
     return Number(num.toPrecision(digits || 4)).toString();
   }
 
+  // Plain machine-readable number string (no thousands separators) for use as the
+  // value of <input type="number">, which rejects comma-grouped values.
+  function numericInputValue(value, digits) {
+    const num = Number(value);
+    if (!isFinite(num)) return "";
+    return String(parseFloat(num.toFixed(digits || 6)));
+  }
+
   // ---- network helpers ------------------------------------------------------
   async function requestJson(url, options) {
     const response = await fetch(url, options);
@@ -868,8 +876,8 @@
     clearWorkspace();
     const dataTable = buildWeibullDataTable(result);
 
-    const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: fmtFixed(result.beta_mle, 6) });
-    const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: fmtFixed(result.eta_mle, 6) });
+    const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(result.beta_mle, 6) });
+    const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(result.eta_mle, 6) });
     const reasonInput = el("input", { class: "lda-input", placeholder: "Adjustment reason based on empirical data points…" });
 
     const charts = el("div", { class: "lda-charts" });

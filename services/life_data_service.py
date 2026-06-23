@@ -1472,10 +1472,23 @@ class LifeDataService:
         raise ValueError("Disposition kind must be 'wo' or 'pm'.")
 
     def _needs_disposition_where(self, kind: str) -> str:
+        # "New/undispositioned" means a row that has no current disposition yet, or
+        # one saved as an inclusion that still lacks its required failure
+        # mode/mechanism. Reviewed exclusions (EXCLUDED_NON_FAILURE,
+        # HELD_AMBIGUOUS, PM_CONTEXT_ONLY, REJECTED_PM_RESET, …) intentionally
+        # leave those IDs blank, so they must not keep matching this filter.
         if kind == "wo":
-            return "AND (d.failure_mode_id IS NULL OR d.failure_mechanism_id IS NULL)"
+            return (
+                "AND (d.event_disposition_id IS NULL OR ("
+                "d.disposition_category IN ('INCLUDED_FAILURE','INCLUDED_CENSORED_ASSET_EVENT') "
+                "AND (d.failure_mode_id IS NULL OR d.failure_mechanism_id IS NULL)))"
+            )
         if kind == "pm":
-            return "AND (d.reset_target_failure_mode_id IS NULL OR d.reset_target_failure_mechanism_id IS NULL)"
+            return (
+                "AND (d.event_disposition_id IS NULL OR ("
+                "d.disposition_category = 'INCLUDED_PM_RESET_EVENT' "
+                "AND (d.reset_target_failure_mode_id IS NULL OR d.reset_target_failure_mechanism_id IS NULL)))"
+            )
         raise ValueError("Disposition kind must be 'wo' or 'pm'.")
 
     def disposition_row_count(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False) -> int:
