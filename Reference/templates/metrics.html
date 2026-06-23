@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>Metrics</h1>
+  <p>Dashboard indicators for reliability engineering, maintenance performance, and asset health.</p>
+</section>
+<section class="grid">
+  {% for card in metrics_data.cards %}
+    <article class="card"><h3>{{ card.label }}</h3><div class="metric-value">{{ card.value }}</div><p>{{ card.detail }}</p></article>
+  {% endfor %}
+</section>
+<section class="card" style="margin-top: 18px;">
+  <h2>Recent analyses</h2>
+  <table class="table"><thead><tr><th>Title</th><th>Status</th><th>Summary</th></tr></thead><tbody>
+    {% for analysis in metrics_data.analyses %}
+      <tr><td>{{ analysis.title }}</td><td><span class="badge">{{ analysis.status }}</span></td><td>{{ analysis.summary }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

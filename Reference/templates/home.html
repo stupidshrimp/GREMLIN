@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <span class="badge">Graphical Reliability Engineering, Maintenance, Life-Data INterface</span>
+  <h1>Reliability engineering workspace for maintenance and life-data decisions.</h1>
+  <p>GREMLIN collects reliability metrics, failure classification workflows, maintenance integrations, and life-data analysis screens into a single Flask application.</p>
+  <div class="actions">
+    <a class="button" href="{{ url_for('life_data_analysis') }}">Open Life Data Analysis</a>
+    <a class="button secondary" href="{{ url_for('metrics') }}">View Metrics</a>
+  </div>
+</section>
+<section class="grid">
+  <article class="card"><h3>Life Data Analysis</h3><p>Build Weibull and survival-analysis workflows for asset populations.</p></article>
+  <article class="card"><h3>Failure Classification</h3><p>Classify failures by pattern, risk, and recommended engineering response.</p></article>
+  <article class="card"><h3>CMMS Integrations</h3><p>Stage Limble sync jobs for assets, tasks, inventory, and work-order data.</p></article>
+</section>
+{% endblock %}

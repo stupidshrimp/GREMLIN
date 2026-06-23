@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero life-analysis-hero" aria-labelledby="life-analysis-title">
+  <span class="badge">Life Data Analysis</span>
+  <h1 id="life-analysis-title">Life Data Analysis</h1>
+  <p>Select an Asset Number, disposition corrective work orders and PM reset events, then run a REL-style Weibull analysis from mapped CMMS data in the existing GREMLIN.db.</p>
+</section>
+
+<section class="card life-analysis-card" aria-labelledby="asset-select-title">
+  <h2 id="asset-select-title">1. Select Asset Number</h2>
+  <label for="asset-number">Asset Number</label>
+  <input id="asset-number" name="asset_number" list="asset-number-list" placeholder="Search Asset Number values">
+  <datalist id="asset-number-list">
+    {% for asset_number in asset_numbers | default([]) %}
+      <option value="{{ asset_number }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <label for="analysis-type">Analysis Type</label>
+  <select id="analysis-type" name="analysis_type">
+    <option selected>Weibull Analysis</option>
+  </select>
+</section>
+
+<section class="grid life-summary-grid" aria-label="Asset Weibull readiness summary">
+  {% for title in [
+    'Total entries for this asset',
+    'Total usable WOs for Weibull',
+    'Total usable PMs for Weibull',
+    'WOs dispositioned',
+    'WOs not dispositioned',
+    'PMs dispositioned',
+    'PMs not dispositioned'
+  ] %}
+    <article class="card">
+      <h3>{{ title }}</h3>
+      <p class="metric-value">—</p>
+    </article>
+  {% endfor %}
+</section>
+
+<section class="actions" aria-label="Life data analysis actions">
+  <button class="button" type="button">Perform Analysis</button>
+  <button class="button secondary" type="button">Disposition Work Orders</button>
+  <button class="button secondary" type="button">Disposition PMs</button>
+</section>
+
+<section class="card life-analysis-card">
+  <h2>Disposition table requirements</h2>
+  <p>WO and PM disposition tables display name, taskID, createdDate_Final, completedDate_Final, Weibull event date/source, downtime, completionNotes, requestTitle, requestorDescription, and disposition notes. Saves write current/historical rows to event_disposition.</p>
+  <p>PM records are never counted as failures; PMs only become Weibull-usable with INCLUDED_PM_RESET_EVENT and APPROVED_RESET. Corrective WOs only become Weibull-usable with INCLUDED_FAILURE.</p>
+</section>
+{% endblock %}

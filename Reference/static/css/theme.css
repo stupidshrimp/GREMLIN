@@ -1,0 +1,72 @@
+:root {
+  --bg: #07130c;
+  --panel: #0d1f14;
+  --text: #ecfdf5;
+  --muted: #9bd8b4;
+  --border: #1f5f3a;
+  --brand: #22c55e;
+  --brand-dark: #052e16;
+}
+* { box-sizing: border-box; }
+body { margin: 0; overflow-x: hidden; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+a { color: inherit; text-decoration: none; }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow-x: hidden; }
+.main { min-width: 0; padding: 88px 32px 32px; }
+.hero, .card { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 18px 50px rgba(34, 197, 94, .08); }
+.hero { padding: 40px; margin-bottom: 24px; }
+.hero h1 { margin: 0 0 12px; font-size: clamp(2rem, 4vw, 4rem); letter-spacing: -.05em; }
+.hero p { color: var(--muted); font-size: 1.1rem; max-width: 760px; line-height: 1.7; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
+.card { padding: 22px; }
+.card h2, .card h3 { margin-top: 0; }
+.metric-value { color: var(--brand); font-size: 2rem; font-weight: 800; }
+.table { width: 100%; border-collapse: collapse; overflow: hidden; }
+.table th, .table td { border-bottom: 1px solid var(--border); padding: 14px; text-align: left; }
+.badge { border-radius: 999px; display: inline-flex; padding: 5px 10px; background: #14532d; color: var(--text); font-weight: 700; font-size: .8rem; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+.button { background: var(--brand); color: var(--brand-dark); padding: 12px 16px; border-radius: 12px; font-weight: 800; }
+.button.secondary { background: #12351f; color: var(--text); border: 1px solid var(--border); }
+
+
+.life-workflow-hero {
+  margin-bottom: 18px;
+}
+.life-workflow-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.workflow-card {
+  min-height: 150px;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
+}
+.workflow-card:hover,
+.workflow-card:focus-visible {
+  background: #12351f;
+  border-color: var(--brand);
+  box-shadow: 0 20px 55px rgba(34, 197, 94, .14);
+  transform: translateY(-3px);
+  outline: none;
+}
+.workflow-card h2 {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+}
+.workflow-card p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin-bottom: 0;
+}
+.placeholder-page p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+@media (max-width: 980px) {
+  .life-workflow-grid { grid-template-columns: 1fr; }
+  .workflow-card { min-height: auto; }
+}
+
+.life-analysis-card label { display: block; color: var(--muted); font-weight: 700; margin: 14px 0 6px; }
+.life-analysis-card input,
+.life-analysis-card select { width: min(680px, 100%); background: #06150d; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.life-summary-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-bottom: 20px; }
+.life-analysis-card p { color: var(--muted); line-height: 1.6; }
+.actions button { border: 0; cursor: pointer; }

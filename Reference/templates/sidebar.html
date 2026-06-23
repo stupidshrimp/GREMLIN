@@ -1,0 +1,11 @@
+<aside class="sidebar">
+  <a class="logo" href="{{ url_for('home') }}">
+    <span class="logo-mark">G</span>
+    <span>GREMLIN</span>
+  </a>
+  <nav class="nav" aria-label="Primary navigation">
+    {% for link in nav_links %}
+      <a href="{{ link.url }}"><span class="nav-icon">{{ link.icon|safe }}</span>{{ link.label }}</a>
+    {% endfor %}
+  </nav>
+</aside>

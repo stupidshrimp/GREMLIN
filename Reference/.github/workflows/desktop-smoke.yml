@@ -1,0 +1,31 @@
+name: Desktop smoke checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile sources
+        run: python -m compileall app.py gremlin_gui.py repositories services models integrations jobs API Archive
+      - name: Check service data
+        run: |
+          python - <<'PY'
+          from services.reliability_service import ReliabilityService
+          from repositories.metrics_repo import MetricsRepository
+          from repositories.failure_repo import FailureRepository
+          from repositories.analysis_repo import AnalysisRepository
+
+          service = ReliabilityService(MetricsRepository(), FailureRepository(), AnalysisRepository())
+          assert len(service.get_metrics_dashboard_data()["cards"]) == 4
+          assert service.get_failure_classification_data()["total"] == 61
+          print("ok")
+          PY

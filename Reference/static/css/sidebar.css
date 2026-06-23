@@ -1,0 +1,7 @@
+.sidebar { position: fixed; inset: 0 auto 0 0; width: 260px; padding: 24px; background: #06150d; color: #ecfdf5; border-right: 1px solid #1f5f3a; }
+.logo { display: flex; align-items: center; gap: 12px; font-weight: 900; font-size: 1.35rem; margin-bottom: 32px; }
+.logo-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: #22c55e; color: #052e16; }
+.nav { display: grid; gap: 8px; }
+.nav a { display: flex; align-items: center; gap: 10px; color: #9bd8b4; padding: 12px 14px; border-radius: 12px; }
+.nav a:hover { background: #14532d; color: #fff; }
+.nav-icon { width: 22px; text-align: center; }
