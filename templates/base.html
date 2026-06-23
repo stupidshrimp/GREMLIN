@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/topbar.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/sidebar.css') }}">
+  {% block head_extra %}{% endblock %}
 </head>
 <body>
   <div class="app-layout" id="appLayout">
@@ -19,5 +20,6 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

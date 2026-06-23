@@ -1,9 +1,87 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+{% endblock %}
+
 {% block content %}
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Life Data Analysis</p>
   <h1>Perform an Analysis</h1>
-  <p>Use this page to configure model assumptions, fit selected distributions, and review confidence bounds for reliability predictions.</p>
+  <p>Select an Asset Number from mapped CMMS data, disposition corrective work orders and PM reset
+     events, then run a REL-style Weibull analysis using only valid observations.</p>
 </section>
+
+<div id="lda-status" class="lda-banner" role="status" hidden></div>
+
+<section class="glass-card slide-in lda-card" aria-labelledby="lda-step-1">
+  <p class="eyebrow">Step 1</p>
+  <h2 id="lda-step-1">Select asset and analysis type</h2>
+  <div class="lda-selectors">
+    <div class="lda-field">
+      <label for="lda-asset">Asset Number</label>
+      <input id="lda-asset" name="asset" list="lda-asset-list" autocomplete="off"
+             placeholder="Search imported Asset Number values…">
+      <datalist id="lda-asset-list"></datalist>
+    </div>
+    <div class="lda-field">
+      <label for="lda-analysis-type">Analysis Type</label>
+      <select id="lda-analysis-type" name="analysis_type">
+        <option value="Weibull Analysis" selected>Weibull Analysis</option>
+      </select>
+    </div>
+  </div>
+  <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
+</section>
+
+<section id="lda-summary-card" class="glass-card slide-in lda-card" aria-labelledby="lda-step-2" hidden>
+  <p class="eyebrow">Step 2</p>
+  <h2 id="lda-step-2">Asset Weibull readiness summary</h2>
+  <div id="lda-summary-grid" class="lda-summary-grid"></div>
+
+  <div class="lda-subgrid">
+    <div class="lda-panel">
+      <h3>Highest-beta mechanisms</h3>
+      <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
+         failure-mechanism population on this asset.</p>
+      <ol id="lda-beta-rankings" class="lda-rankings"></ol>
+    </div>
+    <div class="lda-panel">
+      <h3>Failure mechanism Pareto</h3>
+      <label class="lda-checkbox">
+        <input type="checkbox" id="lda-pareto-toggle">
+        Show failure count instead of downtime hours
+      </label>
+      <div class="lda-chart-wrap">
+        <canvas id="lda-pareto-chart" class="lda-canvas" height="320"></canvas>
+      </div>
+      <p class="lda-hint" id="lda-pareto-empty" hidden>No included failure mechanisms to chart yet.</p>
+    </div>
+  </div>
+</section>
+
+<section id="lda-actions" class="lda-action-bar" hidden>
+  <button type="button" class="btn-primary" id="lda-perform">Perform Analysis</button>
+  <button type="button" class="btn-secondary" id="lda-disposition-wo">Disposition Work Orders</button>
+  <button type="button" class="btn-secondary" id="lda-disposition-pm">Disposition PMs</button>
+</section>
+
+<div id="lda-workspace" class="lda-workspace"></div>
+
+<section id="lda-calculate-all-card" class="glass-card lda-card" hidden>
+  <button type="button" class="btn-secondary" id="lda-calculate-all">
+    Calculate MLE beta/eta for all modes and mechanisms
+  </button>
+  <p class="lda-hint">Runs and saves Weibull MLE fits for every available failure mode and failure
+     mechanism on the selected asset. Requires the calculation password.</p>
+</section>
+
+<div id="lda-loading" class="lda-loading" hidden>
+  <div class="lda-spinner" aria-hidden="true"></div>
+  <span id="lda-loading-text">Working…</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
 {% endblock %}
