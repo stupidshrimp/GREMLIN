@@ -180,6 +180,7 @@
     try {
       const data = await getJson(`${API}/assets`);
       setAssetOptions(data.assets || []);
+      if (state.assetDropdownOpen) renderAssetDropdown();
       hint.textContent = state.assets.length
         ? `${state.assets.length} Asset Number(s) available. Type to search.`
         : "No mapped CMMS Asset Numbers were found in the database.";
@@ -1479,6 +1480,10 @@
     assetInput.addEventListener("input", onAssetInput);
     assetInput.addEventListener("keydown", onAssetKeydown);
     assetInput.addEventListener("focus", openAssetDropdown);
+    // Commit a manually edited value synchronously on blur so actions clicked
+    // immediately after typing (Perform/Disposition/Calculate) run against the
+    // current asset rather than the previous one still held by the input debounce.
+    assetInput.addEventListener("blur", evaluateAssetSelection);
     // Close the dropdown when clicking anywhere outside the combobox.
     document.addEventListener("mousedown", (event) => {
       const combobox = $("lda-asset-combobox");
