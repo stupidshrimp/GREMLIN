@@ -26,6 +26,11 @@ import xml.etree.ElementTree as ET
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 _DEFAULT_DB_RELATIVE_PATHS = (
+    # Drives mapped at the \\sandc.ws\depts share root reach the database through
+    # the Facilities\FACIL\... folder chain. Probe this first so a mapped drive
+    # resolves to the real shared location instead of an empty stub path.
+    r"Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db",
+    # Drives mapped directly at the "901 Reliability Projects" project folder.
     r"Weibull Data\\Database\\GREMLIN.db",
 )
 
@@ -258,9 +263,10 @@ class LifeDataService:
 
     def __init__(self, db_path: Path | str | object = _DEFAULT_DB_PATH_SENTINEL, *, refresh_on_startup: bool = True) -> None:
         if db_path is _DEFAULT_DB_PATH_SENTINEL:
-            self.db_path = Path(r"\\sandc.ws\depts\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db"
-                                )
-
+            # Pick the first reachable shared candidate (UNC or any mapped drive)
+            # instead of opening only the UNC path, so default/session reuse works
+            # on profiles where the share is mapped to a drive letter.
+            self.db_path = resolve_default_db_path(DEFAULT_DB_PATH)
         else:
             self.db_path = Path(db_path)
         self._asset_number_options_cache: list[dict[str, str]] | None = None
