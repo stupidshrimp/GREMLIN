@@ -2073,20 +2073,21 @@ class LifeDataService:
 
     def _lookup_failure_mechanism_id(self, conn: sqlite3.Connection, text: str, failure_mode_id: int | None = None) -> int | None:
         if failure_mode_id is not None:
+            # Only reuse a mechanism that belongs to the selected failure mode or
+            # is mode-agnostic (NULL). A mechanism owned by a different mode must
+            # not be returned, so the caller creates a new one under the selected
+            # mode and (mode, mechanism) populations stay separated.
             row = conn.execute(
                 """
                 SELECT failure_mechanism_id FROM failure_mechanism
                 WHERE lower(failure_mechanism_name) = lower(?)
+                  AND (failure_mode_id = ? OR failure_mode_id IS NULL)
                 ORDER BY
-                    CASE
-                        WHEN failure_mode_id = ? THEN 0
-                        WHEN failure_mode_id IS NULL THEN 1
-                        ELSE 2
-                    END,
+                    CASE WHEN failure_mode_id = ? THEN 0 ELSE 1 END,
                     failure_mechanism_id
                 LIMIT 1
                 """,
-                (text, failure_mode_id),
+                (text, failure_mode_id, failure_mode_id),
             ).fetchone()
         else:
             row = conn.execute(
@@ -2412,11 +2413,28 @@ class LifeDataService:
                 (asset_number, reset_target_failure_mode_id),
             ).fetchone():
                 raise ValueError("PM reset target failure mode must already be a WO-dispositioned option for this asset.")
-            if reset_target_failure_mechanism_id is not None and not conn.execute(
-                "SELECT 1 FROM asset_failure_mechanism_option WHERE asset_number = ? AND failure_mechanism_id = ? AND is_active = 1",
-                (asset_number, reset_target_failure_mechanism_id),
-            ).fetchone():
-                raise ValueError("PM reset target failure mechanism must already be a WO-dispositioned option for this asset.")
+            if reset_target_failure_mechanism_id is not None:
+                mechanism_option = conn.execute(
+                    """
+                    SELECT fmech.failure_mode_id AS mechanism_mode_id
+                    FROM asset_failure_mechanism_option afmo
+                    JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = afmo.failure_mechanism_id
+                    WHERE afmo.asset_number = ? AND afmo.failure_mechanism_id = ? AND afmo.is_active = 1 AND fmech.is_active = 1
+                    """,
+                    (asset_number, reset_target_failure_mechanism_id),
+                ).fetchone()
+                if mechanism_option is None:
+                    raise ValueError("PM reset target failure mechanism must already be a WO-dispositioned option for this asset.")
+                mechanism_mode_id = mechanism_option["mechanism_mode_id"]
+                if (
+                    reset_target_failure_mode_id is not None
+                    and mechanism_mode_id is not None
+                    and int(mechanism_mode_id) != int(reset_target_failure_mode_id)
+                ):
+                    raise ValueError(
+                        "PM reset target failure mechanism does not belong to the selected reset target failure mode. "
+                        "Choose a mechanism that was dispositioned under that failure mode."
+                    )
 
         modeled_population_id = None
         if kind == "wo" and failure_mode_id is not None:
