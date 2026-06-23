@@ -20,9 +20,12 @@
   <div class="lda-selectors">
     <div class="lda-field">
       <label for="lda-asset">Asset Number</label>
-      <input id="lda-asset" name="asset" list="lda-asset-list" autocomplete="off"
-             placeholder="Search imported Asset Number values…">
-      <datalist id="lda-asset-list"></datalist>
+      <div class="lda-combobox" id="lda-asset-combobox">
+        <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
+               aria-autocomplete="list" aria-expanded="false" aria-controls="lda-asset-list"
+               placeholder="Search imported Asset Number values…">
+        <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
+      </div>
     </div>
     <div class="lda-field">
       <label for="lda-analysis-type">Analysis Type</label>
