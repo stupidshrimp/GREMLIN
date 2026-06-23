@@ -413,21 +413,45 @@
     if (kind === "pm") {
       payload.pm_reset_decision = rowState.decision.value;
       payload.pm_reset_rationale = rowState.rationale.value;
-      payload.reset_target_failure_mode_id = comboId(rowState.mode, rowState.modeOptions);
-      payload.reset_target_failure_mechanism_id = comboId(rowState.mech, rowState.mechOptions);
+      // PM mode/mechanism are <select>s that carry the real id per option, so
+      // mechanisms that share a display name across modes stay distinct.
+      payload.reset_target_failure_mode_id = selectId(rowState.mode);
+      payload.reset_target_failure_mechanism_id = selectId(rowState.mech);
     } else {
-      payload.failure_mode_id = comboId(rowState.mode, rowState.modeOptions);
-      payload.failure_mechanism_id = comboId(rowState.mech, rowState.mechOptions);
-      payload.failure_mode_text = rowState.mode.value.trim();
-      payload.failure_mechanism_text = rowState.mech.value.trim();
+      const modeName = rowState.mode.value.trim();
+      const mechName = rowState.mech.value.trim();
+      const modeId = modeName ? (rowState.modeOptions.get(modeName) ?? null) : null;
+      payload.failure_mode_id = modeId;
+      // Resolve the mechanism id within the selected failure mode so a duplicate
+      // mechanism name under a different mode is never sent. When it cannot be
+      // resolved unambiguously, send null + text and let the backend upsert the
+      // mechanism under (name, selected failure mode).
+      payload.failure_mechanism_id = resolveMechanismId(rowState.mechByNameMode, mechName, modeId);
+      payload.failure_mode_text = modeName;
+      payload.failure_mechanism_text = mechName;
     }
     return payload;
   }
 
-  function comboId(input, optionMap) {
-    const text = (input.value || "").trim();
-    if (!text) return null;
-    return optionMap.has(text) ? optionMap.get(text) : null;
+  function selectId(select) {
+    const option = select.options[select.selectedIndex];
+    const raw = option ? option.dataset.id : "";
+    return raw ? Number(raw) : null;
+  }
+
+  // Shared key so the mechanism map build and the lookup can never drift.
+  function mechKey(name, modeId) {
+    return name + String.fromCharCode(0) + (modeId == null ? "" : modeId);
+  }
+
+  function resolveMechanismId(mechByNameMode, name, modeId) {
+    if (!name) return null;
+    const scopedKey = mechKey(name, modeId);
+    if (mechByNameMode.has(scopedKey)) return mechByNameMode.get(scopedKey);
+    // mechanisms saved without a parent mode live under the empty-mode bucket
+    const unscopedKey = mechKey(name, null);
+    if (mechByNameMode.has(unscopedKey)) return mechByNameMode.get(unscopedKey);
+    return null;
   }
 
   function renderDispositionEditor(data) {
@@ -435,8 +459,12 @@
     const workspace = $("lda-workspace");
     workspace.innerHTML = "";
 
+    // Failure-mode names are globally unique, so a name -> id map is safe.
     const modeMap = new Map(data.mode_options.map((o) => [o.failure_mode_name, o.failure_mode_id]));
-    const mechMap = new Map(data.mechanism_options.map((o) => [o.failure_mechanism_name, o.failure_mechanism_id]));
+    // Mechanism names can repeat across modes, so key by (name, parent mode id).
+    const mechByNameMode = new Map(
+      data.mechanism_options.map((o) => [mechKey(o.failure_mechanism_name, o.failure_mode_id), o.failure_mechanism_id])
+    );
 
     const extraHeaders = isPm
       ? ["Disposition Notes", "Disposition Category", "Record Class", "PM Reset Decision",
@@ -525,7 +553,7 @@
         mode: isPm ? mode : mode.input,
         mech: isPm ? mech : mech.input,
         modeOptions: modeMap,
-        mechOptions: mechMap,
+        mechByNameMode,
         tr,
       };
       rowState.initial = JSON.stringify(dispositionPayloadFromRow(rowState, data.kind));
@@ -623,12 +651,15 @@
   }
 
   function buildTaxonomySelect(options, idKey, nameKey, currentId) {
-    // Use the taxonomy name as the option value so comboId() can resolve it
-    // through the same name -> id map used for the editable WO inputs.
+    // Each option carries its real id (data-id) so selectId() reads the exact
+    // taxonomy id even when two mechanisms share a display name across modes.
     const select = el("select", { class: "lda-select" });
-    select.appendChild(el("option", { value: "", text: "" }));
+    const blank = el("option", { value: "", text: "" });
+    blank.dataset.id = "";
+    select.appendChild(blank);
     options.forEach((opt) => {
       const option = el("option", { value: opt[nameKey], text: opt[nameKey] });
+      option.dataset.id = String(opt[idKey]);
       if (currentId != null && Number(opt[idKey]) === Number(currentId)) option.selected = true;
       select.appendChild(option);
     });
