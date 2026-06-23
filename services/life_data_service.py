@@ -2417,6 +2417,22 @@ class LifeDataService:
             if failure_mechanism_id is None and self._normalize_taxonomy_text(failure_mechanism_text):
                 failure_mechanism_id = self._upsert_failure_mechanism_for_asset(conn, asset_number, failure_mechanism_text, failure_mode_id)
             elif failure_mechanism_id is not None:
+                mechanism_row = conn.execute(
+                    "SELECT failure_mode_id FROM failure_mechanism WHERE failure_mechanism_id = ? AND is_active = 1",
+                    (failure_mechanism_id,),
+                ).fetchone()
+                if mechanism_row is None:
+                    raise ValueError("The selected failure mechanism does not exist or is inactive.")
+                mechanism_mode_id = mechanism_row["failure_mode_id"]
+                if (
+                    failure_mode_id is not None
+                    and mechanism_mode_id is not None
+                    and int(mechanism_mode_id) != int(failure_mode_id)
+                ):
+                    raise ValueError(
+                        "The selected failure mechanism belongs to a different failure mode. "
+                        "Choose a mechanism under the selected failure mode."
+                    )
                 self._touch_asset_failure_mechanism(conn, asset_number, failure_mechanism_id, failure_mode_id, None)
         else:
             failure_mode_id = None

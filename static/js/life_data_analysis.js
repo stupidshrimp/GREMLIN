@@ -841,19 +841,21 @@
 
   async function runAnalysisForGroup(group, message) {
     if (!state.selectedAsset) return;
+    const asset = state.selectedAsset;
     beginLoading(message || "Running Weibull analysis…");
     try {
       const data = await postJson(`${API}/perform-analysis`, {
-        asset: state.selectedAsset,
+        asset,
         grouping_level: group.grouping_level,
         failure_mode_id: group.failure_mode_id,
         failure_mechanism_id: group.failure_mechanism_id,
       });
+      if (state.selectedAsset !== asset) return; // asset changed mid-request; ignore stale result
       state.latestResult = data.result;
       renderAnalysisResult(data.result);
       refreshSummary();
     } catch (err) {
-      showBanner(err.message, "error");
+      if (state.selectedAsset === asset) showBanner(err.message, "error");
     } finally {
       endLoading();
     }
@@ -1117,15 +1119,24 @@
 
       // 1) Weibull probability plot in (ln t, ln(-ln R)) space
       drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight);
-      // 2) CDF / unreliability vs time
+      // 2) CDF / unreliability vs time. White points are completed failures
+      //    (KM estimate); red points are right-censored observations placed on
+      //    the fitted unreliability curve at their censoring time.
       drawCurvePane(canvases.cdf, {
         mleLine: curves.map((p) => [p.life_hours, p.cdf]),
         ciLines: ciPairs.map(([b, e]) => analyticCurves(b, e).map((p) => [p.life_hours, p.cdf])),
         scatter: km.filter((p) => p.cdf_estimate != null).map((p) => [p.life_hours, p.cdf_estimate, p]),
+        censored: censObs.map((obs) => {
+          const t = Number(obs.life_hours_for_weibull);
+          return [t, 1 - Math.exp(-Math.pow(t / eta, beta)), obs];
+        }),
         yMax: 1,
         xLabel: "Life hours",
         yLabel: "Unreliability",
         scatterPick: highlightFailureByTime,
+        censoredPick: (obs) => {
+          if (highlight) highlight(obs.weibull_observation_id);
+        },
       });
       // 3) PDF (MLE only)
       drawCurvePane(canvases.pdf, {
@@ -1255,7 +1266,8 @@
     const allY = [].concat(
       opts.mleLine.map((p) => p[1]),
       ...opts.ciLines.map((line) => line.map((p) => p[1])),
-      opts.scatter.map((p) => p[1])
+      (opts.scatter || []).map((p) => p[1]),
+      (opts.censored || []).map((p) => p[1])
     );
     const xMax = Math.max(...opts.mleLine.map((p) => p[0]), 1);
     const yMax = opts.yMax != null ? opts.yMax : Math.max(...allY, 1e-9) * 1.05;
@@ -1279,7 +1291,7 @@
     strokePolyline(ctx, opts.mleLine, sx, sy);
 
     const hits = [];
-    opts.scatter.forEach((p) => {
+    (opts.scatter || []).forEach((p) => {
       const px = sx(p[0]);
       const py = sy(p[1]);
       ctx.fillStyle = "#ffffff";
@@ -1289,15 +1301,27 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p[2] });
+      hits.push({ px, py, point: p[2], pick: opts.scatterPick });
     });
-    if (opts.scatterPick) {
+    (opts.censored || []).forEach((p) => {
+      const px = sx(p[0]);
+      const py = sy(p[1]);
+      ctx.fillStyle = "#c0392b";
+      ctx.strokeStyle = "#7d2b2b";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      hits.push({ px, py, point: p[2], pick: opts.censoredPick });
+    });
+    if (hits.some((h) => h.pick)) {
       target.canvas.onclick = (event) => {
         const rect = target.canvas.getBoundingClientRect();
         const mx = event.clientX - rect.left;
         const my = event.clientY - rect.top;
-        const hit = hits.find((h) => Math.hypot(h.px - mx, h.py - my) <= 7);
-        if (hit) opts.scatterPick(hit.point);
+        const hit = hits.find((h) => h.pick && Math.hypot(h.px - mx, h.py - my) <= 7);
+        if (hit) hit.pick(hit.point);
       };
     }
   }
