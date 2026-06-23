@@ -286,10 +286,26 @@
   }
 
   // ---- Pareto chart ---------------------------------------------------------
+  // Sort by the active metric and recompute the cumulative percentage for it, so
+  // the "failure count" view is a real count Pareto rather than the downtime
+  // ordering/cumulative returned by failure_mechanism_pareto().
+  function paretoDisplayRows() {
+    const metric = state.paretoMetric;
+    const rows = state.paretoRows.map((row) => ({ ...row }));
+    rows.sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0));
+    const total = rows.reduce((sum, row) => sum + (Number(row[metric]) || 0), 0) || 1;
+    let cumulative = 0;
+    rows.forEach((row) => {
+      cumulative += Number(row[metric]) || 0;
+      row._cumulative_percent = (cumulative / total) * 100;
+    });
+    return rows;
+  }
+
   function drawPareto() {
     const canvas = $("lda-pareto-chart");
     const empty = $("lda-pareto-empty");
-    const rows = state.paretoRows;
+    const rows = paretoDisplayRows();
     empty.hidden = rows.length > 0;
     const metric = state.paretoMetric;
     const ctx = setupCanvas(canvas, 320);
@@ -341,7 +357,7 @@
     ctx.beginPath();
     rows.forEach((row, index) => {
       const x = left + index * ((right - left) / rows.length) + ((right - left) / rows.length) / 2;
-      const y = bottom - (Number(row.cumulative_percent) || 0) / 100 * (bottom - top);
+      const y = bottom - (Number(row._cumulative_percent) || 0) / 100 * (bottom - top);
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -349,7 +365,7 @@
     ctx.fillStyle = "#c2723b";
     rows.forEach((row, index) => {
       const x = left + index * ((right - left) / rows.length) + ((right - left) / rows.length) / 2;
-      const y = bottom - (Number(row.cumulative_percent) || 0) / 100 * (bottom - top);
+      const y = bottom - (Number(row._cumulative_percent) || 0) / 100 * (bottom - top);
       ctx.beginPath();
       ctx.arc(x, y, 3, 0, Math.PI * 2);
       ctx.fill();

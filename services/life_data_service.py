@@ -2664,6 +2664,13 @@ class LifeDataService:
     ) -> None:
         self._delete_population_weibull_artifacts(conn, population_id)
         conn.execute("DELETE FROM event_processing_record WHERE asset_number = ? AND modeled_population_id = ?", (asset_number, population_id))
+        population_row = conn.execute(
+            "SELECT population_name FROM modeled_population WHERE modeled_population_id = ?",
+            (population_id,),
+        ).fetchone()
+        modeled_population_used = (
+            population_row["population_name"] if population_row and population_row["population_name"] else f"Asset {asset_number}"
+        )
         if grouping_level == "FAILURE_MECHANISM":
             group_filter = """
                 AND (
@@ -2722,7 +2729,7 @@ class LifeDataService:
                     failure_mechanism_id, grouping_level_used, modeled_population_used, weibull_sequence_number,
                     previous_same_population_event_id, previous_same_population_date, is_failure_event, is_pm_reset_event,
                     is_valid_life_start, is_valid_life_end, weibull_life_note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PARSED', ?, ?, 'ASSET_ONLY', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PARSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["mapped_record_id"],
@@ -2735,7 +2742,8 @@ class LifeDataService:
                     parsed.isoformat(),
                     event_failure_mode_id,
                     event_failure_mechanism_id,
-                    f"Asset {asset_number}",
+                    grouping_level,
+                    modeled_population_used,
                     sequence,
                     previous_id,
                     previous_date,
