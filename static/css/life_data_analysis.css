@@ -2,6 +2,11 @@
    Reuses the GREMLIN theme palette (theme.css) so the page matches the rest of
    the Flask app while replicating the desktop GUI's Weibull workflow. */
 
+/* The HTML `hidden` attribute must always win over the layout rules below
+   (display: grid/flex), which otherwise out-specify the UA [hidden] rule and
+   leave toggled elements — most visibly the "Working…" overlay — stuck on. */
+[hidden] { display: none !important; }
+
 .lda-card { display: grid; gap: 0.65rem; }
 
 .lda-banner {
