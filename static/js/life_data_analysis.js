@@ -40,6 +40,11 @@
     // Free-text filter applied to the disposition table (matched server-side
     // across every record column, so it spans all pages, not just the visible one).
     dispositionSearch: "",
+    // Monotonic token for disposition reloads. Overlapping debounced searches /
+    // page changes can resolve out of order on a slow endpoint; only the load
+    // whose token still matches is allowed to render, so a stale response never
+    // leaves the table filtered for a previous search.
+    dispositionToken: 0,
     // Redraws the current analysis charts at the live canvas size (set while a
     // result is shown, cleared with the workspace) so window resizes don't leave
     // the Weibull plots stretched or squished.
@@ -361,6 +366,9 @@
     $("lda-workspace").innerHTML = "";
     state.analysisRedraw = null;
     state.dispositionChangedFn = null;
+    // Invalidate any in-flight disposition load so it can't render into the
+    // workspace we just cleared (e.g. the asset selection was removed).
+    state.dispositionToken += 1;
   }
 
   async function refreshMapping() {
@@ -625,14 +633,18 @@
   }
 
   async function loadDispositionPage(kind, scope, pageIndex) {
+    // Claim this reload; a newer one (or a workspace clear) bumps the token and
+    // supersedes us, so the response below is dropped instead of rendering stale.
+    const token = ++state.dispositionToken;
     beginLoading("Loading disposition editor…");
     try {
       const search = state.dispositionSearch ? `&search=${encodeURIComponent(state.dispositionSearch)}` : "";
       const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}${search}`;
       const data = await getJson(url);
+      if (token !== state.dispositionToken) return;
       renderDispositionEditor(data);
     } catch (err) {
-      showBanner(err.message, "error");
+      if (token === state.dispositionToken) showBanner(err.message, "error");
     } finally {
       endLoading();
     }
