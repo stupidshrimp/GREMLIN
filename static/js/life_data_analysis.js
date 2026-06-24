@@ -371,22 +371,6 @@
     state.dispositionToken += 1;
   }
 
-  async function refreshMapping() {
-    beginLoading("Refreshing CMMS mapping…");
-    try {
-      const data = await postJson(`${API}/refresh-mapping`, {});
-      setAssetOptions(data.assets || []);
-      if (state.assetDropdownOpen) renderAssetDropdown();
-      showBanner(`Refreshed ${data.mapped || 0} mapped CMMS row(s). ${state.assets.length} Asset Number(s) available.`, "success");
-      // Re-evaluate the current asset in case its data changed.
-      evaluateAssetSelection();
-    } catch (err) {
-      showBanner(err.message, "error");
-    } finally {
-      endLoading();
-    }
-  }
-
   // ---- readiness summary ----------------------------------------------------
   async function refreshSummary() {
     // The summary grid / rankings / Pareto chart only exist on the Perform
@@ -1389,24 +1373,34 @@
   }
 
   function buildWeibullDataTable(result) {
-    const headers = ["#", "Observation ID", "Type", "Life Hours", "Failure", "Right Censored", "Start Datetime", "End/Cutoff Datetime", "Note"];
+    // Each column knows how to render its header and pull its value from an
+    // observation, so the header row and body cells can never drift apart. The
+    // Task ID / Work Title / Request Description / Completion Notes columns come
+    // from the source CMMS work order that closed the life interval (joined in
+    // perform_weibull_analysis); they are blank for trailing current-life rows.
+    const columns = [
+      { label: "#", get: (obs) => String(obs.ordered_index ?? "") },
+      { label: "Observation ID", get: (obs) => String(obs.weibull_observation_id ?? "") },
+      { label: "Task ID", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : "") },
+      { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
+      { label: "Type", get: (obs) => obs.observation_type || "" },
+      { label: "Life Hours", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
+      { label: "Failure", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
+      { label: "Right Censored", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
+      { label: "Start Datetime", get: (obs) => obs.start_datetime || "" },
+      { label: "End/Cutoff Datetime", get: (obs) => obs.end_datetime || obs.analysis_cutoff_datetime || "" },
+      { label: "Request Description", cls: "lda-data-text", get: (obs) => obs.source_request_description || "" },
+      { label: "Completion Notes", cls: "lda-data-text", get: (obs) => obs.source_completion_notes || "" },
+      { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
+    ];
     const table = el("table", { class: "lda-data" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    table.appendChild(
+      el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))])
+    );
     const tbody = el("tbody");
     const rowByObs = new Map();
     (result.observations || []).forEach((obs) => {
-      const endOrCutoff = obs.end_datetime || obs.analysis_cutoff_datetime || "";
-      const tr = el("tr", {}, [
-        el("td", { text: String(obs.ordered_index ?? "") }),
-        el("td", { text: String(obs.weibull_observation_id ?? "") }),
-        el("td", { text: obs.observation_type || "" }),
-        el("td", { text: fmtFixed(obs.life_hours_for_weibull) }),
-        el("td", { text: Number(obs.failure_indicator) ? "Yes" : "No" }),
-        el("td", { text: Number(obs.is_right_censored) ? "Yes" : "No" }),
-        el("td", { text: obs.start_datetime || "" }),
-        el("td", { text: endOrCutoff }),
-        el("td", { text: obs.weibull_life_note || "" }),
-      ]);
+      const tr = el("tr", {}, columns.map((c) => el("td", { text: c.get(obs), class: c.cls || null })));
       rowByObs.set(Number(obs.weibull_observation_id), tr);
       tbody.appendChild(tr);
     });
@@ -1834,23 +1828,44 @@
     ctx.lineTo(left, bottom);
     ctx.lineTo(right, bottom);
     ctx.stroke();
+
+    // Numeric range ticks (subtle). Only drawn when a max value is supplied, i.e.
+    // the linear CDF/PDF/Hazard panes; the log-space probability plot omits them.
     ctx.fillStyle = "#5e7082";
     ctx.font = "10px Inter, sans-serif";
-    if (xLabel) ctx.fillText(xLabel, (left + right) / 2 - 24, bottom + 26);
+    ctx.textBaseline = "alphabetic";
+    if (xMax != null) {
+      ctx.textAlign = "left";
+      ctx.fillText("0", left - 4, bottom + 14);
+      ctx.textAlign = "right";
+      ctx.fillText(fmt(xMax), right, bottom + 14);
+    }
+    if (yMax != null) {
+      ctx.textAlign = "left";
+      ctx.fillText(fmt(yMax), left - 46, top + 6);
+    }
+
+    // Axis titles: drawn prominently (darker + semibold, centered on the plot
+    // area) so every Weibull graph clearly labels what its X and Y axes show.
+    ctx.fillStyle = "#2a3f50";
+    ctx.font = "600 11.5px Inter, sans-serif";
+    if (xLabel) {
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(xLabel, (left + right) / 2, bottom + 31);
+    }
     if (yLabel) {
       ctx.save();
-      ctx.translate(14, (top + bottom) / 2 + 24);
+      ctx.translate(15, (top + bottom) / 2);
       ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
       ctx.fillText(yLabel, 0, 0);
       ctx.restore();
     }
-    if (xMax != null) {
-      ctx.fillText("0", left - 4, bottom + 14);
-      ctx.fillText(fmt(xMax), right - 26, bottom + 14);
-    }
-    if (yMax != null) {
-      ctx.fillText(fmt(yMax), left - 46, top + 6);
-    }
+    // Restore the default text origin so later drawing on this context is unaffected.
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
   }
 
   // ---- wiring ---------------------------------------------------------------
@@ -1871,8 +1886,6 @@
       const combobox = $("lda-asset-combobox");
       if (combobox && !combobox.contains(event.target)) closeAssetDropdown();
     });
-    const refreshButton = $("lda-refresh-mapping");
-    if (refreshButton) refreshButton.addEventListener("click", refreshMapping);
 
     if ($("lda-disposition-root")) initDispositionPage();
     else initAnalysisPage();
