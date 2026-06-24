@@ -993,6 +993,18 @@
       closeList();
     }
 
+    // Resolve the current input text to an option id by exact (case-insensitive)
+    // name match, independent of the blur timer. Returns null when the text does
+    // not exactly match an option. Lets getSelectedId() report a valid typed
+    // entry synchronously, so a Save click that beats the 120 ms blur timer still
+    // sends the right id instead of null.
+    function resolveIdFromText() {
+      const typed = input.value.trim().toLowerCase();
+      if (!typed) return null;
+      const exact = options.find((opt) => String(opt[nameKey]).toLowerCase() === typed);
+      return exact ? Number(exact[idKey]) : null;
+    }
+
     input.addEventListener("focus", openList);
     input.addEventListener("input", () => {
       activeIndex = -1;
@@ -1036,11 +1048,11 @@
         if (allowFreeText) return;
         // Restricted dropdown: keep the text in sync with the resolved id, adopt
         // an exact-name match, or clear an unmatched entry.
-        const typed = input.value.trim().toLowerCase();
-        const exact = options.find((opt) => String(opt[nameKey]).toLowerCase() === typed);
-        if (exact) {
-          selectedId = Number(exact[idKey]);
-          input.value = exact[nameKey];
+        const exactId = resolveIdFromText();
+        if (exactId != null) {
+          selectedId = exactId;
+          const match = options.find((opt) => Number(opt[idKey]) === exactId);
+          input.value = match[nameKey];
         } else if (selectedId != null) {
           const match = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
           input.value = match ? match[nameKey] : "";
@@ -1055,7 +1067,9 @@
       nodes: [wrap],
       input,
       getValue: () => input.value.trim(),
-      getSelectedId: () => selectedId,
+      // Fall back to a synchronous exact-name resolution so a typed-but-not-yet-
+      // committed valid entry isn't read as null when Save races the blur timer.
+      getSelectedId: () => (selectedId != null ? selectedId : resolveIdFromText()),
     };
   }
 
