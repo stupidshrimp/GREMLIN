@@ -7,6 +7,11 @@
   color: #fff;
   border-bottom: 1px solid rgba(255, 255, 255, 0.24);
   box-shadow: 0 8px 24px rgba(6, 43, 28, 0.25);
+  /* Pin the topbar so it stays visible while the page scrolls; the sticky sidebar
+     pins directly below it. */
+  position: sticky;
+  top: 0;
+  z-index: 30;
 }
 
 .brand-group {

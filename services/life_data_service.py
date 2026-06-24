@@ -25,6 +25,12 @@ import xml.etree.ElementTree as ET
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
+# Primary location for GREMLIN.db. The database now lives in the user's local
+# OneDrive Documents folder instead of the network share, so this is probed first
+# and the shared network locations below are kept only as fallbacks. Override with
+# the GREMLIN_DB_PATH environment variable to point at a different file.
+LOCAL_DEFAULT_DB_PATH = r"C:\Users\tim.kim\OneDrive - S & C Electric Company\Documents\GREMLIN.db"
+
 _DEFAULT_DB_RELATIVE_PATHS = (
     # Drives mapped at the \\sandc.ws\depts share root reach the database through
     # the Facilities\FACIL\... folder chain. Probe this first so a mapped drive
@@ -58,7 +64,11 @@ def _build_default_db_path_candidates() -> tuple[Path, ...]:
                 candidates.append(candidate)
                 seen.add(candidate_key)
 
-        # ✅ ADD YOUR PATH FIRST (highest priority)
+        # ✅ Local OneDrive Documents copy (highest priority). The database was moved
+        # off the network drive to this local location, so probe it first.
+        append_candidate(Path(LOCAL_DEFAULT_DB_PATH))
+
+        # Shared network share (legacy fallback).
         append_candidate(Path(
             r"\\sandc.ws\depts\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db"
         ))
@@ -76,7 +86,8 @@ def _build_default_db_path_candidates() -> tuple[Path, ...]:
 
 
 DEFAULT_DB_PATH_CANDIDATES = _build_default_db_path_candidates()
-DEFAULT_DB_PATH = DEFAULT_DB_PATH_CANDIDATES[1]
+# The first candidate is the local OneDrive Documents location (see above).
+DEFAULT_DB_PATH = DEFAULT_DB_PATH_CANDIDATES[0]
 DB_WRITE_TIMEOUT_SECONDS = 30
 _DEFAULT_DB_PATH_SENTINEL = object()
 _LOCK_WAIT_CONTEXT = threading.local()
