@@ -1339,7 +1339,8 @@
         class: "lda-hint",
         text:
           "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
-          "The hazard and PDF panes intentionally show only the MLE curve. Click any plotted failure or censored point to jump to the source Weibull data row below.",
+          "The red vertical line marks the current life — the elapsed time from the most recent valid event to the analysis cutoff. " +
+          "The hazard and PDF panes intentionally show only the MLE curve. Click any plotted failure or censored point, or the current-life line, to jump to the source Weibull data row below.",
       }),
       panel("Results Interpretation Summary", buildInterpretationTable(result),
         "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
@@ -1362,6 +1363,7 @@
       el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#d6a700" }), document.createTextNode("95% CI fit")]),
       el("span", {}, [el("span", { class: "lda-dot", style: "background:#ffffff" }), document.createTextNode("Completed failure")]),
       el("span", {}, [el("span", { class: "lda-dot", style: "background:#c0392b;border-color:#7d2b2b" }), document.createTextNode("Right-censored")]),
+      el("span", {}, [el("span", { class: "lda-vline" }), document.createTextNode("Current life")]),
     ]);
   }
 
@@ -1504,9 +1506,28 @@
     const failureObs = (result.observations || []).filter((o) => Number(o.failure_indicator));
     const censObs = (result.observations || []).filter((o) => Number(o.is_right_censored));
 
+    // "Current life" markers: the trailing right-censored life that runs from the
+    // last valid event to the analysis cutoff ("now"), so it has no end_datetime.
+    // Like the desktop GUI, these are drawn as full-height red vertical lines (a
+    // "now" marker) in every pane rather than as a point, so the ongoing life
+    // since the most recent failure/reset is obvious on each graph.
+    const isCurrentCensor = (o) =>
+      Number(o.is_right_censored) === 1 &&
+      String(o.observation_type || "").toUpperCase() === "RIGHT_CENSORED_LIFE" &&
+      !o.end_datetime;
+    const currentCensors = (result.observations || []).filter(isCurrentCensor);
+    const historicalCensors = censObs.filter((o) => !isCurrentCensor(o));
+    const currentLifeMarkers = currentCensors
+      .map((obs) => [Number(obs.life_hours_for_weibull), obs])
+      .filter(([t]) => isFinite(t) && t > 0);
+    // Jump from a plotted point / current-life marker to its Weibull data row.
+    const jumpToObs = (obs) => {
+      if (highlight && obs) highlight(obs.weibull_observation_id);
+    };
+
     const panes = [
       { key: "prob", title: "Weibull Probability Plot", height: 300 },
-      { key: "cdf", title: "Unreliability (CDF)", height: 300 },
+      { key: "cdf", title: "CDF", height: 300 },
       { key: "pdf", title: "Probability Density (PDF)", height: 300 },
       { key: "hazard", title: "Hazard Rate", height: 300 },
     ];
@@ -1542,41 +1563,45 @@
       if (result.beta_upper_ci != null && result.eta_upper_ci != null) ciPairs.push([result.beta_upper_ci, result.eta_upper_ci]);
 
       // 1) Weibull probability plot in (ln t, ln(-ln R)) space
-      drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight);
-      // 2) CDF / unreliability vs time. White points are completed failures
-      //    (KM estimate); red points are right-censored observations placed on
-      //    the fitted unreliability curve at their censoring time.
+      drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight, currentCensors);
+      // 2) CDF vs time. White points are completed failures (KM estimate); red
+      //    points are historical right-censored observations placed on the fitted
+      //    curve at their censoring time; the red vertical line marks current life.
       drawCurvePane(canvases.cdf, {
         mleLine: curves.map((p) => [p.life_hours, p.cdf]),
         ciLines: ciPairs.map(([b, e]) => analyticCurves(b, e).map((p) => [p.life_hours, p.cdf])),
         scatter: km.filter((p) => p.cdf_estimate != null).map((p) => [p.life_hours, p.cdf_estimate, p]),
-        censored: censObs.map((obs) => {
+        censored: historicalCensors.map((obs) => {
           const t = Number(obs.life_hours_for_weibull);
           return [t, 1 - Math.exp(-Math.pow(t / eta, beta)), obs];
         }),
+        verticalMarkers: currentLifeMarkers,
         yMax: 1,
         xLabel: "Life hours",
-        yLabel: "Unreliability",
+        yLabel: "CDF",
         scatterPick: highlightFailureByTime,
-        censoredPick: (obs) => {
-          if (highlight) highlight(obs.weibull_observation_id);
-        },
+        censoredPick: jumpToObs,
+        markerPick: jumpToObs,
       });
-      // 3) PDF (MLE only)
+      // 3) PDF (MLE only) + current-life marker
       drawCurvePane(canvases.pdf, {
         mleLine: curves.map((p) => [p.life_hours, p.pdf]),
         ciLines: [],
         scatter: [],
+        verticalMarkers: currentLifeMarkers,
         xLabel: "Life hours",
         yLabel: "Density",
+        markerPick: jumpToObs,
       });
-      // 4) Hazard (MLE only)
+      // 4) Hazard (MLE only) + current-life marker
       drawCurvePane(canvases.hazard, {
         mleLine: curves.map((p) => [p.life_hours, p.hazard]),
         ciLines: [],
         scatter: [],
+        verticalMarkers: currentLifeMarkers,
         xLabel: "Life hours",
         yLabel: "Hazard",
+        markerPick: jumpToObs,
       });
     }
 
@@ -1602,7 +1627,7 @@
     return { update: draw };
   }
 
-  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight) {
+  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight, currentCensors) {
     const { ctx, width: W, height: H } = setupCanvas(target.canvas, target.height);
     ctx.clearRect(0, 0, W, H);
     const points = km.filter((p) => p.weibull_plot_y != null && isFinite(p.weibull_plot_x) && isFinite(p.weibull_plot_y));
@@ -1610,9 +1635,14 @@
 
     const xs = points.map((p) => p.weibull_plot_x);
     const ys = points.map((p) => p.weibull_plot_y);
-    // include the fit line endpoints in the domain
-    const xMinData = xs.length ? Math.min(...xs) : lnEta - 1;
-    const xMaxData = xs.length ? Math.max(...xs) : lnEta + 1;
+    // Current-life "now" markers, plotted in ln(life hours) space like the points.
+    const markers = (currentCensors || [])
+      .map((obs) => ({ x: Math.log(Number(obs.life_hours_for_weibull)), obs }))
+      .filter((m) => isFinite(m.x));
+    // include the fit line endpoints + current-life markers in the domain
+    const domainXs = xs.concat(markers.map((m) => m.x));
+    const xMinData = domainXs.length ? Math.min(...domainXs) : lnEta - 1;
+    const xMaxData = domainXs.length ? Math.max(...domainXs) : lnEta + 1;
     const xMin = Math.min(xMinData, lnEta - 1) - 0.3;
     const xMax = Math.max(xMaxData, lnEta + 1) + 0.3;
     const fitY = (x, b) => b * (x - lnEta);
@@ -1663,10 +1693,27 @@
       hits.push({ px, py, point: p });
     });
 
+    // Current-life "now" markers: full-height red vertical lines.
+    markers.forEach((m) => {
+      const px = sx(m.x);
+      ctx.strokeStyle = "#c0392b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+    });
+
     target.canvas.onclick = (event) => {
       const rect = target.canvas.getBoundingClientRect();
       const mx = event.clientX - rect.left;
       const my = event.clientY - rect.top;
+      // Current-life marker: jump straight to the censored observation's own row.
+      const marker = markers.find((m) => Math.abs(sx(m.x) - mx) <= 5 && my >= top && my <= bottom);
+      if (marker) {
+        if (highlight) highlight(marker.obs.weibull_observation_id);
+        return;
+      }
       const hit = hits.find((h) => Math.hypot(h.px - mx, h.py - my) <= 7);
       if (hit && highlight) {
         // nearest failure observation by life hours
@@ -1693,7 +1740,9 @@
       (opts.scatter || []).map((p) => p[1]),
       (opts.censored || []).map((p) => p[1])
     );
-    const xMax = Math.max(...opts.mleLine.map((p) => p[0]), 1);
+    // Include any current-life marker x so its vertical line stays inside the plot
+    // even when current life runs past the fitted curve's last life-hours point.
+    const xMax = Math.max(...opts.mleLine.map((p) => p[0]), ...(opts.verticalMarkers || []).map((m) => m[0]), 1);
     const yMax = opts.yMax != null ? opts.yMax : Math.max(...allY, 1e-9) * 1.05;
     const left = 56;
     const right = W - 16;
@@ -1739,12 +1788,28 @@
       ctx.stroke();
       hits.push({ px, py, point: p[2], pick: opts.censoredPick });
     });
+    // Current-life "now" markers: full-height red vertical lines.
+    (opts.verticalMarkers || []).forEach((m) => {
+      const px = sx(m[0]);
+      ctx.strokeStyle = "#c0392b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+      hits.push({ px, vertical: true, top, bottom, point: m[1], pick: opts.markerPick });
+    });
     if (hits.some((h) => h.pick)) {
       target.canvas.onclick = (event) => {
         const rect = target.canvas.getBoundingClientRect();
         const mx = event.clientX - rect.left;
         const my = event.clientY - rect.top;
-        const hit = hits.find((h) => h.pick && Math.hypot(h.px - mx, h.py - my) <= 7);
+        const hit = hits.find((h) => {
+          if (!h.pick) return false;
+          // Vertical markers span the pane height, so match on x proximity.
+          if (h.vertical) return Math.abs(h.px - mx) <= 5 && my >= h.top && my <= h.bottom;
+          return Math.hypot(h.px - mx, h.py - my) <= 7;
+        });
         if (hit) hit.pick(hit.point);
       };
     }
