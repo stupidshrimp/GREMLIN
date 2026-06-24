@@ -357,6 +357,7 @@
     document.querySelectorAll("body > .lda-portal-list").forEach((node) => node.remove());
     $("lda-workspace").innerHTML = "";
     state.analysisRedraw = null;
+    state.dispositionChangedFn = null;
   }
 
   async function refreshMapping() {
@@ -377,6 +378,9 @@
 
   // ---- readiness summary ----------------------------------------------------
   async function refreshSummary() {
+    // The summary grid / rankings / Pareto chart only exist on the Perform
+    // Analysis page; the dedicated disposition page has no such markup.
+    if (state.pageMode === "disposition") return;
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     const token = ++state.summaryToken;
@@ -793,6 +797,9 @@
     table.appendChild(tbody);
 
     const changed = () => rowStates.filter((rs) => JSON.stringify(dispositionPayloadFromRow(rs, data.kind)) !== rs.initial);
+    // Exposed so the Rows/Scope selectors on the dedicated disposition page can
+    // confirm before discarding unsaved edits, the same way page navigation does.
+    state.dispositionChangedFn = changed;
 
     const checkAllButton = el("button", {
       class: "btn-secondary",
@@ -1052,18 +1059,22 @@
     };
   }
 
+  // Shared by page navigation and the Rows/Scope selectors: confirms before any
+  // of them discard unsaved disposition edits.
+  async function confirmDiscardUnsavedChanges(changedFn) {
+    if (!changedFn || !changedFn().length) return true;
+    return await openModal({
+      title: "Unsaved disposition changes",
+      bodyNodes: [el("p", { text: "This page has unsaved disposition changes. Continue without saving them?" })],
+      actions: [
+        { label: "Stay on page", primary: false, value: () => false },
+        { label: "Discard and continue", primary: true, value: () => true },
+      ],
+    });
+  }
+
   async function maybeChangePage(data, changedFn, targetPage) {
-    if (changedFn().length) {
-      const proceed = await openModal({
-        title: "Unsaved disposition changes",
-        bodyNodes: [el("p", { text: "This page has unsaved disposition changes. Continue without saving them?" })],
-        actions: [
-          { label: "Stay on page", primary: false, value: () => false },
-          { label: "Discard and continue", primary: true, value: () => true },
-        ],
-      });
-      if (!proceed) return;
-    }
+    if (!(await confirmDiscardUnsavedChanges(changedFn))) return;
     loadDispositionPage(data.kind, data.scope, targetPage);
   }
 
@@ -1755,8 +1766,13 @@
     const kindSelect = $("lda-disp-kind");
     if (kindSelect) {
       kindSelect.value = state.dispositionKind;
-      kindSelect.addEventListener("change", () => {
-        state.dispositionKind = kindSelect.value === "pm" ? "pm" : "wo";
+      kindSelect.addEventListener("change", async () => {
+        const requested = kindSelect.value === "pm" ? "pm" : "wo";
+        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
+          kindSelect.value = state.dispositionKind;
+          return;
+        }
+        state.dispositionKind = requested;
         state.dispositionPageIndex = 0;
         reloadDispositionForSelection();
       });
@@ -1764,8 +1780,13 @@
     const scopeSelect = $("lda-disp-scope");
     if (scopeSelect) {
       scopeSelect.value = state.dispositionScope;
-      scopeSelect.addEventListener("change", () => {
-        state.dispositionScope = scopeSelect.value === "new" ? "new" : "all";
+      scopeSelect.addEventListener("change", async () => {
+        const requested = scopeSelect.value === "new" ? "new" : "all";
+        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
+          scopeSelect.value = state.dispositionScope;
+          return;
+        }
+        state.dispositionScope = requested;
         state.dispositionPageIndex = 0;
         reloadDispositionForSelection();
       });
