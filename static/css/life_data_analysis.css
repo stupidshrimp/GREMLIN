@@ -94,6 +94,13 @@
 .lda-combobox-option .lda-combobox-name { font-size: 0.8rem; color: var(--muted); }
 .lda-combobox-empty { padding: 0.5rem 0.6rem; color: var(--muted); font-size: 0.86rem; }
 
+/* Failure mode / failure mechanism searchable dropdowns inside the disposition
+   table. The option list is portaled to <body> with position:fixed (set inline
+   from the input's bounding box) so it is never clipped by the scrollable table
+   container, while reusing the combobox option styling above. */
+.lda-portal-list { position: fixed; right: auto; }
+.lda-combobox-option-label { font-weight: 600; color: var(--forest-900); font-size: 0.86rem; }
+
 /* Buttons rendered as <button> reuse theme btn classes */
 button.btn-primary,
 button.btn-secondary {
@@ -154,8 +161,25 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 /* Workspace (dispositions / results injected here) */
 .lda-workspace { display: grid; gap: 1.2rem; }
 
+/* Disposition page controls */
+.lda-disp-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 1rem;
+  align-items: end;
+}
+
 /* Disposition editor */
-.lda-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+/* Containerize the disposition table so long asset histories scroll inside this
+   box (both axes) instead of stretching the whole page. The sticky header below
+   keeps the column titles visible while scrolling vertically. */
+.lda-table-scroll {
+  overflow: auto;
+  max-height: 65vh;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+}
 table.lda-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 table.lda-table th,
 table.lda-table td {
@@ -289,4 +313,5 @@ table.lda-data tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
   .lda-subgrid { grid-template-columns: 1fr; }
   .lda-charts { grid-template-columns: 1fr; }
   .lda-selectors { grid-template-columns: 1fr; }
+  .lda-disp-controls { grid-template-columns: 1fr; }
 }

@@ -194,8 +194,6 @@ DISPLAY_COLUMNS = (
     "taskID",
     "createdDate_Final",
     "completedDate_Final",
-    "weibullEventDate_Final",
-    "weibullEventDate_Source",
     "downtime",
     "completionNotes",
     "requestTitle",
@@ -1526,13 +1524,6 @@ class LifeDataService:
                        m.task_id AS taskID,
                        m.created_date_final AS createdDate_Final,
                        m.completed_date_final AS completedDate_Final,
-                       COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final) AS weibullEventDate_Final,
-                       CASE
-                           WHEN m.completed_date_final IS NOT NULL AND trim(m.completed_date_final) != '' THEN 'completedDate_Final'
-                           WHEN m.start_date_final IS NOT NULL AND trim(m.start_date_final) != '' THEN 'startDate_Final'
-                           WHEN m.created_date_final IS NOT NULL AND trim(m.created_date_final) != '' THEN 'createdDate_Final'
-                           ELSE ''
-                       END AS weibullEventDate_Source,
                        COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT)) AS downtime,
                        m.completion_notes AS completionNotes,
                        m.request_title AS requestTitle,
