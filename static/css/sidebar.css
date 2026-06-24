@@ -4,6 +4,14 @@
   padding: 1rem 0.7rem;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Sticky sidebar: stays in view while the main content scrolls. align-self:start
+     keeps it from stretching to the full content height (which would leave nothing
+     to stick), and the fixed height fills the viewport below the 74px topbar. */
+  position: sticky;
+  top: 74px;
+  align-self: start;
+  height: calc(100vh - 74px);
+  z-index: 20;
 }
 
 .sidebar-heading {
@@ -84,6 +92,10 @@
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid rgba(15, 18, 26, 0.18);
+    /* Stacked single-column layout: drop the sticky full-height behavior. */
+    position: static;
+    height: auto;
+    align-self: stretch;
   }
 
   .sidebar ul {

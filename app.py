@@ -34,8 +34,13 @@ ICONS = {
 PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
     {
-        "route": "/life-data-analysis",
-        "template": "life_data_analysis.html",
+        # The sidebar "Life Data Analysis" link goes straight to the Perform an
+        # Analysis workspace instead of the "Choose a reliability workflow" landing
+        # page. The landing page (/life-data-analysis) still exists and remains
+        # reachable from the Home "Explore Analysis" button, so Failure
+        # Classification and Standards and Documentation stay accessible.
+        "route": "/life-data-analysis/perform-analysis",
+        "template": "perform_analysis.html",
         "title": "Life Data Analysis",
         "icon": ICONS["trend"],
     },

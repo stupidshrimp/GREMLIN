@@ -31,6 +31,10 @@
     paretoMetric: "downtime_hours",
     latestResult: null,
     summaryToken: 0,
+    // Redraws the current analysis charts at the live canvas size (set while a
+    // result is shown, cleared with the workspace) so window resizes don't leave
+    // the Weibull plots stretched or squished.
+    analysisRedraw: null,
   };
 
   // ---- small DOM + format helpers ------------------------------------------
@@ -336,6 +340,7 @@
 
   function clearWorkspace() {
     $("lda-workspace").innerHTML = "";
+    state.analysisRedraw = null;
   }
 
   async function refreshMapping() {
@@ -419,44 +424,83 @@
     return rows;
   }
 
+  // Show at most this many mechanisms (the highest-ranked by the active metric).
+  // Fewer are shown when fewer exist — this is a cap, not a fixed count.
+  const PARETO_MAX_BARS = 15;
+
   function drawPareto() {
     const canvas = $("lda-pareto-chart");
     const empty = $("lda-pareto-empty");
-    const rows = paretoDisplayRows();
-    empty.hidden = rows.length > 0;
+    const allRows = paretoDisplayRows();
+    // Cap the number of bars. Cumulative % is still computed across every mechanism
+    // (in paretoDisplayRows), so the line reflects the true contribution of the top
+    // ones instead of renormalizing to just the displayed subset.
+    const rows = allRows.slice(0, PARETO_MAX_BARS);
+    empty.hidden = allRows.length > 0;
     const metric = state.paretoMetric;
-    const ctx = setupCanvas(canvas, 320);
-    const W = canvas.clientWidth;
-    const H = 320;
+    const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
     if (!rows.length) return;
 
-    const left = 52;
-    const right = W - 46;
-    const top = 18;
-    const bottom = H - 64;
+    const left = 64; // room for the left value-axis labels + rotated title
+    const right = W - 56; // room for the right cumulative %-axis labels + title
+    const top = 24;
+    const bottom = H - 72; // room for the rotated mechanism labels below the axis
+    const plotH = bottom - top;
+    const slot = (right - left) / rows.length;
     const maxVal = Math.max(...rows.map((r) => Number(r[metric]) || 0), 1);
     const barGap = 8;
-    const barW = Math.max(6, (right - left) / rows.length - barGap);
+    const barW = Math.max(6, slot - barGap);
     const hitboxes = [];
 
-    // axes
+    // Compact axis tick label so large downtime values stay narrow (e.g. 12.3k).
+    const tickLabel = (v) => {
+      const n = Number(v) || 0;
+      if (Math.abs(n) >= 1000) return Math.round(n / 100) / 10 + "k";
+      return n >= 100 ? String(Math.round(n)) : Number(n.toPrecision(3)).toString();
+    };
+
+    // Horizontal gridlines + numeric y-axis labels (left = metric value, right = %).
+    const tickCount = 5;
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= tickCount; i += 1) {
+      const frac = i / tickCount;
+      const y = bottom - frac * plotH;
+      ctx.strokeStyle = "#eef2f6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillStyle = "#5e7082";
+      ctx.textAlign = "right";
+      ctx.fillText(tickLabel(maxVal * frac), left - 7, y);
+      ctx.textAlign = "left";
+      ctx.fillText(Math.round(frac * 100) + "%", right + 7, y);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    // Left and right axes.
     ctx.strokeStyle = "#c4d2dd";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
     ctx.lineTo(left, bottom);
     ctx.lineTo(right, bottom);
+    ctx.moveTo(right, top);
+    ctx.lineTo(right, bottom);
     ctx.stroke();
 
+    // Bars + rotated mechanism labels.
     rows.forEach((row, index) => {
       const value = Number(row[metric]) || 0;
-      const x = left + index * ((right - left) / rows.length) + barGap / 2;
-      const barHeight = (value / maxVal) * (bottom - top);
+      const x = left + index * slot + barGap / 2;
+      const barHeight = (value / maxVal) * plotH;
       const y = bottom - barHeight;
       ctx.fillStyle = "#3f5e77";
       ctx.fillRect(x, y, barW, barHeight);
-      hitboxes.push({ x, y: top, w: barW, h: bottom - top, row });
+      hitboxes.push({ x, y: top, w: barW, h: plotH, row });
 
       ctx.save();
       ctx.fillStyle = "#5e7082";
@@ -468,31 +512,46 @@
       ctx.restore();
     });
 
-    // cumulative percent line
+    // Cumulative percent line + markers (right axis scale: 0..100%).
     ctx.strokeStyle = "#c2723b";
     ctx.lineWidth = 2;
     ctx.beginPath();
     rows.forEach((row, index) => {
-      const x = left + index * ((right - left) / rows.length) + ((right - left) / rows.length) / 2;
-      const y = bottom - (Number(row._cumulative_percent) || 0) / 100 * (bottom - top);
+      const x = left + index * slot + slot / 2;
+      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
     ctx.fillStyle = "#c2723b";
     rows.forEach((row, index) => {
-      const x = left + index * ((right - left) / rows.length) + ((right - left) / rows.length) / 2;
-      const y = bottom - (Number(row._cumulative_percent) || 0) / 100 * (bottom - top);
+      const x = left + index * slot + slot / 2;
+      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
       ctx.beginPath();
       ctx.arc(x, y, 3, 0, Math.PI * 2);
       ctx.fill();
     });
 
-    // y axis labels
+    // Rotated axis titles on both sides.
     ctx.fillStyle = "#5e7082";
     ctx.font = "10px Inter, sans-serif";
-    ctx.fillText(metric === "failure_count" ? "Failures" : "Downtime h", 2, top + 4);
-    ctx.fillText("100%", right - 26, top + 4);
+    ctx.textAlign = "center";
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(metric === "failure_count" ? "Failure count" : "Downtime (hours)", 0, 0);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(W - 9, (top + bottom) / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillText("Cumulative %", 0, 0);
+    ctx.restore();
+
+    // Note when the bar count was capped so the cut-off is explicit.
+    if (allRows.length > rows.length) {
+      ctx.fillText(`Top ${rows.length} of ${allRows.length} mechanisms`, (left + right) / 2, 12);
+    }
+    ctx.textAlign = "left";
 
     canvas.onclick = (event) => {
       const rect = canvas.getBoundingClientRect();
@@ -1001,6 +1060,8 @@
     }
     betaInput.addEventListener("input", applyParameters);
     etaInput.addEventListener("input", applyParameters);
+    // Redraw the charts at the current beta/eta on window resize.
+    state.analysisRedraw = applyParameters;
 
     const saveAdjusted = el("button", {
       class: "btn-primary",
@@ -1168,15 +1229,24 @@
   }
 
   // ---- charts ---------------------------------------------------------------
+  // Size the backing store to the on-screen width and return the CSS dimensions the
+  // drawing code should use. Measuring the parent (not the canvas) avoids reading a
+  // stale width back from a canvas whose `width` attribute was set on a previous
+  // draw, and returning the width means callers never re-read `clientWidth` — which
+  // is 0 before the canvas is attached to the DOM and was the cause of the charts
+  // collapsing into a thin strip on the left.
   function setupCanvas(canvas, cssHeight) {
     const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth || canvas.parentElement.clientWidth || 480;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(cssHeight * dpr);
+    const parent = canvas.parentElement;
+    const cssWidth = Math.round(
+      (parent && parent.clientWidth) || canvas.clientWidth || 480
+    );
     canvas.style.height = cssHeight + "px";
+    canvas.width = Math.max(1, Math.round(cssWidth * dpr));
+    canvas.height = Math.max(1, Math.round(cssHeight * dpr));
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return ctx;
+    return { ctx, width: cssWidth, height: cssHeight };
   }
 
   function buildAnalysisCharts(container, result, highlight) {
@@ -1279,14 +1349,16 @@
       if (best && highlight) highlight(best.weibull_observation_id);
     }
 
-    draw(result.beta_mle, result.eta_mle);
+    // Defer the first draw to the next frame. renderAnalysisResult appends this
+    // chart container to the DOM synchronously after buildAnalysisCharts returns,
+    // so by the time this callback runs the canvases are attached and report their
+    // real on-screen width instead of 0 (which collapsed the plots into a strip).
+    requestAnimationFrame(() => draw(result.beta_mle, result.eta_mle));
     return { update: draw };
   }
 
   function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight) {
-    const ctx = setupCanvas(target.canvas, target.height);
-    const W = target.canvas.clientWidth;
-    const H = target.height;
+    const { ctx, width: W, height: H } = setupCanvas(target.canvas, target.height);
     ctx.clearRect(0, 0, W, H);
     const points = km.filter((p) => p.weibull_plot_y != null && isFinite(p.weibull_plot_x) && isFinite(p.weibull_plot_y));
     const lnEta = Math.log(eta);
@@ -1368,9 +1440,7 @@
   }
 
   function drawCurvePane(target, opts) {
-    const ctx = setupCanvas(target.canvas, target.height);
-    const W = target.canvas.clientWidth;
-    const H = target.height;
+    const { ctx, width: W, height: H } = setupCanvas(target.canvas, target.height);
     ctx.clearRect(0, 0, W, H);
     const allY = [].concat(
       opts.mleLine.map((p) => p[1]),
@@ -1500,6 +1570,7 @@
     });
     window.addEventListener("resize", () => {
       if (state.paretoRows.length) drawPareto();
+      if (state.analysisRedraw) state.analysisRedraw();
     });
     loadAssets();
   }
