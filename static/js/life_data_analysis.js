@@ -37,6 +37,9 @@
     dispositionKind: "wo",
     dispositionScope: "all",
     dispositionPageIndex: 0,
+    // Free-text filter applied to the disposition table (matched server-side
+    // across every record column, so it spans all pages, not just the visible one).
+    dispositionSearch: "",
     // Redraws the current analysis charts at the live canvas size (set while a
     // result is shown, cleared with the workspace) so window resizes don't leave
     // the Weibull plots stretched or squished.
@@ -624,7 +627,8 @@
   async function loadDispositionPage(kind, scope, pageIndex) {
     beginLoading("Loading disposition editor…");
     try {
-      const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}`;
+      const search = state.dispositionSearch ? `&search=${encodeURIComponent(state.dispositionSearch)}` : "";
+      const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}${search}`;
       const data = await getJson(url);
       renderDispositionEditor(data);
     } catch (err) {
@@ -703,12 +707,15 @@
 
     const startRow = data.rows.length ? data.offset + 1 : 0;
     const endRow = data.offset + data.rows.length;
-    const metaText =
+    let metaText =
       data.scope === "new"
         ? `Showing rows ${startRow}-${endRow} of ${data.displayed_count} rows with a blank ` +
           `${isPm ? "reset target failure mode or mechanism" : "failure mode or failure mechanism"} ` +
           `(${data.all_count} eligible rows total).`
         : `Showing rows ${startRow}-${endRow} of ${data.displayed_count} eligible rows for this asset.`;
+    if (data.search) {
+      metaText += ` Filtered by search "${data.search}".`;
+    }
 
     const rowStates = [];
     const table = el("table", { class: "lda-table" });
@@ -796,6 +803,16 @@
       rowStates.push(rowState);
       tbody.appendChild(tr);
     });
+
+    if (!data.rows.length) {
+      const colCount = data.display_columns.length + extraHeaders.length;
+      const emptyText = data.search
+        ? `No rows match "${data.search}". Clear or change the search to see more.`
+        : "No eligible rows for this selection.";
+      tbody.appendChild(
+        el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(colCount), text: emptyText })])
+      );
+    }
 
     table.appendChild(thead);
     table.appendChild(tbody);
@@ -1807,6 +1824,7 @@
     state.dispositionKind = (params.get("kind") || "wo").toLowerCase() === "pm" ? "pm" : "wo";
     state.dispositionScope = "all";
     state.dispositionPageIndex = 0;
+    state.dispositionSearch = "";
 
     const kindSelect = $("lda-disp-kind");
     if (kindSelect) {
@@ -1834,6 +1852,33 @@
         state.dispositionScope = requested;
         state.dispositionPageIndex = 0;
         reloadDispositionForSelection();
+      });
+    }
+
+    // Free-text search box: filters the disposition table server-side (so matches
+    // span every page, not just the visible 50 rows) for both WO and PM records.
+    // Debounced like the asset search, and guarded by the same unsaved-edit
+    // confirmation the Record Type / Rows selectors use, since reloading the
+    // editor discards in-progress edits.
+    const searchInput = $("lda-disp-search");
+    if (searchInput) {
+      let searchDebounce = null;
+      let lastSearch = "";
+      const applySearch = async () => {
+        const value = searchInput.value.trim();
+        if (value === lastSearch) return;
+        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
+          searchInput.value = lastSearch;
+          return;
+        }
+        lastSearch = value;
+        state.dispositionSearch = value;
+        state.dispositionPageIndex = 0;
+        reloadDispositionForSelection();
+      };
+      searchInput.addEventListener("input", () => {
+        if (searchDebounce) clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(applySearch, 300);
       });
     }
 
