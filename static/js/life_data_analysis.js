@@ -24,6 +24,7 @@
     assets: [],
     assetByNumber: new Map(),
     assetFiltered: [],
+    assetLoadError: null,
     assetDropdownOpen: false,
     assetActiveIndex: -1,
     selectedAsset: null,
@@ -179,13 +180,19 @@
     const hint = $("lda-asset-hint");
     try {
       const data = await getJson(`${API}/assets`);
+      state.assetLoadError = null;
       setAssetOptions(data.assets || []);
       if (state.assetDropdownOpen) renderAssetDropdown();
       hint.textContent = state.assets.length
         ? `${state.assets.length} Asset Number(s) available. Type to search.`
         : "No mapped CMMS Asset Numbers were found in the database.";
     } catch (err) {
-      hint.textContent = "";
+      // Distinguish a failed load from a genuinely empty asset list so the
+      // dropdown does not misreport a backend error as "No Asset Numbers
+      // available." Keep the error visible inline and in the banner.
+      state.assetLoadError = err.message;
+      if (state.assetDropdownOpen) renderAssetDropdown();
+      hint.textContent = "Could not load Asset Numbers.";
       showBanner(err.message, "error");
     }
   }
@@ -203,6 +210,13 @@
   function renderAssetDropdown() {
     const list = $("lda-asset-list");
     list.innerHTML = "";
+    if (state.assetLoadError) {
+      list.appendChild(
+        el("li", { class: "lda-combobox-empty", text: `Could not load Asset Numbers: ${state.assetLoadError}` })
+      );
+      state.assetFiltered = [];
+      return;
+    }
     if (!state.assets.length) {
       list.appendChild(el("li", { class: "lda-combobox-empty", text: "No Asset Numbers available." }));
       state.assetFiltered = [];
@@ -342,6 +356,7 @@
     beginLoading("Refreshing CMMS mapping…");
     try {
       const data = await postJson(`${API}/refresh-mapping`, {});
+      state.assetLoadError = null;
       setAssetOptions(data.assets || []);
       if (state.assetDropdownOpen) renderAssetDropdown();
       showBanner(`Refreshed ${data.mapped || 0} mapped CMMS row(s). ${state.assets.length} Asset Number(s) available.`, "success");

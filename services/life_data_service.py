@@ -376,6 +376,12 @@ class LifeDataService:
             self._migrate_rel_disposition_schema(conn)
             conn.executescript(
                 """
+                -- Parent table for mapped_cmms_record's import_batch_id FK. The desktop
+                -- ingestion normally owns this table; create a minimal version when it is
+                -- absent so mapping never fails on a database that holds only raw rows.
+                CREATE TABLE IF NOT EXISTS import_batch (
+                    import_batch_id INTEGER PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS mapped_cmms_record (
                     mapped_record_id INTEGER PRIMARY KEY,
                     raw_record_id INTEGER NOT NULL,
@@ -1016,6 +1022,20 @@ class LifeDataService:
                 })
             if not upsert_values:
                 return 0
+            # mapped_cmms_record carries a FOREIGN KEY to import_batch. The shared
+            # GREMLIN.db normally has that table (and the referenced batches) created
+            # by the desktop ingestion, but a database that holds only raw CMMS rows —
+            # or one whose raw rows reference a batch id that was never recorded —
+            # would otherwise fail every insert with "no such table: import_batch" or
+            # a foreign-key violation, which surfaced in the UI as an empty asset list
+            # ("No Asset Numbers available."). Make the parent rows exist before the
+            # upsert so on-demand mapping always succeeds.
+            conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY)")
+            referenced_batches = sorted({int(value["import_batch_id"]) for value in upsert_values})
+            conn.executemany(
+                "INSERT OR IGNORE INTO import_batch (import_batch_id) VALUES (?)",
+                [(batch_id,) for batch_id in referenced_batches],
+            )
             cols = ", ".join(upsert_values[0])
             placeholders = ", ".join(f":{key}" for key in upsert_values[0])
             update_cols = [key for key in upsert_values[0] if key not in {"raw_record_id", "record_class_final"}]
