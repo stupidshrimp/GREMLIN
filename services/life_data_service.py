@@ -2578,11 +2578,23 @@ class LifeDataService:
                 raise ValueError("No valid life intervals could be built from dispositioned event dates for the selected failure group.")
             observations = conn.execute(
                 f"""
-                SELECT weibull_observation_id, observation_type, start_datetime, end_datetime, analysis_cutoff_datetime,
-                       life_hours_for_weibull, failure_indicator, is_right_censored, weibull_life_note
-                FROM weibull_observation
-                WHERE weibull_observation_id IN ({','.join('?' for _ in observation_ids)}) AND is_usable = 1
-                ORDER BY life_hours_for_weibull, weibull_observation_id
+                SELECT wo.weibull_observation_id, wo.observation_type, wo.start_datetime, wo.end_datetime,
+                       wo.analysis_cutoff_datetime, wo.life_hours_for_weibull, wo.failure_indicator,
+                       wo.is_right_censored, wo.weibull_life_note,
+                       m.task_id AS source_task_id,
+                       m.task_name AS source_work_title,
+                       m.requestor_description AS source_request_description,
+                       m.completion_notes AS source_completion_notes
+                FROM weibull_observation wo
+                -- The closing event (failure or PM reset) of each life interval carries the
+                -- source CMMS work order, so its task id / title / request description /
+                -- completion notes describe the observation shown in the Weibull data table.
+                -- Trailing right-censored "current life" rows have no end event, so these
+                -- columns are NULL there.
+                LEFT JOIN event_processing_record ep ON ep.event_processing_id = wo.end_event_processing_id
+                LEFT JOIN mapped_cmms_record m ON m.mapped_record_id = ep.mapped_record_id
+                WHERE wo.weibull_observation_id IN ({','.join('?' for _ in observation_ids)}) AND wo.is_usable = 1
+                ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
                 """,
                 observation_ids,
             ).fetchall()

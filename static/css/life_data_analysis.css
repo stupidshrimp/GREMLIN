@@ -273,6 +273,11 @@ table.lda-data thead th {
 }
 table.lda-interpretation td:last-child { color: var(--muted); }
 table.lda-data tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
+/* Free-text columns (work title, request description, completion notes, note)
+   can hold long CMMS strings; cap their width and wrap so they don't stretch the
+   table off-screen, while the container below still scrolls when needed. */
+table.lda-data th.lda-data-text,
+table.lda-data td.lda-data-text { max-width: 280px; min-width: 120px; white-space: normal; overflow-wrap: anywhere; }
 .lda-data-scroll { overflow-x: auto; max-height: 440px; overflow-y: auto; border-radius: 12px; }
 
 /* Loading + spinner */

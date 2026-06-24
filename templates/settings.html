@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+{% endblock %}
+
 {% block content %}
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Settings</p>
@@ -17,4 +21,55 @@
     <p>Set package defaults, reliability model presets, and controlled vocabulary for teams.</p>
   </article>
 </section>
+
+<section class="glass-card slide-in lda-card" aria-labelledby="settings-cmms-heading">
+  <p class="eyebrow">CMMS Data</p>
+  <h2 id="settings-cmms-heading">Refresh CMMS mapping</h2>
+  <p>Re-map newly imported CMMS records so later Limble syncs appear in the Asset Number lists
+     on the Life Data Analysis pages.</p>
+  <div id="settings-refresh-status" class="lda-banner" role="status" hidden></div>
+  <div class="lda-row-actions" style="justify-content:flex-start">
+    <button type="button" class="btn-secondary" id="settings-refresh-mapping">Refresh CMMS mapping</button>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const button = document.getElementById("settings-refresh-mapping");
+    const status = document.getElementById("settings-refresh-status");
+    if (!button) return;
+
+    function show(message, kind) {
+      if (!status) return;
+      status.textContent = message;
+      status.className = "lda-banner" + (kind ? " is-" + kind : "");
+      status.hidden = false;
+    }
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      show("Refreshing CMMS mapping…", "info");
+      try {
+        const response = await fetch("{{ url_for('api_refresh_mapping') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || ("Request failed (" + response.status + ")"));
+        }
+        const mapped = data.mapped || 0;
+        const assets = Array.isArray(data.assets) ? data.assets.length : 0;
+        show("Refreshed " + mapped + " mapped CMMS record(s). " + assets + " Asset Number(s) available.", "success");
+      } catch (err) {
+        show(err.message || "Could not refresh CMMS mapping.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  })();
+</script>
 {% endblock %}
