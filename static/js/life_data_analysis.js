@@ -744,7 +744,11 @@
         // dropdown is restricted to known options (allowFreeText: false).
         mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id, { allowFreeText: false });
         tr.appendChild(el("td", {}, mode.nodes));
-        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, { allowFreeText: false });
+        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, {
+          allowFreeText: false,
+          contextIdKey: "failure_mode_id",
+          getContextId: () => mode.getSelectedId(),
+        });
         tr.appendChild(el("td", {}, mech.nodes));
       } else {
         // WO failure mode/mechanism allow typing a new value as well as picking
@@ -890,6 +894,8 @@
   //                           the chosen option's real id is tracked for save.
   function buildTaxonomyCombobox(options, idKey, nameKey, currentId, opts) {
     const allowFreeText = Boolean(opts && opts.allowFreeText);
+    const contextIdKey = opts && opts.contextIdKey;
+    const getContextId = opts && opts.getContextId;
     const wrap = el("div", { class: "lda-combobox lda-cell-combobox" });
     const input = el("input", {
       class: "lda-input",
@@ -915,10 +921,25 @@
       }
     }
 
+    function currentContextId() {
+      return typeof getContextId === "function" ? getContextId() : null;
+    }
+
+    function optionMatchesContext(opt, contextId) {
+      if (!contextIdKey || contextId == null) return true;
+      return Number(opt[contextIdKey]) === Number(contextId);
+    }
+
+    function contextOptions() {
+      const contextId = currentContextId();
+      return options.filter((opt) => optionMatchesContext(opt, contextId));
+    }
+
     function matchesFor(query) {
       const q = (query || "").trim().toLowerCase();
-      if (!q) return options.slice();
-      return options.filter((opt) => String(opt[nameKey]).toLowerCase().includes(q));
+      const candidates = contextOptions();
+      if (!q) return candidates.slice();
+      return candidates.filter((opt) => String(opt[nameKey]).toLowerCase().includes(q));
     }
 
     function positionList() {
@@ -1001,8 +1022,12 @@
     function resolveIdFromText() {
       const typed = input.value.trim().toLowerCase();
       if (!typed) return null;
-      const exact = options.find((opt) => String(opt[nameKey]).toLowerCase() === typed);
-      return exact ? Number(exact[idKey]) : null;
+      const exactMatches = contextOptions().filter((opt) => String(opt[nameKey]).toLowerCase() === typed);
+      if (selectedId != null) {
+        const selected = exactMatches.find((opt) => Number(opt[idKey]) === Number(selectedId));
+        if (selected) return Number(selected[idKey]);
+      }
+      return exactMatches.length === 1 ? Number(exactMatches[0][idKey]) : null;
     }
 
     input.addEventListener("focus", openList);
@@ -1069,7 +1094,13 @@
       getValue: () => input.value.trim(),
       // Fall back to a synchronous exact-name resolution so a typed-but-not-yet-
       // committed valid entry isn't read as null when Save races the blur timer.
-      getSelectedId: () => (selectedId != null ? selectedId : resolveIdFromText()),
+      getSelectedId: () => {
+        if (selectedId != null) {
+          const selected = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
+          if (selected && optionMatchesContext(selected, currentContextId())) return Number(selectedId);
+        }
+        return resolveIdFromText();
+      },
     };
   }
 
