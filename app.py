@@ -287,6 +287,7 @@ def api_dispositions():
     kind = _disposition_kind()
     scope = (request.values.get("scope") or "all").strip().lower()
     only_needing = scope == "new"
+    search = (request.values.get("search") or "").strip()
     page_size = 50
     try:
         page_index = max(0, int(request.values.get("page", 0)))
@@ -294,7 +295,9 @@ def api_dispositions():
         page_index = 0
 
     all_count = service.disposition_row_count(asset_number, kind)
-    displayed_count = service.disposition_row_count(asset_number, kind, only_needing_disposition=only_needing)
+    displayed_count = service.disposition_row_count(
+        asset_number, kind, only_needing_disposition=only_needing, search=search or None
+    )
     max_page_index = max(0, math.ceil(displayed_count / page_size) - 1) if displayed_count else 0
     page_index = min(page_index, max_page_index)
     offset = page_index * page_size
@@ -304,6 +307,7 @@ def api_dispositions():
         only_needing_disposition=only_needing,
         limit=page_size,
         offset=offset,
+        search=search or None,
     )
 
     wo_record_classes = ["CORRECTIVE_WO", "PM", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN"]
@@ -313,6 +317,7 @@ def api_dispositions():
             "asset_number": asset_number,
             "kind": kind,
             "scope": scope,
+            "search": search,
             "rows": rows,
             "display_columns": list(DISPLAY_COLUMNS),
             "mode_options": service.get_asset_failure_mode_options(asset_number),

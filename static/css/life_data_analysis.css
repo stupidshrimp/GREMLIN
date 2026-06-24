@@ -169,6 +169,11 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
   align-items: end;
 }
 
+/* Free-text filter for the disposition table (WO + PM). */
+.lda-disp-search-field { margin-top: 1rem; }
+.lda-disp-search-field .lda-hint { margin: 0.1rem 0 0; }
+table.lda-table td.lda-empty-row { text-align: center; color: var(--muted); padding: 1.1rem 0.55rem; }
+
 /* Disposition editor */
 /* Containerize the disposition table so long asset histories scroll inside this
    box (both axes) instead of stretching the whole page. The sticky header below

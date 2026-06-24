@@ -1500,26 +1500,64 @@ class LifeDataService:
             )
         raise ValueError("Disposition kind must be 'wo' or 'pm'.")
 
-    def disposition_row_count(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False) -> int:
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        # Escape LIKE wildcards so user-typed % / _ are matched literally (paired
+        # with ESCAPE '\' on the LIKE expression).
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def _disposition_search_clause(self, search: str | None) -> tuple[str, list[Any]]:
+        """Build a parameterized WHERE fragment that free-text filters disposition
+        rows. Each whitespace-separated token must appear (case-insensitively, via
+        SQLite's ASCII LIKE) in at least one of the readable record columns shown on
+        the table, so users can filter by task ID, dates, downtime, notes, titles or
+        description using either text or numbers."""
+
+        if not search:
+            return "", []
+        tokens = [token for token in search.split() if token]
+        if not tokens:
+            return "", []
+        searchable = (
+            "m.task_name",
+            "CAST(m.task_id AS TEXT)",
+            "m.created_date_final",
+            "m.completed_date_final",
+            "COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT))",
+            "m.completion_notes",
+            "m.request_title",
+            "m.requestor_description",
+        )
+        per_token = " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in searchable)
+        clauses: list[str] = []
+        params: list[Any] = []
+        for token in tokens:
+            clauses.append(f"({per_token})")
+            params.extend([f"%{self._escape_like(token)}%"] * len(searchable))
+        return " AND " + " AND ".join(clauses), params
+
+    def disposition_row_count(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False, search: str | None = None) -> int:
         where = self._disposition_where(kind)
         needs_disposition_where = self._needs_disposition_where(kind) if only_needing_disposition else ""
+        search_clause, search_params = self._disposition_search_clause(search)
         with self.connect() as conn:
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS count
                 FROM mapped_cmms_record m
                 LEFT JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
-                WHERE m.asset_number = ? AND {where} {needs_disposition_where}
+                WHERE m.asset_number = ? AND {where} {needs_disposition_where}{search_clause}
                 """,
-                (asset_number,),
+                (asset_number, *search_params),
             ).fetchone()
         return int(row["count"] or 0)
 
-    def disposition_rows(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    def disposition_rows(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False, limit: int | None = None, offset: int = 0, search: str | None = None) -> list[dict[str, Any]]:
         where = self._disposition_where(kind)
         needs_disposition_where = self._needs_disposition_where(kind) if only_needing_disposition else ""
+        search_clause, search_params = self._disposition_search_clause(search)
         pagination = ""
-        params: list[Any] = [asset_number]
+        params: list[Any] = [asset_number, *search_params]
         if limit is not None:
             if limit <= 0:
                 raise ValueError("Disposition row limit must be greater than zero.")
@@ -1563,7 +1601,7 @@ class LifeDataService:
                 LEFT JOIN failure_mode rtfm ON rtfm.failure_mode_id = d.reset_target_failure_mode_id
                 LEFT JOIN failure_mechanism rtfmech ON rtfmech.failure_mechanism_id = d.reset_target_failure_mechanism_id
                 LEFT JOIN modeled_population mp ON mp.modeled_population_id = d.modeled_population_id
-                WHERE m.asset_number = ? AND {where} {needs_disposition_where}
+                WHERE m.asset_number = ? AND {where} {needs_disposition_where}{search_clause}
                 ORDER BY COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final), m.task_id
                 {pagination}
                 """,
