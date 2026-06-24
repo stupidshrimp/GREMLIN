@@ -31,6 +31,12 @@
     paretoMetric: "downtime_hours",
     latestResult: null,
     summaryToken: 0,
+    // Page context: "analysis" (Perform an Analysis) or "disposition" (the
+    // dedicated disposition page). Set during init so shared helpers branch.
+    pageMode: "analysis",
+    dispositionKind: "wo",
+    dispositionScope: "all",
+    dispositionPageIndex: 0,
     // Redraws the current analysis charts at the live canvas size (set while a
     // result is shown, cleared with the workspace) so window resizes don't leave
     // the Weibull plots stretched or squished.
@@ -325,22 +331,33 @@
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
-    $("lda-summary-card").hidden = !ready;
-    $("lda-actions").hidden = !ready;
-    $("lda-calculate-all-card").hidden = !ready;
+    // The summary / action / calculate cards only exist on the Perform Analysis
+    // page; guard so the same asset combobox can drive the disposition page too.
+    const summaryCard = $("lda-summary-card");
+    const actionsBar = $("lda-actions");
+    const calcCard = $("lda-calculate-all-card");
+    if (summaryCard) summaryCard.hidden = !ready;
+    if (actionsBar) actionsBar.hidden = !ready;
+    if (calcCard) calcCard.hidden = !ready;
     if (asset) {
       $("lda-asset-hint").textContent = asset.asset_name
         ? `Selected ${asset.asset_number} — ${asset.asset_name}.`
         : `Selected ${asset.asset_number}.`;
-      refreshSummary();
+      if (state.pageMode === "disposition") reloadDispositionForSelection();
+      else refreshSummary();
     } else if (value) {
+      if (state.pageMode === "disposition") clearWorkspace();
       $("lda-asset-hint").textContent = `"${value}" is not a known Asset Number. Choose one from the list.`;
     }
   }
 
   function clearWorkspace() {
+    // Failure mode/mechanism dropdown lists are portaled to <body>; remove any
+    // that are still open so re-rendering the editor never orphans them.
+    document.querySelectorAll("body > .lda-portal-list").forEach((node) => node.remove());
     $("lda-workspace").innerHTML = "";
     state.analysisRedraw = null;
+    state.dispositionChangedFn = null;
   }
 
   async function refreshMapping() {
@@ -361,6 +378,9 @@
 
   // ---- readiness summary ----------------------------------------------------
   async function refreshSummary() {
+    // The summary grid / rankings / Pareto chart only exist on the Perform
+    // Analysis page; the dedicated disposition page has no such markup.
+    if (state.pageMode === "disposition") return;
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     const token = ++state.summaryToken;
@@ -578,29 +598,27 @@
   }
 
   // ---- disposition editor ---------------------------------------------------
-  async function openDisposition(kind) {
+  // From the Perform Analysis page the disposition buttons now navigate to the
+  // dedicated disposition page (its own route) instead of rendering the editor
+  // below everything else. The selected asset and record kind ride along in the
+  // query string so the disposition page opens ready to edit.
+  function gotoDisposition(kind) {
     if (!state.selectedAsset) {
-      showBanner("Select an Asset Number before opening a disposition page.", "error");
+      showBanner("Select an Asset Number before opening the disposition page.", "error");
       return;
     }
-    const recordLabel = kind === "pm" ? "PM reset events" : "work orders";
-    const scope = await openModal({
-      title: "Choose disposition rows",
-      bodyNodes: [
-        el("p", {
-          text:
-            `Which ${recordLabel} do you want to disposition? Choose only new/undispositioned rows to ` +
-            "show records with a blank failure mode or mechanism, or All to show every eligible row.",
-        }),
-      ],
-      actions: [
-        { label: "Only new/undispositioned", primary: false, value: () => "new" },
-        { label: "All", primary: true, value: () => "all" },
-        { label: "Cancel", primary: false, value: () => null },
-      ],
-    });
-    if (!scope) return;
-    loadDispositionPage(kind, scope, 0);
+    const params = new URLSearchParams({ asset: state.selectedAsset, kind });
+    window.location.href = `/life-data-analysis/disposition?${params.toString()}`;
+  }
+
+  // On the dedicated disposition page, (re)load the editor whenever the asset,
+  // record kind, or scope changes.
+  function reloadDispositionForSelection() {
+    if (!state.selectedAsset) {
+      clearWorkspace();
+      return;
+    }
+    loadDispositionPage(state.dispositionKind, state.dispositionScope, state.dispositionPageIndex || 0);
   }
 
   async function loadDispositionPage(kind, scope, pageIndex) {
@@ -628,13 +646,14 @@
     if (kind === "pm") {
       payload.pm_reset_decision = rowState.decision.value;
       payload.pm_reset_rationale = rowState.rationale.value;
-      // PM mode/mechanism are <select>s that carry the real id per option, so
-      // mechanisms that share a display name across modes stay distinct.
-      payload.reset_target_failure_mode_id = selectId(rowState.mode);
-      payload.reset_target_failure_mechanism_id = selectId(rowState.mech);
+      // PM mode/mechanism are searchable dropdowns that carry the real id of the
+      // chosen option, so mechanisms sharing a display name across modes stay
+      // distinct (and PMs can only point at existing taxonomy entries).
+      payload.reset_target_failure_mode_id = rowState.mode.getSelectedId();
+      payload.reset_target_failure_mechanism_id = rowState.mech.getSelectedId();
     } else {
-      const modeName = rowState.mode.value.trim();
-      const mechName = rowState.mech.value.trim();
+      const modeName = rowState.mode.getValue();
+      const mechName = rowState.mech.getValue();
       const modeId = modeName ? (rowState.modeOptions.get(modeName) ?? null) : null;
       payload.failure_mode_id = modeId;
       // Resolve the mechanism id within the selected failure mode so a duplicate
@@ -646,12 +665,6 @@
       payload.failure_mechanism_text = mechName;
     }
     return payload;
-  }
-
-  function selectId(select) {
-    const option = select.options[select.selectedIndex];
-    const raw = option ? option.dataset.id : "";
-    return raw ? Number(raw) : null;
   }
 
   // Shared key so the mechanism map build and the lookup can never drift.
@@ -727,14 +740,22 @@
       if (isPm) {
         decision = buildSelect(data.pm_reset_decisions, row.pm_reset_inclusion_decision || "NEEDS_REVIEW");
         tr.appendChild(el("td", {}, [decision]));
-        mode = buildTaxonomySelect(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id);
-        tr.appendChild(el("td", {}, [mode]));
-        mech = buildTaxonomySelect(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id);
-        tr.appendChild(el("td", {}, [mech]));
-      } else {
-        mode = buildTaxonomyInput(data.mode_options, "failure_mode_id", "failure_mode_name", row.failure_mode_id, "lda-modelist-" + index);
+        // PMs may only reference existing modes/mechanisms, so the searchable
+        // dropdown is restricted to known options (allowFreeText: false).
+        mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id, { allowFreeText: false });
         tr.appendChild(el("td", {}, mode.nodes));
-        mech = buildTaxonomyInput(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, "lda-mechlist-" + index);
+        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, {
+          allowFreeText: false,
+          contextIdKey: "failure_mode_id",
+          getContextId: () => mode.getSelectedId(),
+        });
+        tr.appendChild(el("td", {}, mech.nodes));
+      } else {
+        // WO failure mode/mechanism allow typing a new value as well as picking
+        // an existing one (allowFreeText: true); ids resolve by name on save.
+        mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.failure_mode_id, { allowFreeText: true });
+        tr.appendChild(el("td", {}, mode.nodes));
+        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, { allowFreeText: true });
         tr.appendChild(el("td", {}, mech.nodes));
       }
 
@@ -765,8 +786,8 @@
         include,
         decision,
         rationale,
-        mode: isPm ? mode : mode.input,
-        mech: isPm ? mech : mech.input,
+        mode,
+        mech,
         modeOptions: modeMap,
         mechByNameMode,
         tr,
@@ -780,6 +801,9 @@
     table.appendChild(tbody);
 
     const changed = () => rowStates.filter((rs) => JSON.stringify(dispositionPayloadFromRow(rs, data.kind)) !== rs.initial);
+    // Exposed so the Rows/Scope selectors on the dedicated disposition page can
+    // confirm before discarding unsaved edits, the same way page navigation does.
+    state.dispositionChangedFn = changed;
 
     const checkAllButton = el("button", {
       class: "btn-secondary",
@@ -822,14 +846,7 @@
       text: "Save Dispositions",
       onclick: () => saveDispositions(data.kind, changed),
     });
-    const back = el("button", {
-      class: "btn-secondary",
-      text: "← Close disposition editor",
-      onclick: clearWorkspace,
-    });
-
     const card = el("section", { class: "glass-card lda-card" }, [
-      el("div", { class: "lda-row-actions", style: "justify-content:flex-start" }, [back]),
       el("h2", { text: isPm ? "Disposition PMs" : "Disposition Work Orders" }),
       el("div", { class: "lda-disposition-meta" }, [
         el("p", { text: `Selected asset: ${data.asset_number}` }),
@@ -865,45 +882,244 @@
     return select;
   }
 
-  function buildTaxonomySelect(options, idKey, nameKey, currentId) {
-    // Each option carries its real id (data-id) so selectId() reads the exact
-    // taxonomy id even when two mechanisms share a display name across modes.
-    const select = el("select", { class: "lda-select" });
-    const blank = el("option", { value: "", text: "" });
-    blank.dataset.id = "";
-    select.appendChild(blank);
-    options.forEach((opt) => {
-      const option = el("option", { value: opt[nameKey], text: opt[nameKey] });
-      option.dataset.id = String(opt[idKey]);
-      if (currentId != null && Number(opt[idKey]) === Number(currentId)) option.selected = true;
-      select.appendChild(option);
+  // Searchable failure mode / failure mechanism dropdown for the disposition
+  // table. Renders a text search input with a formatted option list that appears
+  // directly below it — matching the look of the Disposition Category / Record
+  // Class selects. The list is portaled to <body> (position:fixed, positioned
+  // from the input's bounding box) so the scrollable table container never clips
+  // it.
+  //   allowFreeText: true   → WO: typing a brand-new value is allowed; the id is
+  //                           resolved from the typed name on save.
+  //   allowFreeText: false  → PM: selection is restricted to existing options;
+  //                           the chosen option's real id is tracked for save.
+  function buildTaxonomyCombobox(options, idKey, nameKey, currentId, opts) {
+    const allowFreeText = Boolean(opts && opts.allowFreeText);
+    const contextIdKey = opts && opts.contextIdKey;
+    const getContextId = opts && opts.getContextId;
+    const wrap = el("div", { class: "lda-combobox lda-cell-combobox" });
+    const input = el("input", {
+      class: "lda-input",
+      autocomplete: "off",
+      role: "combobox",
+      "aria-autocomplete": "list",
+      "aria-expanded": "false",
+      placeholder: allowFreeText ? "Select existing or type new…" : "Search…",
     });
-    return select;
-  }
+    const list = el("ul", { class: "lda-combobox-list lda-portal-list", role: "listbox", hidden: true });
+    wrap.appendChild(input);
 
-  function buildTaxonomyInput(options, idKey, nameKey, currentId, listId) {
-    const input = el("input", { class: "lda-input", list: listId, placeholder: "Select existing or type new…" });
-    const datalist = el("datalist", { id: listId });
-    options.forEach((opt) => datalist.appendChild(el("option", { value: opt[nameKey] })));
+    let selectedId = null;
+    let isOpen = false;
+    let activeIndex = -1;
+    let filtered = [];
+
     if (currentId != null) {
       const match = options.find((opt) => Number(opt[idKey]) === Number(currentId));
-      if (match) input.value = match[nameKey];
+      if (match) {
+        input.value = match[nameKey];
+        selectedId = Number(match[idKey]);
+      }
     }
-    return { input, nodes: [input, datalist] };
+
+    function currentContextId() {
+      return typeof getContextId === "function" ? getContextId() : null;
+    }
+
+    function optionMatchesContext(opt, contextId) {
+      if (!contextIdKey || contextId == null) return true;
+      return Number(opt[contextIdKey]) === Number(contextId);
+    }
+
+    function contextOptions() {
+      const contextId = currentContextId();
+      return options.filter((opt) => optionMatchesContext(opt, contextId));
+    }
+
+    function matchesFor(query) {
+      const q = (query || "").trim().toLowerCase();
+      const candidates = contextOptions();
+      if (!q) return candidates.slice();
+      return candidates.filter((opt) => String(opt[nameKey]).toLowerCase().includes(q));
+    }
+
+    function positionList() {
+      const rect = input.getBoundingClientRect();
+      list.style.top = `${rect.bottom + 4}px`;
+      list.style.left = `${rect.left}px`;
+      list.style.width = `${rect.width}px`;
+    }
+
+    function renderList() {
+      list.innerHTML = "";
+      filtered = matchesFor(input.value).slice(0, 50);
+      if (!filtered.length) {
+        list.appendChild(
+          el("li", {
+            class: "lda-combobox-empty",
+            text: allowFreeText ? "No matches — keep typing to add a new value." : "No matching options.",
+          })
+        );
+        return;
+      }
+      filtered.forEach((opt, index) => {
+        list.appendChild(
+          el(
+            "li",
+            {
+              class: "lda-combobox-option" + (index === activeIndex ? " is-active" : ""),
+              role: "option",
+              // mousedown (not click) so the choice commits before the input's
+              // blur fires; preventDefault keeps focus on the input.
+              onmousedown: (event) => {
+                event.preventDefault();
+                choose(opt);
+              },
+            },
+            [el("span", { class: "lda-combobox-option-label", text: opt[nameKey] })]
+          )
+        );
+      });
+    }
+
+    function openList() {
+      if (!isOpen) {
+        document.body.appendChild(list);
+        isOpen = true;
+        // Close (rather than chase) the portaled list when anything scrolls, so
+        // it can never float detached from its input. Capture catches scrolls on
+        // the inner table container too.
+        window.addEventListener("scroll", closeList, true);
+        window.addEventListener("resize", closeList, true);
+      }
+      list.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      positionList();
+      renderList();
+    }
+
+    function closeList() {
+      if (!isOpen) return;
+      list.hidden = true;
+      if (list.parentNode) list.parentNode.removeChild(list);
+      isOpen = false;
+      activeIndex = -1;
+      input.setAttribute("aria-expanded", "false");
+      window.removeEventListener("scroll", closeList, true);
+      window.removeEventListener("resize", closeList, true);
+    }
+
+    function choose(opt) {
+      input.value = opt[nameKey];
+      selectedId = Number(opt[idKey]);
+      closeList();
+    }
+
+    // Resolve the current input text to an option id by exact (case-insensitive)
+    // name match, independent of the blur timer. Returns null when the text does
+    // not exactly match an option. Lets getSelectedId() report a valid typed
+    // entry synchronously, so a Save click that beats the 120 ms blur timer still
+    // sends the right id instead of null.
+    function resolveIdFromText() {
+      const typed = input.value.trim().toLowerCase();
+      if (!typed) return null;
+      const exactMatches = contextOptions().filter((opt) => String(opt[nameKey]).toLowerCase() === typed);
+      if (selectedId != null) {
+        const selected = exactMatches.find((opt) => Number(opt[idKey]) === Number(selectedId));
+        if (selected) return Number(selected[idKey]);
+      }
+      return exactMatches.length === 1 ? Number(exactMatches[0][idKey]) : null;
+    }
+
+    input.addEventListener("focus", openList);
+    input.addEventListener("input", () => {
+      activeIndex = -1;
+      // Typing detaches any previously chosen option id; WO re-resolves by name
+      // on save, PM requires an explicit pick (or exact-name match on blur).
+      selectedId = null;
+      if (!isOpen) openList();
+      else {
+        positionList();
+        renderList();
+      }
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (!isOpen) openList();
+        if (filtered.length) {
+          activeIndex = activeIndex + 1 >= filtered.length ? 0 : activeIndex + 1;
+          renderList();
+        }
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (!isOpen) openList();
+        if (filtered.length) {
+          activeIndex = activeIndex <= 0 ? filtered.length - 1 : activeIndex - 1;
+          renderList();
+        }
+      } else if (event.key === "Enter") {
+        if (isOpen && activeIndex >= 0 && activeIndex < filtered.length) {
+          event.preventDefault();
+          choose(filtered[activeIndex]);
+        }
+      } else if (event.key === "Escape") {
+        closeList();
+      }
+    });
+    input.addEventListener("blur", () => {
+      // Delay so an option's mousedown selection runs before the list closes.
+      setTimeout(() => {
+        closeList();
+        if (allowFreeText) return;
+        // Restricted dropdown: keep the text in sync with the resolved id, adopt
+        // an exact-name match, or clear an unmatched entry.
+        const exactId = resolveIdFromText();
+        if (exactId != null) {
+          selectedId = exactId;
+          const match = options.find((opt) => Number(opt[idKey]) === exactId);
+          input.value = match[nameKey];
+        } else if (selectedId != null) {
+          const match = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
+          input.value = match ? match[nameKey] : "";
+          if (!match) selectedId = null;
+        } else {
+          input.value = "";
+        }
+      }, 120);
+    });
+
+    return {
+      nodes: [wrap],
+      input,
+      getValue: () => input.value.trim(),
+      // Fall back to a synchronous exact-name resolution so a typed-but-not-yet-
+      // committed valid entry isn't read as null when Save races the blur timer.
+      getSelectedId: () => {
+        if (selectedId != null) {
+          const selected = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
+          if (selected && optionMatchesContext(selected, currentContextId())) return Number(selectedId);
+        }
+        return resolveIdFromText();
+      },
+    };
+  }
+
+  // Shared by page navigation and the Rows/Scope selectors: confirms before any
+  // of them discard unsaved disposition edits.
+  async function confirmDiscardUnsavedChanges(changedFn) {
+    if (!changedFn || !changedFn().length) return true;
+    return await openModal({
+      title: "Unsaved disposition changes",
+      bodyNodes: [el("p", { text: "This page has unsaved disposition changes. Continue without saving them?" })],
+      actions: [
+        { label: "Stay on page", primary: false, value: () => false },
+        { label: "Discard and continue", primary: true, value: () => true },
+      ],
+    });
   }
 
   async function maybeChangePage(data, changedFn, targetPage) {
-    if (changedFn().length) {
-      const proceed = await openModal({
-        title: "Unsaved disposition changes",
-        bodyNodes: [el("p", { text: "This page has unsaved disposition changes. Continue without saving them?" })],
-        actions: [
-          { label: "Stay on page", primary: false, value: () => false },
-          { label: "Discard and continue", primary: true, value: () => true },
-        ],
-      });
-      if (!proceed) return;
-    }
+    if (!(await confirmDiscardUnsavedChanges(changedFn))) return;
     loadDispositionPage(data.kind, data.scope, targetPage);
   }
 
@@ -1547,23 +1763,33 @@
   function init() {
     const assetInput = $("lda-asset");
     if (!assetInput) return;
+    // Asset combobox wiring is shared by the Perform Analysis page and the
+    // dedicated disposition page.
     assetInput.addEventListener("input", onAssetInput);
     assetInput.addEventListener("keydown", onAssetKeydown);
     assetInput.addEventListener("focus", openAssetDropdown);
     // Commit a manually edited value synchronously on blur so actions clicked
-    // immediately after typing (Perform/Disposition/Calculate) run against the
-    // current asset rather than the previous one still held by the input debounce.
+    // immediately after typing run against the current asset rather than the
+    // previous one still held by the input debounce.
     assetInput.addEventListener("blur", evaluateAssetSelection);
     // Close the dropdown when clicking anywhere outside the combobox.
     document.addEventListener("mousedown", (event) => {
       const combobox = $("lda-asset-combobox");
       if (combobox && !combobox.contains(event.target)) closeAssetDropdown();
     });
+    const refreshButton = $("lda-refresh-mapping");
+    if (refreshButton) refreshButton.addEventListener("click", refreshMapping);
+
+    if ($("lda-disposition-root")) initDispositionPage();
+    else initAnalysisPage();
+  }
+
+  function initAnalysisPage() {
+    state.pageMode = "analysis";
     $("lda-perform").addEventListener("click", performAnalysis);
-    $("lda-disposition-wo").addEventListener("click", () => openDisposition("wo"));
-    $("lda-disposition-pm").addEventListener("click", () => openDisposition("pm"));
+    $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
+    $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
     $("lda-calculate-all").addEventListener("click", calculateAll);
-    $("lda-refresh-mapping").addEventListener("click", refreshMapping);
     $("lda-pareto-toggle").addEventListener("change", (event) => {
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
@@ -1573,6 +1799,53 @@
       if (state.analysisRedraw) state.analysisRedraw();
     });
     loadAssets();
+  }
+
+  function initDispositionPage() {
+    state.pageMode = "disposition";
+    const params = new URLSearchParams(window.location.search);
+    state.dispositionKind = (params.get("kind") || "wo").toLowerCase() === "pm" ? "pm" : "wo";
+    state.dispositionScope = "all";
+    state.dispositionPageIndex = 0;
+
+    const kindSelect = $("lda-disp-kind");
+    if (kindSelect) {
+      kindSelect.value = state.dispositionKind;
+      kindSelect.addEventListener("change", async () => {
+        const requested = kindSelect.value === "pm" ? "pm" : "wo";
+        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
+          kindSelect.value = state.dispositionKind;
+          return;
+        }
+        state.dispositionKind = requested;
+        state.dispositionPageIndex = 0;
+        reloadDispositionForSelection();
+      });
+    }
+    const scopeSelect = $("lda-disp-scope");
+    if (scopeSelect) {
+      scopeSelect.value = state.dispositionScope;
+      scopeSelect.addEventListener("change", async () => {
+        const requested = scopeSelect.value === "new" ? "new" : "all";
+        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
+          scopeSelect.value = state.dispositionScope;
+          return;
+        }
+        state.dispositionScope = requested;
+        state.dispositionPageIndex = 0;
+        reloadDispositionForSelection();
+      });
+    }
+
+    // Preselect the asset passed from the Perform Analysis page once the asset
+    // list has loaded, then open its disposition editor.
+    const requestedAsset = (params.get("asset") || "").trim();
+    loadAssets().then(() => {
+      if (requestedAsset && state.assetByNumber.has(requestedAsset)) {
+        $("lda-asset").value = requestedAsset;
+        evaluateAssetSelection();
+      }
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

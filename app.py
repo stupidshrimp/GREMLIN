@@ -187,6 +187,15 @@ def perform_analysis():
     )
 
 
+@app.route("/life-data-analysis/disposition")
+def disposition():
+    return render_template(
+        "disposition.html",
+        page_title="Disposition",
+        nav_links=NAV_LINKS,
+    )
+
+
 @app.route("/life-data-analysis/failure-classification")
 def failure_classification():
     classification_data = reliability_service.get_failure_classification_data()

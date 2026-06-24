@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Life Data Analysis</p>
+  <h1>Disposition</h1>
+  <p>Disposition corrective work orders and PM reset events for a selected Asset Number. Assign
+     defensible failure modes and mechanisms, set record classes, and mark the observations that
+     should feed the REL-style Weibull analysis.</p>
+  <div class="lda-row-actions" style="justify-content:flex-start">
+    <a class="btn-secondary" href="{{ url_for('perform_analysis') }}">← Back to Perform an Analysis</a>
+  </div>
+</section>
+
+<div id="lda-status" class="lda-banner" role="status" hidden></div>
+
+<section class="glass-card slide-in lda-card" aria-labelledby="lda-disp-step-1">
+  <p class="eyebrow">Step 1</p>
+  <h2 id="lda-disp-step-1">Select asset and disposition scope</h2>
+  <div class="lda-disp-controls">
+    <div class="lda-field">
+      <label for="lda-asset">Asset Number</label>
+      <div class="lda-combobox" id="lda-asset-combobox">
+        <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
+               aria-autocomplete="list" aria-expanded="false" aria-controls="lda-asset-list"
+               placeholder="Search imported Asset Number values…">
+        <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
+      </div>
+    </div>
+    <div class="lda-field">
+      <label for="lda-disp-kind">Record Type</label>
+      <select id="lda-disp-kind" class="lda-select">
+        <option value="wo" selected>Work Orders</option>
+        <option value="pm">PM Reset Events</option>
+      </select>
+    </div>
+    <div class="lda-field">
+      <label for="lda-disp-scope">Rows</label>
+      <select id="lda-disp-scope" class="lda-select">
+        <option value="all" selected>All eligible rows</option>
+        <option value="new">Only new / undispositioned</option>
+      </select>
+    </div>
+  </div>
+  <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
+  <div class="lda-row-actions" style="justify-content:flex-start">
+    <button type="button" class="btn-secondary" id="lda-refresh-mapping">Refresh CMMS mapping</button>
+  </div>
+</section>
+
+<div id="lda-disposition-root" hidden></div>
+<div id="lda-workspace" class="lda-workspace"></div>
+
+<div id="lda-loading" class="lda-loading" hidden>
+  <div class="lda-spinner" aria-hidden="true"></div>
+  <span id="lda-loading-text">Working…</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
+{% endblock %}
