@@ -1745,6 +1745,11 @@ class LifeDataService:
                 FROM mapped_cmms_record m
                 WHERE m.asset_number = :asset_number
                   AND {pm_clause}
+                  -- Only actually-completed PMs count; the date fallback below
+                  -- supplies a timestamp for a completed PM with a blank
+                  -- completion date, but must not pull in open/pending PMs that
+                  -- merely have a start/created date.
+                  AND m.is_completed = 1
                   AND COALESCE(
                         NULLIF(TRIM(m.completed_date_final), ''),
                         NULLIF(TRIM(m.start_date_final), ''),

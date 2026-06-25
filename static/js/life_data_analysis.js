@@ -364,6 +364,9 @@
       state.selectedTrend = null;
       state.pmSelection = null;
       state.pmData = null;
+      // Bump the PM token so an in-flight pm-effectiveness request for the prior
+      // asset can't render after this reset (e.g. switching away and back).
+      state.pmToken += 1;
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
@@ -1058,9 +1061,17 @@
       const params = new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id });
       if (sel.failure_mode_id != null) params.set("failure_mode_id", sel.failure_mode_id);
       const data = await getJson(`${API}/pm-effectiveness?${params.toString()}`);
-      // Drop stale responses (asset switched, analysis type changed, or a newer
-      // request superseded this one) so the panel never shows another selection's data.
-      if (token !== state.pmToken || state.selectedAsset !== asset || state.analysisType !== ANALYSIS_TYPES.PM) return;
+      // Drop stale responses so the panel never shows another selection's data:
+      // a newer request superseded this one, the asset/analysis type changed, or
+      // the selection was cleared/replaced (checked by object identity, which also
+      // covers switching away and back to the same asset before this resolved).
+      if (
+        token !== state.pmToken ||
+        state.selectedAsset !== asset ||
+        state.analysisType !== ANALYSIS_TYPES.PM ||
+        state.pmSelection !== sel
+      )
+        return;
       // The endpoint wraps the service result under `pm_effectiveness` (matching
       // the other analysis routes), so unwrap it before the renderers read fields
       // like has_pm_history / months / rows directly off state.pmData.
