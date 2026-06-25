@@ -1723,7 +1723,14 @@ class LifeDataService:
         completed/start/created fallback already used across the dashboard.
         """
 
-        pm_clause = self._disposition_where("pm")
+        # Use the effective (final, else auto) record class rather than
+        # _disposition_where("pm")'s broader candidate predicate: that predicate
+        # also matches `is_pm_candidate = 1`, which stays set after a user
+        # reclassifies a record's final class away from PM (e.g. to INSPECTION),
+        # so reusing it would keep counting explicitly non-PM records as completed
+        # PMs. save_disposition writes record_class_final on mapped_cmms_record, so
+        # this COALESCE reflects any reclassification.
+        pm_clause = "COALESCE(m.record_class_final, m.record_class_auto) IN ('PM','PM_RESET_CANDIDATE')"
         with self.connect() as conn:
             mechanism_row = conn.execute(
                 "SELECT failure_mechanism_name FROM failure_mechanism WHERE failure_mechanism_id = :id",
