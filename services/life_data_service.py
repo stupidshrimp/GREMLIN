@@ -1473,6 +1473,185 @@ class LifeDataService:
             })
         return pareto_rows
 
+    @staticmethod
+    def _continuous_month_range(month_keys: Iterable[str]) -> list[str]:
+        """Return every ``YYYY-MM`` from the earliest to the latest key, inclusive.
+
+        Filling the gap months (rather than only the months that actually have
+        failures) is what lets the Failure Mode Trend line include zero-occurrence
+        months instead of skipping straight from one populated month to the next.
+        """
+
+        keys = sorted(month_keys)
+        if not keys:
+            return []
+        start_year, start_month = (int(part) for part in keys[0].split("-"))
+        end_year, end_month = (int(part) for part in keys[-1].split("-"))
+        months: list[str] = []
+        year, month = start_year, start_month
+        while (year, month) <= (end_year, end_month):
+            months.append(f"{year:04d}-{month:02d}")
+            if month == 12:
+                year, month = year + 1, 1
+            else:
+                month += 1
+        return months
+
+    @staticmethod
+    def _trend_summary_entry(mechanism: dict[str, Any], value: float | int) -> dict[str, Any]:
+        return {
+            "failure_mode_id": mechanism["failure_mode_id"],
+            "failure_mechanism_id": mechanism["failure_mechanism_id"],
+            "failure_mechanism_name": mechanism["failure_mechanism_name"],
+            "failure_mode_name": mechanism["failure_mode_name"],
+            "value": value,
+        }
+
+    def _failure_mode_trend_summary(
+        self, mechanisms: list[dict[str, Any]], has_growth_window: bool
+    ) -> dict[str, Any]:
+        """Pick the headline mechanism for each Failure Mode Trend summary card.
+
+        ``fastest_growing`` / ``most_improved`` stay ``None`` when there are fewer
+        than six months of data (no recent-3-vs-previous-3 window); the client
+        renders that as "Insufficient Data".
+        """
+
+        summary: dict[str, Any] = {
+            "most_frequent": None,
+            "highest_downtime": None,
+            "fastest_growing": None,
+            "most_improved": None,
+        }
+        if not mechanisms:
+            return summary
+        most_frequent = max(mechanisms, key=lambda m: (m["total_count"], m["total_downtime_hours"]))
+        summary["most_frequent"] = self._trend_summary_entry(most_frequent, int(most_frequent["total_count"]))
+        highest_downtime = max(mechanisms, key=lambda m: (m["total_downtime_hours"], m["total_count"]))
+        summary["highest_downtime"] = self._trend_summary_entry(
+            highest_downtime, round(float(highest_downtime["total_downtime_hours"]), 4)
+        )
+        if has_growth_window:
+            # Fastest growing = largest positive recent-vs-previous change; most
+            # improved = largest decrease. Each card only considers mechanisms that
+            # actually moved in its direction, so a declining mechanism never shows
+            # up as "Fastest Growing" (and vice versa); the card stays empty when no
+            # mechanism moved that way.
+            growing = [m for m in mechanisms if m["growth"] is not None and m["growth"] > 0]
+            if growing:
+                fastest = max(growing, key=lambda m: (m["growth"], m["total_count"]))
+                summary["fastest_growing"] = self._trend_summary_entry(fastest, int(fastest["growth"]))
+            declining = [m for m in mechanisms if m["growth"] is not None and m["growth"] < 0]
+            if declining:
+                improved = min(declining, key=lambda m: (m["growth"], -m["total_count"]))
+                summary["most_improved"] = self._trend_summary_entry(improved, int(improved["growth"]))
+        return summary
+
+    def failure_mode_trend(self, asset_number: str) -> dict[str, Any]:
+        """Monthly failure-mechanism occurrence trend for the Failure Mode Trend panel.
+
+        Uses the same included-failure dataset, failure-mechanism field, work-order
+        date, and downtime field as :meth:`failure_mechanism_pareto`, so the trend
+        stays consistent with the Pareto chart and any asset filter already applied.
+        Records are bucketed by the month of the work-order date (completed, else
+        start, else created), and the returned month axis is continuous (zero-filled)
+        so the trend line never skips a missing month.
+
+        ``growth`` compares the most recent three months against the previous three
+        months and is only computed when at least six months of data exist.
+        """
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH current_disp AS (
+                    SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
+                )
+                SELECT
+                    d.failure_mode_id,
+                    d.failure_mechanism_id,
+                    COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
+                    COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
+                    -- NULLIF(TRIM(...), '') so a blank (empty/whitespace) completed
+                    -- date doesn't stop COALESCE and hide a record that has a usable
+                    -- start/created date — otherwise it would count in the totals but
+                    -- drop out of every monthly bucket, undercounting the trend.
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date,
+                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                FROM mapped_cmms_record m
+                JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
+                LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
+                LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
+                WHERE m.asset_number = :asset_number
+                  AND d.disposition_category = 'INCLUDED_FAILURE'
+                  AND d.failure_mechanism_id IS NOT NULL
+                """,
+                {"asset_number": asset_number},
+            ).fetchall()
+
+        mechanisms: dict[tuple[int, int], dict[str, Any]] = {}
+        month_keys: set[str] = set()
+        for row in rows:
+            key = (int(row["failure_mode_id"]), int(row["failure_mechanism_id"]))
+            mechanism = mechanisms.get(key)
+            if mechanism is None:
+                mechanism = {
+                    "failure_mode_id": int(row["failure_mode_id"]),
+                    "failure_mechanism_id": int(row["failure_mechanism_id"]),
+                    "failure_mechanism_name": row["failure_mechanism_name"],
+                    "failure_mode_name": row["failure_mode_name"],
+                    "total_count": 0,
+                    "total_downtime_hours": 0.0,
+                    "monthly": {},  # YYYY-MM -> occurrence count
+                }
+                mechanisms[key] = mechanism
+            mechanism["total_count"] += 1
+            mechanism["total_downtime_hours"] += float(row["downtime_hours"] or 0.0)
+            parsed = self._parse_datetime(row["wo_date"])
+            if parsed is not None:
+                month_key = f"{parsed.year:04d}-{parsed.month:02d}"
+                mechanism["monthly"][month_key] = mechanism["monthly"].get(month_key, 0) + 1
+                month_keys.add(month_key)
+
+        months = self._continuous_month_range(month_keys)
+        has_growth_window = len(months) >= 6
+        recent_months = months[-3:] if has_growth_window else []
+        previous_months = months[-6:-3] if has_growth_window else []
+
+        mechanism_views: list[dict[str, Any]] = []
+        for mechanism in mechanisms.values():
+            monthly = mechanism["monthly"]
+            monthly_counts = [int(monthly.get(month_key, 0)) for month_key in months]
+            recent_count = sum(int(monthly.get(month_key, 0)) for month_key in recent_months)
+            previous_count = sum(int(monthly.get(month_key, 0)) for month_key in previous_months)
+            mechanism_views.append({
+                "failure_mode_id": mechanism["failure_mode_id"],
+                "failure_mechanism_id": mechanism["failure_mechanism_id"],
+                "failure_mechanism_name": mechanism["failure_mechanism_name"],
+                "failure_mode_name": mechanism["failure_mode_name"],
+                "total_count": int(mechanism["total_count"]),
+                "total_downtime_hours": round(float(mechanism["total_downtime_hours"]), 4),
+                "monthly_counts": monthly_counts,
+                "recent_count": int(recent_count),
+                "previous_count": int(previous_count),
+                "growth": (recent_count - previous_count) if has_growth_window else None,
+            })
+        # Stable order mirroring the Pareto (downtime desc, then count, then name).
+        mechanism_views.sort(
+            key=lambda m: (-m["total_downtime_hours"], -m["total_count"], m["failure_mechanism_name"])
+        )
+
+        return {
+            "months": months,
+            "mechanisms": mechanism_views,
+            "has_growth_window": has_growth_window,
+            "summary": self._failure_mode_trend_summary(mechanism_views, has_growth_window),
+        }
+
     def _disposition_where(self, kind: str) -> str:
         if kind == "wo":
             return "(COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO' OR m.is_corrective_wo_candidate = 1)"

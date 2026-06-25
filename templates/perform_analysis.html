@@ -31,6 +31,9 @@
       <label for="lda-analysis-type">Analysis Type</label>
       <select id="lda-analysis-type" name="analysis_type">
         <option value="Weibull Analysis" selected>Weibull Analysis</option>
+        <option value="Failure Mode Trend Analysis">Failure Mode Trend Analysis</option>
+        <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
+        <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
       </select>
     </div>
   </div>
@@ -40,16 +43,36 @@
 <section id="lda-summary-card" class="glass-card slide-in lda-card" aria-labelledby="lda-step-2" hidden>
   <p class="eyebrow">Step 2</p>
   <h2 id="lda-step-2">Asset Weibull readiness summary</h2>
-  <div id="lda-summary-grid" class="lda-summary-grid"></div>
+
+  <!-- Secondary analysis panel: controlled by the selected Analysis Type. The
+       Pareto section below is intentionally NOT part of this and stays visible for
+       every analysis type. -->
+
+  <!-- Weibull readiness metrics (Weibull Analysis only). -->
+  <div id="lda-weibull-summary">
+    <div id="lda-summary-grid" class="lda-summary-grid"></div>
+  </div>
+
+  <!-- Failure Mode Trend summary cards (Failure Mode Trend Analysis only). -->
+  <div id="lda-trend-summary" hidden>
+    <div id="lda-trend-cards" class="lda-summary-grid"></div>
+  </div>
+
+  <!-- Placeholder for analysis types that are not implemented yet. -->
+  <div id="lda-placeholder-summary" hidden>
+    <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
+  </div>
 
   <div class="lda-subgrid">
-    <div class="lda-panel">
+    <!-- Highest-beta mechanisms (Weibull-specific). -->
+    <div class="lda-panel" id="lda-beta-panel">
       <h3>Highest-beta mechanisms</h3>
       <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
          failure-mechanism population on this asset.</p>
       <ol id="lda-beta-rankings" class="lda-rankings"></ol>
     </div>
-    <div class="lda-panel">
+    <!-- Failure mechanism Pareto: always visible, regardless of analysis type. -->
+    <div class="lda-panel" id="lda-pareto-panel">
       <h3>Failure mechanism Pareto</h3>
       <label class="lda-checkbox">
         <input type="checkbox" id="lda-pareto-toggle">
@@ -59,6 +82,15 @@
         <canvas id="lda-pareto-chart" class="lda-canvas" height="320"></canvas>
       </div>
       <p class="lda-hint" id="lda-pareto-empty" hidden>No included failure mechanisms to chart yet.</p>
+    </div>
+  </div>
+
+  <!-- Failure Mode Trend chart (Failure Mode Trend Analysis only). -->
+  <div class="lda-panel" id="lda-trend-chart-panel" hidden>
+    <h3>Failure Mode Trend</h3>
+    <p class="lda-hint" id="lda-trend-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.</p>
+    <div class="lda-chart-wrap">
+      <canvas id="lda-trend-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
 </section>
