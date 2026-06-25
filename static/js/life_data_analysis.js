@@ -1061,7 +1061,10 @@
       // Drop stale responses (asset switched, analysis type changed, or a newer
       // request superseded this one) so the panel never shows another selection's data.
       if (token !== state.pmToken || state.selectedAsset !== asset || state.analysisType !== ANALYSIS_TYPES.PM) return;
-      state.pmData = data;
+      // The endpoint wraps the service result under `pm_effectiveness` (matching
+      // the other analysis routes), so unwrap it before the renderers read fields
+      // like has_pm_history / months / rows directly off state.pmData.
+      state.pmData = data.pm_effectiveness || null;
       renderPm();
     } catch (err) {
       if (token === state.pmToken) showBanner(err.message, "error");
