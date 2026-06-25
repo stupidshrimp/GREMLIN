@@ -1652,6 +1652,181 @@ class LifeDataService:
             "summary": self._failure_mode_trend_summary(mechanism_views, has_growth_window),
         }
 
+    @staticmethod
+    def _pm_effectiveness_rating(average_days: float | None) -> str:
+        """Map an average days-to-failure value onto the qualitative PM rating.
+
+        Mirrors the RCA dashboard PM Effectiveness card bands; ``None`` (no PM ->
+        failure pairs) is reported as "Insufficient Data".
+        """
+
+        if average_days is None:
+            return "Insufficient Data"
+        if average_days >= 180:
+            return "Excellent"
+        if average_days >= 90:
+            return "Good"
+        if average_days >= 30:
+            return "Fair"
+        return "Poor"
+
+    @staticmethod
+    def _pair_pms_to_failures(
+        pms: list[tuple[datetime, dict[str, Any]]],
+        failures: list[tuple[datetime, dict[str, Any]]],
+    ) -> list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]]:
+        """Pair each completed PM with the first failure that follows it.
+
+        ``pms`` and ``failures`` are ``(datetime, payload)`` tuples and need not be
+        pre-sorted. For each PM the earliest failure strictly after its completion
+        datetime is used (only the first occurrence); PMs with no subsequent failure
+        are dropped. Returns ``(pm_dt, pm, fail_dt, failure, days_between)`` tuples.
+        """
+
+        ordered_failures = sorted(failures, key=lambda item: item[0])
+        pairs: list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]] = []
+        for pm_dt, pm in sorted(pms, key=lambda item: item[0]):
+            next_failure = next(((fd, f) for fd, f in ordered_failures if fd > pm_dt), None)
+            if next_failure is None:
+                continue
+            fail_dt, failure = next_failure
+            days = (fail_dt - pm_dt).total_seconds() / 86400.0
+            pairs.append((pm_dt, pm, fail_dt, failure, days))
+        return pairs
+
+    def pm_effectiveness(
+        self,
+        asset_number: str,
+        failure_mechanism_id: int,
+        failure_mode_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate whether PMs are reducing failures for one failure mechanism.
+
+        For the selected asset and failure mechanism, pair every completed PM with
+        the first corrective (INCLUDED_FAILURE) work order that follows it on the
+        same asset, then summarise the days-between values into the PM Effectiveness
+        cards, the "Failures Following PM" monthly trend, and the PM-to-failure table
+        the RCA dashboard shows in place of the Weibull summary.
+
+        Uses the same datasets the Pareto / Failure Mode Trend panels use: PMs come
+        from the PM record-class filter, failures from the current included-failure
+        dispositions for the chosen mechanism, and the work-order date is the
+        completed/start/created fallback already used across the dashboard.
+        """
+
+        pm_clause = self._disposition_where("pm")
+        with self.connect() as conn:
+            mechanism_row = conn.execute(
+                "SELECT failure_mechanism_name FROM failure_mechanism WHERE failure_mechanism_id = :id",
+                {"id": failure_mechanism_id},
+            ).fetchone()
+            pm_rows = conn.execute(
+                f"""
+                SELECT
+                    m.task_id,
+                    m.asset_number,
+                    NULLIF(TRIM(m.completed_date_final), '') AS completed_date
+                FROM mapped_cmms_record m
+                WHERE m.asset_number = :asset_number
+                  AND {pm_clause}
+                  AND NULLIF(TRIM(m.completed_date_final), '') IS NOT NULL
+                """,
+                {"asset_number": asset_number},
+            ).fetchall()
+            failure_rows = conn.execute(
+                """
+                WITH current_disp AS (
+                    SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
+                )
+                SELECT
+                    m.task_id,
+                    COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date,
+                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                FROM mapped_cmms_record m
+                JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
+                LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
+                WHERE m.asset_number = :asset_number
+                  AND d.disposition_category = 'INCLUDED_FAILURE'
+                  AND d.failure_mechanism_id = :failure_mechanism_id
+                """,
+                {"asset_number": asset_number, "failure_mechanism_id": failure_mechanism_id},
+            ).fetchall()
+
+        mechanism_name = (
+            mechanism_row["failure_mechanism_name"] if mechanism_row else "Unspecified mechanism"
+        )
+
+        pms: list[tuple[datetime, dict[str, Any]]] = []
+        for row in pm_rows:
+            parsed = self._parse_datetime(row["completed_date"])
+            if parsed is None:
+                continue
+            pms.append((parsed, {"task_id": row["task_id"], "asset_number": row["asset_number"]}))
+
+        failures: list[tuple[datetime, dict[str, Any]]] = []
+        for row in failure_rows:
+            parsed = self._parse_datetime(row["wo_date"])
+            if parsed is None:
+                continue
+            failures.append(
+                (
+                    parsed,
+                    {
+                        "task_id": row["task_id"],
+                        "failure_mechanism_name": row["failure_mechanism_name"],
+                        "downtime_hours": float(row["downtime_hours"] or 0.0),
+                    },
+                )
+            )
+
+        pairs = self._pair_pms_to_failures(pms, failures)
+
+        table_rows: list[dict[str, Any]] = []
+        month_counts: dict[str, int] = {}
+        days_values: list[float] = []
+        for pm_dt, pm, fail_dt, failure, days in pairs:
+            days_values.append(days)
+            month_key = f"{fail_dt.year:04d}-{fail_dt.month:02d}"
+            month_counts[month_key] = month_counts.get(month_key, 0) + 1
+            table_rows.append(
+                {
+                    "pm_completion_date": pm_dt.date().isoformat(),
+                    "asset_number": pm.get("asset_number") or asset_number,
+                    "next_failure_date": fail_dt.date().isoformat(),
+                    "days_to_failure": round(days, 1),
+                    "failure_mechanism_name": failure.get("failure_mechanism_name") or mechanism_name,
+                    "downtime_hours": round(float(failure.get("downtime_hours") or 0.0), 4),
+                    "corrective_wo_number": failure.get("task_id"),
+                }
+            )
+
+        # Newest PM first so the most recent activity heads the table.
+        table_rows.sort(key=lambda r: r["pm_completion_date"], reverse=True)
+
+        months = self._continuous_month_range(month_counts.keys())
+        monthly_counts = [int(month_counts.get(key, 0)) for key in months]
+        average_days = (sum(days_values) / len(days_values)) if days_values else None
+
+        return {
+            "asset_number": asset_number,
+            "failure_mode_id": failure_mode_id,
+            "failure_mechanism_id": failure_mechanism_id,
+            "failure_mechanism_name": mechanism_name,
+            "pms_performed": len(pms),
+            "failures_after_pm": len(pairs),
+            "average_days_to_failure": round(average_days, 1) if average_days is not None else None,
+            "effectiveness": self._pm_effectiveness_rating(average_days),
+            "months": months,
+            "monthly_counts": monthly_counts,
+            "rows": table_rows,
+            "has_pm_history": bool(pms),
+        }
+
     def _disposition_where(self, kind: str) -> str:
         if kind == "wo":
             return "(COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO' OR m.is_corrective_wo_candidate = 1)"

@@ -229,6 +229,18 @@ table.lda-table td .lda-textarea { min-width: 150px; padding: 0.4rem 0.5rem; fon
 table.lda-table td.lda-check { text-align: center; }
 table.lda-table td.lda-check input { width: 17px; height: 17px; }
 
+/* PM-to-Failure "Days to Failure" color bands, matching the PM Effectiveness
+   rating thresholds (green 180+, yellow 90-179, orange 30-89, red <30). The
+   nth-child striping above is overridden so the band stays legible on every row. */
+table.lda-table td.lda-days-green,
+table.lda-table tbody tr:nth-child(even) td.lda-days-green { background: rgba(47, 143, 91, 0.22); color: var(--forest-900); font-weight: 600; }
+table.lda-table td.lda-days-yellow,
+table.lda-table tbody tr:nth-child(even) td.lda-days-yellow { background: rgba(214, 167, 0, 0.26); color: var(--forest-900); font-weight: 600; }
+table.lda-table td.lda-days-orange,
+table.lda-table tbody tr:nth-child(even) td.lda-days-orange { background: rgba(214, 122, 49, 0.28); color: var(--forest-900); font-weight: 600; }
+table.lda-table td.lda-days-red,
+table.lda-table tbody tr:nth-child(even) td.lda-days-red { background: rgba(192, 57, 43, 0.24); color: var(--forest-900); font-weight: 600; }
+
 .lda-disposition-meta { display: grid; gap: 0.3rem; }
 .lda-pager { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .lda-pager .lda-page-status { color: var(--muted); font-size: 0.86rem; }
