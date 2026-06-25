@@ -69,15 +69,17 @@
     <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
   </div>
 
+  <!-- Highest-beta mechanisms (Weibull-specific). Rendered above the Pareto so the
+       Pareto can span the full page width on every analysis type. -->
+  <div class="lda-panel" id="lda-beta-panel">
+    <h3>Highest-beta mechanisms</h3>
+    <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
+       failure-mechanism population on this asset.</p>
+    <ol id="lda-beta-rankings" class="lda-rankings"></ol>
+  </div>
+
+  <!-- Failure mechanism Pareto: always visible and full-width, regardless of analysis type. -->
   <div class="lda-subgrid">
-    <!-- Highest-beta mechanisms (Weibull-specific). -->
-    <div class="lda-panel" id="lda-beta-panel">
-      <h3>Highest-beta mechanisms</h3>
-      <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
-         failure-mechanism population on this asset.</p>
-      <ol id="lda-beta-rankings" class="lda-rankings"></ol>
-    </div>
-    <!-- Failure mechanism Pareto: always visible, regardless of analysis type. -->
     <div class="lda-panel" id="lda-pareto-panel">
       <h3>Failure mechanism Pareto</h3>
       <label class="lda-checkbox">
@@ -95,9 +97,27 @@
   <div class="lda-panel" id="lda-trend-chart-panel" hidden>
     <h3>Failure Mode Trend</h3>
     <p class="lda-hint" id="lda-trend-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.</p>
+    <div class="lda-trend-controls" id="lda-trend-controls" hidden>
+      <div class="lda-field">
+        <label for="lda-trend-from">From</label>
+        <input type="month" id="lda-trend-from">
+      </div>
+      <div class="lda-field">
+        <label for="lda-trend-to">To</label>
+        <input type="month" id="lda-trend-to">
+      </div>
+      <button type="button" class="btn-secondary" id="lda-trend-reset">Reset range</button>
+    </div>
     <div class="lda-chart-wrap">
       <canvas id="lda-trend-chart" class="lda-canvas" height="320"></canvas>
     </div>
+  </div>
+
+  <!-- Failure Mode Trend detail table (feeds the trend chart above). -->
+  <div class="lda-panel" id="lda-trend-table-panel" hidden>
+    <h3>Failure Mode Trend Detail</h3>
+    <p class="lda-hint" id="lda-trend-table-hint">Monthly occurrence counts for the selected failure mode or mechanism — the values plotted above.</p>
+    <div class="lda-table-scroll" id="lda-trend-table-wrap"></div>
   </div>
 
   <!-- Failures Following PM trend chart (PM Effectiveness Analysis only). -->
