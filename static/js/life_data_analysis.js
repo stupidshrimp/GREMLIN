@@ -1002,14 +1002,34 @@
     // itself (browsing the options) must not move or close it, so it is ignored.
     // The list is only dismissed once the input has been scrolled out of view,
     // so it can never float detached over unrelated content.
+    // The visible box the input lives in: the scrollable table container
+    // intersected with the window viewport. Because the menu is portaled to
+    // <body>, a row can be scrolled above/left of the table's visible area while
+    // its rect is still inside the page viewport — so the menu must be dismissed
+    // against this box, not the viewport alone. Falls back to the viewport when
+    // there is no scroll container (defensive; these always render inside one).
+    function visibleClip() {
+      const view = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+      const scroller = input.closest(".lda-table-scroll");
+      if (!scroller) return view;
+      const r = scroller.getBoundingClientRect();
+      return {
+        top: Math.max(view.top, r.top),
+        left: Math.max(view.left, r.left),
+        right: Math.min(view.right, r.right),
+        bottom: Math.min(view.bottom, r.bottom),
+      };
+    }
+
     function reflowList(event) {
       if (!isOpen) return;
       if (event && event.type === "scroll" && event.target && list.contains(event.target)) return;
       const rect = input.getBoundingClientRect();
-      const offscreen =
-        rect.bottom <= 0 || rect.top >= window.innerHeight ||
-        rect.right <= 0 || rect.left >= window.innerWidth;
-      if (offscreen) {
+      const clip = visibleClip();
+      const clipped =
+        rect.bottom <= clip.top || rect.top >= clip.bottom ||
+        rect.right <= clip.left || rect.left >= clip.right;
+      if (clipped) {
         closeList();
         return;
       }
