@@ -716,14 +716,17 @@
     const rowStates = [];
     const table = el("table", { class: "lda-table" });
     const thead = el("thead", {}, [
-      el("tr", {}, data.display_columns.concat(extraHeaders).map((h) => el("th", { text: h }))),
+      el("tr", {}, data.display_columns.concat(extraHeaders).map((h) =>
+        el("th", { class: h === "name" ? "lda-col-name" : null, text: h })
+      )),
     ]);
     const tbody = el("tbody");
 
     data.rows.forEach((row, index) => {
       const tr = el("tr");
       data.display_columns.forEach((key) => {
-        tr.appendChild(el("td", { class: "lda-readonly", text: row[key] == null ? "" : String(row[key]) }));
+        const cls = key === "name" ? "lda-readonly lda-col-name" : "lda-readonly";
+        tr.appendChild(el("td", { class: cls, text: row[key] == null ? "" : String(row[key]) }));
       });
 
       const notes = el("textarea", { class: "lda-textarea" });
@@ -994,15 +997,33 @@
       });
     }
 
+    // Keep the portaled list pinned beneath its input when the page, the inner
+    // table container, or the window scrolls/resizes. A scroll *inside* the list
+    // itself (browsing the options) must not move or close it, so it is ignored.
+    // The list is only dismissed once the input has been scrolled out of view,
+    // so it can never float detached over unrelated content.
+    function reflowList(event) {
+      if (!isOpen) return;
+      if (event && event.type === "scroll" && event.target && list.contains(event.target)) return;
+      const rect = input.getBoundingClientRect();
+      const offscreen =
+        rect.bottom <= 0 || rect.top >= window.innerHeight ||
+        rect.right <= 0 || rect.left >= window.innerWidth;
+      if (offscreen) {
+        closeList();
+        return;
+      }
+      positionList();
+    }
+
     function openList() {
       if (!isOpen) {
         document.body.appendChild(list);
         isOpen = true;
-        // Close (rather than chase) the portaled list when anything scrolls, so
-        // it can never float detached from its input. Capture catches scrolls on
-        // the inner table container too.
-        window.addEventListener("scroll", closeList, true);
-        window.addEventListener("resize", closeList, true);
+        // Capture so scrolls on the inner table container are caught too; the
+        // handler re-pins the list to its input rather than dismissing it.
+        window.addEventListener("scroll", reflowList, true);
+        window.addEventListener("resize", reflowList, true);
       }
       list.hidden = false;
       input.setAttribute("aria-expanded", "true");
@@ -1017,8 +1038,8 @@
       isOpen = false;
       activeIndex = -1;
       input.setAttribute("aria-expanded", "false");
-      window.removeEventListener("scroll", closeList, true);
-      window.removeEventListener("resize", closeList, true);
+      window.removeEventListener("scroll", reflowList, true);
+      window.removeEventListener("resize", reflowList, true);
     }
 
     function choose(opt) {
