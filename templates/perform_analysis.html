@@ -58,6 +58,12 @@
     <div id="lda-trend-cards" class="lda-summary-grid"></div>
   </div>
 
+  <!-- PM Effectiveness summary cards (PM Effectiveness Analysis only). -->
+  <div id="lda-pm-summary" hidden>
+    <div id="lda-pm-cards" class="lda-summary-grid"></div>
+    <p class="lda-hint" id="lda-pm-message" hidden></p>
+  </div>
+
   <!-- Placeholder for analysis types that are not implemented yet. -->
   <div id="lda-placeholder-summary" hidden>
     <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
@@ -92,6 +98,22 @@
     <div class="lda-chart-wrap">
       <canvas id="lda-trend-chart" class="lda-canvas" height="320"></canvas>
     </div>
+  </div>
+
+  <!-- Failures Following PM trend chart (PM Effectiveness Analysis only). -->
+  <div class="lda-panel" id="lda-pm-chart-panel" hidden>
+    <h3>Failures Following PM</h3>
+    <p class="lda-hint" id="lda-pm-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.</p>
+    <div class="lda-chart-wrap">
+      <canvas id="lda-pm-chart" class="lda-canvas" height="320"></canvas>
+    </div>
+  </div>
+
+  <!-- PM-to-Failure summary table (PM Effectiveness Analysis only). -->
+  <div class="lda-panel" id="lda-pm-table-panel" hidden>
+    <h3>PM-to-Failure Detail</h3>
+    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.</p>
+    <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
   </div>
 </section>
 

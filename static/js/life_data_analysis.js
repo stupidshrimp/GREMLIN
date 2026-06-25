@@ -45,6 +45,12 @@
     analysisType: ANALYSIS_TYPES.WEIBULL,
     trend: null,
     selectedTrend: null,
+    // PM Effectiveness Analysis: `pmSelection` is the chosen failure mechanism
+    // (from a Pareto click or the Perform Analysis picker); `pmData` is the latest
+    // payload from the pm-effectiveness endpoint. `pmToken` drops stale responses.
+    pmSelection: null,
+    pmData: null,
+    pmToken: 0,
     latestResult: null,
     summaryToken: 0,
     // Page context: "analysis" (Perform an Analysis) or "disposition" (the
@@ -353,9 +359,14 @@
     if (previous !== state.selectedAsset) {
       state.latestResult = null;
       // A new asset invalidates the cached trend data and any failure-mechanism
-      // selection driving the trend chart.
+      // selection driving the trend chart or PM effectiveness analysis.
       state.trend = null;
       state.selectedTrend = null;
+      state.pmSelection = null;
+      state.pmData = null;
+      // Bump the PM token so an in-flight pm-effectiveness request for the prior
+      // asset can't render after this reset (e.g. switching away and back).
+      state.pmToken += 1;
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
@@ -411,6 +422,15 @@
       // Pareto, so refresh them here too (this fires on asset selection and after
       // every disposition change, keeping the cards in sync with the filters).
       if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
+      // PM effectiveness is computed from a separate endpoint, but a disposition
+      // change can move a failure in/out of the included set, so re-fetch it when
+      // a mechanism is already selected so every card/chart/table stays in sync.
+      // With no selection (e.g. the asset just changed, clearing it), render the
+      // empty PM state so the previous asset's cards/chart/table don't linger.
+      if (state.analysisType === ANALYSIS_TYPES.PM) {
+        if (state.pmSelection) loadPmEffectiveness();
+        else renderPm();
+      }
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
     }
@@ -608,6 +628,8 @@
   function onParetoBarSelected(row) {
     if (state.analysisType === ANALYSIS_TYPES.TREND) {
       selectTrendMechanism(row);
+    } else if (state.analysisType === ANALYSIS_TYPES.PM) {
+      selectPmMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
       runParetoMechanism(row);
     }
@@ -645,7 +667,8 @@
     const type = state.analysisType;
     const isWeibull = type === ANALYSIS_TYPES.WEIBULL;
     const isTrend = type === ANALYSIS_TYPES.TREND;
-    const isPlaceholder = !isWeibull && !isTrend;
+    const isPm = type === ANALYSIS_TYPES.PM;
+    const isPlaceholder = !isWeibull && !isTrend && !isPm;
 
     const heading = $("lda-step-2");
     if (heading) {
@@ -653,6 +676,8 @@
         ? "Asset Weibull readiness summary"
         : isTrend
         ? "Failure mode trend summary"
+        : isPm
+        ? "PM effectiveness summary"
         : type;
     }
 
@@ -662,6 +687,9 @@
     setHidden($("lda-beta-panel"), !isWeibull);
     setHidden($("lda-trend-summary"), !isTrend);
     setHidden($("lda-trend-chart-panel"), !isTrend);
+    setHidden($("lda-pm-summary"), !isPm);
+    setHidden($("lda-pm-chart-panel"), !isPm);
+    setHidden($("lda-pm-table-panel"), !isPm);
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
     // With the Weibull beta panel hidden, let the Pareto span the full subgrid
@@ -688,6 +716,13 @@
       clearWorkspace();
     }
     if (isTrend) renderTrend();
+    if (isPm) {
+      // Returning to PM mode with a selection but no data (e.g. the in-flight
+      // request was dropped as stale when the user switched type mid-request)
+      // must re-fetch, otherwise the panels would prompt to reselect a mechanism.
+      if (state.pmSelection && !state.pmData) loadPmEffectiveness();
+      else renderPm();
+    }
   }
 
   // ---- failure mode trend ---------------------------------------------------
@@ -817,7 +852,7 @@
     return `${name} '${parts[0].slice(2)}`;
   }
 
-  function drawTrendChart(canvas, months, counts) {
+  function drawTrendChart(canvas, months, counts, yLabel) {
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
     if (!months.length) return;
@@ -901,7 +936,7 @@
     ctx.translate(13, (top + bottom) / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textBaseline = "middle";
-    ctx.fillText("Occurrence count", 0, 0);
+    ctx.fillText(yLabel || "Occurrence count", 0, 0);
     ctx.restore();
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
@@ -993,6 +1028,265 @@
     });
     if (choice === null || choice === undefined) return;
     selectTrendMechanism(choices[choice].row);
+  }
+
+  // ---- PM effectiveness analysis --------------------------------------------
+  // The selected failure mechanism (Pareto click or Perform Analysis picker)
+  // drives a server-side PM-to-failure analysis: every completed PM on the asset
+  // is paired with the first corrective WO for this mechanism that follows it.
+  function pmSelectionLabel(row) {
+    const modeName = row.failure_mode_name;
+    const mechName = row.failure_mechanism_name;
+    return mechName
+      ? modeName
+        ? `${modeName} / ${mechName}`
+        : mechName
+      : modeName || "the selected failure mechanism";
+  }
+
+  function selectPmMechanism(row) {
+    if (row == null || row.failure_mechanism_id == null) {
+      showBanner("PM effectiveness needs a failure mechanism. Pick a mechanism-level Pareto bar.", "error");
+      return;
+    }
+    state.pmSelection = {
+      failure_mode_id: row.failure_mode_id != null ? row.failure_mode_id : null,
+      failure_mechanism_id: row.failure_mechanism_id,
+      label: pmSelectionLabel(row),
+    };
+    state.pmData = null;
+    // Clear the previous mechanism's cards/chart/table immediately so a slow or
+    // failed request can't leave stale results visible under the new selection.
+    renderPm();
+    loadPmEffectiveness();
+  }
+
+  async function loadPmEffectiveness() {
+    if (state.pageMode === "disposition") return;
+    if (!state.selectedAsset || !state.pmSelection) {
+      renderPm();
+      return;
+    }
+    const asset = state.selectedAsset;
+    const sel = state.pmSelection;
+    const token = ++state.pmToken;
+    // A response is stale when a newer request superseded this one, the asset or
+    // analysis type changed, or the selection was cleared/replaced (object
+    // identity also covers switching away and back to the same asset before this
+    // resolved). Both the success and error paths use it so a late failure can't
+    // surface a PM error over the Weibull/Trend/Downtime view after a type switch.
+    const isStale = () =>
+      token !== state.pmToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== ANALYSIS_TYPES.PM ||
+      state.pmSelection !== sel;
+    beginLoading("Evaluating PM effectiveness…");
+    try {
+      const params = new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id });
+      if (sel.failure_mode_id != null) params.set("failure_mode_id", sel.failure_mode_id);
+      const data = await getJson(`${API}/pm-effectiveness?${params.toString()}`);
+      if (isStale()) return;
+      // The endpoint wraps the service result under `pm_effectiveness` (matching
+      // the other analysis routes), so unwrap it before the renderers read fields
+      // like has_pm_history / months / rows directly off state.pmData.
+      state.pmData = data.pm_effectiveness || null;
+      renderPm();
+    } catch (err) {
+      if (!isStale()) {
+        showBanner(err.message, "error");
+        // Reflect the (now-cleared) data so a failed load doesn't leave another
+        // mechanism's results on screen; an in-place refresh keeps its own data.
+        renderPm();
+      }
+    } finally {
+      endLoading();
+    }
+  }
+
+  // Perform Analysis in PM mode: pick the failure mechanism to evaluate from the
+  // same filtered dataset as the Pareto, then run the PM-to-failure analysis.
+  async function performPmSelection() {
+    if (!state.trend && state.selectedAsset) {
+      beginLoading("Loading failure mechanisms…");
+      try {
+        await refreshSummary();
+      } finally {
+        endLoading();
+      }
+    }
+    // PM effectiveness is per-mechanism, so only mechanism-level choices apply
+    // (the mode-level "all mechanisms" aggregate has no single mechanism id).
+    const choices = trendPickerChoices().filter((choice) => choice.row.failure_mechanism_id != null);
+    if (!choices.length) {
+      showBanner(
+        "No failure mechanisms with included failures are available yet. Disposition WO failures with a failure mechanism first.",
+        "error"
+      );
+      return;
+    }
+    const options = el("div", { class: "lda-modal-options" });
+    choices.forEach((choice, index) => {
+      const radio = el("input", { type: "radio", name: "lda-pm-group", value: String(index) });
+      if (index === 0) radio.checked = true;
+      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
+    });
+    const choice = await openModal({
+      title: "Select failure mechanism to evaluate",
+      bodyNodes: [el("p", { text: "Choose the failure mechanism to evaluate PM effectiveness for:" }), options],
+      actions: [
+        { label: "Cancel", primary: false, value: () => null },
+        {
+          label: "Evaluate",
+          primary: true,
+          value: () => {
+            const checked = options.querySelector("input[name='lda-pm-group']:checked");
+            return checked ? Number(checked.value) : null;
+          },
+        },
+      ],
+    });
+    if (choice === null || choice === undefined) return;
+    selectPmMechanism(choices[choice].row);
+  }
+
+  function renderPm() {
+    renderPmCards();
+    renderPmChart();
+    renderPmTable();
+  }
+
+  // Color band for a Days to Failure value, matching the PM Effectiveness rating.
+  function pmDaysClass(days) {
+    const n = Number(days);
+    if (!isFinite(n)) return "";
+    if (n >= 180) return "lda-days-green";
+    if (n >= 90) return "lda-days-yellow";
+    if (n >= 30) return "lda-days-orange";
+    return "lda-days-red";
+  }
+
+  // Shared empty-state text: distinguishes "no selection yet", "no PM history",
+  // and "PMs but no subsequent failures" so each panel can show the right prompt.
+  function pmEmptyText() {
+    const data = state.pmData;
+    if (!state.pmSelection) {
+      return "Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.";
+    }
+    // A selection is set but its data hasn't arrived yet (initial load, a new
+    // selection that just cleared the previous data, or a failed request): show a
+    // neutral evaluating message rather than the reselect prompt or stale results.
+    if (!data) {
+      return `Evaluating PM effectiveness for ${state.pmSelection.label}…`;
+    }
+    if (!data.has_pm_history) {
+      return "No completed PM work orders were found for this asset.";
+    }
+    return "No failures recorded following completed PMs within the selected date range.";
+  }
+
+  function renderPmCards() {
+    const grid = $("lda-pm-cards");
+    const message = $("lda-pm-message");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const data = state.pmData;
+    if (!state.pmSelection || !data) {
+      if (message) {
+        message.hidden = false;
+        message.textContent = pmEmptyText();
+      }
+      return;
+    }
+    const avg = data.average_days_to_failure;
+    const cards = [
+      ["PMs Performed", String(data.pms_performed ?? 0)],
+      ["Failures After PM", String(data.failures_after_pm ?? 0)],
+      ["Average Days to Failure", avg != null ? `${fmt(avg)} days` : "Insufficient Data"],
+      ["PM Effectiveness", data.effectiveness || "Insufficient Data"],
+    ];
+    cards.forEach(([label, value]) => {
+      grid.appendChild(
+        el("div", { class: "lda-metric" }, [
+          el("span", { class: "lda-metric-value", text: value }),
+          el("span", { class: "lda-metric-label", text: label }),
+        ])
+      );
+    });
+    // Surface the informative message for the two empty-but-valid cases; hide it
+    // once there is real PM-to-failure data to read from the cards/table.
+    if (message) {
+      if (!data.has_pm_history || !data.failures_after_pm) {
+        message.hidden = false;
+        message.textContent = pmEmptyText();
+      } else {
+        message.hidden = true;
+        message.textContent = "";
+      }
+    }
+  }
+
+  function renderPmChart() {
+    const canvas = $("lda-pm-chart");
+    const hint = $("lda-pm-selection");
+    if (!canvas) return;
+    const data = state.pmData;
+    const months = (data && data.months) || [];
+    if (!state.pmSelection || !data || !months.length) {
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = pmEmptyText();
+      }
+      canvas.hidden = true;
+      return;
+    }
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = `Corrective work orders for ${data.failure_mechanism_name || state.pmSelection.label} occurring after a completed PM, by month.`;
+    }
+    canvas.hidden = false;
+    drawTrendChart(canvas, months, data.monthly_counts || [], "Corrective WOs after PM");
+  }
+
+  function renderPmTable() {
+    const wrap = $("lda-pm-table-wrap");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.pmData;
+    const rows = (data && data.rows) || [];
+    const headers = [
+      "PM Completion Date",
+      "Asset",
+      "Next Failure Date",
+      "Days to Failure",
+      "Failure Mechanism",
+      "Downtime",
+      "Corrective WO Number",
+    ];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    if (!rows.length) {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: pmEmptyText() }),
+        ])
+      );
+    }
+    rows.forEach((row) => {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { text: row.pm_completion_date || "" }),
+          el("td", { text: row.asset_number || "" }),
+          el("td", { text: row.next_failure_date || "" }),
+          el("td", { class: pmDaysClass(row.days_to_failure), text: fmt(row.days_to_failure) }),
+          el("td", { text: row.failure_mechanism_name || "" }),
+          el("td", { text: row.downtime_hours != null ? `${fmt(row.downtime_hours)} h` : "" }),
+          el("td", { text: row.corrective_wo_number != null ? String(row.corrective_wo_number) : "" }),
+        ])
+      );
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
   }
 
   // ---- disposition editor ---------------------------------------------------
@@ -1638,6 +1932,7 @@
   async function performAnalysis() {
     if (!state.selectedAsset) return;
     if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
+    if (state.analysisType === ANALYSIS_TYPES.PM) return performPmSelection();
     if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
       showBanner(`${state.analysisType} is coming soon.`, "info");
       return;
@@ -2368,6 +2663,7 @@
     window.addEventListener("resize", () => {
       if (state.paretoRows.length) drawPareto();
       if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
+      if (state.analysisType === ANALYSIS_TYPES.PM) renderPmChart();
       if (state.analysisRedraw) state.analysisRedraw();
     });
     loadAssets();

@@ -398,6 +398,36 @@ def api_upload_disposition_excel():
     return jsonify({"imported": imported})
 
 
+@app.route("/life-data-analysis/api/pm-effectiveness")
+@life_data_api
+def api_pm_effectiveness():
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    mechanism_raw = request.values.get("failure_mechanism_id")
+    if mechanism_raw in (None, ""):
+        raise LifeDataApiError("Select a failure mechanism to evaluate PM effectiveness.", status_code=400)
+    try:
+        failure_mechanism_id = int(mechanism_raw)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
+    mode_raw = request.values.get("failure_mode_id")
+    failure_mode_id = None
+    if mode_raw not in (None, ""):
+        try:
+            failure_mode_id = int(mode_raw)
+        except (TypeError, ValueError):
+            raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
+    return jsonify(
+        {
+            "pm_effectiveness": service.pm_effectiveness(
+                asset_number,
+                failure_mechanism_id=failure_mechanism_id,
+                failure_mode_id=failure_mode_id,
+            )
+        }
+    )
+
+
 @app.route("/life-data-analysis/api/weibull-groups")
 @life_data_api
 def api_weibull_groups():
