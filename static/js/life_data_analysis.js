@@ -1055,6 +1055,9 @@
       label: pmSelectionLabel(row),
     };
     state.pmData = null;
+    // Clear the previous mechanism's cards/chart/table immediately so a slow or
+    // failed request can't leave stale results visible under the new selection.
+    renderPm();
     loadPmEffectiveness();
   }
 
@@ -1089,7 +1092,12 @@
       state.pmData = data.pm_effectiveness || null;
       renderPm();
     } catch (err) {
-      if (!isStale()) showBanner(err.message, "error");
+      if (!isStale()) {
+        showBanner(err.message, "error");
+        // Reflect the (now-cleared) data so a failed load doesn't leave another
+        // mechanism's results on screen; an in-place refresh keeps its own data.
+        renderPm();
+      }
     } finally {
       endLoading();
     }
@@ -1161,8 +1169,14 @@
   // and "PMs but no subsequent failures" so each panel can show the right prompt.
   function pmEmptyText() {
     const data = state.pmData;
-    if (!state.pmSelection || !data) {
+    if (!state.pmSelection) {
       return "Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.";
+    }
+    // A selection is set but its data hasn't arrived yet (initial load, a new
+    // selection that just cleared the previous data, or a failed request): show a
+    // neutral evaluating message rather than the reselect prompt or stale results.
+    if (!data) {
+      return `Evaluating PM effectiveness for ${state.pmSelection.label}…`;
     }
     if (!data.has_pm_history) {
       return "No completed PM work orders were found for this asset.";
