@@ -1642,6 +1642,11 @@
   async function runAnalysisForGroup(group, message) {
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
+    // Capture the analysis type too: if the user switches away from Weibull while
+    // this request is in flight, applyAnalysisTypeUI() clears the workspace, so a
+    // late Weibull response must not repopulate it under the non-Weibull panel.
+    const analysisType = state.analysisType;
+    const isStale = () => state.selectedAsset !== asset || state.analysisType !== analysisType;
     beginLoading(message || "Running Weibull analysis…");
     try {
       const data = await postJson(`${API}/perform-analysis`, {
@@ -1650,12 +1655,12 @@
         failure_mode_id: group.failure_mode_id,
         failure_mechanism_id: group.failure_mechanism_id,
       });
-      if (state.selectedAsset !== asset) return; // asset changed mid-request; ignore stale result
+      if (isStale()) return; // asset or analysis type changed mid-request; drop the stale result
       state.latestResult = data.result;
       renderAnalysisResult(data.result);
       refreshSummary();
     } catch (err) {
-      if (state.selectedAsset === asset) showBanner(err.message, "error");
+      if (!isStale()) showBanner(err.message, "error");
     } finally {
       endLoading();
     }
