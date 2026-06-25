@@ -1731,6 +1731,18 @@ class LifeDataService:
         # PMs. save_disposition writes record_class_final on mapped_cmms_record, so
         # this COALESCE reflects any reclassification.
         pm_clause = "COALESCE(m.record_class_final, m.record_class_auto) IN ('PM','PM_RESET_CANDIDATE')"
+        # `is_completed` alone is unreliable for the completion gate: _map_raw_record
+        # sets it from a "complete" substring test, which also matches "Incomplete"
+        # and "Not Complete". Treat a PM as completed only when it has a real
+        # completion timestamp, or is_completed is set and the status does not read
+        # as not-complete (compared with spaces/dashes/underscores stripped so
+        # "Not Complete"/"not-complete" are caught alongside "Incomplete").
+        normalized_status = "REPLACE(REPLACE(REPLACE(LOWER(COALESCE(m.status_raw, '')), ' ', ''), '-', ''), '_', '')"
+        completed_pm_clause = (
+            "(NULLIF(TRIM(m.completed_date_final), '') IS NOT NULL "
+            f"OR (m.is_completed = 1 AND {normalized_status} NOT LIKE '%incomplete%' "
+            f"AND {normalized_status} NOT LIKE '%notcomplete%'))"
+        )
         with self.connect() as conn:
             mechanism_row = conn.execute(
                 "SELECT failure_mechanism_name FROM failure_mechanism WHERE failure_mechanism_id = :id",
@@ -1756,7 +1768,7 @@ class LifeDataService:
                   -- supplies a timestamp for a completed PM with a blank
                   -- completion date, but must not pull in open/pending PMs that
                   -- merely have a start/created date.
-                  AND m.is_completed = 1
+                  AND {completed_pm_clause}
                   AND COALESCE(
                         NULLIF(TRIM(m.completed_date_final), ''),
                         NULLIF(TRIM(m.start_date_final), ''),
