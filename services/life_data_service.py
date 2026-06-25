@@ -1675,23 +1675,38 @@ class LifeDataService:
         pms: list[tuple[datetime, dict[str, Any]]],
         failures: list[tuple[datetime, dict[str, Any]]],
     ) -> list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]]:
-        """Pair each completed PM with the first failure that follows it.
+        """Pair each completed PM with the first failure in its coverage window.
 
         ``pms`` and ``failures`` are ``(datetime, payload)`` tuples and need not be
-        pre-sorted. For each PM the earliest failure strictly after its completion
-        datetime is used (only the first occurrence); PMs with no subsequent failure
-        are dropped. Returns ``(pm_dt, pm, fail_dt, failure, days_between)`` tuples.
+        pre-sorted. Each failure is attributed to the most recent PM that precedes
+        it — i.e. a PM is paired with the first failure strictly after it and before
+        the next PM (only the first occurrence in that window) — so a failure is
+        never counted against more than one PM when several PMs precede it. PMs with
+        no failure in their window are dropped. Returns ``(pm_dt, pm, fail_dt,
+        failure, days_between)`` tuples.
         """
 
+        ordered_pms = sorted(pms, key=lambda item: item[0])
         ordered_failures = sorted(failures, key=lambda item: item[0])
         pairs: list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]] = []
-        for pm_dt, pm in sorted(pms, key=lambda item: item[0]):
-            next_failure = next(((fd, f) for fd, f in ordered_failures if fd > pm_dt), None)
-            if next_failure is None:
+        fail_index = 0
+        total_failures = len(ordered_failures)
+        for position, (pm_dt, pm) in enumerate(ordered_pms):
+            next_pm_dt = ordered_pms[position + 1][0] if position + 1 < len(ordered_pms) else None
+            # Skip failures at/before this PM; an unconsumed one here is a later
+            # occurrence inside an earlier PM's window that was already ignored.
+            while fail_index < total_failures and ordered_failures[fail_index][0] <= pm_dt:
+                fail_index += 1
+            if fail_index >= total_failures:
+                break
+            fail_dt, failure = ordered_failures[fail_index]
+            # A failure at/after the next PM belongs to that later PM's window, so
+            # leave it for the next iteration instead of consuming it here.
+            if next_pm_dt is not None and fail_dt >= next_pm_dt:
                 continue
-            fail_dt, failure = next_failure
             days = (fail_dt - pm_dt).total_seconds() / 86400.0
             pairs.append((pm_dt, pm, fail_dt, failure, days))
+            fail_index += 1  # consume so no later PM reuses this same failure
         return pairs
 
     def pm_effectiveness(
@@ -1725,11 +1740,22 @@ class LifeDataService:
                 SELECT
                     m.task_id,
                     m.asset_number,
-                    NULLIF(TRIM(m.completed_date_final), '') AS completed_date
+                    -- Same completed -> start -> created fallback the rest of the
+                    -- dashboard uses, so a completed PM with a blank completion
+                    -- timestamp but a usable start/created date still counts.
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS completed_date
                 FROM mapped_cmms_record m
                 WHERE m.asset_number = :asset_number
                   AND {pm_clause}
-                  AND NULLIF(TRIM(m.completed_date_final), '') IS NOT NULL
+                  AND COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                      ) IS NOT NULL
                 """,
                 {"asset_number": asset_number},
             ).fetchall()
