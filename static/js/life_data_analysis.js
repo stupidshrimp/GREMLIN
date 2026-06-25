@@ -425,7 +425,12 @@
       // PM effectiveness is computed from a separate endpoint, but a disposition
       // change can move a failure in/out of the included set, so re-fetch it when
       // a mechanism is already selected so every card/chart/table stays in sync.
-      if (state.analysisType === ANALYSIS_TYPES.PM && state.pmSelection) loadPmEffectiveness();
+      // With no selection (e.g. the asset just changed, clearing it), render the
+      // empty PM state so the previous asset's cards/chart/table don't linger.
+      if (state.analysisType === ANALYSIS_TYPES.PM) {
+        if (state.pmSelection) loadPmEffectiveness();
+        else renderPm();
+      }
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
     }
