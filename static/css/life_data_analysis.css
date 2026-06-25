@@ -128,16 +128,26 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-metric .lda-metric-value { font-size: 1.7rem; font-weight: 700; color: var(--forest-900); line-height: 1.1; }
 .lda-metric .lda-metric-label { font-size: 0.82rem; color: var(--muted); }
 
+/* The Pareto is now the only panel in the subgrid (the highest-beta list sits in
+   its own full-width panel above it), so it spans the full page width on every
+   analysis type, matching the trend / PM views. */
 .lda-subgrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  grid-template-columns: 1fr;
   gap: 1rem;
   margin-top: 0.4rem;
 }
-/* When the Weibull beta panel is hidden (non-Weibull analysis types) the Pareto
-   is the only panel, so it should span the full width instead of leaving an empty
-   column beside it. */
 .lda-subgrid.is-single { grid-template-columns: 1fr; }
+
+/* Date-range filter row for the Failure Mode Trend chart. */
+.lda-trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.85rem;
+}
+.lda-trend-controls .lda-field { min-width: 150px; gap: 0.3rem; }
+.lda-trend-controls .btn-secondary { padding: 0.5rem 0.95rem; }
 
 /* Failure Mode Trend summary cards lead with the analysis-type label, then the
    headline mechanism name (kept smaller than the big numeric readiness metrics so
@@ -206,6 +216,14 @@ table.lda-table td {
   padding: 0.5rem 0.55rem;
   vertical-align: top;
   text-align: left;
+}
+/* Trend detail total row: bolded and shaded so the column sum stands apart from
+   the per-month rows that feed the chart. */
+table.lda-table tbody tr.lda-trend-total td,
+table.lda-table tbody tr.lda-trend-total:nth-child(even) td {
+  font-weight: 700;
+  color: var(--forest-900);
+  background: rgba(85, 116, 143, 0.14);
 }
 table.lda-table thead th {
   position: sticky;

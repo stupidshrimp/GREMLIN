@@ -45,6 +45,9 @@
     analysisType: ANALYSIS_TYPES.WEIBULL,
     trend: null,
     selectedTrend: null,
+    // Inclusive month bounds ("YYYY-MM") for the Failure Mode Trend chart/table.
+    // null means "no bound" (use the full data range on that side).
+    trendRange: { from: null, to: null },
     // PM Effectiveness Analysis: `pmSelection` is the chosen failure mechanism
     // (from a Pareto click or the Perform Analysis picker); `pmData` is the latest
     // payload from the pm-effectiveness endpoint. `pmToken` drops stale responses.
@@ -362,6 +365,7 @@
       // selection driving the trend chart or PM effectiveness analysis.
       state.trend = null;
       state.selectedTrend = null;
+      state.trendRange = { from: null, to: null };
       state.pmSelection = null;
       state.pmData = null;
       // Bump the PM token so an in-flight pm-effectiveness request for the prior
@@ -687,23 +691,18 @@
     setHidden($("lda-beta-panel"), !isWeibull);
     setHidden($("lda-trend-summary"), !isTrend);
     setHidden($("lda-trend-chart-panel"), !isTrend);
+    setHidden($("lda-trend-table-panel"), !isTrend);
     setHidden($("lda-pm-summary"), !isPm);
     setHidden($("lda-pm-chart-panel"), !isPm);
     setHidden($("lda-pm-table-panel"), !isPm);
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
-    // With the Weibull beta panel hidden, let the Pareto span the full subgrid
-    // width instead of leaving an empty column beside it. This changes the Pareto
-    // panel's width, so redraw the chart afterwards: drawPareto()/setupCanvas size
-    // the backing store and click hitboxes from the current parent width, and
-    // otherwise wouldn't rerun until the next summary load, metric toggle, or
-    // window resize — leaving the chart stretched and its bar clicks misaligned.
-    const paretoPanel = $("lda-pareto-panel");
-    const subgrid = paretoPanel ? paretoPanel.closest(".lda-subgrid") : null;
-    if (subgrid) {
-      subgrid.classList.toggle("is-single", !isWeibull);
-      if (state.paretoRows.length) drawPareto();
-    }
+    // The beta panel now sits in its own full-width row above the Pareto, so
+    // showing/hiding it no longer changes the Pareto's width. Redraw anyway when a
+    // type switch could have altered the layout (e.g. a panel above appearing and
+    // shifting the scrollbar) so the canvas backing store and bar hitboxes stay
+    // sized to the live parent width.
+    if (state.paretoRows.length) drawPareto();
 
     if (isPlaceholder) {
       const text = $("lda-placeholder-text");
@@ -728,7 +727,9 @@
   // ---- failure mode trend ---------------------------------------------------
   function renderTrend() {
     renderTrendCards();
+    renderTrendControls();
     renderTrendChart();
+    renderTrendTable();
   }
 
   // Signed "+N / −N vs. prior 3 mo" label for the growth/improvement cards.
@@ -779,11 +780,12 @@
     });
   }
 
-  // Build the monthly occurrence series for the selected failure mode/mechanism.
-  // A mechanism-level selection plots that one mechanism; a mode-level selection
-  // (no mechanism id) sums every mechanism under the mode. Returns null when there
-  // is no selection, no trend data, or the selection has no dated occurrences.
-  function selectedTrendSeries() {
+  // Build the monthly occurrence series for the selected failure mode/mechanism
+  // across the FULL data range. A mechanism-level selection plots that one
+  // mechanism; a mode-level selection (no mechanism id) sums every mechanism under
+  // the mode. Returns null when there is no selection, no trend data, or the
+  // selection has no dated occurrences.
+  function fullTrendSeries() {
     const trend = state.trend;
     const sel = state.selectedTrend;
     if (!trend || !sel) return null;
@@ -802,6 +804,27 @@
     return { label: sel.label, months, counts };
   }
 
+  // The full series restricted to the active date range (state.trendRange). Month
+  // keys are "YYYY-MM", so string comparison gives the right chronological bounds.
+  // Returns the same shape as fullTrendSeries; `months` may be empty when the
+  // range excludes every dated occurrence (the renderers show a range-specific
+  // empty state in that case rather than treating it as "no selection").
+  function selectedTrendSeries() {
+    const base = fullTrendSeries();
+    if (!base) return null;
+    const { from, to } = state.trendRange;
+    if (!from && !to) return base;
+    const months = [];
+    const counts = [];
+    base.months.forEach((key, index) => {
+      if (from && key < from) return;
+      if (to && key > to) return;
+      months.push(key);
+      counts.push(base.counts[index]);
+    });
+    return { label: base.label, months, counts };
+  }
+
   function selectTrendMechanism(row) {
     if (row == null || row.failure_mode_id == null) return;
     const modeName = row.failure_mode_name;
@@ -816,7 +839,58 @@
       failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
       label,
     };
+    renderTrendControls();
     renderTrendChart();
+    renderTrendTable();
+  }
+
+  // Show and populate the date-range inputs whenever the selected mode/mechanism
+  // has a plottable series. The inputs are bounded by the full data range; the
+  // current value falls back to the data bounds when no explicit range is set.
+  function renderTrendControls() {
+    const controls = $("lda-trend-controls");
+    if (!controls) return;
+    const fromInput = $("lda-trend-from");
+    const toInput = $("lda-trend-to");
+    const base = fullTrendSeries();
+    if (!base || !base.months.length) {
+      controls.hidden = true;
+      return;
+    }
+    controls.hidden = false;
+    const minMonth = base.months[0];
+    const maxMonth = base.months[base.months.length - 1];
+    fromInput.min = minMonth;
+    fromInput.max = maxMonth;
+    toInput.min = minMonth;
+    toInput.max = maxMonth;
+    fromInput.value = state.trendRange.from || minMonth;
+    toInput.value = state.trendRange.to || maxMonth;
+  }
+
+  // Apply the From/To month inputs to state.trendRange and redraw. Bounds are kept
+  // ordered (from <= to) by swapping when the user picks an inverted range.
+  function onTrendRangeChange() {
+    const fromInput = $("lda-trend-from");
+    const toInput = $("lda-trend-to");
+    let from = fromInput.value || null;
+    let to = toInput.value || null;
+    if (from && to && from > to) {
+      [from, to] = [to, from];
+      fromInput.value = from;
+      toInput.value = to;
+    }
+    state.trendRange.from = from;
+    state.trendRange.to = to;
+    renderTrendChart();
+    renderTrendTable();
+  }
+
+  function resetTrendRange() {
+    state.trendRange = { from: null, to: null };
+    renderTrendControls();
+    renderTrendChart();
+    renderTrendTable();
   }
 
   function renderTrendChart() {
@@ -824,12 +898,19 @@
     const hint = $("lda-trend-selection");
     if (!canvas) return;
     const series = selectedTrendSeries();
-    if (!series) {
+    if (!series || !series.months.length) {
       if (hint) {
         hint.hidden = false;
-        hint.textContent = state.selectedTrend
-          ? `No occurrences found for ${state.selectedTrend.label} in the current dataset.`
-          : "Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.";
+        if (!state.selectedTrend) {
+          hint.textContent =
+            "Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.";
+        } else if (series) {
+          // A selection with a plottable full series, but the active date range
+          // excludes every month — point the user at the range, not the data.
+          hint.textContent = `No occurrences for ${state.selectedTrend.label} in the selected date range.`;
+        } else {
+          hint.textContent = `No occurrences found for ${state.selectedTrend.label} in the current dataset.`;
+        }
       }
       canvas.hidden = true;
       return;
@@ -840,6 +921,48 @@
     }
     canvas.hidden = false;
     drawTrendChart(canvas, series.months, series.counts);
+  }
+
+  // Tabular view of the exact values feeding the trend chart: one row per month in
+  // the active date range, plus a total. Kept in sync with the chart by sharing
+  // selectedTrendSeries(), so range changes update both together.
+  function renderTrendTable() {
+    const wrap = $("lda-trend-table-wrap");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const series = selectedTrendSeries();
+    const headers = ["Month", "Occurrences"];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    const months = (series && series.months) || [];
+    if (!months.length) {
+      const emptyText = !state.selectedTrend
+        ? "Select a failure mode or mechanism to view its monthly detail."
+        : series
+        ? "No occurrences in the selected date range."
+        : "No occurrences found for the selected failure mode or mechanism.";
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: emptyText }),
+        ])
+      );
+    } else {
+      months.forEach((key, index) => {
+        tbody.appendChild(
+          el("tr", {}, [el("td", { text: monthLabel(key) }), el("td", { text: String(series.counts[index]) })])
+        );
+      });
+      const total = series.counts.reduce((sum, value) => sum + value, 0);
+      tbody.appendChild(
+        el("tr", { class: "lda-trend-total" }, [
+          el("td", { text: "Total" }),
+          el("td", { text: String(total) }),
+        ])
+      );
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
   }
 
   // "2025-01" -> "Jan '25" for compact month-axis labels.
@@ -897,17 +1020,25 @@
     ctx.stroke();
 
     // Month labels, thinned so at most ~12 are drawn (first and last always shown).
+    // Each label is right-aligned and anchored just below its tick, then rotated
+    // counter-clockwise so it hangs down-and-left, clearly beneath the axis line
+    // instead of starting on it (the previous clockwise rotation began the text on
+    // the axis and ran it back up into the plotted line).
     const labelStep = Math.max(1, Math.ceil(n / 12));
     ctx.fillStyle = "#5e7082";
     ctx.font = "10px Inter, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
     months.forEach((key, index) => {
       if (index % labelStep !== 0 && index !== n - 1) return;
       ctx.save();
-      ctx.translate(xAt(index), bottom + 6);
-      ctx.rotate(Math.PI / 5);
+      ctx.translate(xAt(index), bottom + 10);
+      ctx.rotate(-Math.PI / 5);
       ctx.fillText(monthLabel(key), 0, 0);
       ctx.restore();
     });
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
 
     // Occurrence-count line + markers.
     ctx.strokeStyle = "#3f5e77";
@@ -2658,6 +2789,13 @@
       state.analysisType = typeSelect.value || ANALYSIS_TYPES.WEIBULL;
       typeSelect.addEventListener("change", () => setAnalysisType(typeSelect.value));
     }
+    // Failure Mode Trend date-range filter.
+    const trendFrom = $("lda-trend-from");
+    const trendTo = $("lda-trend-to");
+    const trendReset = $("lda-trend-reset");
+    if (trendFrom) trendFrom.addEventListener("change", onTrendRangeChange);
+    if (trendTo) trendTo.addEventListener("change", onTrendRangeChange);
+    if (trendReset) trendReset.addEventListener("click", resetTrendRange);
     // Set the initial secondary-panel visibility for the default analysis type.
     applyAnalysisTypeUI();
     window.addEventListener("resize", () => {
