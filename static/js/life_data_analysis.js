@@ -716,14 +716,17 @@
     const rowStates = [];
     const table = el("table", { class: "lda-table" });
     const thead = el("thead", {}, [
-      el("tr", {}, data.display_columns.concat(extraHeaders).map((h) => el("th", { text: h }))),
+      el("tr", {}, data.display_columns.concat(extraHeaders).map((h) =>
+        el("th", { class: h === "name" ? "lda-col-name" : null, text: h })
+      )),
     ]);
     const tbody = el("tbody");
 
     data.rows.forEach((row, index) => {
       const tr = el("tr");
       data.display_columns.forEach((key) => {
-        tr.appendChild(el("td", { class: "lda-readonly", text: row[key] == null ? "" : String(row[key]) }));
+        const cls = key === "name" ? "lda-readonly lda-col-name" : "lda-readonly";
+        tr.appendChild(el("td", { class: cls, text: row[key] == null ? "" : String(row[key]) }));
       });
 
       const notes = el("textarea", { class: "lda-textarea" });
@@ -994,15 +997,53 @@
       });
     }
 
+    // Keep the portaled list pinned beneath its input when the page, the inner
+    // table container, or the window scrolls/resizes. A scroll *inside* the list
+    // itself (browsing the options) must not move or close it, so it is ignored.
+    // The list is only dismissed once the input has been scrolled out of view,
+    // so it can never float detached over unrelated content.
+    // The visible box the input lives in: the scrollable table container
+    // intersected with the window viewport. Because the menu is portaled to
+    // <body>, a row can be scrolled above/left of the table's visible area while
+    // its rect is still inside the page viewport — so the menu must be dismissed
+    // against this box, not the viewport alone. Falls back to the viewport when
+    // there is no scroll container (defensive; these always render inside one).
+    function visibleClip() {
+      const view = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
+      const scroller = input.closest(".lda-table-scroll");
+      if (!scroller) return view;
+      const r = scroller.getBoundingClientRect();
+      return {
+        top: Math.max(view.top, r.top),
+        left: Math.max(view.left, r.left),
+        right: Math.min(view.right, r.right),
+        bottom: Math.min(view.bottom, r.bottom),
+      };
+    }
+
+    function reflowList(event) {
+      if (!isOpen) return;
+      if (event && event.type === "scroll" && event.target && list.contains(event.target)) return;
+      const rect = input.getBoundingClientRect();
+      const clip = visibleClip();
+      const clipped =
+        rect.bottom <= clip.top || rect.top >= clip.bottom ||
+        rect.right <= clip.left || rect.left >= clip.right;
+      if (clipped) {
+        closeList();
+        return;
+      }
+      positionList();
+    }
+
     function openList() {
       if (!isOpen) {
         document.body.appendChild(list);
         isOpen = true;
-        // Close (rather than chase) the portaled list when anything scrolls, so
-        // it can never float detached from its input. Capture catches scrolls on
-        // the inner table container too.
-        window.addEventListener("scroll", closeList, true);
-        window.addEventListener("resize", closeList, true);
+        // Capture so scrolls on the inner table container are caught too; the
+        // handler re-pins the list to its input rather than dismissing it.
+        window.addEventListener("scroll", reflowList, true);
+        window.addEventListener("resize", reflowList, true);
       }
       list.hidden = false;
       input.setAttribute("aria-expanded", "true");
@@ -1017,8 +1058,8 @@
       isOpen = false;
       activeIndex = -1;
       input.setAttribute("aria-expanded", "false");
-      window.removeEventListener("scroll", closeList, true);
-      window.removeEventListener("resize", closeList, true);
+      window.removeEventListener("scroll", reflowList, true);
+      window.removeEventListener("resize", reflowList, true);
     }
 
     function choose(opt) {

@@ -206,6 +206,10 @@ table.lda-table thead th {
 table.lda-table tbody tr:nth-child(even) { background: rgba(237, 242, 246, 0.5); }
 table.lda-table tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
 table.lda-table td.lda-readonly { color: var(--muted); max-width: 220px; white-space: pre-wrap; word-break: break-word; }
+/* The first read-only column ("name" — the task/WO title) carries the longest
+   free text, so give it a wider track than the other read-only columns. */
+table.lda-table th.lda-col-name { min-width: 300px; }
+table.lda-table td.lda-col-name { min-width: 300px; max-width: 460px; }
 table.lda-table td .lda-input,
 table.lda-table td .lda-select,
 table.lda-table td .lda-textarea { min-width: 150px; padding: 0.4rem 0.5rem; font-size: 0.82rem; }
