@@ -48,6 +48,13 @@
     // Inclusive month bounds ("YYYY-MM") for the Failure Mode Trend chart/table.
     // null means "no bound" (use the full data range on that side).
     trendRange: { from: null, to: null },
+    // A single month ("YYYY-MM") drilled into by clicking a trend data point or a
+    // Failure Mode Trend Detail month row. When set, the "Work Orders in Trend"
+    // table is filtered to that month; null shows every WO in the active range.
+    trendSelectedMonth: null,
+    // Inclusive month bounds for the PM Effectiveness "Failures Following PM" chart
+    // and PM-to-Failure table (same semantics as trendRange).
+    pmRange: { from: null, to: null },
     // PM Effectiveness Analysis: `pmSelection` is the chosen failure mechanism
     // (from a Pareto click or the Perform Analysis picker); `pmData` is the latest
     // payload from the pm-effectiveness endpoint. `pmToken` drops stale responses.
@@ -366,8 +373,10 @@
       state.trend = null;
       state.selectedTrend = null;
       state.trendRange = { from: null, to: null };
+      state.trendSelectedMonth = null;
       state.pmSelection = null;
       state.pmData = null;
+      state.pmRange = { from: null, to: null };
       // Bump the PM token so an in-flight pm-effectiveness request for the prior
       // asset can't render after this reset (e.g. switching away and back).
       state.pmToken += 1;
@@ -692,6 +701,7 @@
     setHidden($("lda-trend-summary"), !isTrend);
     setHidden($("lda-trend-chart-panel"), !isTrend);
     setHidden($("lda-trend-table-panel"), !isTrend);
+    setHidden($("lda-trend-wo-panel"), !isTrend);
     setHidden($("lda-pm-summary"), !isPm);
     setHidden($("lda-pm-chart-panel"), !isPm);
     setHidden($("lda-pm-table-panel"), !isPm);
@@ -730,6 +740,7 @@
     renderTrendControls();
     renderTrendChart();
     renderTrendTable();
+    renderTrendRecordsTable();
   }
 
   // Signed "+N / −N vs. prior 3 mo" label for the growth/improvement cards.
@@ -839,9 +850,12 @@
       failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
       label,
     };
+    // A new mode/mechanism invalidates any month the user had drilled into.
+    state.trendSelectedMonth = null;
     renderTrendControls();
     renderTrendChart();
     renderTrendTable();
+    renderTrendRecordsTable();
   }
 
   // Show and populate the date-range inputs whenever the selected mode/mechanism
@@ -882,15 +896,34 @@
     }
     state.trendRange.from = from;
     state.trendRange.to = to;
+    // Drop a drilled month that the new range no longer covers so the WO table
+    // can't stay filtered to a now-hidden month.
+    const month = state.trendSelectedMonth;
+    if (month && ((from && month < from) || (to && month > to))) {
+      state.trendSelectedMonth = null;
+    }
     renderTrendChart();
     renderTrendTable();
+    renderTrendRecordsTable();
   }
 
   function resetTrendRange() {
     state.trendRange = { from: null, to: null };
+    state.trendSelectedMonth = null;
     renderTrendControls();
     renderTrendChart();
     renderTrendTable();
+    renderTrendRecordsTable();
+  }
+
+  // Toggle the drilled-into month for the Work Orders in Trend table. Clicking the
+  // active month again clears the drill-down (back to every month in the range).
+  function toggleTrendMonth(month) {
+    if (!month) return;
+    state.trendSelectedMonth = state.trendSelectedMonth === month ? null : month;
+    renderTrendChart();
+    renderTrendTable();
+    renderTrendRecordsTable();
   }
 
   function renderTrendChart() {
@@ -917,10 +950,14 @@
     }
     if (hint) {
       hint.hidden = false;
-      hint.textContent = `Monthly occurrence count for ${series.label}.`;
+      hint.textContent = `Monthly occurrence count for ${series.label}. Click a point to show only that month's work orders below.`;
     }
     canvas.hidden = false;
-    drawTrendChart(canvas, series.months, series.counts);
+    const selectedIndex = state.trendSelectedMonth ? series.months.indexOf(state.trendSelectedMonth) : -1;
+    drawTrendChart(canvas, series.months, series.counts, "Occurrence count", {
+      selectedIndex,
+      onPointClick: (index) => toggleTrendMonth(series.months[index]),
+    });
   }
 
   // Tabular view of the exact values feeding the trend chart: one row per month in
@@ -949,9 +986,17 @@
       );
     } else {
       months.forEach((key, index) => {
-        tbody.appendChild(
-          el("tr", {}, [el("td", { text: monthLabel(key) }), el("td", { text: String(series.counts[index]) })])
+        const isActive = state.trendSelectedMonth === key;
+        const tr = el(
+          "tr",
+          {
+            class: `lda-trend-month-row${isActive ? " is-active" : ""}`,
+            title: "Click to show only this month's work orders below",
+            onclick: () => toggleTrendMonth(key),
+          },
+          [el("td", { text: monthLabel(key) }), el("td", { text: String(series.counts[index]) })]
         );
+        tbody.appendChild(tr);
       });
       const total = series.counts.reduce((sum, value) => sum + value, 0);
       tbody.appendChild(
@@ -960,6 +1005,87 @@
           el("td", { text: String(total) }),
         ])
       );
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  // Individual work orders backing the trend for the selected mode/mechanism,
+  // honoring the active date range and (when set) the drilled-into month. Returns
+  // newest-first so the most recent work appears at the top of the detail table.
+  function selectedTrendRecords() {
+    const trend = state.trend;
+    const sel = state.selectedTrend;
+    if (!trend || !sel) return [];
+    const matches = (trend.mechanisms || []).filter(
+      (m) =>
+        Number(m.failure_mode_id) === Number(sel.failure_mode_id) &&
+        (sel.failure_mechanism_id == null || Number(m.failure_mechanism_id) === Number(sel.failure_mechanism_id))
+    );
+    const { from, to } = state.trendRange;
+    const month = state.trendSelectedMonth;
+    const records = [];
+    matches.forEach((m) => {
+      (m.records || []).forEach((record) => {
+        if (month) {
+          if (record.month !== month) return;
+        } else {
+          if (from && record.month < from) return;
+          if (to && record.month > to) return;
+        }
+        records.push(record);
+      });
+    });
+    records.sort((a, b) => String(b.month || "").localeCompare(String(a.month || "")));
+    return records;
+  }
+
+  // "Work Orders in Trend" table: one row per work order feeding the plotted
+  // months, filtered to the drilled month when one is selected. Shows the WO id,
+  // title, request description and completion notes so the trend is traceable to
+  // the source records.
+  function renderTrendRecordsTable() {
+    const wrap = $("lda-trend-wo-wrap");
+    const hint = $("lda-trend-wo-hint");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (hint) {
+      if (!state.selectedTrend) {
+        hint.textContent = "The specific work orders that populate the months plotted above.";
+      } else if (state.trendSelectedMonth) {
+        hint.textContent = `Work orders for ${monthLabel(state.trendSelectedMonth)}. Click the month again to show every month in range.`;
+      } else {
+        hint.textContent = "The specific work orders that populate the months plotted above. Click a month/data point to drill in.";
+      }
+    }
+    const headers = ["WO #", "WO Title", "Month", "Request Description", "Completion Notes"];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    const records = selectedTrendRecords();
+    if (!records.length) {
+      const emptyText = !state.selectedTrend
+        ? "Select a failure mode or mechanism to list its work orders."
+        : state.trendSelectedMonth
+        ? "No work orders for the selected month."
+        : "No work orders for the selected failure mode or mechanism in this range.";
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: emptyText }),
+        ])
+      );
+    } else {
+      records.forEach((record) => {
+        tbody.appendChild(
+          el("tr", {}, [
+            el("td", { text: record.task_id != null ? String(record.task_id) : "" }),
+            el("td", { text: record.task_name || "" }),
+            el("td", { text: monthLabel(record.month) }),
+            el("td", { class: "lda-wo-text", text: record.requestor_description || "" }),
+            el("td", { class: "lda-wo-text", text: record.completion_notes || "" }),
+          ])
+        );
+      });
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
@@ -975,7 +1101,13 @@
     return `${name} '${parts[0].slice(2)}`;
   }
 
-  function drawTrendChart(canvas, months, counts, yLabel) {
+  function drawTrendChart(canvas, months, counts, yLabel, options) {
+    const opts = options || {};
+    const selectedIndex = Number.isInteger(opts.selectedIndex) ? opts.selectedIndex : -1;
+    const onPointClick = typeof opts.onPointClick === "function" ? opts.onPointClick : null;
+    // Reset any handler from a previous render so a chart drawn without click
+    // support (e.g. no selection) can't keep firing the last callback.
+    canvas.onclick = null;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
     if (!months.length) return;
@@ -1019,18 +1151,16 @@
     ctx.lineTo(right, bottom);
     ctx.stroke();
 
-    // Month labels, thinned so at most ~12 are drawn (first and last always shown).
-    // Each label is right-aligned and anchored just below its tick, then rotated
-    // counter-clockwise so it hangs down-and-left, clearly beneath the axis line
-    // instead of starting on it (the previous clockwise rotation began the text on
-    // the axis and ran it back up into the plotted line).
-    const labelStep = Math.max(1, Math.ceil(n / 12));
+    // A label is drawn for every month (the continuous axis is zero-filled, so no
+    // months are skipped) — each is right-aligned and anchored just below its tick,
+    // then rotated counter-clockwise so it hangs down-and-left beneath the axis
+    // line. The font shrinks as the series grows so dense ranges stay legible.
+    const labelFont = n > 36 ? 8 : n > 24 ? 9 : 10;
     ctx.fillStyle = "#5e7082";
-    ctx.font = "10px Inter, sans-serif";
+    ctx.font = `${labelFont}px Inter, sans-serif`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     months.forEach((key, index) => {
-      if (index % labelStep !== 0 && index !== n - 1) return;
       ctx.save();
       ctx.translate(xAt(index), bottom + 10);
       ctx.rotate(-Math.PI / 5);
@@ -1051,11 +1181,23 @@
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    ctx.fillStyle = "#c2723b";
+    const pointHitboxes = [];
     counts.forEach((value, index) => {
+      const x = xAt(index);
+      const y = yAt(value);
+      const isSelected = index === selectedIndex;
+      ctx.fillStyle = isSelected ? "#2a3f50" : "#c2723b";
       ctx.beginPath();
-      ctx.arc(xAt(index), yAt(value), 3, 0, Math.PI * 2);
+      ctx.arc(x, y, isSelected ? 5 : 3, 0, Math.PI * 2);
       ctx.fill();
+      if (isSelected) {
+        ctx.strokeStyle = "#2a3f50";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      pointHitboxes.push({ x, y, index });
     });
 
     // Axis titles.
@@ -1071,6 +1213,30 @@
     ctx.restore();
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
+
+    // Data-point clicks drill the detail table into the clicked month. Match the
+    // nearest marker within a small radius so clicks near (not exactly on) a point
+    // still register.
+    if (onPointClick && pointHitboxes.length) {
+      canvas.style.cursor = "pointer";
+      canvas.onclick = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        const px = ((event.clientX - rect.left) / rect.width) * W;
+        const py = ((event.clientY - rect.top) / rect.height) * H;
+        let best = null;
+        let bestDist = Infinity;
+        pointHitboxes.forEach((box) => {
+          const dist = Math.hypot(px - box.x, py - box.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = box;
+          }
+        });
+        if (best && bestDist <= 14) onPointClick(best.index);
+      };
+    } else {
+      canvas.style.cursor = "default";
+    }
   }
 
   // Build the Perform Analysis (trend) picker choices: an "all mechanisms"
@@ -1186,6 +1352,8 @@
       label: pmSelectionLabel(row),
     };
     state.pmData = null;
+    // A new mechanism's PM history has its own data range; drop the prior range.
+    state.pmRange = { from: null, to: null };
     // Clear the previous mechanism's cards/chart/table immediately so a slow or
     // failed request can't leave stale results visible under the new selection.
     renderPm();
@@ -1282,6 +1450,81 @@
 
   function renderPm() {
     renderPmCards();
+    renderPmControls();
+    renderPmChart();
+    renderPmTable();
+  }
+
+  // Full continuous month series for the PM "Failures Following PM" chart, before
+  // the date-range filter is applied. Returns null when there is no PM data yet.
+  function pmFullSeries() {
+    const data = state.pmData;
+    if (!data) return null;
+    const months = data.months || [];
+    if (!months.length) return null;
+    return { months, counts: data.monthly_counts || [] };
+  }
+
+  // The PM month series restricted to the active date range (state.pmRange). Month
+  // keys are "YYYY-MM", so string comparison gives the right chronological bounds.
+  function selectedPmSeries() {
+    const base = pmFullSeries();
+    if (!base) return null;
+    const { from, to } = state.pmRange;
+    if (!from && !to) return base;
+    const months = [];
+    const counts = [];
+    base.months.forEach((key, index) => {
+      if (from && key < from) return;
+      if (to && key > to) return;
+      months.push(key);
+      counts.push(base.counts[index]);
+    });
+    return { months, counts };
+  }
+
+  // Show and populate the PM date-range inputs whenever there is a plottable PM
+  // series, bounded by the data range (matching the Failure Mode Trend controls).
+  function renderPmControls() {
+    const controls = $("lda-pm-controls");
+    if (!controls) return;
+    const fromInput = $("lda-pm-from");
+    const toInput = $("lda-pm-to");
+    const base = pmFullSeries();
+    if (!base || !base.months.length) {
+      controls.hidden = true;
+      return;
+    }
+    controls.hidden = false;
+    const minMonth = base.months[0];
+    const maxMonth = base.months[base.months.length - 1];
+    fromInput.min = minMonth;
+    fromInput.max = maxMonth;
+    toInput.min = minMonth;
+    toInput.max = maxMonth;
+    fromInput.value = state.pmRange.from || minMonth;
+    toInput.value = state.pmRange.to || maxMonth;
+  }
+
+  function onPmRangeChange() {
+    const fromInput = $("lda-pm-from");
+    const toInput = $("lda-pm-to");
+    let from = fromInput.value || null;
+    let to = toInput.value || null;
+    if (from && to && from > to) {
+      [from, to] = [to, from];
+      fromInput.value = from;
+      toInput.value = to;
+    }
+    state.pmRange.from = from;
+    state.pmRange.to = to;
+    renderPmChart();
+    renderPmTable();
+  }
+
+  function resetPmRange() {
+    state.pmRange = { from: null, to: null };
+    renderPmControls();
     renderPmChart();
     renderPmTable();
   }
@@ -1361,11 +1604,16 @@
     const hint = $("lda-pm-selection");
     if (!canvas) return;
     const data = state.pmData;
-    const months = (data && data.months) || [];
-    if (!state.pmSelection || !data || !months.length) {
+    const series = selectedPmSeries();
+    if (!state.pmSelection || !data || !series || !series.months.length) {
       if (hint) {
         hint.hidden = false;
-        hint.textContent = pmEmptyText();
+        if (series && !series.months.length) {
+          // A plottable series exists, but the active date range excludes it all.
+          hint.textContent = `No corrective work orders after PM for ${data.failure_mechanism_name || state.pmSelection.label} in the selected date range.`;
+        } else {
+          hint.textContent = pmEmptyText();
+        }
       }
       canvas.hidden = true;
       return;
@@ -1375,7 +1623,7 @@
       hint.textContent = `Corrective work orders for ${data.failure_mechanism_name || state.pmSelection.label} occurring after a completed PM, by month.`;
     }
     canvas.hidden = false;
-    drawTrendChart(canvas, months, data.monthly_counts || [], "Corrective WOs after PM");
+    drawTrendChart(canvas, series.months, series.counts, "Corrective WOs after PM");
   }
 
   function renderPmTable() {
@@ -1383,7 +1631,17 @@
     if (!wrap) return;
     wrap.innerHTML = "";
     const data = state.pmData;
-    const rows = (data && data.rows) || [];
+    // Filter to the active date range by the corrective WO's failure month so the
+    // table matches the "Failures Following PM" chart above it.
+    const { from, to } = state.pmRange;
+    const rows = ((data && data.rows) || []).filter((row) => {
+      if (!from && !to) return true;
+      const month = String(row.next_failure_date || "").slice(0, 7);
+      if (!month) return true;
+      if (from && month < from) return false;
+      if (to && month > to) return false;
+      return true;
+    });
     const headers = [
       "PM Completion Date",
       "Asset",
@@ -2796,6 +3054,13 @@
     if (trendFrom) trendFrom.addEventListener("change", onTrendRangeChange);
     if (trendTo) trendTo.addEventListener("change", onTrendRangeChange);
     if (trendReset) trendReset.addEventListener("click", resetTrendRange);
+    // PM Effectiveness date-range filter.
+    const pmFrom = $("lda-pm-from");
+    const pmTo = $("lda-pm-to");
+    const pmReset = $("lda-pm-reset");
+    if (pmFrom) pmFrom.addEventListener("change", onPmRangeChange);
+    if (pmTo) pmTo.addEventListener("change", onPmRangeChange);
+    if (pmReset) pmReset.addEventListener("click", resetPmRange);
     // Set the initial secondary-panel visibility for the default analysis type.
     applyAnalysisTypeUI();
     window.addEventListener("resize", () => {

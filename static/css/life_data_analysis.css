@@ -225,6 +225,24 @@ table.lda-table tbody tr.lda-trend-total:nth-child(even) td {
   color: var(--forest-900);
   background: rgba(85, 116, 143, 0.14);
 }
+
+/* Clickable Failure Mode Trend Detail month rows: drill the Work Orders in Trend
+   table into a single month. The active month is highlighted to show the filter. */
+table.lda-table tbody tr.lda-trend-month-row { cursor: pointer; }
+table.lda-table tbody tr.lda-trend-month-row:hover td { background: rgba(85, 116, 143, 0.08); }
+table.lda-table tbody tr.lda-trend-month-row.is-active td,
+table.lda-table tbody tr.lda-trend-month-row.is-active:nth-child(even) td {
+  background: rgba(194, 114, 59, 0.18);
+  font-weight: 600;
+}
+
+/* Work Orders in Trend free-text columns: wrap long request/completion text and
+   cap the column width so the table stays readable. */
+table.lda-table td.lda-wo-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 28ch;
+}
 table.lda-table thead th {
   position: sticky;
   top: 0;

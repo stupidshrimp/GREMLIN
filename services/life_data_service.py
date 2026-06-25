@@ -1572,6 +1572,11 @@ class LifeDataService:
                     d.failure_mechanism_id,
                     COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
                     COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
+                    m.mapped_record_id,
+                    m.task_id,
+                    m.task_name,
+                    m.requestor_description,
+                    m.completion_notes,
                     -- NULLIF(TRIM(...), '') so a blank (empty/whitespace) completed
                     -- date doesn't stop COALESCE and hide a record that has a usable
                     -- start/created date — otherwise it would count in the totals but
@@ -1607,6 +1612,7 @@ class LifeDataService:
                     "total_count": 0,
                     "total_downtime_hours": 0.0,
                     "monthly": {},  # YYYY-MM -> occurrence count
+                    "records": [],  # per-WO detail backing the trend (dated rows only)
                 }
                 mechanisms[key] = mechanism
             mechanism["total_count"] += 1
@@ -1616,6 +1622,19 @@ class LifeDataService:
                 month_key = f"{parsed.year:04d}-{parsed.month:02d}"
                 mechanism["monthly"][month_key] = mechanism["monthly"].get(month_key, 0) + 1
                 month_keys.add(month_key)
+                # Keep the underlying work order so the client can show which WOs
+                # populate each plotted month. Only dated records are kept so the
+                # detail table stays consistent with the chart's monthly buckets.
+                mechanism["records"].append({
+                    "mapped_record_id": int(row["mapped_record_id"]),
+                    "task_id": row["task_id"],
+                    "task_name": row["task_name"],
+                    "requestor_description": row["requestor_description"],
+                    "completion_notes": row["completion_notes"],
+                    "downtime_hours": round(float(row["downtime_hours"] or 0.0), 4),
+                    "month": month_key,
+                    "wo_date": parsed.date().isoformat(),
+                })
 
         months = self._continuous_month_range(month_keys)
         has_growth_window = len(months) >= 6
@@ -1639,6 +1658,7 @@ class LifeDataService:
                 "recent_count": int(recent_count),
                 "previous_count": int(previous_count),
                 "growth": (recent_count - previous_count) if has_growth_window else None,
+                "records": mechanism["records"],
             })
         # Stable order mirroring the Pareto (downtime desc, then count, then name).
         mechanism_views.sort(
