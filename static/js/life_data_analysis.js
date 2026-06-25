@@ -10,6 +10,16 @@
   "use strict";
 
   const API = "/life-data-analysis/api";
+  // Analysis types offered by the Step 1 selector. Weibull and Failure Mode Trend
+  // are implemented; the rest render a "Coming soon" placeholder for now. The
+  // selected type only controls the secondary analysis panel — the Pareto chart
+  // stays visible for every type.
+  const ANALYSIS_TYPES = {
+    WEIBULL: "Weibull Analysis",
+    TREND: "Failure Mode Trend Analysis",
+    DOWNTIME: "Downtime Driver Analysis",
+    PM: "PM Effectiveness Analysis",
+  };
   const SUMMARY_FIELDS = [
     ["total_entries", "Total entries for this asset"],
     ["usable_wos_for_weibull", "Usable WOs for Weibull"],
@@ -29,6 +39,12 @@
     selectedAsset: null,
     paretoRows: [],
     paretoMetric: "downtime_hours",
+    // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
+    // Trend panel. `trend` is the latest payload returned alongside the summary;
+    // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
+    analysisType: ANALYSIS_TYPES.WEIBULL,
+    trend: null,
+    selectedTrend: null,
     latestResult: null,
     summaryToken: 0,
     // Page context: "analysis" (Perform an Analysis) or "disposition" (the
@@ -336,6 +352,10 @@
     state.selectedAsset = asset ? asset.asset_number : null;
     if (previous !== state.selectedAsset) {
       state.latestResult = null;
+      // A new asset invalidates the cached trend data and any failure-mechanism
+      // selection driving the trend chart.
+      state.trend = null;
+      state.selectedTrend = null;
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
@@ -385,7 +405,12 @@
       renderSummary(data.summary || {});
       renderRankings(data.rankings || []);
       state.paretoRows = data.pareto || [];
+      state.trend = data.trend || null;
       drawPareto();
+      // The trend summary cards and chart share the same filtered dataset as the
+      // Pareto, so refresh them here too (this fires on asset selection and after
+      // every disposition change, keeping the cards in sync with the filters).
+      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
     }
@@ -573,8 +598,19 @@
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
       const hit = hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
-      if (hit) runParetoMechanism(hit.row);
+      if (hit) onParetoBarSelected(hit.row);
     };
+  }
+
+  // A Pareto bar click drives the active analysis: Weibull runs the clicked
+  // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. The
+  // not-yet-implemented types have no secondary action, so the click is ignored.
+  function onParetoBarSelected(row) {
+    if (state.analysisType === ANALYSIS_TYPES.TREND) {
+      selectTrendMechanism(row);
+    } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
+      runParetoMechanism(row);
+    }
   }
 
   function runParetoMechanism(row) {
@@ -590,6 +626,312 @@
       },
       "Running clicked mechanism Weibull analysis…"
     );
+  }
+
+  // ---- analysis type switching ----------------------------------------------
+  function setHidden(node, hidden) {
+    if (node) node.hidden = Boolean(hidden);
+  }
+
+  function setAnalysisType(value) {
+    state.analysisType = value || ANALYSIS_TYPES.WEIBULL;
+    applyAnalysisTypeUI();
+  }
+
+  // Toggle the secondary analysis panel (and the Step 2 heading) to match the
+  // selected analysis type. The Pareto panel is never touched here, so it stays
+  // visible for every analysis type.
+  function applyAnalysisTypeUI() {
+    const type = state.analysisType;
+    const isWeibull = type === ANALYSIS_TYPES.WEIBULL;
+    const isTrend = type === ANALYSIS_TYPES.TREND;
+    const isPlaceholder = !isWeibull && !isTrend;
+
+    const heading = $("lda-step-2");
+    if (heading) {
+      heading.textContent = isWeibull
+        ? "Asset Weibull readiness summary"
+        : isTrend
+        ? "Failure mode trend summary"
+        : type;
+    }
+
+    // Weibull-specific cards/sections are hidden for every non-Weibull type so no
+    // Weibull labels remain on screen.
+    setHidden($("lda-weibull-summary"), !isWeibull);
+    setHidden($("lda-beta-panel"), !isWeibull);
+    setHidden($("lda-trend-summary"), !isTrend);
+    setHidden($("lda-trend-chart-panel"), !isTrend);
+    setHidden($("lda-placeholder-summary"), !isPlaceholder);
+
+    // With the Weibull beta panel hidden, let the Pareto span the full subgrid
+    // width instead of leaving an empty column beside it.
+    const paretoPanel = $("lda-pareto-panel");
+    const subgrid = paretoPanel ? paretoPanel.closest(".lda-subgrid") : null;
+    if (subgrid) subgrid.classList.toggle("is-single", !isWeibull);
+
+    if (isPlaceholder) {
+      const text = $("lda-placeholder-text");
+      if (text) text.textContent = `${type} is coming soon.`;
+    }
+    // A rendered Weibull result lives in the workspace; drop it for non-Weibull
+    // types so no Weibull-specific plots/cards linger after switching.
+    if (!isWeibull) {
+      state.latestResult = null;
+      clearWorkspace();
+    }
+    if (isTrend) renderTrend();
+  }
+
+  // ---- failure mode trend ---------------------------------------------------
+  function renderTrend() {
+    renderTrendCards();
+    renderTrendChart();
+  }
+
+  // Signed "+N / −N vs. prior 3 mo" label for the growth/improvement cards.
+  function trendDeltaText(value) {
+    const n = Number(value) || 0;
+    const sign = n > 0 ? "+" : n < 0 ? "−" : "±";
+    return `${sign}${Math.abs(n)} occ. vs. prior 3 mo`;
+  }
+
+  function renderTrendCards() {
+    const grid = $("lda-trend-cards");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const trend = state.trend;
+    const summary = (trend && trend.summary) || {};
+    const cards = [
+      ["most_frequent", "Most Frequent", (c) => `${c.value} work orders`],
+      ["highest_downtime", "Highest Downtime", (c) => `${fmt(c.value)} downtime hours`],
+      ["fastest_growing", "Fastest Growing", (c) => trendDeltaText(c.value)],
+      ["most_improved", "Most Improved", (c) => trendDeltaText(c.value)],
+    ];
+    const growthCard = (key) => key === "fastest_growing" || key === "most_improved";
+    cards.forEach(([key, label, detail]) => {
+      const entry = summary[key];
+      let valueText;
+      let detailText = "";
+      if (entry) {
+        valueText = entry.failure_mechanism_name || "—";
+        detailText = detail(entry);
+      } else if (growthCard(key) && trend && !trend.has_growth_window) {
+        // Fewer than six months of data, so growth/improvement can't be computed.
+        valueText = "Insufficient Data";
+      } else {
+        valueText = "—";
+      }
+      grid.appendChild(
+        el("div", { class: "lda-metric lda-trend-metric" }, [
+          el("span", { class: "lda-metric-label", text: label }),
+          el("span", { class: "lda-metric-value lda-trend-metric-value", text: valueText }),
+          detailText ? el("span", { class: "lda-metric-label", text: detailText }) : null,
+        ])
+      );
+    });
+  }
+
+  // Build the monthly occurrence series for the selected failure mode/mechanism.
+  // A mechanism-level selection plots that one mechanism; a mode-level selection
+  // (no mechanism id) sums every mechanism under the mode. Returns null when there
+  // is no selection, no trend data, or the selection has no dated occurrences.
+  function selectedTrendSeries() {
+    const trend = state.trend;
+    const sel = state.selectedTrend;
+    if (!trend || !sel) return null;
+    const months = trend.months || [];
+    if (!months.length) return null;
+    const matches = (trend.mechanisms || []).filter(
+      (m) =>
+        Number(m.failure_mode_id) === Number(sel.failure_mode_id) &&
+        (sel.failure_mechanism_id == null || Number(m.failure_mechanism_id) === Number(sel.failure_mechanism_id))
+    );
+    if (!matches.length) return null;
+    const counts = months.map((_, index) =>
+      matches.reduce((sum, m) => sum + (Number((m.monthly_counts || [])[index]) || 0), 0)
+    );
+    if (counts.reduce((a, b) => a + b, 0) === 0) return null;
+    return { label: sel.label, months, counts };
+  }
+
+  function selectTrendMechanism(row) {
+    if (row == null || row.failure_mode_id == null) return;
+    const modeName = row.failure_mode_name;
+    const mechName = row.failure_mechanism_name;
+    const label = mechName
+      ? modeName
+        ? `${modeName} / ${mechName}`
+        : mechName
+      : modeName || "the selected failure mode";
+    state.selectedTrend = {
+      failure_mode_id: row.failure_mode_id,
+      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
+      label,
+    };
+    renderTrendChart();
+  }
+
+  function renderTrendChart() {
+    const canvas = $("lda-trend-chart");
+    const hint = $("lda-trend-selection");
+    if (!canvas) return;
+    const series = selectedTrendSeries();
+    if (!series) {
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = state.selectedTrend
+          ? `No occurrences found for ${state.selectedTrend.label} in the current dataset.`
+          : "Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.";
+      }
+      canvas.hidden = true;
+      return;
+    }
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = `Monthly occurrence count for ${series.label}.`;
+    }
+    canvas.hidden = false;
+    drawTrendChart(canvas, series.months, series.counts);
+  }
+
+  // "2025-01" -> "Jan '25" for compact month-axis labels.
+  function monthLabel(key) {
+    const parts = String(key || "").split("-");
+    if (parts.length !== 2) return String(key || "");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const monthIndex = Number(parts[1]) - 1;
+    const name = monthNames[monthIndex] || parts[1];
+    return `${name} '${parts[0].slice(2)}`;
+  }
+
+  function drawTrendChart(canvas, months, counts) {
+    const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
+    ctx.clearRect(0, 0, W, H);
+    if (!months.length) return;
+
+    const left = 52;
+    const right = W - 18;
+    const top = 22;
+    const bottom = H - 64; // room for the rotated month labels + axis title
+    const plotH = bottom - top;
+    const plotW = right - left;
+    const maxVal = Math.max(...counts, 1);
+    const n = months.length;
+    const xAt = (index) => (n === 1 ? left + plotW / 2 : left + (index / (n - 1)) * plotW);
+    const yAt = (value) => bottom - (value / maxVal) * plotH;
+
+    // Horizontal gridlines + integer y-axis ticks.
+    const tickCount = Math.max(1, Math.min(5, maxVal));
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= tickCount; i += 1) {
+      const frac = i / tickCount;
+      const y = bottom - frac * plotH;
+      ctx.strokeStyle = "#eef2f6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillStyle = "#5e7082";
+      ctx.textAlign = "right";
+      ctx.fillText(String(Math.round(maxVal * frac)), left - 7, y);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    // Axes.
+    ctx.strokeStyle = "#c4d2dd";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.stroke();
+
+    // Month labels, thinned so at most ~12 are drawn (first and last always shown).
+    const labelStep = Math.max(1, Math.ceil(n / 12));
+    ctx.fillStyle = "#5e7082";
+    ctx.font = "10px Inter, sans-serif";
+    months.forEach((key, index) => {
+      if (index % labelStep !== 0 && index !== n - 1) return;
+      ctx.save();
+      ctx.translate(xAt(index), bottom + 6);
+      ctx.rotate(Math.PI / 5);
+      ctx.fillText(monthLabel(key), 0, 0);
+      ctx.restore();
+    });
+
+    // Occurrence-count line + markers.
+    ctx.strokeStyle = "#3f5e77";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    counts.forEach((value, index) => {
+      const x = xAt(index);
+      const y = yAt(value);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = "#c2723b";
+    counts.forEach((value, index) => {
+      ctx.beginPath();
+      ctx.arc(xAt(index), yAt(value), 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Axis titles.
+    ctx.fillStyle = "#2a3f50";
+    ctx.font = "600 11.5px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Month", (left + right) / 2, H - 6);
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textBaseline = "middle";
+    ctx.fillText("Occurrence count", 0, 0);
+    ctx.restore();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  // Perform Analysis in trend mode: pick the failure mode/mechanism to trend from
+  // the same filtered dataset as the Pareto, then plot its monthly occurrences.
+  async function performTrendSelection() {
+    const mechanisms = (state.trend && state.trend.mechanisms) || [];
+    if (!mechanisms.length) {
+      showBanner(
+        "No failure mechanisms with included failures are available to trend yet. Disposition WO failures with a failure mechanism first.",
+        "error"
+      );
+      return;
+    }
+    const options = el("div", { class: "lda-modal-options" });
+    mechanisms.forEach((mechanism, index) => {
+      const labelText =
+        `${mechanism.failure_mode_name} / ${mechanism.failure_mechanism_name} ` +
+        `(${mechanism.total_count} WOs, ${fmt(mechanism.total_downtime_hours)} downtime h)`;
+      const radio = el("input", { type: "radio", name: "lda-trend-group", value: String(index) });
+      if (index === 0) radio.checked = true;
+      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: labelText })]));
+    });
+    const choice = await openModal({
+      title: "Select failure mechanism to trend",
+      bodyNodes: [el("p", { text: "Choose the failure mode or mechanism to view its monthly trend:" }), options],
+      actions: [
+        { label: "Cancel", primary: false, value: () => null },
+        {
+          label: "View trend",
+          primary: true,
+          value: () => {
+            const checked = options.querySelector("input[name='lda-trend-group']:checked");
+            return checked ? Number(checked.value) : null;
+          },
+        },
+      ],
+    });
+    if (choice === null || choice === undefined) return;
+    selectTrendMechanism(mechanisms[choice]);
   }
 
   // ---- disposition editor ---------------------------------------------------
@@ -1228,9 +1570,17 @@
     fileInput.click();
   }
 
-  // ---- perform Weibull analysis ---------------------------------------------
+  // ---- perform analysis (routed by Analysis Type) ---------------------------
+  // The "Perform Analysis" button performs the action for the selected analysis
+  // type: the Weibull group picker for Weibull, the failure-mechanism picker for
+  // Failure Mode Trend, and a "coming soon" notice for the unimplemented types.
   async function performAnalysis() {
     if (!state.selectedAsset) return;
+    if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
+    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
+      showBanner(`${state.analysisType} is coming soon.`, "info");
+      return;
+    }
     beginLoading("Loading Weibull groups…");
     let groups;
     try {
@@ -1942,8 +2292,16 @@
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
     });
+    const typeSelect = $("lda-analysis-type");
+    if (typeSelect) {
+      state.analysisType = typeSelect.value || ANALYSIS_TYPES.WEIBULL;
+      typeSelect.addEventListener("change", () => setAnalysisType(typeSelect.value));
+    }
+    // Set the initial secondary-panel visibility for the default analysis type.
+    applyAnalysisTypeUI();
     window.addEventListener("resize", () => {
       if (state.paretoRows.length) drawPareto();
+      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
       if (state.analysisRedraw) state.analysisRedraw();
     });
     loadAssets();

@@ -275,6 +275,7 @@ def api_summary():
             "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
             "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
             "pareto": service.failure_mechanism_pareto(asset_number),
+            "trend": service.failure_mode_trend(asset_number),
         }
     )
 

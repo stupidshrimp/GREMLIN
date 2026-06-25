@@ -134,6 +134,19 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
   gap: 1rem;
   margin-top: 0.4rem;
 }
+/* When the Weibull beta panel is hidden (non-Weibull analysis types) the Pareto
+   is the only panel, so it should span the full width instead of leaving an empty
+   column beside it. */
+.lda-subgrid.is-single { grid-template-columns: 1fr; }
+
+/* Failure Mode Trend summary cards lead with the analysis-type label, then the
+   headline mechanism name (kept smaller than the big numeric readiness metrics so
+   longer mechanism names stay readable), then the supporting metric. */
+.lda-trend-metric .lda-trend-metric-value {
+  font-size: 1.12rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
 .lda-panel {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.7);
