@@ -1061,29 +1061,29 @@
     const asset = state.selectedAsset;
     const sel = state.pmSelection;
     const token = ++state.pmToken;
+    // A response is stale when a newer request superseded this one, the asset or
+    // analysis type changed, or the selection was cleared/replaced (object
+    // identity also covers switching away and back to the same asset before this
+    // resolved). Both the success and error paths use it so a late failure can't
+    // surface a PM error over the Weibull/Trend/Downtime view after a type switch.
+    const isStale = () =>
+      token !== state.pmToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== ANALYSIS_TYPES.PM ||
+      state.pmSelection !== sel;
     beginLoading("Evaluating PM effectiveness…");
     try {
       const params = new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id });
       if (sel.failure_mode_id != null) params.set("failure_mode_id", sel.failure_mode_id);
       const data = await getJson(`${API}/pm-effectiveness?${params.toString()}`);
-      // Drop stale responses so the panel never shows another selection's data:
-      // a newer request superseded this one, the asset/analysis type changed, or
-      // the selection was cleared/replaced (checked by object identity, which also
-      // covers switching away and back to the same asset before this resolved).
-      if (
-        token !== state.pmToken ||
-        state.selectedAsset !== asset ||
-        state.analysisType !== ANALYSIS_TYPES.PM ||
-        state.pmSelection !== sel
-      )
-        return;
+      if (isStale()) return;
       // The endpoint wraps the service result under `pm_effectiveness` (matching
       // the other analysis routes), so unwrap it before the renderers read fields
       // like has_pm_history / months / rows directly off state.pmData.
       state.pmData = data.pm_effectiveness || null;
       renderPm();
     } catch (err) {
-      if (token === state.pmToken) showBanner(err.message, "error");
+      if (!isStale()) showBanner(err.message, "error");
     } finally {
       endLoading();
     }
