@@ -665,10 +665,17 @@
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
     // With the Weibull beta panel hidden, let the Pareto span the full subgrid
-    // width instead of leaving an empty column beside it.
+    // width instead of leaving an empty column beside it. This changes the Pareto
+    // panel's width, so redraw the chart afterwards: drawPareto()/setupCanvas size
+    // the backing store and click hitboxes from the current parent width, and
+    // otherwise wouldn't rerun until the next summary load, metric toggle, or
+    // window resize — leaving the chart stretched and its bar clicks misaligned.
     const paretoPanel = $("lda-pareto-panel");
     const subgrid = paretoPanel ? paretoPanel.closest(".lda-subgrid") : null;
-    if (subgrid) subgrid.classList.toggle("is-single", !isWeibull);
+    if (subgrid) {
+      subgrid.classList.toggle("is-single", !isWeibull);
+      if (state.paretoRows.length) drawPareto();
+    }
 
     if (isPlaceholder) {
       const text = $("lda-placeholder-text");
@@ -702,23 +709,28 @@
     grid.innerHTML = "";
     const trend = state.trend;
     const summary = (trend && trend.summary) || {};
+    // Each growth card carries the wording shown when no mechanism moved in its
+    // direction (distinct from "Insufficient Data", which means too few months).
     const cards = [
-      ["most_frequent", "Most Frequent", (c) => `${c.value} work orders`],
-      ["highest_downtime", "Highest Downtime", (c) => `${fmt(c.value)} downtime hours`],
-      ["fastest_growing", "Fastest Growing", (c) => trendDeltaText(c.value)],
-      ["most_improved", "Most Improved", (c) => trendDeltaText(c.value)],
+      ["most_frequent", "Most Frequent", (c) => `${c.value} work orders`, null],
+      ["highest_downtime", "Highest Downtime", (c) => `${fmt(c.value)} downtime hours`, null],
+      ["fastest_growing", "Fastest Growing", (c) => trendDeltaText(c.value), "No mechanism increased"],
+      ["most_improved", "Most Improved", (c) => trendDeltaText(c.value), "No mechanism decreased"],
     ];
-    const growthCard = (key) => key === "fastest_growing" || key === "most_improved";
-    cards.forEach(([key, label, detail]) => {
+    cards.forEach(([key, label, detail, emptyDirectionText]) => {
       const entry = summary[key];
       let valueText;
       let detailText = "";
       if (entry) {
         valueText = entry.failure_mechanism_name || "—";
         detailText = detail(entry);
-      } else if (growthCard(key) && trend && !trend.has_growth_window) {
+      } else if (emptyDirectionText && trend && !trend.has_growth_window) {
         // Fewer than six months of data, so growth/improvement can't be computed.
         valueText = "Insufficient Data";
+      } else if (emptyDirectionText && trend) {
+        // Enough data, but no mechanism moved in this card's direction.
+        valueText = "—";
+        detailText = emptyDirectionText;
       } else {
         valueText = "—";
       }

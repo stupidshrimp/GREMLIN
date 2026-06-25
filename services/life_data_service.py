@@ -1533,11 +1533,18 @@ class LifeDataService:
         )
         if has_growth_window:
             # Fastest growing = largest positive recent-vs-previous change; most
-            # improved = largest decrease (most negative change).
-            fastest = max(mechanisms, key=lambda m: (m["growth"], m["total_count"]))
-            summary["fastest_growing"] = self._trend_summary_entry(fastest, int(fastest["growth"]))
-            improved = min(mechanisms, key=lambda m: (m["growth"], -m["total_count"]))
-            summary["most_improved"] = self._trend_summary_entry(improved, int(improved["growth"]))
+            # improved = largest decrease. Each card only considers mechanisms that
+            # actually moved in its direction, so a declining mechanism never shows
+            # up as "Fastest Growing" (and vice versa); the card stays empty when no
+            # mechanism moved that way.
+            growing = [m for m in mechanisms if m["growth"] is not None and m["growth"] > 0]
+            if growing:
+                fastest = max(growing, key=lambda m: (m["growth"], m["total_count"]))
+                summary["fastest_growing"] = self._trend_summary_entry(fastest, int(fastest["growth"]))
+            declining = [m for m in mechanisms if m["growth"] is not None and m["growth"] < 0]
+            if declining:
+                improved = min(declining, key=lambda m: (m["growth"], -m["total_count"]))
+                summary["most_improved"] = self._trend_summary_entry(improved, int(improved["growth"]))
         return summary
 
     def failure_mode_trend(self, asset_number: str) -> dict[str, Any]:
