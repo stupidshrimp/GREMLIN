@@ -1675,38 +1675,27 @@ class LifeDataService:
         pms: list[tuple[datetime, dict[str, Any]]],
         failures: list[tuple[datetime, dict[str, Any]]],
     ) -> list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]]:
-        """Pair each completed PM with the first failure in its coverage window.
+        """Pair each completed PM with the first failure that follows it.
 
         ``pms`` and ``failures`` are ``(datetime, payload)`` tuples and need not be
-        pre-sorted. Each failure is attributed to the most recent PM that precedes
-        it — i.e. a PM is paired with the first failure strictly after it and before
-        the next PM (only the first occurrence in that window) — so a failure is
-        never counted against more than one PM when several PMs precede it. PMs with
-        no failure in their window are dropped. Returns ``(pm_dt, pm, fail_dt,
-        failure, days_between)`` tuples.
+        pre-sorted. Each PM is paired with the earliest failure strictly after its
+        completion datetime (only the first occurrence); PMs with no later failure
+        are dropped. When several PMs precede the same failure they each pair with
+        it, so the per-PM PM-to-failure table and average-days metric cover every
+        such PM — de-duplicating to distinct corrective work orders for the
+        "Failures After PM" count / trend is handled by the caller. Returns
+        ``(pm_dt, pm, fail_dt, failure, days_between)`` tuples.
         """
 
-        ordered_pms = sorted(pms, key=lambda item: item[0])
         ordered_failures = sorted(failures, key=lambda item: item[0])
         pairs: list[tuple[datetime, dict[str, Any], datetime, dict[str, Any], float]] = []
-        fail_index = 0
-        total_failures = len(ordered_failures)
-        for position, (pm_dt, pm) in enumerate(ordered_pms):
-            next_pm_dt = ordered_pms[position + 1][0] if position + 1 < len(ordered_pms) else None
-            # Skip failures at/before this PM; an unconsumed one here is a later
-            # occurrence inside an earlier PM's window that was already ignored.
-            while fail_index < total_failures and ordered_failures[fail_index][0] <= pm_dt:
-                fail_index += 1
-            if fail_index >= total_failures:
-                break
-            fail_dt, failure = ordered_failures[fail_index]
-            # A failure at/after the next PM belongs to that later PM's window, so
-            # leave it for the next iteration instead of consuming it here.
-            if next_pm_dt is not None and fail_dt >= next_pm_dt:
+        for pm_dt, pm in sorted(pms, key=lambda item: item[0]):
+            next_failure = next(((fd, f) for fd, f in ordered_failures if fd > pm_dt), None)
+            if next_failure is None:
                 continue
+            fail_dt, failure = next_failure
             days = (fail_dt - pm_dt).total_seconds() / 86400.0
             pairs.append((pm_dt, pm, fail_dt, failure, days))
-            fail_index += 1  # consume so no later PM reuses this same failure
         return pairs
 
     def pm_effectiveness(
@@ -1722,6 +1711,11 @@ class LifeDataService:
         same asset, then summarise the days-between values into the PM Effectiveness
         cards, the "Failures Following PM" monthly trend, and the PM-to-failure table
         the RCA dashboard shows in place of the Weibull summary.
+
+        The PM-to-failure table and the Average Days to Failure are per PM (so when
+        several PMs precede the same corrective WO each PM still gets a row), while
+        "Failures After PM" and the monthly trend count the *distinct* corrective
+        WOs so a single failure preceded by multiple PMs is only counted once.
 
         Uses the same datasets the Pareto / Failure Mode Trend panels use: PMs come
         from the PM record-class filter, failures from the current included-failure
@@ -1765,6 +1759,7 @@ class LifeDataService:
                     SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
                 )
                 SELECT
+                    m.mapped_record_id,
                     m.task_id,
                     COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
                     COALESCE(
@@ -1803,6 +1798,7 @@ class LifeDataService:
                 (
                     parsed,
                     {
+                        "mapped_record_id": int(row["mapped_record_id"]),
                         "task_id": row["task_id"],
                         "failure_mechanism_name": row["failure_mechanism_name"],
                         "downtime_hours": float(row["downtime_hours"] or 0.0),
@@ -1812,13 +1808,16 @@ class LifeDataService:
 
         pairs = self._pair_pms_to_failures(pms, failures)
 
+        # Table + average days are per PM (each completed PM paired with its first
+        # following corrective WO). "Failures After PM" and the monthly trend count
+        # the distinct corrective WOs instead, so one failure preceded by several
+        # PMs contributes multiple table rows but is only counted once as a failure.
         table_rows: list[dict[str, Any]] = []
-        month_counts: dict[str, int] = {}
         days_values: list[float] = []
+        distinct_failure_dates: dict[int, datetime] = {}
         for pm_dt, pm, fail_dt, failure, days in pairs:
             days_values.append(days)
-            month_key = f"{fail_dt.year:04d}-{fail_dt.month:02d}"
-            month_counts[month_key] = month_counts.get(month_key, 0) + 1
+            distinct_failure_dates.setdefault(int(failure["mapped_record_id"]), fail_dt)
             table_rows.append(
                 {
                     "pm_completion_date": pm_dt.date().isoformat(),
@@ -1834,6 +1833,10 @@ class LifeDataService:
         # Newest PM first so the most recent activity heads the table.
         table_rows.sort(key=lambda r: r["pm_completion_date"], reverse=True)
 
+        month_counts: dict[str, int] = {}
+        for fail_dt in distinct_failure_dates.values():
+            month_key = f"{fail_dt.year:04d}-{fail_dt.month:02d}"
+            month_counts[month_key] = month_counts.get(month_key, 0) + 1
         months = self._continuous_month_range(month_counts.keys())
         monthly_counts = [int(month_counts.get(key, 0)) for key in months]
         average_days = (sum(days_values) / len(days_values)) if days_values else None
@@ -1844,7 +1847,7 @@ class LifeDataService:
             "failure_mechanism_id": failure_mechanism_id,
             "failure_mechanism_name": mechanism_name,
             "pms_performed": len(pms),
-            "failures_after_pm": len(pairs),
+            "failures_after_pm": len(distinct_failure_dates),
             "average_days_to_failure": round(average_days, 1) if average_days is not None else None,
             "effectiveness": self._pm_effectiveness_rating(average_days),
             "months": months,
