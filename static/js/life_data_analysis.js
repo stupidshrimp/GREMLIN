@@ -716,7 +716,13 @@
       clearWorkspace();
     }
     if (isTrend) renderTrend();
-    if (isPm) renderPm();
+    if (isPm) {
+      // Returning to PM mode with a selection but no data (e.g. the in-flight
+      // request was dropped as stale when the user switched type mid-request)
+      // must re-fetch, otherwise the panels would prompt to reselect a mechanism.
+      if (state.pmSelection && !state.pmData) loadPmEffectiveness();
+      else renderPm();
+    }
   }
 
   // ---- failure mode trend ---------------------------------------------------

@@ -1786,8 +1786,17 @@ class LifeDataService:
                 WHERE m.asset_number = :asset_number
                   AND d.disposition_category = 'INCLUDED_FAILURE'
                   AND d.failure_mechanism_id = :failure_mechanism_id
+                  -- The same mechanism id can appear under more than one failure
+                  -- mode (the Pareto emits a row per mode/mechanism pair and the
+                  -- client sends both ids); when a mode is given, match it so the
+                  -- analysis matches exactly the selected Pareto row.
+                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id)
                 """,
-                {"asset_number": asset_number, "failure_mechanism_id": failure_mechanism_id},
+                {
+                    "asset_number": asset_number,
+                    "failure_mechanism_id": failure_mechanism_id,
+                    "failure_mode_id": failure_mode_id,
+                },
             ).fetchall()
 
         mechanism_name = (
