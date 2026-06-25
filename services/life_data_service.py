@@ -1723,14 +1723,19 @@ class LifeDataService:
         completed/start/created fallback already used across the dashboard.
         """
 
-        # Use the effective (final, else auto) record class rather than
-        # _disposition_where("pm")'s broader candidate predicate: that predicate
-        # also matches `is_pm_candidate = 1`, which stays set after a user
-        # reclassifies a record's final class away from PM (e.g. to INSPECTION),
-        # so reusing it would keep counting explicitly non-PM records as completed
-        # PMs. save_disposition writes record_class_final on mapped_cmms_record, so
-        # this COALESCE reflects any reclassification.
-        pm_clause = "COALESCE(m.record_class_final, m.record_class_auto) IN ('PM','PM_RESET_CANDIDATE')"
+        # Match the dashboard's PM disposition dataset while respecting explicit
+        # reclassification. Like _disposition_where("pm") this counts a record whose
+        # effective class is PM and undispositioned PM candidates, but the
+        # is_pm_candidate fallback is only honored while record_class_final IS NULL:
+        # once a user saves a final class (save_disposition writes record_class_final
+        # on mapped_cmms_record), that final class wins, so a record reclassified
+        # away from PM (e.g. to INSPECTION) is excluded even though is_pm_candidate
+        # stays set, and a still-candidate PM auto-classed as something else (e.g.
+        # parts/project) is still counted until it is dispositioned.
+        pm_clause = (
+            "(COALESCE(m.record_class_final, m.record_class_auto) IN ('PM','PM_RESET_CANDIDATE') "
+            "OR (m.record_class_final IS NULL AND m.is_pm_candidate = 1))"
+        )
         # `is_completed` alone is unreliable for the completion gate: _map_raw_record
         # sets it from a "complete" substring test, which also matches "Incomplete"
         # and "Not Complete". Treat a PM as completed only when it has a real
