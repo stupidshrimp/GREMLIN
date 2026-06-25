@@ -907,11 +907,51 @@
     ctx.textBaseline = "alphabetic";
   }
 
+  // Build the Perform Analysis (trend) picker choices: an "all mechanisms"
+  // failure-mode option for every mode that spans more than one mechanism, plus
+  // each individual mechanism. The mode-level option carries failure_mechanism_id
+  // null so selectedTrendSeries() aggregates every mechanism under that mode —
+  // matching the panel text that users can trend a failure mode or a mechanism.
+  function trendPickerChoices() {
+    const mechanisms = (state.trend && state.trend.mechanisms) || [];
+    const byMode = new Map();
+    mechanisms.forEach((mechanism) => {
+      if (!byMode.has(mechanism.failure_mode_id)) byMode.set(mechanism.failure_mode_id, []);
+      byMode.get(mechanism.failure_mode_id).push(mechanism);
+    });
+    const choices = [];
+    byMode.forEach((mechs, modeId) => {
+      const modeName = mechs[0].failure_mode_name;
+      if (mechs.length > 1) {
+        const totalCount = mechs.reduce((sum, m) => sum + (Number(m.total_count) || 0), 0);
+        const totalDowntime = mechs.reduce((sum, m) => sum + (Number(m.total_downtime_hours) || 0), 0);
+        choices.push({
+          row: {
+            failure_mode_id: modeId,
+            failure_mechanism_id: null,
+            failure_mode_name: modeName,
+            failure_mechanism_name: null,
+          },
+          labelText: `${modeName} — all mechanisms (${totalCount} WOs, ${fmt(totalDowntime)} downtime h)`,
+        });
+      }
+      mechs.forEach((mechanism) => {
+        choices.push({
+          row: mechanism,
+          labelText:
+            `${mechanism.failure_mode_name} / ${mechanism.failure_mechanism_name} ` +
+            `(${mechanism.total_count} WOs, ${fmt(mechanism.total_downtime_hours)} downtime h)`,
+        });
+      });
+    });
+    return choices;
+  }
+
   // Perform Analysis in trend mode: pick the failure mode/mechanism to trend from
   // the same filtered dataset as the Pareto, then plot its monthly occurrences.
   async function performTrendSelection() {
-    const mechanisms = (state.trend && state.trend.mechanisms) || [];
-    if (!mechanisms.length) {
+    const choices = trendPickerChoices();
+    if (!choices.length) {
       showBanner(
         "No failure mechanisms with included failures are available to trend yet. Disposition WO failures with a failure mechanism first.",
         "error"
@@ -919,16 +959,13 @@
       return;
     }
     const options = el("div", { class: "lda-modal-options" });
-    mechanisms.forEach((mechanism, index) => {
-      const labelText =
-        `${mechanism.failure_mode_name} / ${mechanism.failure_mechanism_name} ` +
-        `(${mechanism.total_count} WOs, ${fmt(mechanism.total_downtime_hours)} downtime h)`;
+    choices.forEach((choice, index) => {
       const radio = el("input", { type: "radio", name: "lda-trend-group", value: String(index) });
       if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: labelText })]));
+      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
     });
     const choice = await openModal({
-      title: "Select failure mechanism to trend",
+      title: "Select failure mode or mechanism to trend",
       bodyNodes: [el("p", { text: "Choose the failure mode or mechanism to view its monthly trend:" }), options],
       actions: [
         { label: "Cancel", primary: false, value: () => null },
@@ -943,7 +980,7 @@
       ],
     });
     if (choice === null || choice === undefined) return;
-    selectTrendMechanism(mechanisms[choice]);
+    selectTrendMechanism(choices[choice].row);
   }
 
   // ---- disposition editor ---------------------------------------------------
