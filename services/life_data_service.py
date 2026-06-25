@@ -1572,7 +1572,15 @@ class LifeDataService:
                     d.failure_mechanism_id,
                     COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
                     COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
-                    COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final) AS wo_date,
+                    -- NULLIF(TRIM(...), '') so a blank (empty/whitespace) completed
+                    -- date doesn't stop COALESCE and hide a record that has a usable
+                    -- start/created date — otherwise it would count in the totals but
+                    -- drop out of every monthly bucket, undercounting the trend.
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date,
                     COALESCE(m.downtime_hours, 0) AS downtime_hours
                 FROM mapped_cmms_record m
                 JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id

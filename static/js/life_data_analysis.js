@@ -950,6 +950,18 @@
   // Perform Analysis in trend mode: pick the failure mode/mechanism to trend from
   // the same filtered dataset as the Pareto, then plot its monthly occurrences.
   async function performTrendSelection() {
+    // state.trend is populated by the asynchronous summary request kicked off on
+    // asset selection. If the user clicks Perform Analysis before it returns,
+    // fetch it first so an empty choice list isn't mistaken for "no trendable
+    // mechanisms" while the data is still loading.
+    if (!state.trend && state.selectedAsset) {
+      beginLoading("Loading failure mechanisms…");
+      try {
+        await refreshSummary();
+      } finally {
+        endLoading();
+      }
+    }
     const choices = trendPickerChoices();
     if (!choices.length) {
       showBanner(
