@@ -186,7 +186,9 @@
     renderAssetMenu();
     renderSelectedChips();
     renderScopeHint();
-    renderAll();
+    // Risk scoring depends on the compared set, so refetch (debounced) rather
+    // than just re-filtering the existing payload client-side.
+    scheduleReload();
   }
 
   function renderSelectedChips() {
@@ -215,11 +217,13 @@
 
   function renderScopeHint() {
     const hint = $("metrics-scope-hint");
-    const visible = visibleAssets();
-    if (!state.selected.size) {
-      hint.textContent = `No assets selected — comparing all ${visible.length} asset(s) by default.`;
+    if (state.selected.size) {
+      // Use the selection size (not the payload) so the count is right even
+      // during the brief window before a selection-triggered refetch resolves.
+      hint.textContent = `Comparing ${state.selected.size} selected asset(s).`;
     } else {
-      hint.textContent = `Comparing ${visible.length} selected asset(s).`;
+      const total = state.payload && state.payload.assets ? state.payload.assets.length : state.assets.length;
+      hint.textContent = `No assets selected — comparing all ${total} asset(s) by default.`;
     }
   }
 
@@ -235,6 +239,10 @@
     beginLoading();
     try {
       const params = new URLSearchParams();
+      // Send the selected assets so the server computes the risk score (and, in
+      // relative mode, the cross-asset ranking) over exactly the compared set —
+      // not over hidden unselected assets. Empty selection = all assets.
+      state.selected.forEach((assetNumber) => params.append("assets", assetNumber));
       if (state.dateFrom) params.set("start", state.dateFrom);
       if (state.dateTo) params.set("end", state.dateTo);
       const url = params.toString() ? `${METRICS_API}?${params.toString()}` : METRICS_API;
@@ -721,7 +729,14 @@
   }
 
   // ---- filter wiring -------------------------------------------------------
-  let dateDebounce = null;
+  // Shared debounce so rapid filter changes (date edits or multi-select clicks)
+  // batch into a single refetch; the fetchToken guard drops any stale response.
+  let reloadDebounce = null;
+  function scheduleReload() {
+    clearTimeout(reloadDebounce);
+    reloadDebounce = setTimeout(loadMetrics, 220);
+  }
+
   function wireFilters() {
     const search = $("metrics-asset-search");
     const menu = $("metrics-asset-menu");
@@ -747,8 +762,7 @@
     const onDateChange = () => {
       state.dateFrom = from.value;
       state.dateTo = to.value;
-      clearTimeout(dateDebounce);
-      dateDebounce = setTimeout(loadMetrics, 250);
+      scheduleReload();
     };
     from.addEventListener("change", onDateChange);
     to.addEventListener("change", onDateChange);

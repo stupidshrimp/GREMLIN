@@ -2150,6 +2150,12 @@ class LifeDataService:
         stays a placeholder), the risk-score mode, and one row per asset.
         """
 
+        # On a fresh database the raw layer can hold data while mapped_cmms_record
+        # is still empty. The asset list path maps on demand; do the same here so a
+        # metrics request that wins the startup race still sees the mapped rows
+        # instead of returning an empty dashboard.
+        self.ensure_mapped_records_available()
+
         requested = {str(a).strip() for a in (asset_numbers or []) if str(a).strip()}
         with self.connect() as conn:
             rows = conn.execute(
