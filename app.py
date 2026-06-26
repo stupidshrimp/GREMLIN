@@ -428,6 +428,39 @@ def api_pm_effectiveness():
     )
 
 
+@app.route("/life-data-analysis/api/downtime-drivers")
+@life_data_api
+def api_downtime_drivers():
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    # The selected failure mode/mechanism comes from a Pareto bar (both ids) or the
+    # Perform Analysis picker (a mode-level choice carries only the mode id), so the
+    # mode id is required and the mechanism id is optional.
+    mode_raw = request.values.get("failure_mode_id")
+    if mode_raw in (None, ""):
+        raise LifeDataApiError("Select a failure mode or mechanism to analyze downtime drivers.", status_code=400)
+    try:
+        failure_mode_id = int(mode_raw)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
+    mechanism_raw = request.values.get("failure_mechanism_id")
+    failure_mechanism_id = None
+    if mechanism_raw not in (None, ""):
+        try:
+            failure_mechanism_id = int(mechanism_raw)
+        except (TypeError, ValueError):
+            raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
+    return jsonify(
+        {
+            "downtime_drivers": service.downtime_driver_analysis(
+                asset_number,
+                failure_mechanism_id=failure_mechanism_id,
+                failure_mode_id=failure_mode_id,
+            )
+        }
+    )
+
+
 @app.route("/life-data-analysis/api/weibull-groups")
 @life_data_api
 def api_weibull_groups():
