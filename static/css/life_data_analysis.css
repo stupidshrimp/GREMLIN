@@ -128,6 +128,10 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-metric .lda-metric-value { font-size: 1.7rem; font-weight: 700; color: var(--forest-900); line-height: 1.1; }
 .lda-metric .lda-metric-label { font-size: 0.82rem; color: var(--muted); }
 
+/* The Downtime Driver summary has five cards; lay them out in a single row on wide
+   screens (the shared four-column grid would otherwise wrap the fifth card alone). */
+.lda-summary-grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
 /* The Pareto is now the only panel in the subgrid (the highest-beta list sits in
    its own full-width panel above it), so it spans the full page width on every
    analysis type, matching the trend / PM views. */

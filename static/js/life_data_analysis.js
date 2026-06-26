@@ -61,6 +61,13 @@
     pmSelection: null,
     pmData: null,
     pmToken: 0,
+    // Downtime Driver Analysis: `downtimeSelection` is the chosen failure
+    // mode/mechanism (Pareto click or Perform Analysis picker); `downtimeData` is
+    // the latest payload from the downtime-drivers endpoint. `downtimeToken` drops
+    // stale responses (same pattern as the PM analysis above).
+    downtimeSelection: null,
+    downtimeData: null,
+    downtimeToken: 0,
     latestResult: null,
     summaryToken: 0,
     // Page context: "analysis" (Perform an Analysis) or "disposition" (the
@@ -380,6 +387,11 @@
       // Bump the PM token so an in-flight pm-effectiveness request for the prior
       // asset can't render after this reset (e.g. switching away and back).
       state.pmToken += 1;
+      // A new asset likewise invalidates the Downtime Driver selection/data; bump
+      // its token so a late downtime-drivers response for the old asset is dropped.
+      state.downtimeSelection = null;
+      state.downtimeData = null;
+      state.downtimeToken += 1;
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
@@ -443,6 +455,14 @@
       if (state.analysisType === ANALYSIS_TYPES.PM) {
         if (state.pmSelection) loadPmEffectiveness();
         else renderPm();
+      }
+      // Downtime Driver Analysis is computed from its own endpoint but shares the
+      // included-failure dataset, so a disposition change can move work orders in/out
+      // of the selected mechanism — re-fetch when a mechanism is selected so every
+      // card/chart/table stays in sync; otherwise render the empty state.
+      if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
+        if (state.downtimeSelection) loadDowntime();
+        else renderDowntime();
       }
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
@@ -643,6 +663,8 @@
       selectTrendMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.PM) {
       selectPmMechanism(row);
+    } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
+      selectDowntimeMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
       runParetoMechanism(row);
     }
@@ -681,7 +703,8 @@
     const isWeibull = type === ANALYSIS_TYPES.WEIBULL;
     const isTrend = type === ANALYSIS_TYPES.TREND;
     const isPm = type === ANALYSIS_TYPES.PM;
-    const isPlaceholder = !isWeibull && !isTrend && !isPm;
+    const isDowntime = type === ANALYSIS_TYPES.DOWNTIME;
+    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime;
 
     const heading = $("lda-step-2");
     if (heading) {
@@ -691,6 +714,8 @@
         ? "Failure mode trend summary"
         : isPm
         ? "PM effectiveness summary"
+        : isDowntime
+        ? "Downtime driver summary"
         : type;
     }
 
@@ -705,6 +730,11 @@
     setHidden($("lda-pm-summary"), !isPm);
     setHidden($("lda-pm-chart-panel"), !isPm);
     setHidden($("lda-pm-table-panel"), !isPm);
+    setHidden($("lda-downtime-summary"), !isDowntime);
+    setHidden($("lda-downtime-trend-panel"), !isDowntime);
+    setHidden($("lda-downtime-dist-panel"), !isDowntime);
+    setHidden($("lda-downtime-asset-panel"), !isDowntime);
+    setHidden($("lda-downtime-events-panel"), !isDowntime);
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
     // The beta panel now sits in its own full-width row above the Pareto, so
@@ -731,6 +761,12 @@
       // must re-fetch, otherwise the panels would prompt to reselect a mechanism.
       if (state.pmSelection && !state.pmData) loadPmEffectiveness();
       else renderPm();
+    }
+    if (isDowntime) {
+      // Same re-fetch guard as PM: a selection without data (dropped as stale on a
+      // mid-request type switch) re-fetches instead of showing the reselect prompt.
+      if (state.downtimeSelection && !state.downtimeData) loadDowntime();
+      else renderDowntime();
     }
   }
 
@@ -2314,6 +2350,526 @@
     fileInput.click();
   }
 
+  // ---- downtime driver analysis ---------------------------------------------
+  // The selected failure mode/mechanism (Pareto click or Perform Analysis picker)
+  // drives a server-side downtime breakdown for the same included-failure dataset
+  // as the Pareto: summary statistics, a continuous monthly downtime trend, a
+  // downtime distribution, downtime by asset/location, and the top downtime events.
+  function downtimeSelectionLabel(row) {
+    const modeName = row.failure_mode_name;
+    const mechName = row.failure_mechanism_name;
+    return mechName
+      ? modeName
+        ? `${modeName} / ${mechName}`
+        : mechName
+      : modeName || "the selected failure mechanism";
+  }
+
+  function selectDowntimeMechanism(row) {
+    if (row == null || row.failure_mode_id == null) {
+      showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
+      return;
+    }
+    state.downtimeSelection = {
+      failure_mode_id: row.failure_mode_id,
+      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
+      label: downtimeSelectionLabel(row),
+    };
+    state.downtimeData = null;
+    // Clear the previous mechanism's cards/charts/table immediately so a slow or
+    // failed request can't leave stale results visible under the new selection.
+    renderDowntime();
+    loadDowntime();
+  }
+
+  async function loadDowntime() {
+    if (state.pageMode === "disposition") return;
+    if (!state.selectedAsset || !state.downtimeSelection) {
+      renderDowntime();
+      return;
+    }
+    const asset = state.selectedAsset;
+    const sel = state.downtimeSelection;
+    const token = ++state.downtimeToken;
+    // A response is stale when a newer request superseded it, the asset or analysis
+    // type changed, or the selection was cleared/replaced (object identity also
+    // covers switching away and back to the same asset before this resolved).
+    const isStale = () =>
+      token !== state.downtimeToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== ANALYSIS_TYPES.DOWNTIME ||
+      state.downtimeSelection !== sel;
+    beginLoading("Analyzing downtime drivers…");
+    try {
+      const params = new URLSearchParams({ asset, failure_mode_id: sel.failure_mode_id });
+      if (sel.failure_mechanism_id != null) params.set("failure_mechanism_id", sel.failure_mechanism_id);
+      const data = await getJson(`${API}/downtime-drivers?${params.toString()}`);
+      if (isStale()) return;
+      state.downtimeData = data.downtime_drivers || null;
+      renderDowntime();
+    } catch (err) {
+      if (!isStale()) {
+        showBanner(err.message, "error");
+        // Reflect the (now-cleared) data so a failed load doesn't leave another
+        // mechanism's results on screen.
+        renderDowntime();
+      }
+    } finally {
+      endLoading();
+    }
+  }
+
+  // Perform Analysis in downtime mode: pick the failure mode/mechanism from the
+  // same filtered dataset as the Pareto, then analyze its downtime drivers. Reuses
+  // the trend picker choices (mode-level "all mechanisms" plus each mechanism).
+  async function performDowntimeSelection() {
+    if (!state.trend && state.selectedAsset) {
+      beginLoading("Loading failure mechanisms…");
+      try {
+        await refreshSummary();
+      } finally {
+        endLoading();
+      }
+    }
+    const choices = trendPickerChoices();
+    if (!choices.length) {
+      showBanner(
+        "No failure mechanisms with included failures are available to analyze yet. Disposition WO failures with a failure mechanism first.",
+        "error"
+      );
+      return;
+    }
+    const options = el("div", { class: "lda-modal-options" });
+    choices.forEach((choice, index) => {
+      const radio = el("input", { type: "radio", name: "lda-downtime-group", value: String(index) });
+      if (index === 0) radio.checked = true;
+      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
+    });
+    const choice = await openModal({
+      title: "Select failure mode or mechanism to analyze",
+      bodyNodes: [
+        el("p", { text: "Choose the failure mode or mechanism to analyze downtime drivers for:" }),
+        options,
+      ],
+      actions: [
+        { label: "Cancel", primary: false, value: () => null },
+        {
+          label: "Analyze downtime",
+          primary: true,
+          value: () => {
+            const checked = options.querySelector("input[name='lda-downtime-group']:checked");
+            return checked ? Number(checked.value) : null;
+          },
+        },
+      ],
+    });
+    if (choice === null || choice === undefined) return;
+    selectDowntimeMechanism(choices[choice].row);
+  }
+
+  // Shared empty-state text: "no selection", "loading", and "no records" so each
+  // downtime panel can show the right prompt (mirrors pmEmptyText()).
+  function downtimeEmptyText() {
+    if (!state.downtimeSelection) {
+      return "Select a failure mode or mechanism from the Pareto chart or analysis controls to analyze downtime drivers.";
+    }
+    if (!state.downtimeData) {
+      return `Analyzing downtime drivers for ${state.downtimeSelection.label}…`;
+    }
+    return "No downtime records found for the selected failure mechanism within the current filters.";
+  }
+
+  function renderDowntime() {
+    renderDowntimeCards();
+    renderDowntimeTrendChart();
+    renderDowntimeDistChart();
+    renderDowntimeAssetChart();
+    renderDowntimeEventsTable();
+  }
+
+  function renderDowntimeCards() {
+    const grid = $("lda-downtime-cards");
+    const message = $("lda-downtime-message");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const data = state.downtimeData;
+    const hasRecords = Boolean(data && data.has_records);
+    if (!state.downtimeSelection || !data || !hasRecords) {
+      if (message) {
+        message.hidden = false;
+        message.textContent = downtimeEmptyText();
+      }
+      return;
+    }
+    if (message) {
+      message.hidden = true;
+      message.textContent = "";
+    }
+    const s = data.summary || {};
+    const cards = [
+      ["Total Downtime", `${fmt(s.total_downtime_hours)} h`],
+      ["Work Order Count", String(s.work_order_count ?? 0)],
+      ["Average Downtime", `${fmt(s.average_downtime_hours)} h`],
+      ["Median Downtime", `${fmt(s.median_downtime_hours)} h`],
+      ["Max Downtime Event", `${fmt(s.max_downtime_hours)} h`],
+    ];
+    cards.forEach(([label, value]) => {
+      grid.appendChild(
+        el("div", { class: "lda-metric" }, [
+          el("span", { class: "lda-metric-value", text: value }),
+          el("span", { class: "lda-metric-label", text: label }),
+        ])
+      );
+    });
+  }
+
+  function renderDowntimeTrendChart() {
+    const canvas = $("lda-downtime-trend-chart");
+    const hint = $("lda-downtime-trend-hint");
+    if (!canvas) return;
+    const data = state.downtimeData;
+    if (!state.downtimeSelection || !data || !data.has_records) {
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = downtimeEmptyText();
+      }
+      canvas.hidden = true;
+      return;
+    }
+    const months = data.months || [];
+    if (!months.length) {
+      // There are work orders, but none carry a usable date to bucket by month.
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = `No dated work orders for ${state.downtimeSelection.label} to plot a monthly trend.`;
+      }
+      canvas.hidden = true;
+      return;
+    }
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = `Total monthly downtime hours for ${state.downtimeSelection.label}. Zero-downtime months are included so the trend never skips a month.`;
+    }
+    canvas.hidden = false;
+    drawDowntimeLineChart(canvas, months, data.monthly_downtime_hours || [], "Total downtime hours");
+  }
+
+  function renderDowntimeDistChart() {
+    const canvas = $("lda-downtime-dist-chart");
+    const hint = $("lda-downtime-dist-hint");
+    if (!canvas) return;
+    const data = state.downtimeData;
+    if (!state.downtimeSelection || !data || !data.has_records) {
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = downtimeEmptyText();
+      }
+      canvas.hidden = true;
+      return;
+    }
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = "Work order count by downtime range — shows whether downtime comes from many short events or a few long ones.";
+    }
+    canvas.hidden = false;
+    const dist = data.distribution || [];
+    drawBarChart(
+      canvas,
+      dist.map((b) => b.label),
+      dist.map((b) => b.count),
+      {
+        yLabel: "Work order count",
+        xLabel: "Downtime range",
+        tickFormat: (v) => String(Math.round(v)),
+        valueLabel: (v) => String(Math.round(v)),
+      }
+    );
+  }
+
+  function renderDowntimeAssetChart() {
+    const canvas = $("lda-downtime-asset-chart");
+    const hint = $("lda-downtime-asset-hint");
+    if (!canvas) return;
+    const data = state.downtimeData;
+    if (!state.downtimeSelection || !data || !data.has_records) {
+      if (hint) {
+        hint.hidden = false;
+        hint.textContent = downtimeEmptyText();
+      }
+      canvas.hidden = true;
+      return;
+    }
+    const all = data.by_asset || [];
+    const MAX_BARS = 12;
+    const rows = all.slice(0, MAX_BARS);
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent =
+        all.length > rows.length
+          ? `Total downtime hours grouped by asset/location, highest first (top ${rows.length} of ${all.length}).`
+          : "Total downtime hours grouped by asset (or location when no asset is recorded), highest first.";
+    }
+    canvas.hidden = false;
+    drawBarChart(
+      canvas,
+      rows.map((r) => r.label),
+      rows.map((r) => r.downtime_hours),
+      {
+        yLabel: "Total downtime hours",
+        tickFormat: compactHours,
+        valueLabel: (v) => fmt(v),
+        rotateLabels: true,
+      }
+    );
+  }
+
+  function renderDowntimeEventsTable() {
+    const wrap = $("lda-downtime-events-wrap");
+    const hint = $("lda-downtime-events-hint");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.downtimeData;
+    const hasRecords = Boolean(data && data.has_records);
+    if (hint) {
+      hint.textContent =
+        !state.downtimeSelection || !hasRecords
+          ? downtimeEmptyText()
+          : "The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).";
+    }
+    const headers = ["Date", "Asset", "Location", "Failure Mechanism", "Downtime (h)", "Operator", "WO #", "Description"];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    const events = (hasRecords && data.top_events) || [];
+    if (!events.length) {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", {
+            class: "lda-readonly lda-empty-row",
+            colspan: String(headers.length),
+            text: !state.downtimeSelection || !hasRecords ? downtimeEmptyText() : "No downtime events to list.",
+          }),
+        ])
+      );
+    } else {
+      events.forEach((ev) => {
+        const description =
+          ev.requestor_description || ev.task_name || ev.request_title || ev.completion_notes || "";
+        tbody.appendChild(
+          el("tr", {}, [
+            el("td", { text: ev.wo_date || "—" }),
+            el("td", { text: ev.asset || "—" }),
+            el("td", { text: ev.location || "—" }),
+            el("td", { text: ev.failure_mechanism_name || "—" }),
+            el("td", { text: fmt(ev.downtime_hours) }),
+            el("td", { text: ev.operator || "—" }),
+            el("td", { text: ev.task_id != null ? String(ev.task_id) : "—" }),
+            el("td", { class: "lda-wo-text", text: description }),
+          ])
+        );
+      });
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  // Compact numeric label for downtime-hour axes/values (e.g. 12.3k), matching the
+  // Pareto's k-formatting so large totals stay narrow.
+  function compactHours(value) {
+    const n = Number(value) || 0;
+    if (Math.abs(n) >= 1000) return Math.round(n / 100) / 10 + "k";
+    if (Math.abs(n) >= 100) return String(Math.round(n));
+    if (n === 0) return "0";
+    return Number(n.toPrecision(3)).toString();
+  }
+
+  // Monthly downtime line chart: continuous (zero-filled) month axis so the trend
+  // line never skips a missing month, with a numeric (hours) y-axis.
+  function drawDowntimeLineChart(canvas, months, values, yLabel) {
+    canvas.onclick = null;
+    const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
+    ctx.clearRect(0, 0, W, H);
+    if (!months.length) return;
+
+    const left = 56;
+    const right = W - 18;
+    const top = 22;
+    const bottom = H - 64;
+    const plotH = bottom - top;
+    const plotW = right - left;
+    const maxVal = Math.max(...values, 1);
+    const n = months.length;
+    const xAt = (index) => (n === 1 ? left + plotW / 2 : left + (index / (n - 1)) * plotW);
+    const yAt = (value) => bottom - (value / maxVal) * plotH;
+
+    const tickCount = 5;
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= tickCount; i += 1) {
+      const frac = i / tickCount;
+      const y = bottom - frac * plotH;
+      ctx.strokeStyle = "#eef2f6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillStyle = "#5e7082";
+      ctx.textAlign = "right";
+      ctx.fillText(compactHours(maxVal * frac), left - 7, y);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    ctx.strokeStyle = "#c4d2dd";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.stroke();
+
+    const labelFont = n > 36 ? 8 : n > 24 ? 9 : 10;
+    ctx.fillStyle = "#5e7082";
+    ctx.font = `${labelFont}px Inter, sans-serif`;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    months.forEach((key, index) => {
+      ctx.save();
+      ctx.translate(xAt(index), bottom + 10);
+      ctx.rotate(-Math.PI / 5);
+      ctx.fillText(monthLabel(key), 0, 0);
+      ctx.restore();
+    });
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.strokeStyle = "#3f5e77";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      const x = xAt(index);
+      const y = yAt(value);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = "#c2723b";
+    values.forEach((value, index) => {
+      const x = xAt(index);
+      const y = yAt(value);
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    ctx.fillStyle = "#2a3f50";
+    ctx.font = "600 11.5px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Month", (left + right) / 2, H - 6);
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textBaseline = "middle";
+    ctx.fillText(yLabel || "Total downtime hours", 0, 0);
+    ctx.restore();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  // Generic vertical bar chart used by the Downtime Distribution (binned counts)
+  // and Downtime by Asset/Location (per-asset hours) panels. Short bin labels are
+  // drawn horizontally; long asset labels are rotated (opts.rotateLabels).
+  function drawBarChart(canvas, labels, values, options) {
+    const opts = options || {};
+    const yLabel = opts.yLabel || "";
+    const tickFormat = opts.tickFormat || ((v) => String(Math.round(v)));
+    const valueLabel = opts.valueLabel || tickFormat;
+    const barColor = opts.barColor || "#3f5e77";
+    canvas.onclick = null;
+    const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
+    ctx.clearRect(0, 0, W, H);
+    if (!labels.length) return;
+
+    const left = 56;
+    const right = W - 18;
+    const top = 24;
+    const bottom = H - (opts.rotateLabels ? 86 : 56);
+    const plotH = bottom - top;
+    const slot = (right - left) / labels.length;
+    const maxVal = Math.max(...values.map((v) => Number(v) || 0), 1);
+    const barGap = Math.min(20, slot * 0.32);
+    const barW = Math.max(6, slot - barGap);
+
+    const tickCount = 5;
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= tickCount; i += 1) {
+      const frac = i / tickCount;
+      const y = bottom - frac * plotH;
+      ctx.strokeStyle = "#eef2f6";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillStyle = "#5e7082";
+      ctx.textAlign = "right";
+      ctx.fillText(tickFormat(maxVal * frac), left - 7, y);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    ctx.strokeStyle = "#c4d2dd";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.stroke();
+
+    labels.forEach((label, index) => {
+      const value = Number(values[index]) || 0;
+      const x = left + index * slot + (slot - barW) / 2;
+      const barHeight = (value / maxVal) * plotH;
+      const y = bottom - barHeight;
+      ctx.fillStyle = barColor;
+      ctx.fillRect(x, y, barW, barHeight);
+
+      if (value > 0) {
+        ctx.fillStyle = "#2a3f50";
+        ctx.font = "10px Inter, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(valueLabel(value), x + barW / 2, y - 4);
+      }
+
+      ctx.fillStyle = "#5e7082";
+      ctx.font = "10px Inter, sans-serif";
+      if (opts.rotateLabels) {
+        ctx.save();
+        ctx.translate(x + barW / 2, bottom + 8);
+        ctx.rotate(Math.PI / 5);
+        ctx.textAlign = "left";
+        ctx.fillText(String(label).slice(0, 22), 0, 0);
+        ctx.restore();
+      } else {
+        ctx.textAlign = "center";
+        ctx.fillText(String(label), x + barW / 2, bottom + 16);
+      }
+    });
+
+    ctx.fillStyle = "#2a3f50";
+    ctx.font = "600 11.5px Inter, sans-serif";
+    ctx.textAlign = "center";
+    if (opts.xLabel) ctx.fillText(opts.xLabel, (left + right) / 2, H - 6);
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textBaseline = "middle";
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  }
+
   // ---- perform analysis (routed by Analysis Type) ---------------------------
   // The "Perform Analysis" button performs the action for the selected analysis
   // type: the Weibull group picker for Weibull, the failure-mechanism picker for
@@ -2322,6 +2878,7 @@
     if (!state.selectedAsset) return;
     if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
     if (state.analysisType === ANALYSIS_TYPES.PM) return performPmSelection();
+    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return performDowntimeSelection();
     if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
       showBanner(`${state.analysisType} is coming soon.`, "info");
       return;
@@ -3067,6 +3624,11 @@
       if (state.paretoRows.length) drawPareto();
       if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
       if (state.analysisType === ANALYSIS_TYPES.PM) renderPmChart();
+      if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
+        renderDowntimeTrendChart();
+        renderDowntimeDistChart();
+        renderDowntimeAssetChart();
+      }
       if (state.analysisRedraw) state.analysisRedraw();
     });
     loadAssets();

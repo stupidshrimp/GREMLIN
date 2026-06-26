@@ -64,6 +64,12 @@
     <p class="lda-hint" id="lda-pm-message" hidden></p>
   </div>
 
+  <!-- Downtime Driver summary cards (Downtime Driver Analysis only). -->
+  <div id="lda-downtime-summary" hidden>
+    <div id="lda-downtime-cards" class="lda-summary-grid lda-summary-grid-5"></div>
+    <p class="lda-hint" id="lda-downtime-message" hidden></p>
+  </div>
+
   <!-- Placeholder for analysis types that are not implemented yet. -->
   <div id="lda-placeholder-summary" hidden>
     <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
@@ -152,6 +158,40 @@
     <h3>PM-to-Failure Detail</h3>
     <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.</p>
     <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
+  </div>
+
+  <!-- Monthly Downtime Trend chart (Downtime Driver Analysis only). -->
+  <div class="lda-panel" id="lda-downtime-trend-panel" hidden>
+    <h3>Monthly Downtime Trend</h3>
+    <p class="lda-hint" id="lda-downtime-trend-hint">Select a failure mode or mechanism from the Pareto chart or analysis controls to analyze downtime drivers.</p>
+    <div class="lda-chart-wrap">
+      <canvas id="lda-downtime-trend-chart" class="lda-canvas" height="320"></canvas>
+    </div>
+  </div>
+
+  <!-- Downtime Distribution histogram (Downtime Driver Analysis only). -->
+  <div class="lda-panel" id="lda-downtime-dist-panel" hidden>
+    <h3>Downtime Distribution</h3>
+    <p class="lda-hint" id="lda-downtime-dist-hint">Work order count by downtime range — shows whether downtime comes from many short events or a few long ones.</p>
+    <div class="lda-chart-wrap">
+      <canvas id="lda-downtime-dist-chart" class="lda-canvas" height="320"></canvas>
+    </div>
+  </div>
+
+  <!-- Downtime by Asset / Location bar chart (Downtime Driver Analysis only). -->
+  <div class="lda-panel" id="lda-downtime-asset-panel" hidden>
+    <h3>Downtime by Asset / Location</h3>
+    <p class="lda-hint" id="lda-downtime-asset-hint">Total downtime hours grouped by asset (or location when no asset is recorded), highest first.</p>
+    <div class="lda-chart-wrap">
+      <canvas id="lda-downtime-asset-chart" class="lda-canvas" height="320"></canvas>
+    </div>
+  </div>
+
+  <!-- Top Downtime Events table (Downtime Driver Analysis only). -->
+  <div class="lda-panel" id="lda-downtime-events-panel" hidden>
+    <h3>Top Downtime Events</h3>
+    <p class="lda-hint" id="lda-downtime-events-hint">The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).</p>
+    <div class="lda-table-scroll" id="lda-downtime-events-wrap"></div>
   </div>
 </section>
 

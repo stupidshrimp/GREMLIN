@@ -1914,6 +1914,208 @@ class LifeDataService:
             "has_pm_history": bool(pms),
         }
 
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        """Median of ``values`` (0.0 for an empty list)."""
+
+        ordered = sorted(values)
+        count = len(ordered)
+        if count == 0:
+            return 0.0
+        mid = count // 2
+        if count % 2:
+            return float(ordered[mid])
+        return (float(ordered[mid - 1]) + float(ordered[mid])) / 2.0
+
+    @staticmethod
+    def _first_nonempty(*values: Any) -> str | None:
+        """First non-blank value (trimmed) among ``values``, else ``None``."""
+
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    def downtime_driver_analysis(
+        self,
+        asset_number: str,
+        failure_mechanism_id: int | None = None,
+        failure_mode_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Explain why a failure mechanism drives downtime, for the Downtime Driver panel.
+
+        Uses the same included-failure dataset, failure-mechanism field, work-order
+        date, and downtime field as :meth:`failure_mechanism_pareto` /
+        :meth:`failure_mode_trend`, so the analysis stays consistent with the Pareto
+        chart and any asset/disposition filter already applied. ``failure_mechanism_id``
+        may be ``None`` to aggregate every mechanism under ``failure_mode_id`` (the
+        mode-level "all mechanisms" selection); otherwise the analysis is restricted to
+        the single mechanism (matched within the given mode when one is supplied).
+
+        Returns the downtime summary statistics, a continuous zero-filled monthly
+        downtime series (so the trend never skips a missing month), a binned downtime
+        distribution, downtime grouped by asset/location, and the highest-downtime
+        work orders. Every included corrective work order for the selection counts
+        toward the summary/distribution/grouping; only dated records contribute to the
+        monthly trend.
+        """
+
+        # Downtime range buckets for the Downtime Distribution histogram, as
+        # (label, lower_inclusive, upper_exclusive) with an open-ended final bucket
+        # (upper None). Mirrors the RCA dashboard's suggested 0-1/1-4/4-8/8-24/24+
+        # hour bins so the chart shows whether downtime is driven by many short
+        # events or a few long ones.
+        distribution_bins: tuple[tuple[str, float, float | None], ...] = (
+            ("0–1 hr", 0.0, 1.0),
+            ("1–4 hr", 1.0, 4.0),
+            ("4–8 hr", 4.0, 8.0),
+            ("8–24 hr", 8.0, 24.0),
+            ("24+ hr", 24.0, None),
+        )
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH current_disp AS (
+                    SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
+                )
+                SELECT
+                    m.mapped_record_id,
+                    m.task_id,
+                    m.task_name,
+                    m.asset_name,
+                    m.asset_number,
+                    m.immediate_parent_asset_name,
+                    m.root_asset_name,
+                    m.requestor_description,
+                    m.request_title,
+                    m.completion_notes,
+                    COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
+                    COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date,
+                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                FROM mapped_cmms_record m
+                JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
+                LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
+                LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
+                WHERE m.asset_number = :asset_number
+                  AND d.disposition_category = 'INCLUDED_FAILURE'
+                  AND d.failure_mechanism_id IS NOT NULL
+                  -- A mechanism-level selection restricts to one mechanism; a
+                  -- mode-level selection (mechanism NULL) keeps every mechanism under
+                  -- the mode. The same mechanism id can appear under more than one
+                  -- mode, so match the mode too when one is supplied.
+                  AND (:failure_mechanism_id IS NULL OR d.failure_mechanism_id = :failure_mechanism_id)
+                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id)
+                """,
+                {
+                    "asset_number": asset_number,
+                    "failure_mechanism_id": failure_mechanism_id,
+                    "failure_mode_id": failure_mode_id,
+                },
+            ).fetchall()
+
+        work_orders: list[dict[str, Any]] = []
+        downtime_values: list[float] = []
+        total_downtime = 0.0
+        monthly: dict[str, float] = {}
+        month_keys: set[str] = set()
+        asset_downtime: dict[str, float] = {}
+        bin_counts = [0 for _ in distribution_bins]
+
+        for row in rows:
+            downtime = float(row["downtime_hours"] or 0.0)
+            if downtime < 0:
+                downtime = 0.0
+            total_downtime += downtime
+            downtime_values.append(downtime)
+
+            # "Use asset if available. If asset is unavailable, use location." The
+            # mapped CMMS schema has no work-order location column, so the asset
+            # hierarchy's parent/root asset name stands in for location.
+            asset_label = self._first_nonempty(row["asset_name"], row["asset_number"])
+            location_label = self._first_nonempty(
+                row["root_asset_name"], row["immediate_parent_asset_name"]
+            )
+            group_label = asset_label or location_label or "Unspecified asset"
+            asset_downtime[group_label] = asset_downtime.get(group_label, 0.0) + downtime
+
+            for index, (_, lower, upper) in enumerate(distribution_bins):
+                if downtime >= lower and (upper is None or downtime < upper):
+                    bin_counts[index] += 1
+                    break
+
+            parsed = self._parse_datetime(row["wo_date"])
+            month_key = None
+            if parsed is not None:
+                month_key = f"{parsed.year:04d}-{parsed.month:02d}"
+                monthly[month_key] = monthly.get(month_key, 0.0) + downtime
+                month_keys.add(month_key)
+
+            work_orders.append({
+                "mapped_record_id": int(row["mapped_record_id"]),
+                "task_id": row["task_id"],
+                "task_name": row["task_name"],
+                "asset": asset_label,
+                "location": location_label,
+                "failure_mechanism_name": row["failure_mechanism_name"],
+                "failure_mode_name": row["failure_mode_name"],
+                # The mapped CMMS schema does not capture a work-order operator /
+                # assignee, so this is None and the table shows a placeholder.
+                "operator": None,
+                "downtime_hours": round(downtime, 4),
+                "requestor_description": row["requestor_description"],
+                "request_title": row["request_title"],
+                "completion_notes": row["completion_notes"],
+                "wo_date": parsed.date().isoformat() if parsed is not None else None,
+                "month": month_key,
+            })
+
+        months = self._continuous_month_range(month_keys)
+        monthly_downtime = [round(float(monthly.get(key, 0.0)), 4) for key in months]
+        distribution = [
+            {"label": label, "count": int(count)}
+            for (label, _, _), count in zip(distribution_bins, bin_counts)
+        ]
+        by_asset = [
+            {"label": label, "downtime_hours": round(value, 4)}
+            for label, value in sorted(asset_downtime.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+        # Highest single-event downtime first; ties fall back to the most recent
+        # dated work order (None dates sort last).
+        top_events = sorted(
+            work_orders,
+            key=lambda w: (w["downtime_hours"], w["wo_date"] or ""),
+            reverse=True,
+        )[:10]
+
+        work_order_count = len(work_orders)
+        return {
+            "asset_number": asset_number,
+            "failure_mode_id": failure_mode_id,
+            "failure_mechanism_id": failure_mechanism_id,
+            "summary": {
+                "total_downtime_hours": round(total_downtime, 4),
+                "work_order_count": work_order_count,
+                "average_downtime_hours": round(total_downtime / work_order_count, 4) if work_order_count else 0.0,
+                "median_downtime_hours": round(self._median(downtime_values), 4),
+                "max_downtime_hours": round(max(downtime_values), 4) if downtime_values else 0.0,
+            },
+            "months": months,
+            "monthly_downtime_hours": monthly_downtime,
+            "distribution": distribution,
+            "by_asset": by_asset,
+            "top_events": top_events,
+            "has_records": work_order_count > 0,
+        }
+
     def _disposition_where(self, kind: str) -> str:
         if kind == "wo":
             return "(COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO' OR m.is_corrective_wo_candidate = 1)"
