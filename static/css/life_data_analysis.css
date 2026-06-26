@@ -21,6 +21,37 @@
 .lda-banner.is-success { border-color: #8fbf9f; background: #eaf6ee; color: #234d33; }
 .lda-banner.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
 
+/* Toast notifications (top-right) — used for disposition save outcomes. */
+.lda-toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: min(360px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+.lda-toast {
+  border-radius: 14px;
+  padding: 0.85rem 1.1rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateX(12px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.lda-toast.is-visible { opacity: 1; transform: translateX(0); }
+.lda-toast.is-error { border-color: #d98a8a; background: #fbecec; color: #7d2b2b; }
+.lda-toast.is-success { border-color: #8fbf9f; background: #eaf6ee; color: #234d33; }
+.lda-toast.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
+
 /* Step 1 selectors */
 .lda-selectors {
   display: grid;

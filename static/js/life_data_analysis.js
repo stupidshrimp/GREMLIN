@@ -216,6 +216,34 @@
     $("lda-status").hidden = true;
   }
 
+  // ---- toast ----------------------------------------------------------------
+  // Transient status pill anchored to the top-right of the viewport. Used for
+  // disposition save outcomes so the result is visible without scrolling back
+  // to the banner at the top of the page.
+  function showToast(message, kind) {
+    let container = $("lda-toast-container");
+    if (!container) {
+      container = el("div", { id: "lda-toast-container", class: "lda-toast-container" });
+      document.body.appendChild(container);
+    }
+    const toast = el("div", {
+      class: "lda-toast " + (kind ? "is-" + kind : "is-info"),
+      role: "status",
+      text: message,
+    });
+    container.appendChild(toast);
+    // Trigger the enter transition on the next frame.
+    requestAnimationFrame(() => toast.classList.add("is-visible"));
+    const remove = () => {
+      toast.classList.remove("is-visible");
+      toast.addEventListener("transitionend", () => toast.remove(), { once: true });
+      // Fallback in case the transitionend never fires.
+      setTimeout(() => toast.remove(), 400);
+    };
+    toast.addEventListener("click", remove);
+    setTimeout(remove, 5000);
+  }
+
   // ---- modal ----------------------------------------------------------------
   function openModal({ title, bodyNodes, actions }) {
     return new Promise((resolve) => {
@@ -2442,7 +2470,7 @@
   async function saveDispositions(kind, changedFn) {
     const changed = changedFn();
     if (!changed.length) {
-      showBanner("No disposition rows changed, so nothing needed to be saved.", "info");
+      showToast("No disposition rows changed, so nothing needed to be saved.", "info");
       return;
     }
     const payloads = changed.map((rs) => dispositionPayloadFromRow(rs, kind));
@@ -2450,10 +2478,10 @@
     try {
       const result = await postJson(`${API}/dispositions/save`, { dispositions: payloads });
       changed.forEach((rs) => (rs.initial = JSON.stringify(dispositionPayloadFromRow(rs, kind))));
-      showBanner(`Saved ${result.saved} changed REL disposition row(s) to event_disposition.`, "success");
+      showToast(`Saved ${result.saved} changed REL disposition row(s) to event_disposition.`, "success");
       refreshSummary();
     } catch (err) {
-      showBanner(err.message, "error");
+      showToast(err.message, "error");
     } finally {
       endLoading();
     }
