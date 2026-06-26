@@ -777,8 +777,9 @@
   // Replay the active failure mode/mechanism onto the newly selected analysis type so
   // switching analyses keeps the same failure focus and auto-computes it. Returns
   // true when it kicked off the selection/compute for the type (so the caller can
-  // skip its own empty-state render). A mode-only selection can't drive PM/Weibull
-  // (both need a mechanism), so those are skipped and fall back to the empty state.
+  // skip its own empty-state render). PM needs a specific mechanism, so a mode-only
+  // focus can't drive it — that case clears any stale PM result and falls back to the
+  // empty prompt. Weibull and the trend/downtime analyses run at mode level too.
   function applyCarriedSelection(type) {
     const active = state.activeMechanismRow;
     if (!active) return false;
@@ -788,7 +789,19 @@
       return true;
     }
     if (type === ANALYSIS_TYPES.PM) {
-      if (active.failure_mechanism_id == null || selectionMatches(state.pmSelection, active)) return false;
+      if (active.failure_mechanism_id == null) {
+        // The carried focus is mode-level and can't drive PM (which needs a specific
+        // mechanism). Drop any stale mechanism PM result so the panel shows the empty
+        // "pick a mechanism" prompt for the current focus, not a previous mechanism's
+        // data. Bump the token so an in-flight load for the old mechanism is dropped.
+        if (state.pmSelection || state.pmData) {
+          state.pmSelection = null;
+          state.pmData = null;
+          state.pmToken += 1;
+        }
+        return false;
+      }
+      if (selectionMatches(state.pmSelection, active)) return false;
       selectPmMechanism(active);
       return true;
     }
@@ -3224,12 +3237,15 @@
       "aria-label": "Operating hours per day",
     });
     hoursInput.addEventListener("input", () => {
+      // Browsers don't clamp typed values to the input's max, so validate the upper
+      // bound here too: more than 24 h/day is physically impossible and would report a
+      // calendar duration shorter than continuous running.
       const hpd = Number(hoursInput.value);
-      if (isFinite(hpd) && hpd > 0) {
+      if (isFinite(hpd) && hpd > 0 && hpd <= 24) {
         state.operatingHoursPerDay = hpd;
         durationLine.textContent = mttfDurationText(mttfHours, hpd);
       } else {
-        durationLine.textContent = "Enter the operating hours per day to estimate calendar time.";
+        durationLine.textContent = "Enter an operating schedule between 0 and 24 h/day to estimate calendar time.";
       }
     });
 
