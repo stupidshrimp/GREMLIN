@@ -99,6 +99,15 @@
     </div>
   </div>
 
+  <!-- Action bar: sits directly below the Pareto so the buttons appear in the
+       same place for every analysis type (in Weibull the Pareto is the last
+       panel; the other analyses render their extra panels below this bar). -->
+  <div id="lda-actions" class="lda-action-bar" hidden>
+    <button type="button" class="btn-primary" id="lda-perform">Perform Analysis</button>
+    <button type="button" class="btn-secondary" id="lda-disposition-wo">Disposition Work Orders</button>
+    <button type="button" class="btn-secondary" id="lda-disposition-pm">Disposition PMs</button>
+  </div>
+
   <!-- Failure Mode Trend chart (Failure Mode Trend Analysis only). -->
   <div class="lda-panel" id="lda-trend-chart-panel" hidden>
     <h3>Failure Mode Trend</h3>
@@ -193,12 +202,6 @@
     <p class="lda-hint" id="lda-downtime-events-hint">The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).</p>
     <div class="lda-table-scroll" id="lda-downtime-events-wrap"></div>
   </div>
-</section>
-
-<section id="lda-actions" class="lda-action-bar" hidden>
-  <button type="button" class="btn-primary" id="lda-perform">Perform Analysis</button>
-  <button type="button" class="btn-secondary" id="lda-disposition-wo">Disposition Work Orders</button>
-  <button type="button" class="btn-secondary" id="lda-disposition-pm">Disposition PMs</button>
 </section>
 
 <div id="lda-workspace" class="lda-workspace"></div>
