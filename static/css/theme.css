@@ -51,6 +51,7 @@ body {
   grid-area: content;
   padding: 2rem;
   display: grid;
+  align-content: start;
   gap: 1.2rem;
   transition: padding 220ms ease;
 }
