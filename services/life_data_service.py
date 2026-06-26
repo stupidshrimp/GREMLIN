@@ -16,7 +16,7 @@ import string
 import threading
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
@@ -24,6 +24,10 @@ from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+
+WEEKDAY_24H_ASSET_NUMBERS = {"3101", "3102", "3103", "3104", "3105", "3106", "3107", "3154", "3142", "3023", "3253"}
+DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 20.0
+FULL_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 24.0
 
 # Primary location for GREMLIN.db. The database now lives in the user's local
 # OneDrive Documents folder instead of the network share, so this is probed first
@@ -3556,7 +3560,7 @@ class LifeDataService:
                 (population_id,),
             ).fetchone()
             life_basis_id = self._life_basis_id(conn)
-            schedule_class_id = self._schedule_class_id(conn)
+            schedule_class_id = self._schedule_class_id(conn, asset_number)
             self._refresh_event_processing(conn, asset_number, population_id, grouping_level=grouping_level, failure_mode_id=failure_mode_id, failure_mechanism_id=failure_mechanism_id)
             observation_ids = self._refresh_observations(conn, asset_number, population_id, life_basis_id, schedule_class_id, cutoff)
             if not observation_ids:
@@ -3670,7 +3674,7 @@ class LifeDataService:
                     "MLE fit includes selected failure-group completed failures and right-censored observations.",
                     json.dumps(interpretation_summary),
                     interpretation_summary[0]["recommendation"] if interpretation_summary else "Review the Weibull fit before selecting a maintenance strategy.",
-                    "Foundation implementation uses raw elapsed hours and current dispositions for a selected failure mode/mechanism population.",
+                    "Foundation implementation uses schedule-adjusted weekday hours with weekend exclusions and current dispositions for a selected failure mode/mechanism population.",
                 ),
             ).lastrowid
             return AnalysisResultView(
@@ -3713,10 +3717,46 @@ class LifeDataService:
         )
 
     def _life_basis_id(self, conn: sqlite3.Connection) -> int:
-        return int(conn.execute("SELECT life_basis_id FROM life_basis WHERE life_basis_code = 'RAW_ELAPSED_HOURS'").fetchone()[0])
+        return int(conn.execute("SELECT life_basis_id FROM life_basis WHERE life_basis_code = 'SCHEDULE_ADJUSTED_ELAPSED_HOURS'").fetchone()[0])
 
-    def _schedule_class_id(self, conn: sqlite3.Connection) -> int:
-        return int(conn.execute("SELECT schedule_class_id FROM asset_schedule_class WHERE schedule_class_code = 'RAW_ELAPSED_ONLY'").fetchone()[0])
+    def _schedule_class_id(self, conn: sqlite3.Connection, asset_number: str) -> int:
+        schedule_code = "24H_MON_FRI" if self._uses_full_weekday_schedule(asset_number) else "20H_MON_FRI"
+        return int(conn.execute("SELECT schedule_class_id FROM asset_schedule_class WHERE schedule_class_code = ?", (schedule_code,)).fetchone()[0])
+
+    @staticmethod
+    def _uses_full_weekday_schedule(asset_number: str) -> bool:
+        return str(asset_number).strip() in WEEKDAY_24H_ASSET_NUMBERS
+
+    @staticmethod
+    def _scheduled_life_hours(start: datetime, end: datetime, hours_per_day: float, *, exclude_weekends: bool = True) -> tuple[float, float, float]:
+        """Return scheduled life hours plus excluded weekend and non-run hours.
+
+        Schedule-adjusted Weibull life is based on weekday scheduled time. A full
+        included weekday contributes ``hours_per_day`` hours; partial weekdays are
+        prorated across the 24-hour calendar day. Weekend time is excluded when
+        requested.
+        """
+
+        if end <= start:
+            return 0.0, 0.0, 0.0
+        hours_per_day = max(0.0, min(24.0, float(hours_per_day)))
+        scheduled_hours = 0.0
+        excluded_weekend_hours = 0.0
+        excluded_non_run_hours = 0.0
+        current = start
+        while current < end:
+            next_midnight = datetime.combine(current.date() + timedelta(days=1), time.min, tzinfo=current.tzinfo)
+            segment_end = min(end, next_midnight)
+            raw_hours = (segment_end - current).total_seconds() / 3600.0
+            is_weekend = current.weekday() >= 5
+            if exclude_weekends and is_weekend:
+                excluded_weekend_hours += raw_hours
+            else:
+                segment_scheduled = raw_hours * (hours_per_day / 24.0)
+                scheduled_hours += segment_scheduled
+                excluded_non_run_hours += max(0.0, raw_hours - segment_scheduled)
+            current = segment_end
+        return scheduled_hours, excluded_weekend_hours, excluded_non_run_hours
 
     def _refresh_event_processing(
         self,
@@ -3835,6 +3875,12 @@ class LifeDataService:
             """,
             (asset_number, population_id),
         ).fetchall()
+        schedule = conn.execute(
+            "SELECT hours_per_day, exclude_weekends FROM asset_schedule_class WHERE schedule_class_id = ?",
+            (schedule_class_id,),
+        ).fetchone()
+        hours_per_day = float(schedule["hours_per_day"] if schedule and schedule["hours_per_day"] is not None else DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY)
+        exclude_weekends = bool(schedule["exclude_weekends"] if schedule else 1)
         ids: list[int] = []
         previous_event = None
         previous_date = None
@@ -3843,16 +3889,23 @@ class LifeDataService:
             if not event_date:
                 continue
             if previous_date is not None and previous_event is not None:
-                hours = (event_date - previous_date).total_seconds() / 3600.0
-                if hours > 0:
+                raw_hours = (event_date - previous_date).total_seconds() / 3600.0
+                scheduled_hours, excluded_weekend_hours, excluded_non_run_hours = self._scheduled_life_hours(
+                    previous_date,
+                    event_date,
+                    hours_per_day,
+                    exclude_weekends=exclude_weekends,
+                )
+                if scheduled_hours > 0:
                     observation_type = "COMPLETED_FAILURE_LIFE" if event["is_failure_event"] else "PM_RESET_CENSORED_LIFE"
                     obs_id = conn.execute(
                         """
                         INSERT INTO weibull_observation(modeled_population_id, asset_number, start_event_processing_id,
                             end_event_processing_id, observation_type, censoring_type, start_datetime, end_datetime,
                             analysis_cutoff_datetime, life_basis_id, schedule_class_id, life_hours_raw_elapsed,
-                            life_hours_for_weibull, failure_indicator, is_right_censored, is_usable, weibull_life_note)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                            excluded_weekend_hours, excluded_schedule_non_run_hours, life_hours_for_weibull,
+                            failure_indicator, is_right_censored, is_usable, weibull_life_note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         """,
                         (
                             population_id,
@@ -3866,11 +3919,13 @@ class LifeDataService:
                             cutoff,
                             life_basis_id,
                             schedule_class_id,
-                            hours,
-                            hours,
+                            raw_hours,
+                            excluded_weekend_hours,
+                            excluded_non_run_hours,
+                            scheduled_hours,
                             int(event["is_failure_event"]),
                             int(not event["is_failure_event"]),
-                            "Life interval between current valid life-start event and this end/reset event.",
+                            "Scheduled life interval between current valid life-start event and this end/reset event.",
                         ),
                     ).lastrowid
                     ids.append(int(obs_id))
@@ -3878,17 +3933,24 @@ class LifeDataService:
             previous_date = event_date
         if previous_date is not None and previous_event is not None:
             cutoff_dt = self._parse_datetime(cutoff) or datetime.now(timezone.utc)
-            hours = (cutoff_dt - previous_date).total_seconds() / 3600.0
-            if hours > 0:
+            raw_hours = (cutoff_dt - previous_date).total_seconds() / 3600.0
+            scheduled_hours, excluded_weekend_hours, excluded_non_run_hours = self._scheduled_life_hours(
+                previous_date,
+                cutoff_dt,
+                hours_per_day,
+                exclude_weekends=exclude_weekends,
+            )
+            if scheduled_hours > 0:
                 obs_id = conn.execute(
                     """
                     INSERT INTO weibull_observation(modeled_population_id, asset_number, start_event_processing_id,
                         observation_type, censoring_type, start_datetime, analysis_cutoff_datetime, life_basis_id,
-                        schedule_class_id, life_hours_raw_elapsed, life_hours_for_weibull, failure_indicator,
+                        schedule_class_id, life_hours_raw_elapsed, excluded_weekend_hours,
+                        excluded_schedule_non_run_hours, life_hours_for_weibull, failure_indicator,
                         is_right_censored, is_usable, weibull_life_note)
-                    VALUES (?, ?, ?, 'RIGHT_CENSORED_LIFE', 'RIGHT', ?, ?, ?, ?, ?, ?, 0, 1, 1, ?)
+                    VALUES (?, ?, ?, 'RIGHT_CENSORED_LIFE', 'RIGHT', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, ?)
                     """,
-                    (population_id, asset_number, previous_event["event_processing_id"], previous_date.isoformat(), cutoff, life_basis_id, schedule_class_id, hours, hours, "Right-censored life from last valid start/reset/failure event to analysis cutoff."),
+                    (population_id, asset_number, previous_event["event_processing_id"], previous_date.isoformat(), cutoff, life_basis_id, schedule_class_id, raw_hours, excluded_weekend_hours, excluded_non_run_hours, scheduled_hours, "Right-censored scheduled life from last valid start/reset/failure event to analysis cutoff."),
                 ).lastrowid
                 ids.append(int(obs_id))
         return ids
