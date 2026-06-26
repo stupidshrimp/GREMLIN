@@ -2213,12 +2213,17 @@ class LifeDataService:
 
         window_start = start_dt or data_min
         window_end = end_dt or data_max
-        # Keep only records inside the active window (undated records can still
-        # contribute to counts/downtime but never to the period split).
+        # Keep only records inside the active window. Undated records can be
+        # included only when no explicit date range is active; otherwise they
+        # cannot be proven to belong to the requested period.
+        date_range_active = start_dt is not None or end_dt is not None
         in_window: list[dict[str, Any]] = []
         for record in parsed_rows:
             when = record["when"]
-            if when is not None:
+            if when is None:
+                if date_range_active:
+                    continue
+            else:
                 if window_start is not None and when < window_start:
                     continue
                 if window_end is not None and when > window_end:
