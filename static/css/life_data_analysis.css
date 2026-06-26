@@ -30,6 +30,19 @@
 .lda-field { display: grid; gap: 0.35rem; }
 .lda-field label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
 
+/* Step 1 card stays pinned just below the 74px sticky topbar so the Asset Number
+   and Analysis Type controls follow the screen while the workspace scrolls. A more
+   opaque background than the default glass-card keeps scrolling content from
+   showing through; z-index sits below the topbar (30) but above the scrolling
+   workspace so the asset combobox dropdown (z-index 50 within this card) is never
+   clipped by panels below. */
+.lda-step1-sticky {
+  position: sticky;
+  top: 74px;
+  z-index: 15;
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.99), rgba(229, 245, 236, 0.98));
+}
+
 .lda-field input,
 .lda-field select,
 .lda-input,
@@ -346,6 +359,24 @@ table.lda-data thead th {
   box-shadow: inset 0 -1px 0 var(--border);
 }
 table.lda-interpretation td:last-child { color: var(--muted); }
+
+/* MTTF value cell: the fitted hours, the calendar-time conversion, and an editable
+   operating-schedule (hours/day) control that recomputes the months/days inline. */
+.lda-mttf-cell { display: grid; gap: 0.3rem; }
+.lda-mttf-cell .lda-mttf-hours-value { font-weight: 600; color: var(--text); }
+.lda-mttf-cell .lda-mttf-duration { color: var(--forest-800); font-weight: 600; }
+.lda-mttf-schedule {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.lda-mttf-schedule input.lda-mttf-hours {
+  width: 4.5rem;
+  padding: 0.25rem 0.4rem;
+}
 table.lda-data tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
 /* Free-text columns (work title, request description, completion notes, note)
    can hold long CMMS strings; cap their width and wrap so they don't stretch the
