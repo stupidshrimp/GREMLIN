@@ -2177,7 +2177,7 @@ class LifeDataService:
                 FROM mapped_cmms_record m
                 WHERE m.asset_number IS NOT NULL AND TRIM(m.asset_number) <> ''
                   AND (COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO'
-                       OR m.is_corrective_wo_candidate = 1)
+                       OR (m.record_class_final IS NULL AND m.is_corrective_wo_candidate = 1))
                 """
             ).fetchall()
 
