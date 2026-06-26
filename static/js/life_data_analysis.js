@@ -69,6 +69,15 @@
     downtimeData: null,
     downtimeToken: 0,
     latestResult: null,
+    // Operating schedule (hours per day the asset actually runs) used to convert the
+    // Weibull MTTF from operating hours into approximate calendar months/days. 24 =
+    // continuous running; users with a fixed shift (e.g. 20 h/day) can adjust it
+    // inline next to the MTTF value, and the conversion recomputes live.
+    operatingHoursPerDay: 24,
+    // The most recently selected failure mode/mechanism, regardless of which
+    // analysis type made the selection. Carried forward when the user switches
+    // analysis types so the new analysis auto-computes for the same failure focus.
+    activeMechanismRow: null,
     summaryToken: 0,
     // Page context: "analysis" (Perform an Analysis) or "disposition" (the
     // dedicated disposition page). Set during init so shared helpers branch.
@@ -126,6 +135,31 @@
     if (!isFinite(num)) return "";
     if (Math.abs(num) >= 1000) return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return Number(num.toPrecision(digits || 4)).toString();
+  }
+
+  // Convert an MTTF expressed in operating hours into approximate calendar time,
+  // given how many hours per day the asset actually runs. Returns null for invalid
+  // inputs (non-positive hours or schedule). 30.4375 = mean calendar-month length
+  // (365.25 / 12), so the months/days split lines up with the calendar rather than a
+  // flat 30-day month.
+  const DAYS_PER_CALENDAR_MONTH = 30.4375;
+  function mttfCalendarDuration(operatingHours, hoursPerDay) {
+    const hours = Number(operatingHours);
+    const hpd = Number(hoursPerDay);
+    if (!isFinite(hours) || hours <= 0 || !isFinite(hpd) || hpd <= 0) return null;
+    const calendarDays = hours / hpd;
+    const months = Math.floor(calendarDays / DAYS_PER_CALENDAR_MONTH);
+    const days = Math.round(calendarDays - months * DAYS_PER_CALENDAR_MONTH);
+    return { calendarDays, months, days };
+  }
+
+  // "≈ 14 months, 13 days" style label for the MTTF calendar conversion.
+  function mttfDurationText(operatingHours, hoursPerDay) {
+    const d = mttfCalendarDuration(operatingHours, hoursPerDay);
+    if (!d) return "";
+    const monthLabel = d.months === 1 ? "month" : "months";
+    const dayLabel = d.days === 1 ? "day" : "days";
+    return `≈ ${d.months} ${monthLabel}, ${d.days} ${dayLabel} of calendar time`;
   }
 
   // Plain machine-readable number string (no thousands separators) for use as the
@@ -392,6 +426,9 @@
       state.downtimeSelection = null;
       state.downtimeData = null;
       state.downtimeToken += 1;
+      // A new asset's failure mode/mechanism ids may not apply; drop the carried
+      // selection so a type switch doesn't auto-run a stale mechanism on it.
+      state.activeMechanismRow = null;
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
@@ -675,6 +712,7 @@
       showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
       return;
     }
+    setActiveMechanism(row);
     runAnalysisForGroup(
       {
         grouping_level: "FAILURE_MECHANISM",
@@ -693,6 +731,99 @@
   function setAnalysisType(value) {
     state.analysisType = value || ANALYSIS_TYPES.WEIBULL;
     applyAnalysisTypeUI();
+  }
+
+  // Normalize a Pareto row / Weibull group into the minimal failure mode+mechanism
+  // shape that every analysis type's select function understands. Stored as the
+  // "active" selection so it can be replayed onto a different analysis when the user
+  // switches analysis types.
+  function rowToActiveSelection(row) {
+    if (!row) return null;
+    return {
+      failure_mode_id: row.failure_mode_id != null ? row.failure_mode_id : null,
+      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
+      failure_mode_name: row.failure_mode_name != null ? row.failure_mode_name : null,
+      failure_mechanism_name: row.failure_mechanism_name != null ? row.failure_mechanism_name : null,
+      // Preserve the Weibull grouping level when the source carries one (the modal's
+      // "Failure mode" vs "Failure mechanism" groups). Pareto rows omit it but are
+      // always mechanism-level, so it's derived from the mechanism id when absent.
+      grouping_level: row.grouping_level != null ? row.grouping_level : null,
+    };
+  }
+
+  // The Weibull grouping level implied by an active selection: an explicit level from
+  // the source when present, otherwise mechanism-level when a mechanism is set and
+  // mode-level when only a mode is. The backend accepts both FAILURE_MODE and
+  // FAILURE_MECHANISM, so mode-only selections stay runnable.
+  function weibullGroupingLevel(active) {
+    if (active.grouping_level) return active.grouping_level;
+    return active.failure_mechanism_id != null ? "FAILURE_MECHANISM" : "FAILURE_MODE";
+  }
+
+  function setActiveMechanism(row) {
+    const normalized = rowToActiveSelection(row);
+    if (normalized) state.activeMechanismRow = normalized;
+  }
+
+  function selectionMatches(selection, active) {
+    return Boolean(
+      selection &&
+        active &&
+        selection.failure_mode_id == active.failure_mode_id &&
+        selection.failure_mechanism_id == active.failure_mechanism_id
+    );
+  }
+
+  // Replay the active failure mode/mechanism onto the newly selected analysis type so
+  // switching analyses keeps the same failure focus and auto-computes it. Returns
+  // true when it kicked off the selection/compute for the type (so the caller can
+  // skip its own empty-state render). PM needs a specific mechanism, so a mode-only
+  // focus can't drive it — that case clears any stale PM result and falls back to the
+  // empty prompt. Weibull and the trend/downtime analyses run at mode level too.
+  function applyCarriedSelection(type) {
+    const active = state.activeMechanismRow;
+    if (!active) return false;
+    if (type === ANALYSIS_TYPES.TREND) {
+      if (active.failure_mode_id == null || selectionMatches(state.selectedTrend, active)) return false;
+      selectTrendMechanism(active);
+      return true;
+    }
+    if (type === ANALYSIS_TYPES.PM) {
+      if (active.failure_mechanism_id == null) {
+        // The carried focus is mode-level and can't drive PM (which needs a specific
+        // mechanism). Drop any stale mechanism PM result so the panel shows the empty
+        // "pick a mechanism" prompt for the current focus, not a previous mechanism's
+        // data. Bump the token so an in-flight load for the old mechanism is dropped.
+        if (state.pmSelection || state.pmData) {
+          state.pmSelection = null;
+          state.pmData = null;
+          state.pmToken += 1;
+        }
+        return false;
+      }
+      if (selectionMatches(state.pmSelection, active)) return false;
+      selectPmMechanism(active);
+      return true;
+    }
+    if (type === ANALYSIS_TYPES.DOWNTIME) {
+      if (active.failure_mode_id == null || selectionMatches(state.downtimeSelection, active)) return false;
+      selectDowntimeMechanism(active);
+      return true;
+    }
+    if (type === ANALYSIS_TYPES.WEIBULL) {
+      if (active.failure_mode_id == null) return false;
+      const groupingLevel = weibullGroupingLevel(active);
+      runAnalysisForGroup(
+        {
+          grouping_level: groupingLevel,
+          failure_mode_id: active.failure_mode_id,
+          failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
+        },
+        "Recomputing Weibull analysis for the carried-over selection…"
+      );
+      return true;
+    }
+    return false;
   }
 
   // Toggle the secondary analysis panel (and the Step 2 heading) to match the
@@ -754,15 +885,22 @@
       state.latestResult = null;
       clearWorkspace();
     }
-    if (isTrend) renderTrend();
-    if (isPm) {
+
+    // Carry the most-recently selected failure mode/mechanism onto the newly chosen
+    // analysis type and auto-compute it, so switching analyses keeps the same
+    // failure focus instead of resetting to "pick a mechanism". When it handles the
+    // selection, skip the per-type empty/idle render below to avoid double work.
+    const autoComputed = applyCarriedSelection(type);
+
+    if (isTrend && !autoComputed) renderTrend();
+    if (isPm && !autoComputed) {
       // Returning to PM mode with a selection but no data (e.g. the in-flight
       // request was dropped as stale when the user switched type mid-request)
       // must re-fetch, otherwise the panels would prompt to reselect a mechanism.
       if (state.pmSelection && !state.pmData) loadPmEffectiveness();
       else renderPm();
     }
-    if (isDowntime) {
+    if (isDowntime && !autoComputed) {
       // Same re-fetch guard as PM: a selection without data (dropped as stale on a
       // mid-request type switch) re-fetches instead of showing the reselect prompt.
       if (state.downtimeSelection && !state.downtimeData) loadDowntime();
@@ -874,6 +1012,7 @@
 
   function selectTrendMechanism(row) {
     if (row == null || row.failure_mode_id == null) return;
+    setActiveMechanism(row);
     const modeName = row.failure_mode_name;
     const mechName = row.failure_mechanism_name;
     const label = mechName
@@ -1382,6 +1521,7 @@
       showBanner("PM effectiveness needs a failure mechanism. Pick a mechanism-level Pareto bar.", "error");
       return;
     }
+    setActiveMechanism(row);
     state.pmSelection = {
       failure_mode_id: row.failure_mode_id != null ? row.failure_mode_id : null,
       failure_mechanism_id: row.failure_mechanism_id,
@@ -2370,6 +2510,7 @@
       showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
       return;
     }
+    setActiveMechanism(row);
     state.downtimeSelection = {
       failure_mode_id: row.failure_mode_id,
       failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
@@ -2926,6 +3067,7 @@
       ],
     });
     if (choice === null || choice === undefined) return;
+    setActiveMechanism(groups[choice]);
     runAnalysisForGroup(groups[choice]);
   }
 
@@ -3061,13 +3203,61 @@
       tbody.appendChild(
         el("tr", {}, [
           el("td", { text: row.metric || "—" }),
-          el("td", { text: row.value || "—" }),
+          buildInterpretationValueCell(row, result),
           el("td", { text: row.recommendation || "—" }),
         ])
       );
     });
     table.appendChild(tbody);
     return table;
+  }
+
+  // Value cell for one interpretation-summary row. The MTTF row gets an extra
+  // calendar-time conversion (months/days) plus an editable operating-schedule
+  // input, so users can see the mean life in real terms for their run schedule
+  // (e.g. 20 h/day). Every other metric renders as a plain value cell.
+  function buildInterpretationValueCell(row, result) {
+    const isMttf = String(row.metric || "").trim().toUpperCase() === "MTTF";
+    const mttfHours = result ? Number(result.mean_time_to_failure) : NaN;
+    if (!isMttf || !isFinite(mttfHours) || mttfHours <= 0) {
+      return el("td", { text: row.value || "—" });
+    }
+
+    const durationLine = el("span", {
+      class: "lda-mttf-duration",
+      text: mttfDurationText(mttfHours, state.operatingHoursPerDay),
+    });
+    const hoursInput = el("input", {
+      class: "lda-input lda-mttf-hours",
+      type: "number",
+      min: "0.1",
+      max: "24",
+      step: "0.5",
+      value: numericInputValue(state.operatingHoursPerDay, 4),
+      "aria-label": "Operating hours per day",
+    });
+    hoursInput.addEventListener("input", () => {
+      // Browsers don't clamp typed values to the input's max, so validate the upper
+      // bound here too: more than 24 h/day is physically impossible and would report a
+      // calendar duration shorter than continuous running.
+      const hpd = Number(hoursInput.value);
+      if (isFinite(hpd) && hpd > 0 && hpd <= 24) {
+        state.operatingHoursPerDay = hpd;
+        durationLine.textContent = mttfDurationText(mttfHours, hpd);
+      } else {
+        durationLine.textContent = "Enter an operating schedule between 0 and 24 h/day to estimate calendar time.";
+      }
+    });
+
+    return el("td", { class: "lda-mttf-cell" }, [
+      el("span", { class: "lda-mttf-hours-value", text: row.value || `${fmt(mttfHours)} hours` }),
+      durationLine,
+      el("div", { class: "lda-mttf-schedule" }, [
+        el("label", { text: "Operating schedule:" }),
+        hoursInput,
+        el("span", { text: "h/day" }),
+      ]),
+    ]);
   }
 
   function buildWeibullDataTable(result) {
