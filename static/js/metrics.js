@@ -33,6 +33,9 @@
     expanded: null, // currently expanded card key or null
     dropdownOpen: false,
     assetQuery: "",
+    // Active API date filters. The inputs may display the default data extent,
+    // but these stay empty until the user explicitly changes the date range so
+    // the backend can keep its default unbounded semantics.
     dateFrom: "",
     dateTo: "",
     dataWindow: { start: null, end: null },
@@ -274,15 +277,13 @@
 
   function initDateInputs() {
     // Default the date pickers to the data's own extent the first time we learn
-    // it, without clobbering a range the user has already chosen.
+    // it, without turning those displayed defaults into active API filters.
     if (state.dateInitialized) return;
     const from = $("metrics-date-from");
     const to = $("metrics-date-to");
     if (state.dataWindow.start) {
       from.value = state.dataWindow.start;
       to.value = state.dataWindow.end || "";
-      state.dateFrom = from.value;
-      state.dateTo = to.value;
       state.dateInitialized = true;
     }
   }
@@ -783,8 +784,8 @@
         : state.dataWindow;
       from.value = resetWindow.start || "";
       to.value = resetWindow.end || "";
-      state.dateFrom = from.value;
-      state.dateTo = to.value;
+      state.dateFrom = "";
+      state.dateTo = "";
       renderSelectedChips();
       renderAssetMenu();
       loadMetrics();
