@@ -36,6 +36,10 @@
     dateFrom: "",
     dateTo: "",
     dataWindow: { start: null, end: null },
+    // Preserve the all-asset extent learned on the initial unfiltered request so
+    // Reset can restore true global bounds even after selected-asset requests
+    // replace dataWindow with a narrower extent.
+    globalDataWindow: { start: null, end: null },
     dateInitialized: false,
     fetchToken: 0,
   };
@@ -250,6 +254,9 @@
       if (token !== state.fetchToken) return; // a newer request superseded this one
       state.payload = data;
       state.dataWindow = data.data_window || { start: null, end: null };
+      if (!state.selected.size && !state.dateFrom && !state.dateTo) {
+        state.globalDataWindow = state.dataWindow;
+      }
       initDateInputs();
       clearBanner();
       renderScopeHint();
@@ -771,8 +778,11 @@
       state.selected.clear();
       state.assetQuery = "";
       search.value = "";
-      from.value = state.dataWindow.start || "";
-      to.value = state.dataWindow.end || "";
+      const resetWindow = state.globalDataWindow.start || state.globalDataWindow.end
+        ? state.globalDataWindow
+        : state.dataWindow;
+      from.value = resetWindow.start || "";
+      to.value = resetWindow.end || "";
       state.dateFrom = from.value;
       state.dateTo = to.value;
       renderSelectedChips();
