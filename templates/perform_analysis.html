@@ -116,14 +116,32 @@
   <!-- Failure Mode Trend detail table (feeds the trend chart above). -->
   <div class="lda-panel" id="lda-trend-table-panel" hidden>
     <h3>Failure Mode Trend Detail</h3>
-    <p class="lda-hint" id="lda-trend-table-hint">Monthly occurrence counts for the selected failure mode or mechanism — the values plotted above.</p>
+    <p class="lda-hint" id="lda-trend-table-hint">Monthly occurrence counts for the selected failure mode or mechanism — the values plotted above. Click a month to show only its work orders below.</p>
     <div class="lda-table-scroll" id="lda-trend-table-wrap"></div>
+  </div>
+
+  <!-- Work orders backing the trend (filterable by clicking a month/data point). -->
+  <div class="lda-panel" id="lda-trend-wo-panel" hidden>
+    <h3>Work Orders in Trend</h3>
+    <p class="lda-hint" id="lda-trend-wo-hint">The specific work orders that populate the months plotted above.</p>
+    <div class="lda-table-scroll" id="lda-trend-wo-wrap"></div>
   </div>
 
   <!-- Failures Following PM trend chart (PM Effectiveness Analysis only). -->
   <div class="lda-panel" id="lda-pm-chart-panel" hidden>
     <h3>Failures Following PM</h3>
     <p class="lda-hint" id="lda-pm-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.</p>
+    <div class="lda-trend-controls" id="lda-pm-controls" hidden>
+      <div class="lda-field">
+        <label for="lda-pm-from">From</label>
+        <input type="month" id="lda-pm-from">
+      </div>
+      <div class="lda-field">
+        <label for="lda-pm-to">To</label>
+        <input type="month" id="lda-pm-to">
+      </div>
+      <button type="button" class="btn-secondary" id="lda-pm-reset">Reset range</button>
+    </div>
     <div class="lda-chart-wrap">
       <canvas id="lda-pm-chart" class="lda-canvas" height="320"></canvas>
     </div>
