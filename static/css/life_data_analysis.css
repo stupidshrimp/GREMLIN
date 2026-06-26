@@ -187,6 +187,11 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 
 /* Workspace (dispositions / results injected here) */
 .lda-workspace { display: grid; gap: 1.2rem; }
+/* When nothing is injected yet (no asset selected, or a non-Weibull type), the
+   workspace is empty. Collapse it so it stops contributing a stray grid gap
+   below the cards — keeping page spacing identical before and after selecting an
+   asset. */
+.lda-workspace:empty { display: none; }
 
 /* Disposition page controls */
 .lda-disp-controls {
