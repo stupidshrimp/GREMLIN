@@ -744,7 +744,20 @@
       failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
       failure_mode_name: row.failure_mode_name != null ? row.failure_mode_name : null,
       failure_mechanism_name: row.failure_mechanism_name != null ? row.failure_mechanism_name : null,
+      // Preserve the Weibull grouping level when the source carries one (the modal's
+      // "Failure mode" vs "Failure mechanism" groups). Pareto rows omit it but are
+      // always mechanism-level, so it's derived from the mechanism id when absent.
+      grouping_level: row.grouping_level != null ? row.grouping_level : null,
     };
+  }
+
+  // The Weibull grouping level implied by an active selection: an explicit level from
+  // the source when present, otherwise mechanism-level when a mechanism is set and
+  // mode-level when only a mode is. The backend accepts both FAILURE_MODE and
+  // FAILURE_MECHANISM, so mode-only selections stay runnable.
+  function weibullGroupingLevel(active) {
+    if (active.grouping_level) return active.grouping_level;
+    return active.failure_mechanism_id != null ? "FAILURE_MECHANISM" : "FAILURE_MODE";
   }
 
   function setActiveMechanism(row) {
@@ -785,8 +798,16 @@
       return true;
     }
     if (type === ANALYSIS_TYPES.WEIBULL) {
-      if (active.failure_mode_id == null || active.failure_mechanism_id == null) return false;
-      runParetoMechanism(active);
+      if (active.failure_mode_id == null) return false;
+      const groupingLevel = weibullGroupingLevel(active);
+      runAnalysisForGroup(
+        {
+          grouping_level: groupingLevel,
+          failure_mode_id: active.failure_mode_id,
+          failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
+        },
+        "Recomputing Weibull analysis for the carried-over selection…"
+      );
       return true;
     }
     return false;
