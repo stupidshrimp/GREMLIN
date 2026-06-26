@@ -2116,6 +2116,348 @@ class LifeDataService:
             "has_records": work_order_count > 0,
         }
 
+    # ------------------------------------------------------------------ #
+    # Metrics dashboard read-model
+    # ------------------------------------------------------------------ #
+    def asset_reliability_metrics(
+        self,
+        asset_numbers: list[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Per-asset reliability KPIs powering the high-level Metrics dashboard.
+
+        The dataset is the same corrective work order set used by the Life Data
+        Analysis disposition screen (``_disposition_where('wo')`` — every record
+        classified or flagged as a corrective work order), and the work-order date
+        is coalesced exactly as the Pareto / Downtime Driver analyses do
+        (``completed_date_final`` → ``start_date_final`` → ``created_date_final``).
+        That keeps the dashboard consistent with the rest of the app.
+
+        The active window is split in half so a *current* period can be compared
+        against a *baseline* period for trend direction and the reliability risk
+        score. When no record falls in the baseline half for any asset, the risk
+        score falls back to ranking the current period across the selected assets.
+
+        Args:
+            asset_numbers: Restrict to these asset numbers; ``None``/empty = all.
+            start_date / end_date: Inclusive ``YYYY-MM-DD`` bounds for the window;
+                ``None`` lets the bound fall back to the data's own extent.
+
+        Returns a JSON-friendly dict: the applied window, the full data extent (for
+        defaulting the date pickers), whether scheduled/operating hours exist (they
+        do not yet, so MTBF is derived from time between failures and Availability
+        stays a placeholder), the risk-score mode, and one row per asset.
+        """
+
+        # On a fresh database the raw layer can hold data while mapped_cmms_record
+        # is still empty. The asset list path maps on demand; do the same here so a
+        # metrics request that wins the startup race still sees the mapped rows
+        # instead of returning an empty dashboard.
+        self.ensure_mapped_records_available()
+
+        requested = {str(a).strip() for a in (asset_numbers or []) if str(a).strip()}
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    TRIM(m.asset_number) AS asset_number,
+                    COALESCE(NULLIF(TRIM(m.asset_name), ''), '') AS asset_name,
+                    COALESCE(m.downtime_hours, 0) AS downtime_hours,
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date,
+                    COALESCE(
+                        NULLIF(TRIM(m.request_title), ''),
+                        NULLIF(TRIM(m.task_name), ''),
+                        NULLIF(TRIM(m.requestor_description), '')
+                    ) AS wo_label
+                FROM mapped_cmms_record m
+                WHERE m.asset_number IS NOT NULL AND TRIM(m.asset_number) <> ''
+                  AND (COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO'
+                       OR (m.record_class_final IS NULL AND m.is_corrective_wo_candidate = 1))
+                """
+            ).fetchall()
+
+        # Resolve the active window. Parse the requested bounds and the data's own
+        # extent; an open bound defers to the data so "all dates" still splits into
+        # two comparable halves.
+        start_dt = self._parse_metric_date(start_date, end_of_day=False)
+        end_dt = self._parse_metric_date(end_date, end_of_day=True)
+
+        parsed_rows: list[dict[str, Any]] = []
+        data_min: datetime | None = None
+        data_max: datetime | None = None
+        for row in rows:
+            asset_number = row["asset_number"]
+            if requested and asset_number not in requested:
+                continue
+            when = self._parse_datetime(row["wo_date"])
+            downtime = float(row["downtime_hours"] or 0.0)
+            if downtime < 0:
+                downtime = 0.0
+            if when is not None:
+                data_min = when if data_min is None or when < data_min else data_min
+                data_max = when if data_max is None or when > data_max else data_max
+            parsed_rows.append(
+                {
+                    "asset_number": asset_number,
+                    "asset_name": row["asset_name"],
+                    "downtime": downtime,
+                    "when": when,
+                    "label": (row["wo_label"] or "").strip().lower(),
+                }
+            )
+
+        window_start = start_dt or data_min
+        window_end = end_dt or data_max
+        # Keep only records inside the active window. Undated records can be
+        # included only when no explicit date range is active; otherwise they
+        # cannot be proven to belong to the requested period.
+        date_range_active = start_dt is not None or end_dt is not None
+        in_window: list[dict[str, Any]] = []
+        for record in parsed_rows:
+            when = record["when"]
+            if when is None:
+                if date_range_active:
+                    continue
+            else:
+                if window_start is not None and when < window_start:
+                    continue
+                if window_end is not None and when > window_end:
+                    continue
+            in_window.append(record)
+
+        # Midpoint of the active window splits baseline (earlier) from current
+        # (recent). Without two real bounds there is nothing to split on.
+        midpoint: datetime | None = None
+        if window_start is not None and window_end is not None and window_end > window_start:
+            midpoint = window_start + (window_end - window_start) / 2
+
+        by_asset: dict[str, dict[str, Any]] = {}
+        for record in in_window:
+            asset_number = record["asset_number"]
+            bucket = by_asset.get(asset_number)
+            if bucket is None:
+                bucket = by_asset.setdefault(
+                    asset_number,
+                    {
+                        "asset_number": asset_number,
+                        "asset_name": record["asset_name"],
+                        "all": [],
+                        "current": [],
+                        "baseline": [],
+                    },
+                )
+            if not bucket["asset_name"] and record["asset_name"]:
+                bucket["asset_name"] = record["asset_name"]
+            bucket["all"].append(record)
+            when = record["when"]
+            if midpoint is not None and when is not None:
+                (bucket["current"] if when >= midpoint else bucket["baseline"]).append(record)
+
+        baseline_available = any(bucket["baseline"] for bucket in by_asset.values())
+
+        assets: list[dict[str, Any]] = []
+        for bucket in by_asset.values():
+            assets.append(self._asset_metric_row(bucket, baseline_available))
+
+        # Relative risk fallback: with no baseline anywhere, rank the current
+        # period across the selected assets instead of period-over-period change.
+        if not baseline_available and assets:
+            self._apply_relative_risk(assets)
+
+        for asset in assets:
+            asset["status"] = self._risk_status(asset["risk_score"])
+
+        assets.sort(key=lambda a: self._natural_key(a["asset_number"]))
+
+        return {
+            "scheduled_hours_available": False,
+            "baseline_mode": "period" if baseline_available else "relative",
+            "applied_window": {
+                "start": window_start.date().isoformat() if window_start else None,
+                "end": window_end.date().isoformat() if window_end else None,
+                "midpoint": midpoint.date().isoformat() if midpoint else None,
+            },
+            "data_window": {
+                "start": data_min.date().isoformat() if data_min else None,
+                "end": data_max.date().isoformat() if data_max else None,
+            },
+            "asset_count": len(assets),
+            "assets": assets,
+        }
+
+    def _asset_metric_row(self, bucket: dict[str, Any], baseline_available: bool) -> dict[str, Any]:
+        """Build one asset's KPI/risk row from its bucketed corrective work orders."""
+
+        all_records = bucket["all"]
+        current = bucket["current"]
+        baseline = bucket["baseline"]
+
+        wo_count = len(all_records)
+        total_downtime = sum(r["downtime"] for r in all_records)
+        # MTTR = total downtime / number of corrective work orders.
+        mttr = total_downtime / wo_count if wo_count else None
+
+        # MTBF: operating-hours data is not captured yet, so estimate mean time
+        # between corrective failures from the dated work orders (span / gaps).
+        # Fewer than two dated failures cannot yield an interval -> Data Required.
+        failure_times = sorted(r["when"] for r in all_records if r["when"] is not None)
+        if len(failure_times) >= 2:
+            span_hours = (failure_times[-1] - failure_times[0]).total_seconds() / 3600.0
+            gaps = len(failure_times) - 1
+            mtbf = span_hours / gaps if gaps and span_hours > 0 else None
+            mtbf_status = "ok" if mtbf is not None else "data_required"
+        else:
+            mtbf = None
+            mtbf_status = "data_required"
+
+        cur_count = len(current)
+        base_count = len(baseline)
+        cur_downtime = sum(r["downtime"] for r in current)
+        base_downtime = sum(r["downtime"] for r in baseline)
+        cur_mttr = cur_downtime / cur_count if cur_count else 0.0
+        base_mttr = base_downtime / base_count if base_count else 0.0
+
+        # Repeat-failure frequency in the current period: the share of failures
+        # that are not the first occurrence of their work-order label.
+        labels = [r["label"] for r in current if r["label"]]
+        repeat_failures = len(labels) - len(set(labels)) if labels else 0
+        repeat_score = (repeat_failures / len(labels) * 100.0) if labels else 0.0
+
+        has_baseline = base_count > 0
+        downtime_change = self._pct_change(cur_downtime, base_downtime)
+        wo_change = self._pct_change(cur_count, base_count)
+        mttr_change = self._pct_change(cur_mttr, base_mttr)
+
+        if baseline_available:
+            dt_score = self._increase_score(cur_downtime, base_downtime)
+            wo_score = self._increase_score(cur_count, base_count)
+            mttr_score = self._increase_score(cur_mttr, base_mttr)
+            risk = 0.40 * dt_score + 0.25 * wo_score + 0.25 * mttr_score + 0.10 * repeat_score
+            risk_score: float | None = round(max(0.0, min(100.0, risk)), 1)
+        else:
+            # Filled in later by _apply_relative_risk once every asset is known.
+            risk_score = None
+
+        # Trend direction follows the current-vs-baseline downtime movement.
+        if downtime_change is None:
+            trend = "flat"
+        elif downtime_change > 5:
+            trend = "up"
+        elif downtime_change < -5:
+            trend = "down"
+        else:
+            trend = "flat"
+
+        alert_count = 0
+        if risk_score is not None and risk_score >= 70:
+            alert_count += 1
+        for change in (downtime_change, wo_change, mttr_change):
+            if change is not None and change >= 50:
+                alert_count += 1
+
+        return {
+            "asset_number": bucket["asset_number"],
+            "asset_name": bucket["asset_name"] or "",
+            "work_order_count": wo_count,
+            "total_downtime_hours": round(total_downtime, 2),
+            "mttr_hours": round(mttr, 2) if mttr is not None else None,
+            "mtbf_hours": round(mtbf, 2) if mtbf is not None else None,
+            "mtbf_status": mtbf_status,
+            "current_downtime_hours": round(cur_downtime, 2),
+            "baseline_downtime_hours": round(base_downtime, 2),
+            "current_wo_count": cur_count,
+            "baseline_wo_count": base_count,
+            "has_baseline": has_baseline,
+            "downtime_change_pct": downtime_change,
+            "wo_change_pct": wo_change,
+            "mttr_change_pct": mttr_change,
+            "repeat_failure_count": repeat_failures,
+            "risk_score": risk_score,
+            "trend": trend,
+            "alert_count": alert_count,
+        }
+
+    def _apply_relative_risk(self, assets: list[dict[str, Any]]) -> None:
+        """Score risk by ranking the current period across the selected assets.
+
+        Used when no baseline period is available: downtime, work-order count and
+        MTTR are each min-max normalised across the assets, then blended.
+        """
+
+        def rel(values: list[float], value: float) -> float:
+            lo, hi = min(values), max(values)
+            if hi <= lo:
+                return 50.0 if value > 0 else 0.0
+            return (value - lo) / (hi - lo) * 100.0
+
+        downtimes = [a["current_downtime_hours"] or a["total_downtime_hours"] for a in assets]
+        counts = [float(a["current_wo_count"] or a["work_order_count"]) for a in assets]
+        mttrs = [float(a["mttr_hours"] or 0.0) for a in assets]
+        for asset in assets:
+            dt = asset["current_downtime_hours"] or asset["total_downtime_hours"]
+            ct = float(asset["current_wo_count"] or asset["work_order_count"])
+            mt = float(asset["mttr_hours"] or 0.0)
+            score = (
+                0.45 * rel(downtimes, dt)
+                + 0.275 * rel(counts, ct)
+                + 0.275 * rel(mttrs, mt)
+            )
+            asset["risk_score"] = round(max(0.0, min(100.0, score)), 1)
+            if asset["risk_score"] >= 70 and asset["alert_count"] == 0:
+                asset["alert_count"] = 1
+
+    @staticmethod
+    def _increase_score(current: float, baseline: float) -> float:
+        """0–100 score for how much ``current`` rose above ``baseline``.
+
+        No rise scores 0; a doubling (or a value appearing where the baseline was
+        zero) scores 100. Decreases are treated as 0 (improving, not a risk).
+        """
+
+        if current <= 0:
+            return 0.0
+        if baseline <= 0:
+            return 100.0
+        change = (current - baseline) / baseline
+        if change <= 0:
+            return 0.0
+        return min(100.0, change * 100.0)
+
+    @staticmethod
+    def _pct_change(current: float, baseline: float) -> float | None:
+        """Percent change from ``baseline`` to ``current`` (None when undefined)."""
+
+        if baseline and baseline > 0:
+            return round((current - baseline) / baseline * 100.0, 1)
+        if current > 0:
+            return None  # baseline of zero -> "new" activity, not a finite percent
+        return 0.0
+
+    @staticmethod
+    def _risk_status(risk_score: float | None) -> str:
+        if risk_score is None:
+            return "Low"
+        if risk_score >= 70:
+            return "High"
+        if risk_score >= 40:
+            return "Medium"
+        return "Low"
+
+    def _parse_metric_date(self, value: str | None, *, end_of_day: bool) -> datetime | None:
+        """Parse a ``YYYY-MM-DD`` filter bound into a UTC datetime (or None)."""
+
+        parsed = self._parse_datetime(value)
+        if parsed is None:
+            return None
+        if end_of_day:
+            return parsed.replace(hour=23, minute=59, second=59, microsecond=0)
+        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
     def _disposition_where(self, kind: str) -> str:
         if kind == "wo":
             return "(COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO' OR m.is_corrective_wo_candidate = 1)"

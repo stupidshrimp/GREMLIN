@@ -208,12 +208,37 @@ def failure_classification():
 
 @app.route("/metrics")
 def metrics():
-    metrics_data = reliability_service.get_metrics_dashboard_data()
     return render_template(
         "metrics.html",
         page_title="Metrics",
         nav_links=NAV_LINKS,
-        metrics_data=metrics_data,
+    )
+
+
+@app.route("/metrics/api/reliability")
+@life_data_api
+def api_metrics_reliability():
+    """Per-asset reliability KPIs for the Metrics dashboard.
+
+    Reuses the shared maintenance dataset through the same LifeDataService the
+    Life Data Analysis pages use. ``assets`` (repeatable or comma-separated) and
+    ``start``/``end`` (YYYY-MM-DD) narrow the result; omitting ``assets`` returns
+    every asset so the client can default to comparing them all.
+    """
+
+    service = _service_or_api_error()
+    raw_assets = request.values.getlist("assets")
+    asset_numbers: list[str] = []
+    for value in raw_assets:
+        asset_numbers.extend(part.strip() for part in str(value).split(",") if part.strip())
+    start = (request.values.get("start") or "").strip() or None
+    end = (request.values.get("end") or "").strip() or None
+    return jsonify(
+        service.asset_reliability_metrics(
+            asset_numbers=asset_numbers or None,
+            start_date=start,
+            end_date=end,
+        )
     )
 
 
