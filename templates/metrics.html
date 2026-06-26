@@ -1,20 +1,217 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/metrics.css') }}">
+{% endblock %}
+
 {% block content %}
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Metrics</p>
   <h1>Track the health of reliability operations.</h1>
-  <p>Turn raw event and maintenance data into clear operational KPIs for engineering and leadership.</p>
+  <p>Turn raw event and maintenance data into clear operational KPIs for engineering and leadership.
+     Compare assets side by side, then click a card to drill into the detailed charts and tables.</p>
 </section>
 
-<section class="card-grid two-col">
-  <article class="glass-card tile slide-in">
-    <h2>Operational KPIs</h2>
-    <p>Monitor MTBF, MTTR, and first-pass yield trends across lines, regions, or programs.</p>
+<div id="metrics-status" class="metrics-banner" role="status" hidden></div>
+
+<!-- Asset filter / search + date range. Every card respects these controls. -->
+<section class="glass-card slide-in metrics-filters" aria-label="Asset and date filters">
+  <div class="metrics-filter-row">
+    <div class="metrics-field metrics-field-grow">
+      <label for="metrics-asset-search">Search assets</label>
+      <div class="metrics-asset-control">
+        <input id="metrics-asset-search" type="text" autocomplete="off"
+               placeholder="Type to filter asset names or numbers…">
+        <div id="metrics-asset-menu" class="metrics-asset-menu" role="listbox" aria-multiselectable="true" hidden></div>
+      </div>
+      <p class="metrics-hint" id="metrics-asset-hint">Loading assets…</p>
+    </div>
+
+    <div class="metrics-field">
+      <label for="metrics-date-from">From</label>
+      <input id="metrics-date-from" type="date">
+    </div>
+    <div class="metrics-field">
+      <label for="metrics-date-to">To</label>
+      <input id="metrics-date-to" type="date">
+    </div>
+
+    <div class="metrics-field metrics-field-actions">
+      <button type="button" class="btn-secondary" id="metrics-reset">Reset filters</button>
+    </div>
+  </div>
+
+  <div class="metrics-selected" id="metrics-selected-wrap" hidden>
+    <span class="metrics-selected-label">Comparing:</span>
+    <div id="metrics-selected-chips" class="metrics-chip-row"></div>
+  </div>
+  <p class="metrics-hint" id="metrics-scope-hint">No assets selected — comparing all assets by default.</p>
+</section>
+
+<section class="metrics-card-stack">
+  <!-- ============================ Operational KPIs ============================ -->
+  <article class="glass-card metrics-card" id="card-kpis" data-card="kpis" tabindex="0"
+           role="button" aria-expanded="false" aria-controls="kpis-expanded">
+    <header class="metrics-card-head">
+      <div>
+        <p class="eyebrow">Operational KPIs</p>
+        <h2>Reliability performance by asset</h2>
+        <p class="metrics-card-desc">MTBF, MTTR, corrective work order volume and total downtime — compared across the selected assets.</p>
+      </div>
+      <span class="metrics-card-toggle" aria-hidden="true"></span>
+    </header>
+
+    <div class="metrics-preview" data-preview="kpis">
+      <p class="metrics-preview-label">MTBF by asset (hours)</p>
+      <div class="metrics-chart-wrap metrics-chart-preview">
+        <canvas id="kpis-preview-chart" height="160"></canvas>
+      </div>
+      <p class="metrics-empty" id="kpis-preview-empty" hidden></p>
+    </div>
+
+    <div class="metrics-expanded" id="kpis-expanded" hidden>
+      <div class="metrics-chart-grid">
+        <div class="metrics-panel">
+          <h3>MTBF by Asset</h3>
+          <p class="metrics-hint">Mean time between corrective failures (hours). Estimated from work-order
+             dates while operating-hours data is unavailable.</p>
+          <div class="metrics-chart-wrap"><canvas id="kpis-mtbf-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="kpis-mtbf" hidden></p>
+        </div>
+        <div class="metrics-panel">
+          <h3>MTTR by Asset</h3>
+          <p class="metrics-hint">Total downtime ÷ number of corrective work orders (hours).</p>
+          <div class="metrics-chart-wrap"><canvas id="kpis-mttr-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="kpis-mttr" hidden></p>
+        </div>
+        <div class="metrics-panel">
+          <h3>Work Order Count by Asset</h3>
+          <p class="metrics-hint">Count of corrective work orders in the selected window.</p>
+          <div class="metrics-chart-wrap"><canvas id="kpis-woc-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="kpis-woc" hidden></p>
+        </div>
+        <div class="metrics-panel">
+          <h3>Total Downtime by Asset</h3>
+          <p class="metrics-hint">Sum of downtime hours per asset.</p>
+          <div class="metrics-chart-wrap"><canvas id="kpis-downtime-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="kpis-downtime" hidden></p>
+        </div>
+      </div>
+
+      <div class="metrics-panel">
+        <h3>KPI summary</h3>
+        <div class="metrics-table-scroll">
+          <table class="metrics-table" id="kpis-table">
+            <thead>
+              <tr>
+                <th>Asset</th><th>MTBF (hr)</th><th>MTTR (hr)</th>
+                <th>Work Orders</th><th>Total Downtime (hr)</th><th>Trend</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="metrics-empty" data-empty="kpis-table" hidden></p>
+      </div>
+    </div>
   </article>
-  <article class="glass-card tile slide-in">
-    <h2>Alerting Readiness</h2>
-    <p>Spot early reliability regressions with baseline-aware thresholds and trend anomaly views.</p>
+
+  <!-- ============================ Alerting Readiness ============================ -->
+  <article class="glass-card metrics-card" id="card-alerts" data-card="alerts" tabindex="0"
+           role="button" aria-expanded="false" aria-controls="alerts-expanded">
+    <header class="metrics-card-head">
+      <div>
+        <p class="eyebrow">Alerting Readiness</p>
+        <h2>Reliability risk by asset</h2>
+        <p class="metrics-card-desc">Surface assets that may need attention based on a first-pass reliability risk score.</p>
+      </div>
+      <span class="metrics-card-toggle" aria-hidden="true"></span>
+    </header>
+
+    <div class="metrics-preview" data-preview="alerts">
+      <p class="metrics-preview-label">Reliability risk score by asset (0–100)</p>
+      <div class="metrics-chart-wrap metrics-chart-preview">
+        <canvas id="alerts-preview-chart" height="160"></canvas>
+      </div>
+      <p class="metrics-empty" id="alerts-preview-empty" hidden></p>
+    </div>
+
+    <div class="metrics-expanded" id="alerts-expanded" hidden>
+      <div class="metrics-chart-grid">
+        <div class="metrics-panel">
+          <h3>Reliability Risk Score by Asset</h3>
+          <p class="metrics-hint">Risk score 0–100. The dashed line marks the alert threshold (70).
+             Assets above it are flagged High.</p>
+          <div class="metrics-chart-wrap"><canvas id="alerts-risk-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="alerts-risk" hidden></p>
+        </div>
+        <div class="metrics-panel">
+          <h3>Downtime Spike Detection</h3>
+          <p class="metrics-hint">Current-period downtime compared against the baseline period for each asset.</p>
+          <div class="metrics-chart-wrap"><canvas id="alerts-spike-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="alerts-spike" hidden></p>
+        </div>
+      </div>
+
+      <div class="metrics-panel">
+        <h3>Assets exceeding the alert threshold</h3>
+        <p class="metrics-hint" id="alerts-threshold-summary"></p>
+      </div>
+
+      <div class="metrics-panel">
+        <h3>Risk summary</h3>
+        <div class="metrics-table-scroll">
+          <table class="metrics-table" id="alerts-table">
+            <thead>
+              <tr>
+                <th>Asset</th><th>Risk Score</th><th>Downtime Δ vs Baseline</th>
+                <th>WO Count Δ vs Baseline</th><th>MTTR Δ vs Baseline</th>
+                <th>Status</th><th>Alert Count</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="metrics-empty" data-empty="alerts-table" hidden></p>
+      </div>
+    </div>
+  </article>
+
+  <!-- ============================ Availability (placeholder) ============================ -->
+  <article class="glass-card metrics-card metrics-card-disabled" id="card-availability"
+           data-card="availability" tabindex="0" role="button" aria-expanded="false"
+           aria-controls="availability-expanded">
+    <header class="metrics-card-head">
+      <div>
+        <p class="eyebrow">Availability</p>
+        <h2>Asset availability</h2>
+        <p class="metrics-card-desc">Track availability from downtime and scheduled work hours.</p>
+      </div>
+      <span class="metrics-card-toggle" aria-hidden="true"></span>
+    </header>
+
+    <div class="metrics-preview" data-preview="availability">
+      <div class="metrics-chart-wrap metrics-chart-preview metrics-chart-placeholder" aria-hidden="true">
+        <span class="metrics-placeholder-text">Coming soon</span>
+      </div>
+    </div>
+
+    <div class="metrics-expanded" id="availability-expanded" hidden>
+      <div class="metrics-panel metrics-coming-soon">
+        <p class="metrics-coming-soon-text">Availability analysis is coming soon. This metric will calculate
+           asset availability using downtime and scheduled work hours.</p>
+        <p class="metrics-hint">Future definition: Availability = (Scheduled Work Hours − Downtime) ÷ Scheduled Work Hours</p>
+      </div>
+    </div>
   </article>
 </section>
+
+<div id="metrics-loading" class="metrics-loading" hidden>
+  <div class="metrics-spinner" aria-hidden="true"></div>
+  <span>Loading metrics…</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/metrics.js') }}"></script>
 {% endblock %}
