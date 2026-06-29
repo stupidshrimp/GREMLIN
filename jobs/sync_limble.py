@@ -19,8 +19,7 @@ from services.ingestion_service import IngestionService
 
 def run_sync(updated_since: str | None = None) -> dict[str, int]:
     """Run one sync cycle using placeholder wiring."""
-    # TODO: load real config from environment or secrets manager.
-    config = LimbleConfig(base_url="https://api.limblecmms.com", api_key="REPLACE_ME")
+    config = LimbleConfig.from_env()
     client = LimbleClient(config=config)
     raw_repo = RawRepository()
     service = IngestionService(limble_client=client, raw_repo=raw_repo)
