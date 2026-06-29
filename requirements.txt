@@ -1,2 +1,3 @@
 Flask
-load_dotenv
+requests
+python-dotenv
