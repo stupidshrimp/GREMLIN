@@ -7,6 +7,7 @@ REL-style mapped, disposition, event-processing, and Weibull analysis tables.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -820,6 +821,17 @@ class LifeDataService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_approved_weibull_parameter_result ON approved_weibull_parameter(weibull_result_id);
                 CREATE INDEX IF NOT EXISTS idx_approved_weibull_parameter_population ON approved_weibull_parameter(approved_modeled_population_id);
+
+                CREATE TABLE IF NOT EXISTS weibull_report_log (
+                    weibull_report_log_id INTEGER PRIMARY KEY,
+                    asset_number TEXT NOT NULL,
+                    report_number TEXT NOT NULL,
+                    sequence_number INTEGER NOT NULL,
+                    analysis_label TEXT,
+                    weibull_result_id INTEGER,
+                    generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_weibull_report_log_asset ON weibull_report_log(asset_number);
                 """
             )
             conn.executemany(
@@ -2644,6 +2656,364 @@ class LifeDataService:
             lookup_rows=lookup_rows,
         )
         return len(rows)
+
+    # ---- Weibull report (Word .docx) -----------------------------------------
+    @staticmethod
+    def _safe_asset_token(asset_number: str) -> str:
+        token = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(asset_number)).strip("_")
+        return token or "asset"
+
+    def next_weibull_report_number(self, asset_number: str, *, analysis_label: str = "", weibull_result_id: int | None = None) -> tuple[str, int]:
+        """Reserve the next ``REL-WBL-RPT-<asset>-00x`` report number for an asset.
+
+        The sequence increments per asset so repeat reports get -001, -002, … The
+        reservation is recorded in ``weibull_report_log`` so numbers are never reused.
+        """
+
+        token = self._safe_asset_token(asset_number)
+        with self.write_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sequence_number), 0) AS last_seq FROM weibull_report_log WHERE asset_number = ?",
+                (asset_number,),
+            ).fetchone()
+            sequence_number = int(row["last_seq"]) + 1 if row else 1
+            report_number = f"REL-WBL-RPT-{token}-{sequence_number:03d}"
+            conn.execute(
+                """
+                INSERT INTO weibull_report_log(asset_number, report_number, sequence_number, analysis_label, weibull_result_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (asset_number, report_number, sequence_number, analysis_label or None, weibull_result_id),
+            )
+        return report_number, sequence_number
+
+    def load_weibull_result_for_report(self, result_id: int, asset_number: str) -> dict[str, Any]:
+        """Load a persisted Weibull result and confirm it belongs to ``asset_number``.
+
+        The report's parameters, confidence intervals, MTTF, observation counts, and
+        interpretation summary are read back from ``weibull_result`` (never trusted from
+        the client) so a tampered request cannot mint a numbered REL report with
+        arbitrary values or a result id borrowed from another asset.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT wr.weibull_result_id, wr.beta_mle, wr.eta_mle,
+                       wr.beta_lower_ci, wr.beta_upper_ci, wr.eta_lower_ci, wr.eta_upper_ci,
+                       wr.failure_count, wr.censored_count, wr.total_observation_count,
+                       wr.mean_time_to_failure, wr.engineering_interpretation,
+                       ad.asset_number, ad.analysis_name
+                FROM weibull_result wr
+                JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+                JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+                WHERE wr.weibull_result_id = ?
+                """,
+                (result_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("That Weibull result no longer exists. Re-run the analysis before generating a report.")
+        if str(row["asset_number"]) != str(asset_number):
+            raise ValueError("The selected Weibull result does not belong to this asset.")
+
+        try:
+            interpretation_summary = json.loads(row["engineering_interpretation"]) if row["engineering_interpretation"] else []
+        except (ValueError, TypeError):
+            interpretation_summary = []
+        if not isinstance(interpretation_summary, list):
+            interpretation_summary = []
+
+        analysis_name = str(row["analysis_name"] or "")
+        label_prefix = "Weibull Analysis - "
+        analysis_label = analysis_name[len(label_prefix):] if analysis_name.startswith(label_prefix) else analysis_name
+        return {
+            "result_id": int(row["weibull_result_id"]),
+            "analysis_label": analysis_label or "Selected failure group",
+            "beta_mle": row["beta_mle"],
+            "eta_mle": row["eta_mle"],
+            "beta_lower_ci": row["beta_lower_ci"],
+            "beta_upper_ci": row["beta_upper_ci"],
+            "eta_lower_ci": row["eta_lower_ci"],
+            "eta_upper_ci": row["eta_upper_ci"],
+            "failure_count": row["failure_count"],
+            "censored_count": row["censored_count"],
+            "total_observation_count": row["total_observation_count"],
+            "mean_time_to_failure": row["mean_time_to_failure"],
+            "interpretation_summary": interpretation_summary,
+        }
+
+    def build_weibull_report_docx(self, asset_number: str, payload: dict[str, Any], output_path: str | Path) -> str:
+        """Write a high-level Weibull report Word document and return its report number.
+
+        The analysis fields are reloaded from the persisted ``weibull_result`` for the
+        given asset (so the numbered REL report cannot be driven by tampered request
+        data); only the chart images are taken from the client payload, since they are
+        rendered from canvases that exist only in the browser.
+        """
+
+        client_result = payload.get("result") or {}
+        result_id = self._optional_int_value(payload.get("result_id"))
+        if result_id is None:
+            result_id = self._optional_int_value(client_result.get("result_id"))
+        if result_id is None:
+            raise ValueError("A saved Weibull result id is required to generate a report.")
+        result = self.load_weibull_result_for_report(result_id, asset_number)
+        analysis_label = result["analysis_label"]
+        report_number, _ = self.next_weibull_report_number(
+            asset_number,
+            analysis_label=analysis_label,
+            weibull_result_id=result_id,
+        )
+        charts: list[dict[str, Any]] = []
+        for chart in payload.get("charts") or []:
+            if not chart:
+                continue
+            png_bytes = self._decode_data_url_png(chart.get("image"))
+            if not png_bytes:
+                continue
+            charts.append({"title": chart.get("title"), "_png_bytes": png_bytes})
+        self._write_docx(output_path, self._weibull_report_body(report_number, asset_number, analysis_label, result, charts), charts)
+        return report_number
+
+    def _weibull_report_body(self, report_number: str, asset_number: str, analysis_label: str, result: dict[str, Any], charts: list[dict[str, Any]]) -> str:
+        """Build the ``word/document.xml`` body XML for a Weibull report."""
+
+        def fmt(value: Any, suffix: str = "") -> str:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return "Not available"
+            if not math.isfinite(number):
+                return "Not available"
+            return f"{number:.4g}{suffix}"
+
+        generated_on = datetime.now().strftime("%Y-%m-%d %H:%M")
+        beta = fmt(result.get("beta_mle"))
+        eta = fmt(result.get("eta_mle"), " hours")
+        mttf = fmt(result.get("mean_time_to_failure"), " hours")
+        beta_ci = (
+            f"{fmt(result.get('beta_lower_ci'))} to {fmt(result.get('beta_upper_ci'))}"
+            if result.get("beta_lower_ci") is not None and result.get("beta_upper_ci") is not None
+            else "Not available"
+        )
+        eta_ci = (
+            f"{fmt(result.get('eta_lower_ci'))} to {fmt(result.get('eta_upper_ci'), ' hours')}"
+            if result.get("eta_lower_ci") is not None and result.get("eta_upper_ci") is not None
+            else "Not available"
+        )
+        total = result.get("total_observation_count")
+        failures = result.get("failure_count")
+        censored = result.get("censored_count")
+
+        parts: list[str] = []
+        parts.append(self._docx_heading(report_number, level=1))
+        parts.append(self._docx_heading("Weibull Reliability Analysis Report", level=2))
+        parts.append(self._docx_paragraph(f"Asset Number: {asset_number}", bold=True))
+        parts.append(self._docx_paragraph(f"Failure population: {analysis_label}"))
+        parts.append(self._docx_paragraph(f"Report generated: {generated_on}"))
+        parts.append(self._docx_paragraph(f"Observations: {total} total, {failures} failures, {censored} right-censored."))
+
+        # Headline parameters table.
+        parts.append(self._docx_heading("Fitted Weibull Parameters", level=2))
+        parts.append(
+            self._docx_table(
+                ["Parameter", "Value"],
+                [
+                    ["Shape (beta)", beta],
+                    ["Scale (eta)", eta],
+                    ["Mean time to failure (MTTF)", mttf],
+                    ["Beta 95% confidence interval", beta_ci],
+                    ["Eta 95% confidence interval", eta_ci],
+                ],
+            )
+        )
+
+        # Charts.
+        if charts:
+            parts.append(self._docx_heading("Analysis Graphs", level=2))
+            for index, chart in enumerate(charts, start=1):
+                title = str(chart.get("title") or f"Figure {index}")
+                parts.append(self._docx_paragraph(title, bold=True))
+                parts.append(self._docx_image_paragraph(index, chart))
+
+        # Interpretation summary table.
+        parts.append(self._docx_heading("Results Interpretation Summary", level=2))
+        rows = result.get("interpretation_summary") or []
+        table_rows = [
+            [str(row.get("metric") or "—"), str(row.get("value") or "—"), str(row.get("recommendation") or "—")]
+            for row in rows
+        ]
+        if not table_rows:
+            table_rows = [["—", "—", "No interpretation summary is available for this Weibull result."]]
+        parts.append(self._docx_table(["Metric", "Value", "Interpretation / Recommended Action"], table_rows))
+
+        parts.append(
+            self._docx_paragraph(
+                "Recommendations are based on beta, eta, MTTF, and the approximate 95% confidence intervals for the "
+                "fitted Weibull parameters. This report summarizes the analysis at a high level; consult the GREMLIN "
+                "Perform Analysis workspace for the underlying observation data.",
+                italic=True,
+            )
+        )
+
+        body = "".join(parts) + self._DOCX_SECTPR
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f"<w:body>{body}</w:body></w:document>"
+        )
+
+    _DOCX_SECTPR = (
+        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+        '<w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440" '
+        'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
+    )
+    # Usable content width inside 1" margins on US-Letter (6.5 in) in EMU.
+    _DOCX_CONTENT_WIDTH_EMU = 5943600
+
+    def _docx_run(self, text: str, *, bold: bool = False, italic: bool = False, size_half_points: int | None = None) -> str:
+        run_props = []
+        if bold:
+            run_props.append("<w:b/>")
+        if italic:
+            run_props.append("<w:i/>")
+        if size_half_points:
+            run_props.append(f'<w:sz w:val="{size_half_points}"/>')
+        rpr = f"<w:rPr>{''.join(run_props)}</w:rPr>" if run_props else ""
+        return f'<w:r>{rpr}<w:t xml:space="preserve">{escape(str(text))}</w:t></w:r>'
+
+    def _docx_paragraph(self, text: str, *, bold: bool = False, italic: bool = False) -> str:
+        return f"<w:p>{self._docx_run(text, bold=bold, italic=italic)}</w:p>"
+
+    def _docx_heading(self, text: str, *, level: int = 1) -> str:
+        size = {1: 36, 2: 28, 3: 24}.get(level, 24)
+        spacing = '<w:spacing w:before="240" w:after="120"/>'
+        return f"<w:p><w:pPr>{spacing}</w:pPr>{self._docx_run(text, bold=True, size_half_points=size)}</w:p>"
+
+    def _docx_table(self, headers: list[str], rows: list[list[str]]) -> str:
+        border = '<w:tblBorders>' + "".join(
+            f'<w:{edge} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>'
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV")
+        ) + '</w:tblBorders>'
+        tbl_pr = (
+            '<w:tblPr><w:tblStyle w:val="TableGrid"/>'
+            '<w:tblW w:w="5000" w:type="pct"/>'
+            f'{border}<w:tblLayout w:type="autofit"/></w:tblPr>'
+        )
+
+        def cell(text: str, *, header: bool = False) -> str:
+            shade = '<w:shd w:val="clear" w:color="auto" w:fill="D9E2F3"/>' if header else ""
+            tc_pr = f"<w:tcPr>{shade}</w:tcPr>" if shade else ""
+            return f"<w:tc>{tc_pr}<w:p>{self._docx_run(text, bold=header)}</w:p></w:tc>"
+
+        header_row = "<w:tr>" + "".join(cell(h, header=True) for h in headers) + "</w:tr>"
+        body_rows = "".join("<w:tr>" + "".join(cell(value) for value in row) + "</w:tr>" for row in rows)
+        return f"<w:tbl>{tbl_pr}{header_row}{body_rows}</w:tbl><w:p/>"
+
+    def _docx_image_paragraph(self, index: int, chart: dict[str, Any]) -> str:
+        width_px, height_px = self._png_pixel_size(chart.get("_png_bytes") or b"")
+        if width_px <= 0 or height_px <= 0:
+            width_px, height_px = 1000, 600
+        emu_per_px = 9525  # 96 DPI
+        cx = width_px * emu_per_px
+        cy = height_px * emu_per_px
+        if cx > self._DOCX_CONTENT_WIDTH_EMU:
+            scale = self._DOCX_CONTENT_WIDTH_EMU / cx
+            cx = int(cx * scale)
+            cy = int(cy * scale)
+        rid = f"rIdImg{index}"
+        title = escape(str(chart.get("title") or f"Figure {index}"))
+        return (
+            "<w:p><w:r><w:drawing>"
+            f'<wp:inline distT="0" distB="0" distL="0" distR="0">'
+            f'<wp:extent cx="{cx}" cy="{cy}"/>'
+            '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            f'<wp:docPr id="{index}" name="Picture {index}" descr="{title}"/>'
+            '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+            '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic>'
+            f'<pic:nvPicPr><pic:cNvPr id="{index}" name="Picture {index}" descr="{title}"/><pic:cNvPicPr/></pic:nvPicPr>'
+            f'<pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            '<pic:spPr>'
+            f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            '</pic:spPr></pic:pic>'
+            '</a:graphicData></a:graphic>'
+            "</wp:inline></w:drawing></w:r></w:p>"
+        )
+
+    @staticmethod
+    def _png_pixel_size(data: bytes) -> tuple[int, int]:
+        # PNG IHDR holds big-endian width/height at byte offsets 16 and 20.
+        if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+            width = int.from_bytes(data[16:20], "big")
+            height = int.from_bytes(data[20:24], "big")
+            return width, height
+        return 0, 0
+
+    @staticmethod
+    def _decode_data_url_png(image: str) -> bytes:
+        raw = str(image or "")
+        if "," in raw and raw.strip().lower().startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        try:
+            return base64.b64decode(raw, validate=False)
+        except (ValueError, TypeError):
+            return b""
+
+    def _write_docx(self, output_path: str | Path, document_xml: str, charts: list[dict[str, Any]]) -> None:
+        """Assemble a minimal Word .docx package using only the standard library."""
+
+        image_rels: list[str] = []
+        image_files: list[tuple[str, bytes]] = []
+        for index, chart in enumerate(charts, start=1):
+            png_bytes = chart.get("_png_bytes")
+            if not png_bytes:
+                continue
+            filename = f"media/image{index}.png"
+            image_files.append((f"word/{filename}", png_bytes))
+            image_rels.append(
+                f'<Relationship Id="rIdImg{index}" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+                f'Target="{filename}"/>'
+            )
+
+        content_types = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Default Extension="png" ContentType="image/png"/>'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '</Types>'
+        )
+        root_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="word/document.xml"/></Relationships>'
+        )
+        document_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(image_rels)
+            + '</Relationships>'
+        )
+
+        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as document:
+            document.writestr("[Content_Types].xml", content_types)
+            document.writestr("_rels/.rels", root_rels)
+            document.writestr("word/document.xml", document_xml)
+            document.writestr("word/_rels/document.xml.rels", document_rels)
+            for arcname, data in image_files:
+                document.writestr(arcname, data)
 
     def import_disposition_excel(self, asset_number: str, kind: str, input_path: str | Path) -> int:
         """Read disposition rows from Excel and save them as current dispositions."""
