@@ -337,6 +337,13 @@ class AnalysisResultView:
 class LifeDataService:
     """Owns GREMLIN.db schema, CMMS mapping, disposition, and Weibull analysis."""
 
+    # Version stamp for the raw -> mapped transform. ``refresh_mapped_cmms_records``
+    # skips any raw row whose content hash and mapping version are unchanged, so
+    # this MUST be bumped whenever ``_map_raw_record`` changes how it derives a
+    # column. Otherwise rows already mapped under the old logic are never re-mapped
+    # (their raw JSON is identical) and keep their stale values.
+    _MAPPING_VERSION = "v2"
+
     def __init__(self, db_path: Path | str | object = _DEFAULT_DB_PATH_SENTINEL, *, refresh_on_startup: bool = True) -> None:
         if db_path is _DEFAULT_DB_PATH_SENTINEL:
             # Pick the first reachable shared candidate (UNC or any mapped drive)
@@ -1483,7 +1490,7 @@ class LifeDataService:
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
         self._asset_number_options_cache = None
-        mapping_version = "v1"
+        mapping_version = self._MAPPING_VERSION
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
                 return 0
@@ -1577,7 +1584,12 @@ class LifeDataService:
             "status_id_raw": self._get_alias(raw, "statusID"),
             "asset_id_raw": self._get_alias(raw, "assetID"),
             "asset_name": self._get_alias(raw, "Asset Name"),
-            "asset_number": self._get_alias(raw, "Asset Number"),
+            # The legacy Excel export carried a human-readable "Asset Number" column,
+            # but Limble's task API identifies the asset only by the numeric
+            # ``assetID``. Fall back to ``assetID`` so API-sourced records still
+            # populate an asset number instead of collapsing to NULL (which drops
+            # them from the asset dropdown entirely).
+            "asset_number": self._get_alias(raw, "Asset Number", "assetID"),
             "immediate_parent_asset_id": self._get_alias(raw, "Immediate Parent Asset ID"),
             "immediate_parent_asset_name": self._get_alias(raw, "Immediate Parent Asset Name"),
             "root_asset_id": self._get_alias(raw, "Root Asset ID"),
@@ -1612,7 +1624,7 @@ class LifeDataService:
             "is_corrective_wo_candidate": int(is_wo),
             "is_purchase_order_related": int(bool(self._get_alias(raw, "poIDs"))),
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
-            "mapping_version": "v1",
+            "mapping_version": self._MAPPING_VERSION,
         }
 
     def _parse_downtime_minutes(self, value: Any) -> float | None:
