@@ -246,17 +246,24 @@ class RawRepository:
                 sets.append(f"{column} = ?")
                 params.append(value)
         assignment = ", ".join(sets)
+        # Legacy tables may lack an explicit raw_record_id; fall back to rowid,
+        # the same way the application mapper does.
+        pk_expr = "raw_record_id" if "raw_record_id" in columns else "rowid"
         for raw_record_id in ids:
             conn.execute(
-                f"UPDATE raw_cmms_record SET {assignment} WHERE raw_record_id = ?",
+                f"UPDATE raw_cmms_record SET {assignment} WHERE {pk_expr} = ?",
                 [*params, raw_record_id],
             )
 
     def _index_existing(self, conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         """Map Limble taskID -> {ids: [...], hash: <hash of first row>}."""
 
-        has_source_id = "source_record_id" in self._column_names(conn, "raw_cmms_record")
-        select = "SELECT raw_record_id, raw_json" + (", source_record_id" if has_source_id else "") + " FROM raw_cmms_record"
+        columns = self._column_names(conn, "raw_cmms_record")
+        has_source_id = "source_record_id" in columns
+        # Legacy tables may only have raw_json (no raw_record_id); fall back to
+        # rowid, aliased so downstream row access is uniform.
+        pk_expr = "raw_record_id" if "raw_record_id" in columns else "rowid AS raw_record_id"
+        select = f"SELECT {pk_expr}, raw_json" + (", source_record_id" if has_source_id else "") + " FROM raw_cmms_record"
         index: dict[str, dict[str, Any]] = {}
         for row in conn.execute(select):
             try:
