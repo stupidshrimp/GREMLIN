@@ -3952,13 +3952,23 @@
     return (td.textContent || "").trim();
   }
 
+  // Parse a cell's display text as a number, tolerating the thousands separators
+  // that fmtFixed/toLocaleString add (e.g. "1,000.00"), which plain Number()
+  // rejects. Returns NaN for anything that is not a pure (optionally grouped)
+  // number so dates and free text fall through to the text comparison.
+  function columnNumericValue(s) {
+    if (s === "") return NaN;
+    const cleaned = s.replace(/,/g, "");
+    return /^[+-]?(\d+\.?\d*|\.\d+)$/.test(cleaned) ? Number(cleaned) : NaN;
+  }
+
   // Numbers sort numerically (and before text); everything else uses a
   // numeric-aware locale compare, which also orders ISO date strings correctly.
   function columnCompare(a, b) {
-    const na = Number(a);
-    const nb = Number(b);
-    const aNum = a !== "" && isFinite(na);
-    const bNum = b !== "" && isFinite(nb);
+    const na = columnNumericValue(a);
+    const nb = columnNumericValue(b);
+    const aNum = isFinite(na);
+    const bNum = isFinite(nb);
     if (aNum && bNum) return na - nb;
     if (aNum) return -1;
     if (bNum) return 1;
