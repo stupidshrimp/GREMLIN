@@ -194,6 +194,37 @@
       body: JSON.stringify(body || {}),
     });
 
+  // POST a JSON body and download the binary response (e.g. a generated Word
+  // report) as a file, using the server's Content-Disposition filename.
+  async function postDownload(url, body, fallbackName) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    if (!response.ok) {
+      let message = `Request failed (${response.status}).`;
+      try {
+        const data = await response.json();
+        if (data && data.error) message = data.error;
+      } catch (err) {
+        /* response body was not JSON; keep the generic message */
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = (match && match[1]) || fallbackName || "download";
+    const href = URL.createObjectURL(blob);
+    const link = el("a", { href, download: filename });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(href);
+    return filename;
+  }
+
   // ---- loading + banner -----------------------------------------------------
   let loadingDepth = 0;
   function beginLoading(message) {
@@ -3198,9 +3229,65 @@
         "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
       panel("Weibull Data Used for Graphs", dataTable.node,
         "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations."),
+      buildReportBar(result, charts),
     ]);
     $("lda-workspace").appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Action bar at the bottom of the results: generates a formal, high-level
+  // Weibull report (Word .docx) containing the charts and interpretation summary.
+  function buildReportBar(result, charts) {
+    const button = el("button", {
+      class: "btn-primary",
+      type: "button",
+      text: "Generate Weibull Report",
+    });
+    button.addEventListener("click", () => generateWeibullReport(result, charts, button));
+    return el("div", { class: "lda-report-bar" }, [
+      button,
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) summarizing this Weibull result at a high level, " +
+          "including the analysis graphs and the interpretation summary.",
+      }),
+    ]);
+  }
+
+  async function generateWeibullReport(result, chartsContainer, button) {
+    if (!state.selectedAsset) {
+      showBanner("Select an Asset Number first.", "error");
+      return;
+    }
+    // Capture each rendered chart canvas as a PNG, pairing it with its heading so
+    // the report figures match what is on screen.
+    const charts = [];
+    chartsContainer.querySelectorAll(".lda-chart-card").forEach((cardEl) => {
+      const canvas = cardEl.querySelector("canvas");
+      const heading = cardEl.querySelector("h4");
+      if (!canvas) return;
+      try {
+        charts.push({ title: heading ? heading.textContent : "", image: canvas.toDataURL("image/png") });
+      } catch (err) {
+        /* tainted canvas should not happen for locally drawn charts; skip it */
+      }
+    });
+    if (button) button.disabled = true;
+    beginLoading("Generating Weibull report…");
+    try {
+      const filename = await postDownload(
+        `${API}/weibull-report`,
+        { asset: state.selectedAsset, result, charts },
+        "weibull-report.docx"
+      );
+      showBanner(`Generated ${filename}.`, "success");
+    } catch (err) {
+      showBanner(err.message, "error");
+    } finally {
+      endLoading();
+      if (button) button.disabled = false;
+    }
   }
 
   function field(labelText, input) {

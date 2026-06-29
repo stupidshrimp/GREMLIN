@@ -551,6 +551,37 @@ def api_parameter_adjustment():
     return jsonify({"parameter_adjustment_id": adjustment_id})
 
 
+@app.route("/life-data-analysis/api/weibull-report", methods=["POST"])
+@life_data_api
+def api_weibull_report():
+    service = _service_or_api_error()
+    payload = request.get_json(silent=True) or {}
+    asset_number = (payload.get("asset") or "").strip()
+    if not asset_number:
+        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
+    if not (payload.get("result") or {}):
+        raise LifeDataApiError("Run a Weibull analysis before generating a report.", status_code=400)
+    # Build the .docx in a temp file, serve it from memory, then delete the temp
+    # file immediately so repeated downloads never orphan files on disk.
+    fd, path = tempfile.mkstemp(suffix=".docx", prefix="weibull_report_")
+    os.close(fd)
+    try:
+        report_number = service.build_weibull_report_docx(asset_number, payload, path)
+        with open(path, "rb") as handle:
+            document_bytes = handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return send_file(
+        io.BytesIO(document_bytes),
+        as_attachment=True,
+        download_name=f"{report_number}.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
 @app.errorhandler(404)
 def not_found(_err):
     return render_template("home.html", page_title="Not Found", nav_links=NAV_LINKS), 404
