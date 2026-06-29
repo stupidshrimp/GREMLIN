@@ -3291,7 +3291,9 @@
     try {
       const filename = await postDownload(
         `${API}/weibull-report`,
-        { asset: state.selectedAsset, result, charts },
+        // Send only the saved result id (plus chart images); the server reloads the
+        // authoritative parameters and interpretation summary from the database.
+        { asset: state.selectedAsset, result_id: result.result_id, charts },
         "weibull-report.docx"
       );
       showBanner(`Generated ${filename}.`, "success");

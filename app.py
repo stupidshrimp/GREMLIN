@@ -559,8 +559,15 @@ def api_weibull_report():
     asset_number = (payload.get("asset") or "").strip()
     if not asset_number:
         raise LifeDataApiError("Select an Asset Number first.", status_code=400)
-    if not (payload.get("result") or {}):
+    result_id = payload.get("result_id")
+    if result_id in (None, ""):
+        result_id = (payload.get("result") or {}).get("result_id")
+    if result_id in (None, ""):
         raise LifeDataApiError("Run a Weibull analysis before generating a report.", status_code=400)
+    try:
+        payload["result_id"] = int(result_id)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("A valid saved Weibull result id is required.", status_code=400)
     # Build the .docx in a temp file, serve it from memory, then delete the temp
     # file immediately so repeated downloads never orphan files on disk.
     fd, path = tempfile.mkstemp(suffix=".docx", prefix="weibull_report_")

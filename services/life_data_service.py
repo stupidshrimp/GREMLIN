@@ -2687,20 +2687,82 @@ class LifeDataService:
             )
         return report_number, sequence_number
 
+    def load_weibull_result_for_report(self, result_id: int, asset_number: str) -> dict[str, Any]:
+        """Load a persisted Weibull result and confirm it belongs to ``asset_number``.
+
+        The report's parameters, confidence intervals, MTTF, observation counts, and
+        interpretation summary are read back from ``weibull_result`` (never trusted from
+        the client) so a tampered request cannot mint a numbered REL report with
+        arbitrary values or a result id borrowed from another asset.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT wr.weibull_result_id, wr.beta_mle, wr.eta_mle,
+                       wr.beta_lower_ci, wr.beta_upper_ci, wr.eta_lower_ci, wr.eta_upper_ci,
+                       wr.failure_count, wr.censored_count, wr.total_observation_count,
+                       wr.mean_time_to_failure, wr.engineering_interpretation,
+                       ad.asset_number, ad.analysis_name
+                FROM weibull_result wr
+                JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+                JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+                WHERE wr.weibull_result_id = ?
+                """,
+                (result_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("That Weibull result no longer exists. Re-run the analysis before generating a report.")
+        if str(row["asset_number"]) != str(asset_number):
+            raise ValueError("The selected Weibull result does not belong to this asset.")
+
+        try:
+            interpretation_summary = json.loads(row["engineering_interpretation"]) if row["engineering_interpretation"] else []
+        except (ValueError, TypeError):
+            interpretation_summary = []
+        if not isinstance(interpretation_summary, list):
+            interpretation_summary = []
+
+        analysis_name = str(row["analysis_name"] or "")
+        label_prefix = "Weibull Analysis - "
+        analysis_label = analysis_name[len(label_prefix):] if analysis_name.startswith(label_prefix) else analysis_name
+        return {
+            "result_id": int(row["weibull_result_id"]),
+            "analysis_label": analysis_label or "Selected failure group",
+            "beta_mle": row["beta_mle"],
+            "eta_mle": row["eta_mle"],
+            "beta_lower_ci": row["beta_lower_ci"],
+            "beta_upper_ci": row["beta_upper_ci"],
+            "eta_lower_ci": row["eta_lower_ci"],
+            "eta_upper_ci": row["eta_upper_ci"],
+            "failure_count": row["failure_count"],
+            "censored_count": row["censored_count"],
+            "total_observation_count": row["total_observation_count"],
+            "mean_time_to_failure": row["mean_time_to_failure"],
+            "interpretation_summary": interpretation_summary,
+        }
+
     def build_weibull_report_docx(self, asset_number: str, payload: dict[str, Any], output_path: str | Path) -> str:
         """Write a high-level Weibull report Word document and return its report number.
 
-        ``payload`` carries the rendered analysis fields plus the chart images
-        captured client-side (base64 PNG data URLs), so the document mirrors exactly
-        what the engineer reviewed on screen.
+        The analysis fields are reloaded from the persisted ``weibull_result`` for the
+        given asset (so the numbered REL report cannot be driven by tampered request
+        data); only the chart images are taken from the client payload, since they are
+        rendered from canvases that exist only in the browser.
         """
 
-        result = payload.get("result") or {}
-        analysis_label = str(result.get("analysis_label") or payload.get("analysis_label") or "Selected failure group")
+        client_result = payload.get("result") or {}
+        result_id = self._optional_int_value(payload.get("result_id"))
+        if result_id is None:
+            result_id = self._optional_int_value(client_result.get("result_id"))
+        if result_id is None:
+            raise ValueError("A saved Weibull result id is required to generate a report.")
+        result = self.load_weibull_result_for_report(result_id, asset_number)
+        analysis_label = result["analysis_label"]
         report_number, _ = self.next_weibull_report_number(
             asset_number,
             analysis_label=analysis_label,
-            weibull_result_id=self._optional_int_value(result.get("result_id")),
+            weibull_result_id=result_id,
         )
         charts: list[dict[str, Any]] = []
         for chart in payload.get("charts") or []:
