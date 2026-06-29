@@ -2147,7 +2147,12 @@
       class: "btn-secondary",
       text: "Check all Include in Weibull Candidate",
       onclick: () => {
-        rowStates.forEach((rs) => (rs.include.checked = true));
+        // Respect an active column filter: only check rows the user can currently
+        // see, so filtering to a subset and clicking this never silently flips
+        // (and later saves) the Weibull inclusion of hidden rows.
+        rowStates.forEach((rs) => {
+          if (rs.tr.style.display !== "none") rs.include.checked = true;
+        });
       },
     });
 
