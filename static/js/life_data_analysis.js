@@ -3428,11 +3428,15 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    enableTableColumnTools(table);
+    const tableTools = enableTableColumnTools(table);
     const node = el("div", { class: "lda-data-scroll" }, [table]);
     function highlight(observationId) {
       const tr = rowByObs.get(Number(observationId));
       if (!tr) return;
+      // A click-to-jump from a chart point may target a row that an active column
+      // filter is hiding (e.g. filtered to Failure=Yes, then clicking a censored
+      // point). Clear the filters so the jump actually reveals the row.
+      if (tr.style.display === "none" && tableTools) tableTools.clearFilters();
       tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
       tr.classList.add("is-highlight");
       tr.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -4123,6 +4127,20 @@
       });
       th.appendChild(el("div", { class: "lda-col-head" }, [el("span", { class: "lda-col-label", text: label }), btn]));
     });
+
+    // Drop every active value filter and re-show all rows. Returned so callers
+    // (e.g. the chart click-to-row jump) can reveal a row that an active filter
+    // is currently hiding before scrolling to it.
+    function clearFilters() {
+      filters.forEach((_, i) => { filters[i] = null; });
+      ths.forEach((th) => {
+        const btn = th.querySelector(".lda-col-tool");
+        if (btn) btn.classList.remove("is-active");
+      });
+      applyFilters();
+    }
+
+    return { clearFilters };
   }
 
   // ---- Weibull point hover tooltips ----------------------------------------
