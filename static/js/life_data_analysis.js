@@ -2105,6 +2105,7 @@
 
     table.appendChild(thead);
     table.appendChild(tbody);
+    enableTableColumnTools(table);
 
     const changed = () => rowStates.filter((rs) => JSON.stringify(dispositionPayloadFromRow(rs, data.kind)) !== rs.initial);
     // Exposed so the Rows/Scope selectors on the dedicated disposition page can
@@ -2165,6 +2166,7 @@
         }),
       ]),
       el("div", { class: "lda-row-actions", style: "justify-content:flex-start" }, [checkAllButton]),
+      el("p", { class: "lda-hint", text: "Use the ▾ menu in any column header to sort or filter the rows shown on this page." }),
       el("div", { class: "lda-table-scroll" }, [table]),
       pager,
       el("div", { class: "lda-row-actions" }, [download, upload, save]),
@@ -3192,12 +3194,13 @@
         text:
           "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
           "The red vertical line marks the current life — the elapsed time from the most recent valid event to the analysis cutoff. " +
-          "The hazard and PDF panes intentionally show only the MLE curve. Click any plotted failure or censored point, or the current-life line, to jump to the source Weibull data row below.",
+          "The hazard and PDF panes intentionally show only the MLE curve. Hover any plotted point or the current-life line to see its task ID, life hours, start/end dates, request description, and completion notes; click it to jump to the source Weibull data row below.",
       }),
       panel("Results Interpretation Summary", buildInterpretationTable(result),
         "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
       panel("Weibull Data Used for Graphs", dataTable.node,
-        "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations."),
+        "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Use the ▾ menu in any column header to sort or filter the rows."),
     ]);
     $("lda-workspace").appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -3321,6 +3324,7 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
+    enableTableColumnTools(table);
     const node = el("div", { class: "lda-data-scroll" }, [table]);
     function highlight(observationId) {
       const tr = rowByObs.get(Number(observationId));
@@ -3434,6 +3438,20 @@
     const jumpToObs = (obs) => {
       if (highlight && obs) highlight(obs.weibull_observation_id);
     };
+    // KM/scatter points carry only a time, so map one back to the closest failure
+    // observation by life hours for the hover tooltip and click-to-row jump.
+    const nearestFailureObs = (lifeHours) => {
+      let best = null;
+      let bestDelta = Infinity;
+      failureObs.forEach((obs) => {
+        const delta = Math.abs(Number(obs.life_hours_for_weibull) - Number(lifeHours));
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          best = obs;
+        }
+      });
+      return best;
+    };
 
     const panes = [
       { key: "prob", title: "Weibull Probability Plot", height: 300 },
@@ -3490,6 +3508,7 @@
         xLabel: "Life hours",
         yLabel: "CDF",
         scatterPick: highlightFailureByTime,
+        scatterObs: (p) => nearestFailureObs(p.life_hours),
         censoredPick: jumpToObs,
         markerPick: jumpToObs,
       });
@@ -3517,15 +3536,7 @@
 
     function highlightFailureByTime(point) {
       // map a KM/time point back to the nearest failure observation row
-      let best = null;
-      let bestDelta = Infinity;
-      failureObs.forEach((obs) => {
-        const delta = Math.abs(Number(obs.life_hours_for_weibull) - Number(point.life_hours));
-        if (delta < bestDelta) {
-          bestDelta = delta;
-          best = obs;
-        }
-      });
+      const best = nearestFailureObs(point.life_hours);
       if (best && highlight) highlight(best.weibull_observation_id);
     }
 
@@ -3588,6 +3599,21 @@
     ctx.lineTo(sx(xMax), sy(fitY(xMax, beta)));
     ctx.stroke();
 
+    // Map a plotted KM point back to the closest failure observation (by life
+    // hours, in log space) for the hover tooltip and click-to-row jump.
+    const nearestFailureByX = (plotX) => {
+      let best = null;
+      let bestDelta = Infinity;
+      (failureObs || []).forEach((obs) => {
+        const delta = Math.abs(Math.log(Number(obs.life_hours_for_weibull)) - plotX);
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          best = obs;
+        }
+      });
+      return best;
+    };
+
     // KM points
     const hits = [];
     points.forEach((p) => {
@@ -3600,7 +3626,7 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p });
+      hits.push({ px, py, point: p, obs: nearestFailureByX(p.weibull_plot_x) });
     });
 
     // Current-life "now" markers: full-height red vertical lines.
@@ -3614,31 +3640,21 @@
       ctx.stroke();
     });
 
+    // Resolve the observation under the cursor: a current-life marker (matched on
+    // x, since it spans the pane height) takes precedence, then the nearest point.
+    const locate = (mx, my) => {
+      const marker = markers.find((m) => Math.abs(sx(m.x) - mx) <= 5 && my >= top && my <= bottom);
+      if (marker) return marker.obs;
+      const hit = hits.find((h) => Math.hypot(h.px - mx, h.py - my) <= 7);
+      return hit ? hit.obs : null;
+    };
+
     target.canvas.onclick = (event) => {
       const rect = target.canvas.getBoundingClientRect();
-      const mx = event.clientX - rect.left;
-      const my = event.clientY - rect.top;
-      // Current-life marker: jump straight to the censored observation's own row.
-      const marker = markers.find((m) => Math.abs(sx(m.x) - mx) <= 5 && my >= top && my <= bottom);
-      if (marker) {
-        if (highlight) highlight(marker.obs.weibull_observation_id);
-        return;
-      }
-      const hit = hits.find((h) => Math.hypot(h.px - mx, h.py - my) <= 7);
-      if (hit && highlight) {
-        // nearest failure observation by life hours
-        let best = null;
-        let bestDelta = Infinity;
-        failureObs.forEach((obs) => {
-          const delta = Math.abs(Math.log(Number(obs.life_hours_for_weibull)) - hit.point.weibull_plot_x);
-          if (delta < bestDelta) {
-            bestDelta = delta;
-            best = obs;
-          }
-        });
-        if (best) highlight(best.weibull_observation_id);
-      }
+      const obs = locate(event.clientX - rect.left, event.clientY - rect.top);
+      if (obs && highlight) highlight(obs.weibull_observation_id);
     };
+    attachPointHover(target.canvas, locate);
   }
 
   function drawCurvePane(target, opts) {
@@ -3684,7 +3700,7 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p[2], pick: opts.scatterPick });
+      hits.push({ px, py, point: p[2], obs: opts.scatterObs ? opts.scatterObs(p[2]) : null, pick: opts.scatterPick });
     });
     (opts.censored || []).forEach((p) => {
       const px = sx(p[0]);
@@ -3696,7 +3712,7 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p[2], pick: opts.censoredPick });
+      hits.push({ px, py, point: p[2], obs: p[2], pick: opts.censoredPick });
     });
     // Current-life "now" markers: full-height red vertical lines.
     (opts.verticalMarkers || []).forEach((m) => {
@@ -3707,21 +3723,27 @@
       ctx.moveTo(px, top);
       ctx.lineTo(px, bottom);
       ctx.stroke();
-      hits.push({ px, vertical: true, top, bottom, point: m[1], pick: opts.markerPick });
+      hits.push({ px, vertical: true, top, bottom, point: m[1], obs: m[1], pick: opts.markerPick });
     });
+    // Locate the hit under the cursor (canvas pixels). Vertical markers span the
+    // pane height, so they match on x proximity; points match within a small radius.
+    const locate = (mx, my) =>
+      hits.find((h) => {
+        if (h.vertical) return Math.abs(h.px - mx) <= 5 && my >= h.top && my <= h.bottom;
+        return Math.hypot(h.px - mx, h.py - my) <= 7;
+      });
     if (hits.some((h) => h.pick)) {
       target.canvas.onclick = (event) => {
         const rect = target.canvas.getBoundingClientRect();
-        const mx = event.clientX - rect.left;
-        const my = event.clientY - rect.top;
-        const hit = hits.find((h) => {
-          if (!h.pick) return false;
-          // Vertical markers span the pane height, so match on x proximity.
-          if (h.vertical) return Math.abs(h.px - mx) <= 5 && my >= h.top && my <= h.bottom;
-          return Math.hypot(h.px - mx, h.py - my) <= 7;
-        });
-        if (hit) hit.pick(hit.point);
+        const hit = locate(event.clientX - rect.left, event.clientY - rect.top);
+        if (hit && hit.pick) hit.pick(hit.point);
       };
+    }
+    if (hits.length) {
+      attachPointHover(target.canvas, (mx, my) => {
+        const hit = locate(mx, my);
+        return hit ? hit.obs : null;
+      });
     }
   }
 
@@ -3782,6 +3804,274 @@
     // Restore the default text origin so later drawing on this context is unaffected.
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
+  }
+
+  // ---- Excel-style column sort / filter ------------------------------------
+  // Adds a per-column header dropdown (Sort A→Z / Z→A plus a checkable value
+  // filter, like Excel's column filter) to a rendered table. It works on the rows
+  // currently in the table: for the Weibull data table that is every observation,
+  // and for the paginated disposition editor it is the visible page (complementing
+  // the cross-page server-side search box). Sorting reorders the existing <tr>
+  // nodes so editable controls keep their state; filtering hides non-matching
+  // rows. The dropdown is attached to <body> so the table's scroll containers and
+  // sticky headers never clip it.
+  let openColumnMenu = null;
+  function closeColumnMenu() {
+    if (openColumnMenu) {
+      openColumnMenu.remove();
+      openColumnMenu = null;
+    }
+  }
+  document.addEventListener("mousedown", (event) => {
+    if (!openColumnMenu) return;
+    if (openColumnMenu.contains(event.target)) return;
+    if (event.target.closest && event.target.closest(".lda-col-tool")) return;
+    closeColumnMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeColumnMenu();
+  });
+
+  // Comparable text of a body cell, reading inside editable controls so the
+  // disposition editor sorts/filters by the chosen value rather than empty markup.
+  function columnCellText(td) {
+    if (!td) return "";
+    const select = td.querySelector("select");
+    if (select) {
+      const opt = select.options[select.selectedIndex];
+      return ((opt ? opt.textContent : select.value) || "").trim();
+    }
+    const checkbox = td.querySelector('input[type="checkbox"]');
+    if (checkbox) return checkbox.checked ? "Yes" : "No";
+    const field = td.querySelector("input, textarea");
+    if (field) return String(field.value || "").trim();
+    return (td.textContent || "").trim();
+  }
+
+  // Numbers sort numerically (and before text); everything else uses a
+  // numeric-aware locale compare, which also orders ISO date strings correctly.
+  function columnCompare(a, b) {
+    const na = Number(a);
+    const nb = Number(b);
+    const aNum = a !== "" && isFinite(na);
+    const bNum = b !== "" && isFinite(nb);
+    if (aNum && bNum) return na - nb;
+    if (aNum) return -1;
+    if (bNum) return 1;
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  }
+
+  function enableTableColumnTools(table) {
+    const thead = table.tHead;
+    const tbody = table.tBodies[0];
+    if (!thead || !tbody || !thead.rows.length) return;
+    const headerRow = thead.rows[thead.rows.length - 1];
+    const ths = Array.from(headerRow.cells);
+    // Active value filter per column: a Set of allowed display values, or null
+    // (no filter, every value shown).
+    const filters = ths.map(() => null);
+
+    const dataRows = () =>
+      Array.from(tbody.rows).filter(
+        (tr) => tr.cells.length === ths.length && !tr.querySelector(".lda-empty-row")
+      );
+
+    function applyFilters() {
+      dataRows().forEach((tr) => {
+        const hidden = filters.some((set, col) => set && !set.has(columnCellText(tr.cells[col])));
+        tr.style.display = hidden ? "none" : "";
+      });
+    }
+
+    function sortBy(col, dir) {
+      const rows = dataRows();
+      rows.sort((ra, rb) => {
+        const cmp = columnCompare(columnCellText(ra.cells[col]), columnCellText(rb.cells[col]));
+        return dir === "desc" ? -cmp : cmp;
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      ths.forEach((th, i) => {
+        th.classList.remove("is-sorted-asc", "is-sorted-desc");
+        if (i === col) th.classList.add(dir === "desc" ? "is-sorted-desc" : "is-sorted-asc");
+      });
+    }
+
+    function openMenu(col, anchorBtn) {
+      closeColumnMenu();
+      const menu = el("div", { class: "lda-col-menu" });
+      menu.dataset.col = String(col);
+
+      const sortAsc = el("button", { type: "button", class: "lda-col-menu-sort", text: "Sort A → Z" });
+      const sortDesc = el("button", { type: "button", class: "lda-col-menu-sort", text: "Sort Z → A" });
+      sortAsc.addEventListener("click", () => { sortBy(col, "asc"); closeColumnMenu(); });
+      sortDesc.addEventListener("click", () => { sortBy(col, "desc"); closeColumnMenu(); });
+      menu.appendChild(el("div", { class: "lda-col-menu-sorts" }, [sortAsc, sortDesc]));
+
+      // Distinct values across every data row (not just the rows other filters
+      // currently leave visible) so a filtered-out value can always be re-added.
+      const BLANK = "(Blanks)";
+      const values = new Set();
+      dataRows().forEach((tr) => {
+        const text = columnCellText(tr.cells[col]);
+        values.add(text === "" ? BLANK : text);
+      });
+      const sortedValues = Array.from(values).sort(columnCompare);
+
+      const search = el("input", { type: "search", class: "lda-col-menu-search", placeholder: "Search values…" });
+      menu.appendChild(search);
+
+      const allBox = el("input", { type: "checkbox" });
+      allBox.checked = true;
+      const allLabel = el("label", { class: "lda-col-menu-all" }, [allBox, el("span", { text: "(Select all)" })]);
+      menu.appendChild(allLabel);
+
+      const list = el("div", { class: "lda-col-menu-values" });
+      const active = filters[col];
+      const boxes = sortedValues.map((value) => {
+        const rawValue = value === BLANK ? "" : value;
+        const box = el("input", { type: "checkbox" });
+        box.checked = !active || active.has(rawValue);
+        box.dataset.value = rawValue;
+        const label = el("label", { class: "lda-col-menu-value" }, [box, el("span", { text: value, title: value })]);
+        list.appendChild(label);
+        return { box, label, search: value.toLowerCase() };
+      });
+      menu.appendChild(list);
+
+      const syncAll = () => {
+        const visible = boxes.filter((b) => b.label.style.display !== "none");
+        allBox.checked = visible.length > 0 && visible.every((b) => b.box.checked);
+      };
+      syncAll();
+
+      allBox.addEventListener("change", () => {
+        boxes.forEach((b) => {
+          if (b.label.style.display !== "none") b.box.checked = allBox.checked;
+        });
+      });
+      boxes.forEach((b) => b.box.addEventListener("change", syncAll));
+      search.addEventListener("input", () => {
+        const q = search.value.trim().toLowerCase();
+        boxes.forEach((b) => { b.label.style.display = b.search.includes(q) ? "" : "none"; });
+        syncAll();
+      });
+
+      const clear = el("button", { type: "button", class: "btn-secondary", text: "Clear filter" });
+      const apply = el("button", { type: "button", class: "btn-primary", text: "Apply" });
+      clear.addEventListener("click", () => {
+        filters[col] = null;
+        anchorBtn.classList.remove("is-active");
+        applyFilters();
+        closeColumnMenu();
+      });
+      apply.addEventListener("click", () => {
+        const allowed = boxes.filter((b) => b.box.checked).map((b) => b.box.dataset.value);
+        if (allowed.length === boxes.length) {
+          filters[col] = null;
+          anchorBtn.classList.remove("is-active");
+        } else {
+          filters[col] = new Set(allowed);
+          anchorBtn.classList.add("is-active");
+        }
+        applyFilters();
+        closeColumnMenu();
+      });
+      menu.appendChild(el("div", { class: "lda-col-menu-actions" }, [clear, apply]));
+
+      document.body.appendChild(menu);
+      openColumnMenu = menu;
+      // Position under the trigger, clamped to the viewport.
+      const rect = anchorBtn.getBoundingClientRect();
+      let left = rect.left;
+      if (left + menu.offsetWidth > window.innerWidth - 8) left = window.innerWidth - menu.offsetWidth - 8;
+      menu.style.left = Math.round(Math.max(8, left)) + "px";
+      menu.style.top = Math.round(rect.bottom + 4) + "px";
+      search.focus();
+    }
+
+    ths.forEach((th, col) => {
+      const label = (th.textContent || "").trim();
+      th.textContent = "";
+      const btn = el("button", {
+        type: "button",
+        class: "lda-col-tool",
+        title: `Sort or filter “${label}”`,
+        "aria-label": `Sort or filter ${label}`,
+        text: "▾",
+      });
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (openColumnMenu && openColumnMenu.dataset.col === String(col)) {
+          closeColumnMenu();
+          return;
+        }
+        openMenu(col, btn);
+      });
+      th.appendChild(el("div", { class: "lda-col-head" }, [el("span", { class: "lda-col-label", text: label }), btn]));
+    });
+  }
+
+  // ---- Weibull point hover tooltips ----------------------------------------
+  // A single floating tooltip, reused by every Weibull plot, that describes the
+  // observation behind a hovered point or current-life marker.
+  let pointTooltipEl = null;
+  function pointTooltip() {
+    if (!pointTooltipEl) {
+      pointTooltipEl = el("div", { class: "lda-point-tooltip", role: "tooltip" });
+      pointTooltipEl.hidden = true;
+      document.body.appendChild(pointTooltipEl);
+    }
+    return pointTooltipEl;
+  }
+  function hidePointTooltip() {
+    if (pointTooltipEl) pointTooltipEl.hidden = true;
+  }
+  function showPointTooltip(clientX, clientY, obs) {
+    if (!obs) { hidePointTooltip(); return; }
+    const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
+    const tip = pointTooltip();
+    tip.innerHTML = "";
+    const fields = [
+      ["Task ID", obs.source_task_id != null && obs.source_task_id !== "" ? String(obs.source_task_id) : "—"],
+      ["Life hours", fmtFixed(obs.life_hours_for_weibull) || "—"],
+      ["Start", obs.start_datetime || "—"],
+      ["End / cutoff", obs.end_datetime || obs.analysis_cutoff_datetime || "—"],
+      ["Request", truncate(obs.source_request_description, 220) || "—"],
+      ["Completion notes", truncate(obs.source_completion_notes, 220) || "—"],
+    ];
+    fields.forEach(([label, value]) => {
+      tip.appendChild(
+        el("div", { class: "lda-point-tooltip-row" }, [
+          el("span", { class: "lda-point-tooltip-label", text: label }),
+          el("span", { class: "lda-point-tooltip-value", text: value }),
+        ])
+      );
+    });
+    tip.hidden = false;
+    const rect = tip.getBoundingClientRect();
+    const margin = 14;
+    let x = clientX + margin;
+    let y = clientY + margin;
+    if (x + rect.width > window.innerWidth - 8) x = clientX - rect.width - margin;
+    if (y + rect.height > window.innerHeight - 8) y = clientY - rect.height - margin;
+    tip.style.left = Math.round(Math.max(8, x)) + "px";
+    tip.style.top = Math.round(Math.max(8, y)) + "px";
+  }
+
+  // Wire hover tooltips on a chart canvas. `locate(mx, my)` returns the
+  // observation under the cursor (in canvas pixels) or null.
+  function attachPointHover(canvas, locate) {
+    canvas.onmousemove = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const obs = locate(event.clientX - rect.left, event.clientY - rect.top);
+      canvas.style.cursor = obs ? "pointer" : "";
+      if (obs) showPointTooltip(event.clientX, event.clientY, obs);
+      else hidePointTooltip();
+    };
+    canvas.onmouseleave = () => {
+      canvas.style.cursor = "";
+      hidePointTooltip();
+    };
   }
 
   // ---- wiring ---------------------------------------------------------------

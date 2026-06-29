@@ -416,6 +416,97 @@ table.lda-data th.lda-data-text,
 table.lda-data td.lda-data-text { max-width: 280px; min-width: 120px; white-space: normal; overflow-wrap: anywhere; }
 .lda-data-scroll { overflow-x: auto; max-height: 440px; overflow-y: auto; border-radius: 12px; }
 
+/* Excel-style column sort / filter ----------------------------------------- */
+/* Header layout: the column label keeps its place and the ▾ trigger sits at the
+   right edge of the column, like an Excel filter dropdown. */
+.lda-col-head { display: flex; align-items: center; gap: 0.4rem; }
+.lda-col-label { overflow: hidden; text-overflow: ellipsis; }
+.lda-col-tool {
+  margin-left: auto;
+  flex: none;
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.12rem 0.3rem;
+  border-radius: 5px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  opacity: 0.7;
+}
+.lda-col-tool:hover { opacity: 1; }
+.lda-col-tool.is-active {
+  opacity: 1;
+  background: #d6a700;
+  border-color: #b78f00;
+  color: #1d2731;
+}
+/* Sort direction caret appended to the active column's label. */
+table thead th.is-sorted-asc .lda-col-label::after { content: " \25B2"; font-size: 0.7em; opacity: 0.8; }
+table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-size: 0.7em; opacity: 0.8; }
+
+.lda-col-menu {
+  position: fixed;
+  z-index: 90;
+  width: 244px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(6, 43, 28, 0.22);
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+.lda-col-menu-sorts { display: grid; gap: 0.35rem; }
+.lda-col-menu-sort {
+  text-align: left;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  color: var(--forest-900);
+  font-weight: 600;
+}
+.lda-col-menu-sort:hover { background: var(--forest-200); }
+.lda-col-menu-search { width: 100%; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 7px; }
+.lda-col-menu-all {
+  display: flex; align-items: center; gap: 0.45rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.4rem;
+}
+.lda-col-menu-values { max-height: 200px; overflow: auto; display: grid; gap: 0.1rem; }
+.lda-col-menu-value { display: flex; align-items: center; gap: 0.45rem; cursor: pointer; padding: 0.1rem 0.1rem; }
+.lda-col-menu-value span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lda-col-menu-value input,
+.lda-col-menu-all input { flex: none; }
+.lda-col-menu-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.lda-col-menu-actions .btn-primary,
+.lda-col-menu-actions .btn-secondary { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+
+/* Weibull plot point hover tooltip ----------------------------------------- */
+.lda-point-tooltip {
+  position: fixed;
+  z-index: 95;
+  max-width: 340px;
+  background: rgba(23, 33, 28, 0.96);
+  color: #f3f7f4;
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  display: grid;
+  gap: 0.25rem;
+}
+.lda-point-tooltip-row { display: grid; grid-template-columns: 86px 1fr; gap: 0.5rem; }
+.lda-point-tooltip-label { color: #a9c4b3; font-weight: 600; }
+.lda-point-tooltip-value { overflow-wrap: anywhere; white-space: pre-wrap; }
+
 /* Loading + spinner */
 .lda-loading {
   position: fixed;
