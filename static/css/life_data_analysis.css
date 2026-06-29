@@ -71,7 +71,22 @@
   position: sticky;
   top: 74px;
   z-index: 15;
+  gap: 0.4rem;
+  padding: 0.9rem 1.1rem;
   background: linear-gradient(140deg, rgba(255, 255, 255, 0.99), rgba(229, 245, 236, 0.98));
+}
+
+.lda-step1-sticky .eyebrow { line-height: 1.1; }
+.lda-step1-sticky h2 {
+  margin: 0;
+  font-size: clamp(1.25rem, 1.05rem + 0.55vw, 1.55rem);
+  line-height: 1.2;
+}
+.lda-step1-sticky .lda-selectors { gap: 0.75rem; }
+.lda-step1-sticky .lda-field { gap: 0.25rem; }
+.lda-step1-sticky .lda-hint {
+  margin-top: 0.05rem;
+  line-height: 1.25;
 }
 
 .lda-field input,
