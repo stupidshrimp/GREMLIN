@@ -101,9 +101,9 @@ class IngestionService:
             f"{counts['updated']} updated, {counts['skipped']} unchanged."
         )
 
-        mapped = 0
+        mapping = {"mapped": 0, "mapping_ok": True, "mapping_note": "skipped (--no-map)"}
         if self.refresh_mapping:
-            mapped = self._refresh_mapped_records()
+            mapping = self._refresh_mapped_records()
 
         return {
             "fetched_tasks": len(tasks),
@@ -111,26 +111,55 @@ class IngestionService:
             "records": len(records),
             "import_batch_id": batch_id,
             **counts,
-            "mapped": mapped,
+            **mapping,
             "dry_run": False,
         }
 
-    def _refresh_mapped_records(self) -> int:
-        """Map new/changed raw rows into ``mapped_cmms_record`` via LifeDataService."""
+    def _refresh_mapped_records(self) -> dict[str, Any]:
+        """Map new/changed raw rows into ``mapped_cmms_record`` via LifeDataService.
+
+        Returns ``{"mapped": int, "mapping_ok": bool, "mapping_note": str | None}``
+        so the caller can report an honest outcome instead of a bland success.
+        """
+
+        # Precondition: the mapping layer (FK target + LifeDataService's downtime
+        # backfill JOIN) requires raw_cmms_record.raw_record_id. A legacy table
+        # that lacks it cannot be mapped without migrating the database. We do not
+        # restructure the user's raw tables here (an earlier in-place rebuild of
+        # these tables was intentionally reverted), so report the situation
+        # clearly rather than masking a no-op mapping as success — the raw data is
+        # still imported and will map once the database has a raw_record_id column.
+        if not self._raw_table_has_raw_record_id():
+            note = (
+                "raw_cmms_record has no raw_record_id column, so the imported rows could not be "
+                "mapped and will not appear on the dashboards yet. The raw data was imported and "
+                "will map once the database is migrated to include raw_record_id."
+            )
+            self._log("Warning: " + note)
+            return {"mapped": 0, "mapping_ok": False, "mapping_note": note}
 
         try:
             from services.life_data_service import LifeDataService
         except Exception as exc:  # noqa: BLE001 - mapping is best-effort
-            self._log(f"Skipping mapping refresh (LifeDataService unavailable): {exc}")
-            return 0
+            note = f"LifeDataService unavailable: {exc}"
+            self._log("Skipping mapping refresh (" + note + ").")
+            return {"mapped": 0, "mapping_ok": False, "mapping_note": note}
         try:
             service = LifeDataService(db_path=self.raw_repo.db_path, refresh_on_startup=False)
-            mapped = service.refresh_mapped_cmms_records()
+            mapped = int(service.refresh_mapped_cmms_records() or 0)
             self._log(f"Mapped {mapped} raw record(s) into mapped_cmms_record.")
-            return int(mapped or 0)
+            return {"mapped": mapped, "mapping_ok": True, "mapping_note": None}
         except Exception as exc:  # noqa: BLE001 - never lose a good raw import over mapping
-            self._log(f"Warning: mapping refresh failed ({exc}). Raw data was imported successfully.")
-            return 0
+            note = f"mapping refresh failed: {exc}"
+            self._log("Warning: " + note + ". Raw data was imported successfully.")
+            return {"mapped": 0, "mapping_ok": False, "mapping_note": note}
+
+    def _raw_table_has_raw_record_id(self) -> bool:
+        conn = self.raw_repo.connect()
+        try:
+            return "raw_record_id" in {row[1] for row in conn.execute("PRAGMA table_info(raw_cmms_record)")}
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Transform
