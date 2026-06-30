@@ -192,14 +192,21 @@ def _retry_after_seconds(resp: "requests.Response") -> float | None:
 
 
 def _task_touched_at(task: dict[str, Any]) -> int:
-    """Best-effort 'most recently touched' Unix time for client-side filtering."""
+    """Best-effort 'most recently touched' Unix time (seconds) for client-side filtering."""
 
     candidates = []
     for key in ("lastEdited", "createdDate", "dateCompleted", "startDate"):
         value = task.get(key)
         try:
-            if value not in (None, "", 0):
-                candidates.append(int(float(value)))
+            if value in (None, "", 0):
+                continue
+            number = float(value)
         except (TypeError, ValueError):
             continue
+        # Normalise millisecond timestamps to seconds (same threshold the
+        # transform uses) so the comparison with the seconds-based --since
+        # cutoff is correct rather than treating a 13-digit value as far future.
+        if number > 10_000_000_000:
+            number /= 1000.0
+        candidates.append(int(number))
     return max(candidates) if candidates else 0
