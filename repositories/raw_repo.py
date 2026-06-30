@@ -143,14 +143,21 @@ class RawRepository:
     def complete_batch(self, batch_id: int, *, status: str, raw_row_count: int) -> None:
         with self.write_connection() as conn:
             columns = self._column_names(conn, "import_batch")
-            sets = ["status = ?"]
-            params: list[Any] = [status]
-            if "import_completed_at" in columns:
-                sets.append("import_completed_at = ?")
-                params.append(_utc_now_text())
-            if "raw_row_count" in columns:
-                sets.append("raw_row_count = ?")
-                params.append(raw_row_count)
+            # Only update columns that actually exist, so a minimal legacy
+            # import_batch (e.g. without a status column) does not abort the sync
+            # after the raw rows were already imported.
+            sets: list[str] = []
+            params: list[Any] = []
+            for column, value in (
+                ("status", status),
+                ("import_completed_at", _utc_now_text()),
+                ("raw_row_count", raw_row_count),
+            ):
+                if column in columns:
+                    sets.append(f"{column} = ?")
+                    params.append(value)
+            if not sets:
+                return
             params.append(batch_id)
             conn.execute(f"UPDATE import_batch SET {', '.join(sets)} WHERE import_batch_id = ?", params)
 
@@ -310,11 +317,16 @@ class RawRepository:
             if meta["notnull"] and meta["dflt_value"] is None:
                 values[name] = _zero_value_for(meta["type"])
         column_names = list(values)
-        placeholders = ", ".join("?" for _ in column_names)
-        conn.execute(
-            f"INSERT INTO {table} ({', '.join(column_names)}) VALUES ({placeholders})",
-            [values[name] for name in column_names],
-        )
+        if not column_names:
+            # A table with only its integer PK has nothing to set; an empty
+            # column/value list is invalid SQL, so insert a default row instead.
+            conn.execute(f"INSERT INTO {table} DEFAULT VALUES")
+        else:
+            placeholders = ", ".join("?" for _ in column_names)
+            conn.execute(
+                f"INSERT INTO {table} ({', '.join(column_names)}) VALUES ({placeholders})",
+                [values[name] for name in column_names],
+            )
         return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     @staticmethod
