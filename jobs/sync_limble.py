@@ -142,6 +142,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
     parser.add_argument("--no-assets", action="store_true", help="Skip the /assets fetch used for name/hierarchy enrichment.")
     parser.add_argument("--no-map", action="store_true", help="Skip refreshing mapped_cmms_record after import.")
+    parser.add_argument(
+        "--include-templates",
+        action="store_true",
+        help="Import Limble template tasks too (excluded by default, matching the legacy export).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and transform, but make no database changes.")
     parser.add_argument("--create", action="store_true", help="Create the database file if it does not exist.")
     return parser
@@ -173,6 +178,7 @@ def run(args: argparse.Namespace) -> dict:
         downtime_unit=downtime_unit,
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
+        exclude_templates=not args.include_templates,
     )
 
     print(f"Database: {db_path}")

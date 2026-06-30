@@ -44,6 +44,7 @@ class IngestionService:
         downtime_unit: str = "minutes",
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
+        exclude_templates: bool = True,
         log: Callable[[str], None] = print,
     ) -> None:
         self.limble_client = limble_client
@@ -54,6 +55,7 @@ class IngestionService:
         self.downtime_unit = unit
         self.fetch_assets = fetch_assets
         self.refresh_mapping = refresh_mapping
+        self.exclude_templates = exclude_templates
         self._log = log
 
     # ------------------------------------------------------------------
@@ -64,7 +66,20 @@ class IngestionService:
 
         self._log("Fetching tasks from Limble ...")
         tasks = self.limble_client.get_tasks(updated_since=updated_since)
-        self._log(f"Fetched {len(tasks)} task(s).")
+        fetched_tasks = len(tasks)
+        self._log(f"Fetched {fetched_tasks} task(s).")
+
+        # Limble /tasks includes template rows (PM/work-order definitions, not
+        # real events). The legacy export filtered these out before building the
+        # asset task sheet, and downstream disposition/analysis does not exclude
+        # them, so drop truthy-template tasks here to avoid contaminating data.
+        excluded_templates = 0
+        if self.exclude_templates:
+            kept = [task for task in tasks if not self._is_template(task)]
+            excluded_templates = len(tasks) - len(kept)
+            if excluded_templates:
+                self._log(f"Excluded {excluded_templates} template task(s).")
+            tasks = kept
 
         asset_index = AssetIndex.empty()
         if self.fetch_assets:
@@ -78,7 +93,8 @@ class IngestionService:
         if dry_run:
             self._log("Dry run: no database changes were made.")
             return {
-                "fetched_tasks": len(tasks),
+                "fetched_tasks": fetched_tasks,
+                "excluded_templates": excluded_templates,
                 "fetched_assets": asset_index.count,
                 "records": len(records),
                 "inserted": 0,
@@ -106,7 +122,8 @@ class IngestionService:
             mapping = self._refresh_mapped_records()
 
         return {
-            "fetched_tasks": len(tasks),
+            "fetched_tasks": fetched_tasks,
+            "excluded_templates": excluded_templates,
             "fetched_assets": asset_index.count,
             "records": len(records),
             "import_batch_id": batch_id,
@@ -122,18 +139,22 @@ class IngestionService:
         so the caller can report an honest outcome instead of a bland success.
         """
 
-        # Precondition: the mapping layer (FK target + LifeDataService's downtime
-        # backfill JOIN) requires raw_cmms_record.raw_record_id. A legacy table
-        # that lacks it cannot be mapped without migrating the database. We do not
-        # restructure the user's raw tables here (an earlier in-place rebuild of
-        # these tables was intentionally reverted), so report the situation
-        # clearly rather than masking a no-op mapping as success — the raw data is
-        # still imported and will map once the database has a raw_record_id column.
-        if not self._raw_table_has_raw_record_id():
+        # Precondition: mapping requires raw_cmms_record to carry both
+        # raw_record_id (FK target + LifeDataService's downtime backfill JOIN) and
+        # import_batch_id (mapped_cmms_record has a NOT NULL FK to import_batch;
+        # LifeDataService otherwise inserts "0 AS import_batch_id", which violates
+        # that FK). A legacy table missing either cannot be mapped without
+        # migrating the database. We do not restructure the user's raw tables here
+        # (an earlier in-place rebuild of these tables was intentionally reverted),
+        # so report the situation clearly rather than masking a failed/no-op
+        # mapping as success — the raw data is still imported and will map once the
+        # database includes those columns.
+        missing = self._missing_mapping_columns()
+        if missing:
             note = (
-                "raw_cmms_record has no raw_record_id column, so the imported rows could not be "
-                "mapped and will not appear on the dashboards yet. The raw data was imported and "
-                "will map once the database is migrated to include raw_record_id."
+                f"raw_cmms_record is missing column(s) {', '.join(missing)} required for mapping, so the "
+                "imported rows could not be mapped and will not appear on the dashboards yet. The raw data "
+                "was imported and will map once the database includes those columns."
             )
             self._log("Warning: " + note)
             return {"mapped": 0, "mapping_ok": False, "mapping_note": note}
@@ -154,12 +175,24 @@ class IngestionService:
             self._log("Warning: " + note + ". Raw data was imported successfully.")
             return {"mapped": 0, "mapping_ok": False, "mapping_note": note}
 
-    def _raw_table_has_raw_record_id(self) -> bool:
+    def _missing_mapping_columns(self) -> list[str]:
+        """Return the columns the mapping layer needs that raw_cmms_record lacks."""
+
         conn = self.raw_repo.connect()
         try:
-            return "raw_record_id" in {row[1] for row in conn.execute("PRAGMA table_info(raw_cmms_record)")}
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_cmms_record)")}
         finally:
             conn.close()
+        return [column for column in ("raw_record_id", "import_batch_id") if column not in columns]
+
+    @staticmethod
+    def _is_template(task: dict[str, Any]) -> bool:
+        """True when a Limble task is a template (PM/WO definition, not a real event)."""
+
+        value = task.get("template")
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "t")
+        return bool(value)
 
     # ------------------------------------------------------------------
     # Transform
