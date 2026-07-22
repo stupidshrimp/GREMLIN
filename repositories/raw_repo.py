@@ -133,7 +133,10 @@ class RawRepository:
         desired = {
             "source_system": "Limble",
             "import_started_at": now,
-            "status": "RUNNING",
+            # Existing GREMLIN databases constrain import_batch.status to
+            # STARTED/COMPLETED/FAILED/CANCELLED, so use the legacy-compatible
+            # in-progress value instead of a newer synonym.
+            "status": "STARTED",
             "notes": notes,
         }
         with self.write_connection() as conn:
