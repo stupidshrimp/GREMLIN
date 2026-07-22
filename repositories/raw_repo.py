@@ -185,12 +185,13 @@ class RawRepository:
 
             for record in records:
                 task_id = _task_key(record)
-                raw_text = json.dumps(record, ensure_ascii=False, sort_keys=True)
-                raw_hash = hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest()
                 match = existing.get(task_id) if task_id else None
+                effective_record = _merge_preserved_fields(match.get("raw") if match else None, record)
+                raw_text = json.dumps(effective_record, ensure_ascii=False, sort_keys=True)
+                raw_hash = hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest()
 
                 if match is None:
-                    desired = self._raw_record_values(batch_id, task_id, record, raw_text, raw_hash)
+                    desired = self._raw_record_values(batch_id, task_id, effective_record, raw_text, raw_hash)
                     if "source_row_number" in columns:
                         desired.setdefault("source_row_number", next_row_number)
                         next_row_number += 1
@@ -207,7 +208,7 @@ class RawRepository:
                     if raw_hash in match.get("hashes", set()):
                         skipped += 1
                     else:
-                        desired = self._raw_record_values(batch_id, task_id, record, raw_text, raw_hash)
+                        desired = self._raw_record_values(batch_id, task_id, effective_record, raw_text, raw_hash)
                         if "source_row_number" in columns:
                             desired.setdefault("source_row_number", next_row_number)
                             next_row_number += 1
@@ -309,7 +310,12 @@ class RawRepository:
             ).hexdigest()
             entry = index.get(key)
             if entry is None:
-                index[key] = {"ids": [row["raw_record_id"]], "hash": computed_hash, "hashes": {computed_hash}}
+                index[key] = {
+                    "ids": [row["raw_record_id"]],
+                    "hash": computed_hash,
+                    "hashes": {computed_hash},
+                    "raw": parsed,
+                }
             else:
                 entry["ids"].append(row["raw_record_id"])
                 entry.setdefault("hashes", set()).add(computed_hash)
@@ -360,6 +366,35 @@ class RawRepository:
     @staticmethod
     def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+_PRESERVED_RAW_JSON_FIELDS = (
+    # Legacy/import-enriched asset identity fields are what the analysis screens
+    # group by. Limble API sync payloads may use a narrower numeric assetID or
+    # omit display fields, so do not let a routine refresh move historical work
+    # orders out from under the asset the user already dispositioned/analyzed.
+    "Asset Number",
+    "Asset Name",
+    "Immediate Parent Asset ID",
+    "Immediate Parent Asset Name",
+    "Root Asset ID",
+    "Root Asset Name",
+    "WO Asset Level",
+    "Asset Has Children",
+)
+
+
+def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    """Return incoming payload plus legacy asset fields that must not be overwritten."""
+
+    if not existing:
+        return incoming
+    merged = dict(incoming)
+    for key in _PRESERVED_RAW_JSON_FIELDS:
+        value = existing.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 def _zero_value_for(column_type: str) -> Any:

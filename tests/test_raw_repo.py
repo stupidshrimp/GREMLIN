@@ -80,6 +80,36 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(result, {"inserted": 0, "updated": 0, "skipped": 1})
             self.assertEqual(repo.raw_record_count(), 2)
 
+    def test_unique_task_id_update_preserves_existing_asset_identity_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "name": "old",
+                "Asset Number": "Legacy-Parent-Asset",
+                "Asset Name": "Legacy Parent Asset",
+            }])
+
+            next_batch_id = repo.start_batch()
+            result = repo.upsert_records(next_batch_id, [{
+                "taskID": 7,
+                "name": "new",
+                "assetID": 67,
+                "Asset Number": "67",
+                "Asset Name": "API Child Asset",
+            }])
+
+            self.assertEqual(result, {"inserted": 0, "updated": 1, "skipped": 0})
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["name"], "new")
+            self.assertEqual(raw["assetID"], 67)
+            self.assertEqual(raw["Asset Number"], "Legacy-Parent-Asset")
+            self.assertEqual(raw["Asset Name"], "Legacy Parent Asset")
+
     def test_unique_task_id_updates_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "gremlin.db"
