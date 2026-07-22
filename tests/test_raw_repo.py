@@ -80,6 +80,48 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(result, {"inserted": 0, "updated": 0, "skipped": 1})
             self.assertEqual(repo.raw_record_count(), 2)
 
+    def test_duplicate_task_id_append_keeps_incoming_asset_identity_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+            conn.execute(
+                """
+                CREATE TABLE raw_cmms_record (
+                    raw_record_id INTEGER PRIMARY KEY,
+                    import_batch_id INTEGER NOT NULL,
+                    source_record_id TEXT,
+                    raw_json TEXT NOT NULL,
+                    raw_content_hash TEXT
+                )
+                """
+            )
+            conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+            conn.execute(
+                "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                (json.dumps({"taskID": 42, "Asset Number": "legacy-asset-a", "description": "historic A"}),),
+            )
+            conn.execute(
+                "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                (json.dumps({"taskID": 42, "Asset Number": "legacy-asset-b", "description": "historic B"}),),
+            )
+            conn.commit()
+            conn.close()
+
+            repo = RawRepository(db_path)
+            result = repo.upsert_records(2, [{
+                "taskID": 42,
+                "Asset Number": "incoming-current-asset",
+                "description": "current Limble task",
+            }])
+
+            self.assertEqual(result, {"inserted": 1, "updated": 0, "skipped": 0})
+            with sqlite3.connect(db_path) as conn:
+                rows = [json.loads(row[0]) for row in conn.execute("SELECT raw_json FROM raw_cmms_record ORDER BY raw_record_id")]
+            self.assertEqual(rows[0]["Asset Number"], "legacy-asset-a")
+            self.assertEqual(rows[1]["Asset Number"], "legacy-asset-b")
+            self.assertEqual(rows[2]["Asset Number"], "incoming-current-asset")
+
     def test_unique_task_id_update_preserves_existing_asset_identity_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "gremlin.db"

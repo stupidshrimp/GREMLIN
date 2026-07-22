@@ -186,7 +186,12 @@ class RawRepository:
             for record in records:
                 task_id = _task_key(record)
                 match = existing.get(task_id) if task_id else None
-                effective_record = _merge_preserved_fields(match.get("raw") if match else None, record)
+                # Only merge legacy asset identity into a true one-to-one update.
+                # Duplicate task IDs are intentionally preserved as historical rows;
+                # a new current API row must keep its own incoming asset fields rather
+                # than inheriting whichever duplicate the index happened to see first.
+                merge_existing = match and len(match["ids"]) == 1
+                effective_record = _merge_preserved_fields(match.get("raw") if merge_existing else None, record)
                 raw_text = json.dumps(effective_record, ensure_ascii=False, sort_keys=True)
                 raw_hash = hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest()
 
