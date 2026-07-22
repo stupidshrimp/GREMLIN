@@ -302,13 +302,13 @@ class RawRepository:
                 key = str(row["source_record_id"]).strip()
             if not key:
                 continue
+            # Recompute the hash exactly the way upsert does so equality is
+            # meaningful even for legacy rows that stored a different hash.
+            computed_hash = hashlib.sha256(
+                json.dumps(parsed, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+            ).hexdigest()
             entry = index.get(key)
             if entry is None:
-                # Recompute the hash exactly the way upsert does so equality is
-                # meaningful even for legacy rows that stored a different hash.
-                computed_hash = hashlib.sha256(
-                    json.dumps(parsed, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
-                ).hexdigest()
                 index[key] = {"ids": [row["raw_record_id"]], "hash": computed_hash, "hashes": {computed_hash}}
             else:
                 entry["ids"].append(row["raw_record_id"])

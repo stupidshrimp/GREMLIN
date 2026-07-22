@@ -46,6 +46,40 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(rows[1]["description"], "historic row B")
             self.assertEqual(rows[2]["description"], "current Limble task")
 
+    def test_duplicate_task_id_skips_when_payload_matches_later_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+            conn.execute(
+                """
+                CREATE TABLE raw_cmms_record (
+                    raw_record_id INTEGER PRIMARY KEY,
+                    import_batch_id INTEGER NOT NULL,
+                    source_record_id TEXT,
+                    raw_json TEXT NOT NULL,
+                    raw_content_hash TEXT
+                )
+                """
+            )
+            conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+            conn.execute(
+                "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                (json.dumps({"taskID": 42, "description": "historic row A"}),),
+            )
+            conn.execute(
+                "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                (json.dumps({"taskID": 42, "description": "current Limble task"}),),
+            )
+            conn.commit()
+            conn.close()
+
+            repo = RawRepository(db_path)
+            result = repo.upsert_records(2, [{"taskID": 42, "description": "current Limble task"}])
+
+            self.assertEqual(result, {"inserted": 0, "updated": 0, "skipped": 1})
+            self.assertEqual(repo.raw_record_count(), 2)
+
     def test_unique_task_id_updates_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "gremlin.db"
