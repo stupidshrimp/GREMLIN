@@ -196,6 +196,23 @@ class RawRepository:
                         next_row_number += 1
                     self._insert_schema_aware(conn, "raw_cmms_record", desired, pk_column="raw_record_id")
                     inserted += 1
+                elif len(match["ids"]) > 1:
+                    # A duplicated natural key means the existing rows are not a
+                    # safe one-to-one representation of the Limble task. Updating
+                    # every duplicate would overwrite historical/legacy rows with
+                    # one current payload, which looks like data loss to users.
+                    # Preserve those rows; if this exact payload is already among
+                    # them, treat it as unchanged, otherwise append the current
+                    # API record as a new raw row for later cleanup/deduping.
+                    if raw_hash in match.get("hashes", set()):
+                        skipped += 1
+                    else:
+                        desired = self._raw_record_values(batch_id, task_id, record, raw_text, raw_hash)
+                        if "source_row_number" in columns:
+                            desired.setdefault("source_row_number", next_row_number)
+                            next_row_number += 1
+                        self._insert_schema_aware(conn, "raw_cmms_record", desired, pk_column="raw_record_id")
+                        inserted += 1
                 elif match["hash"] != raw_hash:
                     self._update_raw_record(conn, columns, match["ids"], batch_id, task_id, raw_text, raw_hash)
                     updated += 1
@@ -285,16 +302,17 @@ class RawRepository:
                 key = str(row["source_record_id"]).strip()
             if not key:
                 continue
+            # Recompute the hash exactly the way upsert does so equality is
+            # meaningful even for legacy rows that stored a different hash.
+            computed_hash = hashlib.sha256(
+                json.dumps(parsed, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
+            ).hexdigest()
             entry = index.get(key)
             if entry is None:
-                # Recompute the hash exactly the way upsert does so equality is
-                # meaningful even for legacy rows that stored a different hash.
-                computed_hash = hashlib.sha256(
-                    json.dumps(parsed, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="replace")
-                ).hexdigest()
-                index[key] = {"ids": [row["raw_record_id"]], "hash": computed_hash}
+                index[key] = {"ids": [row["raw_record_id"]], "hash": computed_hash, "hashes": {computed_hash}}
             else:
                 entry["ids"].append(row["raw_record_id"])
+                entry.setdefault("hashes", set()).add(computed_hash)
         return index
 
     def _next_source_row_number(self, conn: sqlite3.Connection, columns: set[str]) -> int:
