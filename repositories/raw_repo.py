@@ -390,6 +390,24 @@ _PINNED_ASSET_IDENTITY_FIELDS = (
     "Asset Has Children",
 )
 
+# Derived ISO date fields mirror a source Unix field that IngestionService.transform
+# turns into the ``*_Final``/``*DateTime`` values the mapper reads. They are computed,
+# not curated, so they must always track their source rather than being preserved on
+# their own: when a refresh carries the source field but it has been cleared (e.g. a
+# completed task is reopened and ``dateCompleted`` drops to 0), transform emits no
+# derived value, and a stale derived value left over from the previous payload would
+# keep the row looking completed. Each derived field is mapped to the source key(s)
+# whose presence in the incoming payload means "this date was refreshed".
+_SOURCE_LINKED_DATE_FIELDS = {
+    "completedDate_Final": ("dateCompleted",),
+    "completedDateTime": ("dateCompleted",),
+    "createdDate_Final": ("createdDate",),
+    "createdDateTime": ("createdDate",),
+    "startDate_Final": ("startDate",),
+    "startDateTime": ("startDate",),
+    "dueDate_Final": ("dueDate", "due"),
+}
+
 
 def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     """Merge an incoming Limble payload onto an existing row without dropping data.
@@ -420,6 +438,16 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
         if value in (None, "") and existing.get(key) not in (None, ""):
             continue
         merged[key] = value
+    # Derived date fields must follow their source. If the refresh carried the
+    # source date field but did not produce the derived value, the source was
+    # cleared (e.g. a reopened task): drop the stale derived value instead of
+    # preserving it. A refresh that simply omits the source (narrow API payload)
+    # leaves the derived value untouched above.
+    for derived, sources in _SOURCE_LINKED_DATE_FIELDS.items():
+        if derived in incoming:
+            continue
+        if any(source in incoming for source in sources):
+            merged.pop(derived, None)
     for key in _PINNED_ASSET_IDENTITY_FIELDS:
         value = existing.get(key)
         if value not in (None, ""):

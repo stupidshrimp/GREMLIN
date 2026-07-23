@@ -220,6 +220,56 @@ class RawRepositoryTests(unittest.TestCase):
                 raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
             self.assertEqual(raw["completionNotes"], "replaced mechanical seal")
 
+    def test_cleared_source_date_drops_stale_derived_date(self):
+        # A reopened task comes back with its source date cleared to 0. The derived
+        # completedDate_Final (which the mapper treats as "completed") must not
+        # linger from the previous payload, or the row stays falsely completed.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "dateCompleted": 1700000000,
+                "completedDate_Final": "2023-11-14T22:13:20+00:00",
+                "completedDateTime": "2023-11-14T22:13:20+00:00",
+            }])
+
+            next_batch_id = repo.start_batch()
+            # Reopened: source present but cleared, no derived value emitted.
+            repo.upsert_records(next_batch_id, [{"taskID": 7, "dateCompleted": 0}])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["dateCompleted"], 0)
+            self.assertNotIn("completedDate_Final", raw)
+            self.assertNotIn("completedDateTime", raw)
+
+    def test_derived_date_preserved_when_source_is_omitted(self):
+        # A narrower refresh that omits the source date entirely must keep the
+        # existing derived date, distinguishing "omitted" from "cleared".
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "name": "Pump repair",
+                "dateCompleted": 1700000000,
+                "completedDate_Final": "2023-11-14T22:13:20+00:00",
+            }])
+
+            next_batch_id = repo.start_batch()
+            # Source omitted entirely (narrow payload); only name changes.
+            repo.upsert_records(next_batch_id, [{"taskID": 7, "name": "Pump repair (rev)"}])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["completedDate_Final"], "2023-11-14T22:13:20+00:00")
+            self.assertEqual(raw["dateCompleted"], 1700000000)
+
 
 if __name__ == "__main__":
     unittest.main()
