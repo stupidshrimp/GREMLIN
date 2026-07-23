@@ -242,6 +242,27 @@ def api_metrics_reliability():
     )
 
 
+@app.route("/metrics/api/availability")
+@life_data_api
+def api_metrics_availability():
+    """Availability table data for the Metrics dashboard."""
+
+    service = _service_or_api_error()
+    raw_assets = request.values.getlist("assets")
+    asset_numbers: list[str] = []
+    for value in raw_assets:
+        asset_numbers.extend(part.strip() for part in str(value).split(",") if part.strip())
+    start = (request.values.get("start") or "").strip() or None
+    end = (request.values.get("end") or "").strip() or None
+    return jsonify(
+        service.asset_availability_metrics(
+            asset_numbers=asset_numbers or None,
+            start_date=start,
+            end_date=end,
+        )
+    )
+
+
 @app.route("/standards-and-documentation")
 def standards_and_documentation():
     return render_template(

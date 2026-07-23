@@ -8,6 +8,7 @@ REL-style mapped, disposition, event-processing, and Weibull analysis tables.
 from __future__ import annotations
 
 import base64
+import calendar
 import hashlib
 import json
 import math
@@ -17,7 +18,7 @@ import string
 import threading
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
@@ -2397,6 +2398,133 @@ class LifeDataService:
             "trend": trend,
             "alert_count": alert_count,
         }
+
+    def asset_availability_metrics(
+        self,
+        asset_numbers: list[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Return backend table rows for the Metrics dashboard availability graph.
+
+        The response is grouped by asset and month so the client can render the
+        same payload as either a table or a chart.
+        """
+
+        self.ensure_mapped_records_available()
+
+        requested = {str(a).strip() for a in (asset_numbers or []) if str(a).strip()}
+        start_dt = self._parse_metric_date(start_date, end_of_day=False)
+        end_dt = self._parse_metric_date(end_date, end_of_day=True)
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    TRIM(m.asset_number) AS asset_number,
+                    COALESCE(NULLIF(TRIM(m.asset_name), ''), '') AS asset_name,
+                    COALESCE(m.downtime_hours, 0) AS downtime_hours,
+                    COALESCE(
+                        NULLIF(TRIM(m.completed_date_final), ''),
+                        NULLIF(TRIM(m.start_date_final), ''),
+                        NULLIF(TRIM(m.created_date_final), '')
+                    ) AS wo_date
+                FROM mapped_cmms_record m
+                WHERE m.asset_number IS NOT NULL AND TRIM(m.asset_number) <> ''
+                  AND (COALESCE(m.record_class_final, m.record_class_auto) = 'CORRECTIVE_WO'
+                       OR (m.record_class_final IS NULL AND m.is_corrective_wo_candidate = 1))
+                """
+            ).fetchall()
+
+        data_min: datetime | None = None
+        data_max: datetime | None = None
+        buckets: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            asset_number = row["asset_number"]
+            if requested and asset_number not in requested:
+                continue
+            when = self._parse_datetime(row["wo_date"])
+            if when is None:
+                continue
+            if start_dt is not None and when < start_dt:
+                continue
+            if end_dt is not None and when > end_dt:
+                continue
+
+            data_min = when if data_min is None or when < data_min else data_min
+            data_max = when if data_max is None or when > data_max else data_max
+            month = when.strftime("%Y-%m")
+            key = (asset_number, month)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "asset_number": asset_number,
+                    "asset_name": row["asset_name"],
+                    "month": month,
+                    "downtime_hours": 0.0,
+                    "work_order_count": 0,
+                },
+            )
+            if not bucket["asset_name"] and row["asset_name"]:
+                bucket["asset_name"] = row["asset_name"]
+            bucket["downtime_hours"] += max(0.0, float(row["downtime_hours"] or 0.0))
+            bucket["work_order_count"] += 1
+
+        availability_rows: list[dict[str, Any]] = []
+        for bucket in buckets.values():
+            scheduled_hours = self._availability_scheduled_hours(bucket["asset_number"], bucket["month"])
+            availability_rows.append(
+                {
+                    "asset_number": bucket["asset_number"],
+                    "asset_name": bucket["asset_name"] or "",
+                    "month": bucket["month"],
+                    "scheduled_hours": round(scheduled_hours, 2),
+                    "downtime_hours": round(bucket["downtime_hours"], 2),
+                    "availability_percent": self._availability_percent_for_row(
+                        scheduled_hours=scheduled_hours,
+                        downtime_hours=bucket["downtime_hours"],
+                    ),
+                    "work_order_count": bucket["work_order_count"],
+                }
+            )
+
+        availability_rows.sort(key=lambda r: (r["month"], self._natural_key(r["asset_number"])))
+
+        return {
+            "applied_window": {
+                "start": start_dt.date().isoformat() if start_dt else None,
+                "end": end_dt.date().isoformat() if end_dt else None,
+            },
+            "data_window": {
+                "start": data_min.date().isoformat() if data_min else None,
+                "end": data_max.date().isoformat() if data_max else None,
+            },
+            "asset_count": len({row["asset_number"] for row in availability_rows}),
+            "availability": availability_rows,
+        }
+
+    @staticmethod
+    def _availability_scheduled_hours(asset_number: str, month: str) -> float:
+        """Return scheduled hours for one asset/month."""
+
+        year, month_number = (int(part) for part in month.split("-", 1))
+        days = [date(year, month_number, day) for day in range(1, calendar.monthrange(year, month_number)[1] + 1)]
+        weekdays = sum(1 for day in days if day.weekday() < 5)
+        hours_per_day = (
+            FULL_WEEKDAY_SCHEDULE_HOURS_PER_DAY
+            if str(asset_number).strip() in WEEKDAY_24H_ASSET_NUMBERS
+            else DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY
+        )
+        return weekdays * hours_per_day
+
+    @staticmethod
+    def _availability_percent_for_row(*, scheduled_hours: float, downtime_hours: float) -> float | None:
+        """Return availability percentage from scheduled and downtime hours."""
+
+        if scheduled_hours <= 0:
+            return None
+        availability = max(0.0, 1.0 - (max(0.0, downtime_hours) / scheduled_hours))
+        return round(availability * 100.0, 2)
 
     def _apply_relative_risk(self, assets: list[dict[str, Any]]) -> None:
         """Score risk by ranking the current period across the selected assets.
