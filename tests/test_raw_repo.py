@@ -334,6 +334,137 @@ class RawRepositoryTests(unittest.TestCase):
                 raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
             self.assertEqual(raw["completionNotes"], "curated note")
 
+    def test_new_task_files_under_curated_asset_number_from_matched_history(self):
+        # A brand-new task arrives from Limble labelled with only the bare numeric
+        # assetID. If history groups that asset under a curated Asset Number, the new
+        # task must be filed there too, otherwise new work orders land under a numeric
+        # asset the user never looks at (the "few new WOs" symptom).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            # Legacy history: curated Asset Number, no numeric assetID of its own.
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "name": "old corrective",
+                "Asset Number": "PUMP-01",
+            }])
+
+            next_batch_id = repo.start_batch()
+            # A refresh of task 7 (now carrying the numeric assetID) alongside a
+            # brand-new task 999 on the same physical asset, labelled numerically.
+            result = repo.upsert_records(next_batch_id, [
+                {"taskID": 7, "name": "old corrective", "assetID": 67, "Asset Number": "67"},
+                {"taskID": 999, "name": "new corrective", "assetID": 67, "Asset Number": "67"},
+            ])
+
+            self.assertEqual(result, {"inserted": 1, "updated": 1, "skipped": 0})
+            with sqlite3.connect(db_path) as conn:
+                rows = {
+                    json.loads(row[0])["taskID"]: json.loads(row[0])
+                    for row in conn.execute("SELECT raw_json FROM raw_cmms_record")
+                }
+            # Refreshed history keeps its curated number (pinning); the brand-new task
+            # is filed under the same curated asset instead of the numeric "67".
+            self.assertEqual(rows[7]["Asset Number"], "PUMP-01")
+            self.assertEqual(rows[999]["Asset Number"], "PUMP-01")
+
+    def test_numeric_misfiled_asset_number_self_heals_on_update(self):
+        # A row an earlier (pre-fix) sync already inserted under the bare numeric id
+        # is relabelled with the curated number on the next sync, so mis-filed work
+        # orders rejoin their asset without a manual backfill. Seed the post-buggy
+        # state directly: a curated history row that now carries the numeric assetID
+        # (as a matched refresh would add), plus a new-task row stuck under that id.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '7', ?)",
+                    (json.dumps({"taskID": 7, "assetID": 67, "Asset Number": "PUMP-01"}),),
+                )
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '999', ?)",
+                    (json.dumps({"taskID": 999, "assetID": 67, "Asset Number": "67"}),),
+                )
+                conn.commit()
+
+            next_batch_id = repo.start_batch()
+            result = repo.upsert_records(next_batch_id, [
+                {"taskID": 7, "assetID": 67, "Asset Number": "67"},
+                {"taskID": 999, "assetID": 67, "Asset Number": "67"},
+            ])
+
+            self.assertEqual(result["inserted"], 0)
+            with sqlite3.connect(db_path) as conn:
+                rows = {
+                    json.loads(row[0])["taskID"]: json.loads(row[0])
+                    for row in conn.execute("SELECT raw_json FROM raw_cmms_record")
+                }
+            self.assertEqual(rows[7]["Asset Number"], "PUMP-01")
+            self.assertEqual(rows[999]["Asset Number"], "PUMP-01")
+
+    def test_bridge_reads_asset_pairing_from_a_later_duplicate_row(self):
+        # A duplicated task ID is a supported legacy state. When only a later
+        # duplicate carries the assetID + curated Asset Number pairing, the bridge
+        # must still learn it, so a brand-new task on that asset is filed under the
+        # curated number rather than the bare numeric id.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+                # First duplicate: curated number, but no numeric assetID.
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                    (json.dumps({"taskID": 42, "Asset Number": "PUMP-01"}),),
+                )
+                # Later duplicate: the only row carrying the assetID + curated pair.
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                    (json.dumps({"taskID": 42, "assetID": 67, "Asset Number": "PUMP-01"}),),
+                )
+                conn.commit()
+
+            next_batch_id = repo.start_batch()
+            # A brand-new task on asset 67; task 42 is not in this batch, so the
+            # pairing can only come from the later duplicate via source 1.
+            repo.upsert_records(next_batch_id, [
+                {"taskID": 999, "assetID": 67, "Asset Number": "67"},
+            ])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(
+                    conn.execute("SELECT raw_json FROM raw_cmms_record WHERE source_record_id = '999'").fetchone()[0]
+                )
+            self.assertEqual(raw["Asset Number"], "PUMP-01")
+
+    def test_new_task_on_unknown_asset_keeps_numeric_asset_number(self):
+        # An asset with no curated history keeps the numeric id -- the bridge only
+        # relabels when history actually knows a curated number for that assetID.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{"taskID": 7, "assetID": 67, "Asset Number": "PUMP-01"}])
+
+            next_batch_id = repo.start_batch()
+            result = repo.upsert_records(next_batch_id, [
+                {"taskID": 1000, "assetID": 5000, "Asset Number": "5000"},
+            ])
+
+            self.assertEqual(result, {"inserted": 1, "updated": 0, "skipped": 0})
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(
+                    conn.execute("SELECT raw_json FROM raw_cmms_record WHERE source_record_id = '1000'").fetchone()[0]
+                )
+            self.assertEqual(raw["Asset Number"], "5000")
+
 
 if __name__ == "__main__":
     unittest.main()
