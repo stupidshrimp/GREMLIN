@@ -270,6 +270,70 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(raw["completedDate_Final"], "2023-11-14T22:13:20+00:00")
             self.assertEqual(raw["dateCompleted"], 1700000000)
 
+    def test_cleared_source_date_drops_legacy_derived_aliases(self):
+        # A legacy row may store a mapper-supported alias (dateCompleted_Final).
+        # A reopen must drop the alias too, not just the canonical derived field,
+        # or the mapper still reads the row as completed.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "dateCompleted": 1700000000,
+                "dateCompleted_Final": "2023-11-14T22:13:20+00:00",
+            }])
+
+            next_batch_id = repo.start_batch()
+            repo.upsert_records(next_batch_id, [{"taskID": 7, "dateCompleted": 0}])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["dateCompleted"], 0)
+            self.assertNotIn("dateCompleted_Final", raw)
+
+    def test_blank_source_date_clears_stored_source(self):
+        # Limble may clear a date to None/"" rather than 0. The stored source
+        # timestamp must clear too, so it stays consistent with the derived cleanup
+        # (no stale dateCompleted left behind for source-fallback consumers).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "dateCompleted": 1700000000,
+                "completedDate_Final": "2023-11-14T22:13:20+00:00",
+            }])
+
+            next_batch_id = repo.start_batch()
+            repo.upsert_records(next_batch_id, [{"taskID": 7, "dateCompleted": None}])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertIn("dateCompleted", raw)
+            self.assertIn(raw["dateCompleted"], (None, "", 0))
+            self.assertNotIn("completedDate_Final", raw)
+
+    def test_non_date_blank_incoming_still_protected(self):
+        # The source-date exemption must not weaken the general guard: a blank
+        # incoming value for a non-date field still cannot blank curated data.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{"taskID": 7, "completionNotes": "curated note"}])
+
+            next_batch_id = repo.start_batch()
+            repo.upsert_records(next_batch_id, [{"taskID": 7, "completionNotes": None}])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["completionNotes"], "curated note")
+
 
 if __name__ == "__main__":
     unittest.main()

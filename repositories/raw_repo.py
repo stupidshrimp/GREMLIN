@@ -390,23 +390,25 @@ _PINNED_ASSET_IDENTITY_FIELDS = (
     "Asset Has Children",
 )
 
-# Derived ISO date fields mirror a source Unix field that IngestionService.transform
-# turns into the ``*_Final``/``*DateTime`` values the mapper reads. They are computed,
-# not curated, so they must always track their source rather than being preserved on
-# their own: when a refresh carries the source field but it has been cleared (e.g. a
-# completed task is reopened and ``dateCompleted`` drops to 0), transform emits no
-# derived value, and a stale derived value left over from the previous payload would
-# keep the row looking completed. Each derived field is mapped to the source key(s)
-# whose presence in the incoming payload means "this date was refreshed".
-_SOURCE_LINKED_DATE_FIELDS = {
-    "completedDate_Final": ("dateCompleted",),
-    "completedDateTime": ("dateCompleted",),
-    "createdDate_Final": ("createdDate",),
-    "createdDateTime": ("createdDate",),
-    "startDate_Final": ("startDate",),
-    "startDateTime": ("startDate",),
-    "dueDate_Final": ("dueDate", "due"),
+# Source Unix date fields and the derived values that mirror them.
+# IngestionService.transform turns a source date into the ``*_Final``/``*DateTime``
+# strings the mapper reads. Those derived values are computed, not curated, so they
+# must track their source rather than being preserved on their own: when a refresh
+# carries the source field but it has been cleared (e.g. a completed task is reopened
+# and ``dateCompleted`` drops to 0/null), transform emits no derived value, and a
+# stale derived value left over from the previous payload would keep the row looking
+# completed. So whenever a refresh carries a source date key, drop the derived values
+# it did not re-supply. The derived list covers every alias LifeDataService._map_raw_record
+# reads for that date, so a legacy row that stored an alias (e.g. dateCompleted_Final)
+# is cleaned up too. ``due`` and ``dueDate`` are both source keys for dueDate_Final.
+_SOURCE_DATE_DERIVED_FIELDS = {
+    "dateCompleted": ("completedDate_Final", "completedDateTime", "dateCompletedfinal", "dateCompleted_Final"),
+    "createdDate": ("createdDate_Final", "createdDateTime", "createdDateFinal"),
+    "startDate": ("startDate_Final", "startDateTime", "startDateFinal"),
+    "dueDate": ("dueDate_Final",),
+    "due": ("dueDate_Final",),
 }
+_SOURCE_DATE_KEYS = frozenset(_SOURCE_DATE_DERIVED_FIELDS)
 
 
 def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
@@ -425,8 +427,9 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
     payload and overlay the incoming fields. A sync can therefore add new fields and
     update fields the API actually returned, but it can never delete curated data
     the API simply did not include. An incoming empty value (``None``/``""``) never
-    overwrites a non-empty stored value, and the asset-identity fields stay pinned to
-    their existing values.
+    overwrites a non-empty stored value -- except for source date keys, which stay
+    consistent with their derived values (a cleared source date clears the row) --
+    and the asset-identity fields stay pinned to their existing values.
     """
 
     if not existing:
@@ -434,20 +437,25 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
     merged = dict(existing)
     for key, value in incoming.items():
         # Only overlay values that carry data (or brand-new keys); a narrower
-        # refresh must not blank a field the stored row already populated.
-        if value in (None, "") and existing.get(key) not in (None, ""):
+        # refresh must not blank a field the stored row already populated. Source
+        # date keys are exempt: a refresh that clears a date to None/""/0 must be
+        # able to clear the stored source so it stays consistent with the derived
+        # date cleanup below (otherwise a stale source timestamp lingers).
+        if value in (None, "") and existing.get(key) not in (None, "") and key not in _SOURCE_DATE_KEYS:
             continue
         merged[key] = value
-    # Derived date fields must follow their source. If the refresh carried the
-    # source date field but did not produce the derived value, the source was
-    # cleared (e.g. a reopened task): drop the stale derived value instead of
-    # preserving it. A refresh that simply omits the source (narrow API payload)
-    # leaves the derived value untouched above.
-    for derived, sources in _SOURCE_LINKED_DATE_FIELDS.items():
-        if derived in incoming:
+    # Derived date fields must follow their source. Whenever a refresh carries a
+    # source date key, drop any derived value (including the legacy aliases the
+    # mapper reads) it did not re-supply: the source was cleared (e.g. a reopened
+    # task) or replaced, so a derived value left over from the previous payload
+    # would keep the row looking completed. A refresh that simply omits the source
+    # (narrow API payload) leaves the derived values untouched above.
+    for source, derived_fields in _SOURCE_DATE_DERIVED_FIELDS.items():
+        if source not in incoming:
             continue
-        if any(source in incoming for source in sources):
-            merged.pop(derived, None)
+        for derived in derived_fields:
+            if derived not in incoming:
+                merged.pop(derived, None)
     for key in _PINNED_ASSET_IDENTITY_FIELDS:
         value = existing.get(key)
         if value not in (None, ""):
