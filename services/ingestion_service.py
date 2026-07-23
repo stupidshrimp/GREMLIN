@@ -14,9 +14,13 @@ Transform decisions (confirmed for this Limble account):
 * **Asset Number = the Limble ``assetID``.** The app keys every screen off
   ``asset_number``; the ``/tasks`` endpoint only carries a numeric ``assetID``,
   so we copy it into the ``"Asset Number"`` field the mapper reads.
-* **``downtime`` is stored in minutes.** The downstream availability calculator
-  divides ``downtime`` by 60 to get hours, so the value is normalised to minutes
-  here (the input unit is configurable to guard against a future change).
+* **``downtime`` is reported by Limble in seconds** (e.g. ``12600`` == 3 h 30 m).
+  Under the default configuration it is stored in ``raw_json`` exactly as Limble
+  provides it; ``LifeDataService._parse_downtime_minutes`` is the single place
+  that normalises it (seconds -> minutes -> hours). ``downtime_unit`` is left as
+  a guard against a future source change, but changing it from the default
+  rescales the stored value and would double-convert against that seconds
+  assumption, so keep it at the default unless the mapping layer is updated too.
 * **Dates** are emitted both as the original Unix values *and* as ISO-8601 UTC
   ``*_Final`` strings, because the Weibull/event-processing path parses the
   ``*_Final`` columns and cannot read raw Unix integers.
@@ -210,7 +214,10 @@ class IngestionService:
         # Asset hierarchy enrichment from /assets.
         asset_index.enrich(record, asset_id)
 
-        # Normalise downtime to minutes (what the consumers expect).
+        # Store downtime as Limble provides it (seconds) under the default unit;
+        # LifeDataService normalises seconds->minutes->hours downstream. A
+        # non-default downtime_unit rescales here and must not be combined with
+        # that normalisation (see module docstring).
         minutes = self._downtime_to_minutes(task.get("downtime"))
         if minutes is not None:
             if self.downtime_unit != "minutes":

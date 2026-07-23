@@ -999,7 +999,9 @@ class LifeDataService:
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
         self._asset_number_options_cache = None
-        mapping_version = "v1"
+        # Bumped to v2 so already-mapped rows are re-derived from stored raw JSON
+        # after the downtime seconds->minutes fix, without needing a Limble re-sync.
+        mapping_version = "v2"
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
                 return 0
@@ -1128,14 +1130,22 @@ class LifeDataService:
             "is_corrective_wo_candidate": int(is_wo),
             "is_purchase_order_related": int(bool(self._get_alias(raw, "poIDs"))),
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
-            "mapping_version": "v1",
+            "mapping_version": "v2",
         }
 
     def _parse_downtime_minutes(self, value: Any) -> float | None:
+        """Normalise a raw CMMS downtime value to minutes.
+
+        Limble reports task ``downtime`` in **seconds** (e.g. ``12600`` == 3.5 h),
+        so a bare numeric value is seconds and must be divided by 60 to reach the
+        minutes the rest of the pipeline stores (``downtime_hours`` then divides
+        by 60 again). Explicit textual units are still honoured for legacy or
+        hand-entered values: ``"3.5 hours"`` -> 210 min, ``"45 min"`` -> 45 min.
+        """
         if value in (None, ""):
             return None
         if isinstance(value, (int, float)):
-            return float(value)
+            return float(value) / 60.0
         text = str(value).strip().lower()
         match = re.search(r"[-+]?\d*\.?\d+", text)
         if not match:
@@ -1143,7 +1153,10 @@ class LifeDataService:
         number = float(match.group())
         if "hour" in text or re.search(r"\bhr\b", text):
             return number * 60.0
-        return number
+        if "min" in text:
+            return number
+        # Bare number or an explicit "seconds" label: the raw Limble unit.
+        return number / 60.0
 
     def _classify_record(self, type_raw: Any, task_name: Any, request_title: Any, requestor_description: Any, completion_notes: Any, raw: dict[str, Any]) -> tuple[str, bool, bool, str]:
         type_text = str(type_raw or "").strip()
@@ -2524,7 +2537,7 @@ class LifeDataService:
             "CAST(m.task_id AS TEXT)",
             "m.created_date_final",
             "m.completed_date_final",
-            "COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT))",
+            "CAST(ROUND(m.downtime_hours, 2) AS TEXT)",
             "m.completion_notes",
             "m.request_title",
             "m.requestor_description",
@@ -2574,7 +2587,7 @@ class LifeDataService:
                        m.task_id AS taskID,
                        m.created_date_final AS createdDate_Final,
                        m.completed_date_final AS completedDate_Final,
-                       COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT)) AS downtime,
+                       ROUND(m.downtime_hours, 2) AS downtime,
                        m.completion_notes AS completionNotes,
                        m.request_title AS requestTitle,
                        m.requestor_description AS requestorDescription,
