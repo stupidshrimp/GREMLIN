@@ -939,12 +939,12 @@ class LifeDataService:
             except json.JSONDecodeError:
                 raw = {}
             downtime_raw = self._get_alias(raw, "downtime")
-            downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+            downtime_hours = self._parse_downtime_hours(self._get_alias(raw, "downtime_hours") or downtime_raw)
             updates.append({
                 "mapped_record_id": row["mapped_record_id"],
                 "downtime_raw": downtime_raw,
-                "downtime_minutes": downtime_minutes,
-                "downtime_hours": downtime_minutes / 60.0 if downtime_minutes is not None else None,
+                "downtime_minutes": downtime_hours * 60.0 if downtime_hours is not None else None,
+                "downtime_hours": downtime_hours,
             })
         if updates:
             conn.executemany(
@@ -999,7 +999,7 @@ class LifeDataService:
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
         self._asset_number_options_cache = None
-        mapping_version = "v1"
+        mapping_version = "v2"
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
                 return 0
@@ -1080,7 +1080,8 @@ class LifeDataService:
         start_date_final = self._get_alias(raw, "startDate_Final", "startDateFinal")
         type_raw = self._get_alias(raw, "type")
         downtime_raw = self._get_alias(raw, "downtime")
-        downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+        downtime_hours = self._parse_downtime_hours(self._get_alias(raw, "downtime_hours") or downtime_raw)
+        downtime_minutes = downtime_hours * 60.0 if downtime_hours is not None else None
         auto_class, is_pm, is_wo, reason = self._classify_record(type_raw, task_name, request_title, requestor_description, completion_notes, raw)
         status_text = str(self._get_alias(raw, "status", "statusID") or "").lower()
         return {
@@ -1120,7 +1121,7 @@ class LifeDataService:
             "po_ids_json": self._json_text(self._get_alias(raw, "poIDs")),
             "downtime_raw": downtime_raw,
             "downtime_minutes": downtime_minutes,
-            "downtime_hours": downtime_minutes / 60.0 if downtime_minutes is not None else None,
+            "downtime_hours": downtime_hours,
             "record_class_auto": auto_class,
             "record_class_final": None,
             "classification_reason": reason,
@@ -1128,10 +1129,18 @@ class LifeDataService:
             "is_corrective_wo_candidate": int(is_wo),
             "is_purchase_order_related": int(bool(self._get_alias(raw, "poIDs"))),
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
-            "mapping_version": "v1",
+            "mapping_version": "v2",
         }
 
-    def _parse_downtime_minutes(self, value: Any) -> float | None:
+    def _parse_downtime_hours(self, value: Any) -> float | None:
+        """Parse downtime as hours without scaling bare numeric raw values.
+
+        Limble already supplies raw downtime in hours for this account. Numeric
+        values and unitless strings are therefore hours. Explicit minute/second
+        strings are still accepted for legacy/manual imports and converted to
+        hours.
+        """
+
         if value in (None, ""):
             return None
         if isinstance(value, (int, float)):
@@ -1141,9 +1150,15 @@ class LifeDataService:
         if not match:
             return None
         number = float(match.group())
-        if "hour" in text or re.search(r"\bhr\b", text):
-            return number * 60.0
+        if re.search(r"\b(sec|secs|second|seconds)\b", text):
+            return number / 3600.0
+        if re.search(r"\b(min|mins|minute|minutes)\b", text):
+            return number / 60.0
         return number
+
+    def _parse_downtime_minutes(self, value: Any) -> float | None:
+        hours = self._parse_downtime_hours(value)
+        return hours * 60.0 if hours is not None else None
 
     def _classify_record(self, type_raw: Any, task_name: Any, request_title: Any, requestor_description: Any, completion_notes: Any, raw: dict[str, Any]) -> tuple[str, bool, bool, str]:
         type_text = str(type_raw or "").strip()

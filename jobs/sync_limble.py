@@ -135,8 +135,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["minutes", "seconds", "hours"],
         default=None,
         help=(
-            "Unit of Limble's task 'downtime' field; it is normalised to minutes on write. "
-            "Falls back to the LIMBLE_DOWNTIME_UNIT env/.env value, then 'minutes'."
+            "Unit of Limble's task 'downtime' field; raw downtime is preserved and derived hours are computed. "
+            "Falls back to the LIMBLE_DOWNTIME_UNIT env/.env value, then 'hours'."
         ),
     )
     parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
@@ -169,7 +169,7 @@ def run(args: argparse.Namespace) -> dict:
     )
     # Resolve the downtime unit only after .env is loaded so a value configured
     # there (LIMBLE_DOWNTIME_UNIT) is honoured rather than the bare default.
-    downtime_unit = args.downtime_unit or os.getenv("LIMBLE_DOWNTIME_UNIT") or "minutes"
+    downtime_unit = args.downtime_unit or os.getenv("LIMBLE_DOWNTIME_UNIT") or "hours"
     client = LimbleClient(config)
     raw_repo = RawRepository(db_path)
     service = IngestionService(

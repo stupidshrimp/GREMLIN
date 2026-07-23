@@ -14,9 +14,9 @@ Transform decisions (confirmed for this Limble account):
 * **Asset Number = the Limble ``assetID``.** The app keys every screen off
   ``asset_number``; the ``/tasks`` endpoint only carries a numeric ``assetID``,
   so we copy it into the ``"Asset Number"`` field the mapper reads.
-* **``downtime`` is stored in minutes.** The downstream availability calculator
-  divides ``downtime`` by 60 to get hours, so the value is normalised to minutes
-  here (the input unit is configurable to guard against a future change).
+* **``downtime`` is stored in hours.** Limble already returns downtime in hours for
+  this account, so the raw ``downtime`` value is preserved. Derived helper fields
+  may be emitted, but the raw downtime column is not overwritten or scaled.
 * **Dates** are emitted both as the original Unix values *and* as ISO-8601 UTC
   ``*_Final`` strings, because the Weibull/event-processing path parses the
   ``*_Final`` columns and cannot read raw Unix integers.
@@ -30,7 +30,7 @@ from typing import Any, Callable
 from integrations.limble import LimbleClient
 from repositories.raw_repo import RawRepository
 
-_DOWNTIME_UNIT_FACTORS = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours": 60.0}
+_DOWNTIME_UNIT_TO_HOURS = {"hours": 1.0, "minutes": 1.0 / 60.0, "seconds": 1.0 / 3600.0}
 
 
 class IngestionService:
@@ -41,7 +41,7 @@ class IngestionService:
         limble_client: LimbleClient,
         raw_repo: RawRepository,
         *,
-        downtime_unit: str = "minutes",
+        downtime_unit: str = "hours",
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
@@ -49,9 +49,9 @@ class IngestionService:
     ) -> None:
         self.limble_client = limble_client
         self.raw_repo = raw_repo
-        unit = (downtime_unit or "minutes").strip().lower()
-        if unit not in _DOWNTIME_UNIT_FACTORS:
-            raise ValueError(f"downtime_unit must be one of {sorted(_DOWNTIME_UNIT_FACTORS)}; got {downtime_unit!r}")
+        unit = (downtime_unit or "hours").strip().lower()
+        if unit not in _DOWNTIME_UNIT_TO_HOURS:
+            raise ValueError(f"downtime_unit must be one of {sorted(_DOWNTIME_UNIT_TO_HOURS)}; got {downtime_unit!r}")
         self.downtime_unit = unit
         self.fetch_assets = fetch_assets
         self.refresh_mapping = refresh_mapping
@@ -210,13 +210,14 @@ class IngestionService:
         # Asset hierarchy enrichment from /assets.
         asset_index.enrich(record, asset_id)
 
-        # Normalise downtime to minutes (what the consumers expect).
-        minutes = self._downtime_to_minutes(task.get("downtime"))
-        if minutes is not None:
-            if self.downtime_unit != "minutes":
-                record["downtime_source_value"] = task.get("downtime")
-                record["downtime_source_unit"] = self.downtime_unit
-            record["downtime"] = minutes
+        # Preserve the raw downtime value. Limble downtime is already hours for
+        # this account; do not overwrite or scale the raw ``downtime`` column.
+        hours = self._downtime_to_hours(task.get("downtime"))
+        if hours is not None:
+            record["downtime_source_value"] = task.get("downtime")
+            record["downtime_source_unit"] = self.downtime_unit
+            record["downtime_hours"] = hours
+            record["downtime_minutes"] = hours * 60.0
 
         # Emit ISO-8601 UTC datetimes alongside the original Unix timestamps so
         # the *_Final-preferring downstream parsers have a value they can read.
@@ -237,11 +238,11 @@ class IngestionService:
         if datetime_key:
             record[datetime_key] = iso
 
-    def _downtime_to_minutes(self, value: Any) -> float | None:
+    def _downtime_to_hours(self, value: Any) -> float | None:
         number = _coerce_number(value)
         if number is None:
             return None
-        return number * _DOWNTIME_UNIT_FACTORS[self.downtime_unit]
+        return number * _DOWNTIME_UNIT_TO_HOURS[self.downtime_unit]
 
 
 class AssetIndex:
