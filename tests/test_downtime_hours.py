@@ -72,7 +72,7 @@ class DowntimeHoursTests(unittest.TestCase):
             conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
             conn.execute(
                 "INSERT INTO raw_cmms_record(raw_record_id, import_batch_id, raw_json) VALUES (1, 1, ?)",
-                (json.dumps({"taskID": 123, "name": "Repair", "downtime": 2.5}),),
+                (json.dumps({"taskID": 123, "name": "Repair", "downtime": 2.5, "downtime_hours": 2.5}),),
             )
             conn.execute(
                 "INSERT INTO mapped_cmms_record(raw_record_id, record_class_final, mapping_version) VALUES (1, 'WO', 'v1')"
@@ -142,6 +142,50 @@ class DowntimeHoursTests(unittest.TestCase):
                     "SELECT task_name, downtime_hours, downtime_minutes, mapping_version FROM mapped_cmms_record WHERE raw_record_id = 1"
                 ).fetchone()
             self.assertEqual(row, ("Old normalized row", 2.0, 120.0, "v2"))
+
+    def test_backfill_treats_numeric_without_hour_helper_as_legacy_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+            conn.execute(
+                """
+                CREATE TABLE raw_cmms_record (
+                    raw_record_id INTEGER PRIMARY KEY,
+                    import_batch_id INTEGER NOT NULL,
+                    raw_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE mapped_cmms_record (
+                    mapped_record_id INTEGER PRIMARY KEY,
+                    raw_record_id INTEGER NOT NULL UNIQUE,
+                    record_class_final TEXT,
+                    mapping_version TEXT NOT NULL DEFAULT 'v1'
+                )
+                """
+            )
+            conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+            conn.execute(
+                "INSERT INTO raw_cmms_record(raw_record_id, import_batch_id, raw_json) VALUES (1, 1, ?)",
+                (json.dumps({"taskID": 123, "name": "Backfilled old row", "downtime": 120}),),
+            )
+            conn.execute(
+                "INSERT INTO mapped_cmms_record(raw_record_id, record_class_final, mapping_version) VALUES (1, 'WO', 'v1')"
+            )
+            conn.commit()
+            conn.close()
+
+            service = LifeDataService(db_path, refresh_on_startup=False)
+
+            self.assertEqual(service.refresh_mapped_cmms_records(), 1)
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT task_name, downtime_hours, downtime_minutes, mapping_version FROM mapped_cmms_record WHERE raw_record_id = 1"
+                ).fetchone()
+            self.assertEqual(row, ("Backfilled old row", 2.0, 120.0, "v2"))
 
 
 if __name__ == "__main__":

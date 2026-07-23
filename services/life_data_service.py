@@ -990,7 +990,7 @@ class LifeDataService:
             except json.JSONDecodeError:
                 raw = {}
             downtime_raw = self._get_alias(raw, "downtime")
-            downtime_hours = self._parse_downtime_hours(self._get_alias(raw, "downtime_hours") or downtime_raw)
+            downtime_hours = self._parse_backfill_downtime_hours(raw, downtime_raw)
             updates.append({
                 "mapped_record_id": row["mapped_record_id"],
                 "downtime_raw": downtime_raw,
@@ -1010,6 +1010,24 @@ class LifeDataService:
                 updates,
             )
         return len(updates)
+
+    def _parse_backfill_downtime_hours(self, raw: dict[str, Any], downtime_raw: Any) -> float | None:
+        """Parse downtime for migrated v1 mapped rows without inflating old numeric minutes.
+
+        Backfill runs before the v2 remap-preservation guard has existing mapped
+        hour/minute columns to read. Raw rows imported by the previous sync path
+        can therefore contain numeric ``downtime`` values already normalized to
+        minutes and no explicit ``downtime_hours`` helper. Treat those bare
+        numeric backfill values as minutes; rows carrying the new helper use it
+        as the hour source.
+        """
+
+        downtime_hours = self._get_alias(raw, "downtime_hours")
+        if downtime_hours is not None:
+            return self._parse_downtime_hours(downtime_hours)
+        if isinstance(downtime_raw, (int, float)):
+            return float(downtime_raw) / 60.0
+        return self._parse_downtime_hours(downtime_raw)
 
     def _table_exists(self, conn: sqlite3.Connection, table: str) -> bool:
         row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
