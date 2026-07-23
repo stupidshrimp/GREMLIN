@@ -329,11 +329,16 @@ class RawRepository:
                     "ids": [row["raw_record_id"]],
                     "hash": computed_hash,
                     "hashes": {computed_hash},
+                    # ``raw`` stays the first duplicate (what the 1:1 merge path
+                    # reads); ``raws`` keeps every duplicate so the asset-number
+                    # bridge can harvest a pairing that lives only in a later row.
                     "raw": parsed,
+                    "raws": [parsed],
                 }
             else:
                 entry["ids"].append(row["raw_record_id"])
                 entry.setdefault("hashes", set()).add(computed_hash)
+                entry.setdefault("raws", [entry.get("raw")]).append(parsed)
         return index
 
     def _next_source_row_number(self, conn: sqlite3.Connection, columns: set[str]) -> int:
@@ -518,10 +523,17 @@ def _build_asset_number_bridge(
         bucket = votes.setdefault(key, {})
         bucket[curated] = bucket.get(curated, 0) + 1
 
-    # Source 1: stored rows that already carry both an assetID and a curated number.
+    # Source 1: stored rows that already carry both an assetID and a curated
+    # number. Every duplicate of a task ID is inspected, not just the first, so a
+    # pairing recorded only on a later duplicate still contributes a vote.
     for entry in existing.values():
-        raw = entry.get("raw") or {}
-        _record_vote(raw.get("assetID"), raw.get("Asset Number"))
+        raws = entry.get("raws")
+        if not raws:
+            raw = entry.get("raw")
+            raws = [raw] if raw is not None else []
+        for raw in raws:
+            if isinstance(raw, dict):
+                _record_vote(raw.get("assetID"), raw.get("Asset Number"))
 
     # Source 2: incoming tasks matched 1:1 to a stored row -- pair the incoming
     # numeric assetID with the row's existing curated Asset Number. This covers the

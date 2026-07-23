@@ -407,6 +407,42 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(rows[7]["Asset Number"], "PUMP-01")
             self.assertEqual(rows[999]["Asset Number"], "PUMP-01")
 
+    def test_bridge_reads_asset_pairing_from_a_later_duplicate_row(self):
+        # A duplicated task ID is a supported legacy state. When only a later
+        # duplicate carries the assetID + curated Asset Number pairing, the bridge
+        # must still learn it, so a brand-new task on that asset is filed under the
+        # curated number rather than the bare numeric id.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("INSERT INTO import_batch(import_batch_id, status) VALUES (1, 'COMPLETED')")
+                # First duplicate: curated number, but no numeric assetID.
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                    (json.dumps({"taskID": 42, "Asset Number": "PUMP-01"}),),
+                )
+                # Later duplicate: the only row carrying the assetID + curated pair.
+                conn.execute(
+                    "INSERT INTO raw_cmms_record(import_batch_id, source_record_id, raw_json) VALUES (1, '42', ?)",
+                    (json.dumps({"taskID": 42, "assetID": 67, "Asset Number": "PUMP-01"}),),
+                )
+                conn.commit()
+
+            next_batch_id = repo.start_batch()
+            # A brand-new task on asset 67; task 42 is not in this batch, so the
+            # pairing can only come from the later duplicate via source 1.
+            repo.upsert_records(next_batch_id, [
+                {"taskID": 999, "assetID": 67, "Asset Number": "67"},
+            ])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(
+                    conn.execute("SELECT raw_json FROM raw_cmms_record WHERE source_record_id = '999'").fetchone()[0]
+                )
+            self.assertEqual(raw["Asset Number"], "PUMP-01")
+
     def test_new_task_on_unknown_asset_keeps_numeric_asset_number(self):
         # An asset with no curated history keeps the numeric id -- the bridge only
         # relabels when history actually knows a curated number for that assetID.
