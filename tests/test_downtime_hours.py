@@ -37,6 +37,8 @@ class DowntimeHoursTests(unittest.TestCase):
         service = object.__new__(LifeDataService)
 
         self.assertEqual(service._parse_downtime_hours("90 minutes"), 1.5)
+        self.assertEqual(service._parse_downtime_hours("90min"), 1.5)
+        self.assertAlmostEqual(service._parse_downtime_hours("30sec"), 30 / 3600.0)
         self.assertEqual(service._parse_downtime_hours("2 hr"), 2.0)
 
 

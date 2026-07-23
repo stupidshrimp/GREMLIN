@@ -1150,9 +1150,10 @@ class LifeDataService:
         if not match:
             return None
         number = float(match.group())
-        if re.search(r"\b(sec|secs|second|seconds)\b", text):
+        suffix = text[match.end():].lstrip()
+        if re.match(r"^(?:sec|secs|second|seconds)\b", suffix):
             return number / 3600.0
-        if re.search(r"\b(min|mins|minute|minutes)\b", text):
+        if re.match(r"^(?:min|mins|minute|minutes)\b", suffix):
             return number / 60.0
         return number
 
