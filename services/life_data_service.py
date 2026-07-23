@@ -862,16 +862,67 @@ class LifeDataService:
         """Safely add REL disposition columns/tables to existing GREMLIN.db files."""
 
         if self._table_exists(conn, "mapped_cmms_record"):
+            # Older GREMLIN.db files may have only the narrow mapped table used
+            # before the REL/disposition work. Version-forced remaps upsert the
+            # full current row shape, so migrate every mapped column that the
+            # mapper writes before marking v1 rows eligible for a v2 refresh.
             required_mapped_columns = {
+                "raw_record_id": "INTEGER",
                 "raw_content_hash": "TEXT",
+                "import_batch_id": "INTEGER NOT NULL DEFAULT 0",
+                "source_system": "TEXT NOT NULL DEFAULT 'Limble'",
+                "task_id": "TEXT",
+                "task_name": "TEXT",
+                "template_raw": "TEXT",
+                "type_raw": "TEXT",
+                "associated_task_id": "TEXT",
+                "status_raw": "TEXT",
+                "status_id_raw": "TEXT",
+                "asset_id_raw": "TEXT",
+                "asset_name": "TEXT",
+                "asset_number": "TEXT",
+                "immediate_parent_asset_id": "TEXT",
+                "immediate_parent_asset_name": "TEXT",
+                "root_asset_id": "TEXT",
+                "root_asset_name": "TEXT",
+                "wo_asset_level": "TEXT",
+                "asset_has_children_raw": "TEXT",
+                "created_date_raw": "TEXT",
+                "created_datetime_raw": "TEXT",
+                "created_date_final": "TEXT",
+                "start_date_raw": "TEXT",
+                "start_datetime_raw": "TEXT",
+                "start_date_final": "TEXT",
+                "due_date_raw": "TEXT",
+                "due_datetime_raw": "TEXT",
+                "due_date_final": "TEXT",
+                "completed_date_raw": "TEXT",
+                "completed_datetime_raw": "TEXT",
+                "completed_date_final": "TEXT",
+                "completion_notes": "TEXT",
+                "requestor_description": "TEXT",
+                "request_title": "TEXT",
+                "description_raw": "TEXT",
+                "custom_tags_json": "TEXT",
+                "po_ids_json": "TEXT",
                 "downtime_raw": "TEXT",
                 "downtime_minutes": "REAL",
                 "downtime_hours": "REAL",
                 "downtime_backfill_attempted": "INTEGER NOT NULL DEFAULT 0",
+                "record_class_auto": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "record_class_final": "TEXT",
+                "classification_reason": "TEXT",
+                "is_pm_candidate": "INTEGER NOT NULL DEFAULT 0",
+                "is_corrective_wo_candidate": "INTEGER NOT NULL DEFAULT 0",
+                "is_purchase_order_related": "INTEGER NOT NULL DEFAULT 0",
+                "is_completed": "INTEGER NOT NULL DEFAULT 0",
+                "mapped_at": "TEXT",
+                "mapping_version": "TEXT NOT NULL DEFAULT 'v1'",
             }
             for column, ddl in required_mapped_columns.items():
                 if not self._column_exists(conn, "mapped_cmms_record", column):
                     conn.execute(f"ALTER TABLE mapped_cmms_record ADD COLUMN {column} {ddl}")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_mapped_cmms_raw_record ON mapped_cmms_record(raw_record_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_mapped_cmms_raw_hash ON mapped_cmms_record(raw_content_hash)")
             self._backfill_mapped_downtime_from_raw(conn)
         if self._table_exists(conn, "failure_mechanism") and not self._column_exists(conn, "failure_mechanism", "failure_mode_id"):
