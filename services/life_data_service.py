@@ -2503,6 +2503,13 @@ class LifeDataService:
             "availability": availability_rows,
         }
 
+    # start here.
+    # The route and Metrics page are already wired up: /metrics/api/availability
+    # calls asset_availability_metrics(), and the Availability card reads the
+    # rows returned under "availability". The query/grouping above gets each
+    # asset-month to this point with downtime and WO count filled in. If the
+    # displayed numbers look wrong, the schedule and percent rules below are the
+    # first things to check.
     @staticmethod
     def _availability_scheduled_hours(asset_number: str, month: str) -> float:
         """Return scheduled hours for one asset/month."""
