@@ -1065,9 +1065,16 @@ class LifeDataService:
                     "record_class_final": row["record_class_final"],
                     "raw_content_hash": row["raw_content_hash"],
                     "mapping_version": row["mapping_version"],
+                    "downtime_raw": row["downtime_raw"],
+                    "downtime_minutes": row["downtime_minutes"],
+                    "downtime_hours": row["downtime_hours"],
                 }
                 for row in conn.execute(
-                    "SELECT raw_record_id, record_class_final, raw_content_hash, mapping_version FROM mapped_cmms_record"
+                    """
+                    SELECT raw_record_id, record_class_final, raw_content_hash, mapping_version,
+                           downtime_raw, downtime_minutes, downtime_hours
+                    FROM mapped_cmms_record
+                    """
                 ).fetchall()
             }
             upsert_values: list[dict[str, Any]] = []
@@ -1082,6 +1089,10 @@ class LifeDataService:
                 except json.JSONDecodeError:
                     raw = {}
                 mapped = self._map_raw_record(raw)
+                if self._should_preserve_existing_downtime_for_v2_remap(raw, existing):
+                    mapped["downtime_raw"] = existing.get("downtime_raw")
+                    mapped["downtime_minutes"] = existing.get("downtime_minutes")
+                    mapped["downtime_hours"] = existing.get("downtime_hours")
                 mapped["record_class_final"] = existing.get("record_class_final") if existing else None
                 upsert_values.append({
                     "raw_record_id": row["raw_record_id"],
@@ -1107,6 +1118,26 @@ class LifeDataService:
                 upsert_values,
             )
             return len(upsert_values)
+
+    def _should_preserve_existing_downtime_for_v2_remap(self, raw: dict[str, Any], existing: dict[str, Any] | None) -> bool:
+        """Keep pre-v2 mapped downtime when old raw JSON lacks hour provenance.
+
+        Some databases contain raw rows imported by the previous sync path where
+        numeric ``raw_json["downtime"]`` had already been written in minutes, but
+        no ``downtime_hours`` helper/provenance was stored. The v2 remap should
+        not reinterpret those historical numeric values as hours and inflate
+        dashboards by 60x; preserve the already-mapped v1 hour/minute values
+        unless the raw row has explicit v2 hour data.
+        """
+
+        if not existing or existing.get("mapping_version") == "v2":
+            return False
+        if self._get_alias(raw, "downtime_hours") is not None:
+            return False
+        downtime_raw = self._get_alias(raw, "downtime")
+        if not isinstance(downtime_raw, (int, float)):
+            return False
+        return existing.get("downtime_hours") is not None or existing.get("downtime_minutes") is not None
 
     def _get_alias(self, raw: dict[str, Any], *keys: str) -> Any:
         for key in keys:
