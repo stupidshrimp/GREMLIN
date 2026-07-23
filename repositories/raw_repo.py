@@ -181,6 +181,10 @@ class RawRepository:
             if not columns:
                 raise RuntimeError("raw_cmms_record table is missing; call ensure_schema() first.")
             existing = self._index_existing(conn)
+            # Bridge the Limble numeric assetID to the curated "Asset Number" the
+            # historical rows group under, so a task that would otherwise carry only
+            # the bare numeric id is filed under the same asset as its history.
+            asset_number_bridge = _build_asset_number_bridge(existing, records)
             next_row_number = self._next_source_row_number(conn, columns)
 
             for record in records:
@@ -192,6 +196,12 @@ class RawRepository:
                 # than inheriting whichever duplicate the index happened to see first.
                 merge_existing = match and len(match["ids"]) == 1
                 effective_record = _merge_preserved_fields(match.get("raw") if merge_existing else None, record)
+                # File the row under the curated Asset Number history uses for this
+                # assetID whenever it would otherwise carry only the bare numeric id:
+                # a brand-new task (no existing row to pin from), or a row an earlier
+                # sync already mis-filed under the numeric id. Real curated values are
+                # left untouched, so this never moves a WO the user already grouped.
+                _apply_asset_number_bridge(effective_record, asset_number_bridge)
                 raw_text = json.dumps(effective_record, ensure_ascii=False, sort_keys=True)
                 raw_hash = hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest()
 
@@ -461,6 +471,93 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
         if value not in (None, ""):
             merged[key] = value
     return merged
+
+
+def _asset_identity_text(value: Any) -> str | None:
+    """Normalise an assetID / Asset Number to a trimmed string, or None if empty."""
+
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _build_asset_number_bridge(
+    existing: dict[str, dict[str, Any]], incoming: list[dict[str, Any]]
+) -> dict[str, str]:
+    """Map a Limble numeric ``assetID`` to the curated ``Asset Number`` history uses.
+
+    Historical/legacy rows group work orders under a curated ``Asset Number``
+    (e.g. ``"PUMP-01"``), while the Limble ``/tasks`` API only carries a numeric
+    ``assetID`` (e.g. ``67``). A brand-new task therefore arrives labelled with the
+    bare numeric id and, left alone, lands under a different asset than the
+    historical work orders for the same machine -- so new work orders "disappear"
+    from the asset the user is looking at.
+
+    This builds a best-effort ``assetID -> curated Asset Number`` lookup from the
+    two places that already pair the values:
+
+    * an incoming task matched 1:1 to a stored row contributes
+      ``incoming assetID -> that row's existing curated Asset Number``, and
+    * any stored row that already carries both fields contributes directly.
+
+    A row whose ``Asset Number`` is just the numeric id echoed back carries no
+    grouping information, so it never votes (and thus a database that only ever
+    used numeric asset numbers yields an empty bridge -- a complete no-op). When an
+    assetID maps to several curated numbers across history, the most frequently
+    seen value wins, ties broken by first appearance.
+    """
+
+    votes: dict[str, dict[str, int]] = {}
+
+    def _record_vote(asset_id: Any, asset_number: Any) -> None:
+        key = _asset_identity_text(asset_id)
+        curated = _asset_identity_text(asset_number)
+        if key is None or curated is None or curated == key:
+            return
+        bucket = votes.setdefault(key, {})
+        bucket[curated] = bucket.get(curated, 0) + 1
+
+    # Source 1: stored rows that already carry both an assetID and a curated number.
+    for entry in existing.values():
+        raw = entry.get("raw") or {}
+        _record_vote(raw.get("assetID"), raw.get("Asset Number"))
+
+    # Source 2: incoming tasks matched 1:1 to a stored row -- pair the incoming
+    # numeric assetID with the row's existing curated Asset Number. This covers the
+    # common case where legacy rows never stored a numeric assetID of their own.
+    for record in incoming:
+        task_id = _task_key(record)
+        if not task_id:
+            continue
+        match = existing.get(task_id)
+        if not match or len(match.get("ids", [])) != 1:
+            continue
+        _record_vote(record.get("assetID"), (match.get("raw") or {}).get("Asset Number"))
+
+    return {key: max(counts, key=counts.get) for key, counts in votes.items()}
+
+
+def _apply_asset_number_bridge(record: dict[str, Any], bridge: dict[str, str]) -> None:
+    """Relabel a record's bare-numeric Asset Number with the curated one, in place.
+
+    Only acts when the record carries no Asset Number or one equal to its numeric
+    ``assetID`` (the un-curated default the transform emits); a real curated value
+    already on the record is preserved, so this never overrides the pinning done for
+    genuinely historical rows.
+    """
+
+    if not bridge:
+        return
+    key = _asset_identity_text(record.get("assetID"))
+    if key is None:
+        return
+    curated = bridge.get(key)
+    if not curated:
+        return
+    current = _asset_identity_text(record.get("Asset Number"))
+    if current is None or current == key:
+        record["Asset Number"] = curated
 
 
 def _zero_value_for(column_type: str) -> Any:
