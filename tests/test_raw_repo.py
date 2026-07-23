@@ -164,6 +164,62 @@ class RawRepositoryTests(unittest.TestCase):
             self.assertEqual(result, {"inserted": 0, "updated": 1, "skipped": 0})
             self.assertEqual(repo.raw_record_count(), 1)
 
+    def test_update_does_not_drop_fields_the_incoming_payload_omits(self):
+        # A Limble /tasks refresh carries a narrower payload than the stored row
+        # (the list endpoint omits completion notes, completed dates, downtime,
+        # etc.). The sync must add/update fields without blanking curated data the
+        # API simply did not return, otherwise a single sync guts every row.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "name": "Pump repair",
+                "completionNotes": "replaced mechanical seal",
+                "dateCompleted": 1700000000,
+                "completedDate_Final": "2023-11-14T22:13:20+00:00",
+                "downtime": 45,
+            }])
+
+            next_batch_id = repo.start_batch()
+            # Narrower refresh: name changes, everything else is absent.
+            result = repo.upsert_records(next_batch_id, [{"taskID": 7, "name": "Pump repair (rev)"}])
+
+            self.assertEqual(result, {"inserted": 0, "updated": 1, "skipped": 0})
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["name"], "Pump repair (rev)")
+            self.assertEqual(raw["completionNotes"], "replaced mechanical seal")
+            self.assertEqual(raw["dateCompleted"], 1700000000)
+            self.assertEqual(raw["completedDate_Final"], "2023-11-14T22:13:20+00:00")
+            self.assertEqual(raw["downtime"], 45)
+
+    def test_update_empty_incoming_value_does_not_blank_existing_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gremlin.db"
+            repo = RawRepository(db_path)
+            repo.ensure_schema()
+            batch_id = repo.start_batch()
+            repo.upsert_records(batch_id, [{
+                "taskID": 7,
+                "name": "Pump repair",
+                "completionNotes": "replaced mechanical seal",
+            }])
+
+            next_batch_id = repo.start_batch()
+            # An explicitly empty completionNotes must not wipe the curated value.
+            repo.upsert_records(next_batch_id, [{
+                "taskID": 7,
+                "name": "Pump repair",
+                "completionNotes": "",
+            }])
+
+            with sqlite3.connect(db_path) as conn:
+                raw = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()[0])
+            self.assertEqual(raw["completionNotes"], "replaced mechanical seal")
+
 
 if __name__ == "__main__":
     unittest.main()

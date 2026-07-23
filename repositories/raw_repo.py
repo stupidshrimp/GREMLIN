@@ -373,11 +373,13 @@ class RawRepository:
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-_PRESERVED_RAW_JSON_FIELDS = (
+_PINNED_ASSET_IDENTITY_FIELDS = (
     # Legacy/import-enriched asset identity fields are what the analysis screens
     # group by. Limble API sync payloads may use a narrower numeric assetID or
     # omit display fields, so do not let a routine refresh move historical work
-    # orders out from under the asset the user already dispositioned/analyzed.
+    # orders out from under the asset the user already dispositioned/analyzed:
+    # these stay pinned to the existing value even when the incoming payload
+    # carries its own (narrower) asset identity.
     "Asset Number",
     "Asset Name",
     "Immediate Parent Asset ID",
@@ -390,12 +392,35 @@ _PRESERVED_RAW_JSON_FIELDS = (
 
 
 def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
-    """Return incoming payload plus legacy asset fields that must not be overwritten."""
+    """Merge an incoming Limble payload onto an existing row without dropping data.
+
+    A Limble ``/tasks`` refresh routinely carries a *narrower* payload than the row
+    already stored: the list endpoint omits fields that were present when the row
+    was first imported (completion notes, completed/created dates, downtime, and
+    other curated columns). The previous behaviour replaced the row with only the
+    incoming keys, so every field the API left out was silently blanked. On a
+    reliability database those omitted fields are the analysis (completed dates and
+    downtime especially), so a single sync gutted almost every row even though the
+    row count never changed.
+
+    To make the sync additive rather than destructive we start from the existing
+    payload and overlay the incoming fields. A sync can therefore add new fields and
+    update fields the API actually returned, but it can never delete curated data
+    the API simply did not include. An incoming empty value (``None``/``""``) never
+    overwrites a non-empty stored value, and the asset-identity fields stay pinned to
+    their existing values.
+    """
 
     if not existing:
         return incoming
-    merged = dict(incoming)
-    for key in _PRESERVED_RAW_JSON_FIELDS:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        # Only overlay values that carry data (or brand-new keys); a narrower
+        # refresh must not blank a field the stored row already populated.
+        if value in (None, "") and existing.get(key) not in (None, ""):
+            continue
+        merged[key] = value
+    for key in _PINNED_ASSET_IDENTITY_FIELDS:
         value = existing.get(key)
         if value not in (None, ""):
             merged[key] = value
