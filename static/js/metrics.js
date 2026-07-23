@@ -18,6 +18,7 @@
 
   const ASSET_API = "/life-data-analysis/api/assets";
   const METRICS_API = "/metrics/api/reliability";
+  const AVAILABILITY_API = "/metrics/api/availability";
   const ALERT_THRESHOLD = 70;
 
   // Forest palette (matches theme.css) used for the comparison bars.
@@ -30,6 +31,7 @@
     assets: [], // [{asset_number, asset_name}]
     selected: new Set(), // asset_number values; empty = all
     payload: null, // last /metrics/api/reliability response
+    availabilityPayload: null, // last /metrics/api/availability response
     expanded: null, // currently expanded card key or null
     dropdownOpen: false,
     assetQuery: "",
@@ -241,6 +243,55 @@
     return rows.filter((row) => state.selected.has(row.asset_number));
   }
 
+  function visibleAvailabilityRows() {
+    const rows = (state.availabilityPayload && state.availabilityPayload.availability) || [];
+    if (!state.selected.size) return rows;
+    return rows.filter((row) => state.selected.has(row.asset_number));
+  }
+
+  function availabilityNoDataMessage() {
+    if (state.availabilityPayload && state.availabilityPayload.availability && state.availabilityPayload.availability.length) {
+      return "No availability data for the selected assets in this date range.";
+    }
+    return "No availability data is available for the selected filters.";
+  }
+
+  function availabilityByAsset(rows) {
+    const byAsset = new Map();
+    rows.forEach((row) => {
+      const key = row.asset_number || "";
+      if (!key) return;
+      const bucket = byAsset.get(key) || {
+        asset_number: key,
+        asset_name: row.asset_name || "",
+        availability_sum: 0,
+        availability_count: 0,
+        scheduled_hours: 0,
+        downtime_hours: 0,
+        work_order_count: 0,
+      };
+      if (!bucket.asset_name && row.asset_name) bucket.asset_name = row.asset_name;
+      const availability = Number(row.availability_percent);
+      if (isFinite(availability)) {
+        bucket.availability_sum += availability;
+        bucket.availability_count += 1;
+      }
+      bucket.scheduled_hours += Number(row.scheduled_hours) || 0;
+      bucket.downtime_hours += Number(row.downtime_hours) || 0;
+      bucket.work_order_count += Number(row.work_order_count) || 0;
+      byAsset.set(key, bucket);
+    });
+    return Array.from(byAsset.values()).map((bucket) => ({
+      asset_number: bucket.asset_number,
+      asset_name: bucket.asset_name,
+      average_availability:
+        bucket.availability_count > 0 ? bucket.availability_sum / bucket.availability_count : null,
+      scheduled_hours: bucket.scheduled_hours,
+      downtime_hours: bucket.downtime_hours,
+      work_order_count: bucket.work_order_count,
+    }));
+  }
+
   async function loadMetrics() {
     const token = ++state.fetchToken;
     beginLoading();
@@ -252,10 +303,13 @@
       state.selected.forEach((assetNumber) => params.append("assets", assetNumber));
       if (state.dateFrom) params.set("start", state.dateFrom);
       if (state.dateTo) params.set("end", state.dateTo);
-      const url = params.toString() ? `${METRICS_API}?${params.toString()}` : METRICS_API;
-      const data = await getJson(url);
+      const query = params.toString();
+      const url = query ? `${METRICS_API}?${query}` : METRICS_API;
+      const availabilityUrl = query ? `${AVAILABILITY_API}?${query}` : AVAILABILITY_API;
+      const [data, availabilityData] = await Promise.all([getJson(url), getJson(availabilityUrl)]);
       if (token !== state.fetchToken) return; // a newer request superseded this one
       state.payload = data;
+      state.availabilityPayload = availabilityData;
       state.dataWindow = data.data_window || { start: null, end: null };
       if (!state.selected.size && !state.dateFrom && !state.dateTo) {
         state.globalDataWindow = state.dataWindow;
@@ -267,6 +321,7 @@
     } catch (err) {
       if (token !== state.fetchToken) return;
       state.payload = { assets: [] };
+      state.availabilityPayload = { availability: [] };
       showBanner(err.message || "Could not load metrics data.", "error");
       renderScopeHint();
       renderAll();
@@ -547,6 +602,24 @@
     drawBarChart(canvas, items, { height: 160, threshold: ALERT_THRESHOLD, thresholdLabel: "Alert 70" });
   }
 
+  function renderAvailabilityPreview() {
+    const canvas = $("availability-preview-chart");
+    const empty = $("availability-preview-empty");
+    const items = availabilityByAsset(visibleAvailabilityRows())
+      .filter((row) => row.average_availability !== null && row.average_availability !== undefined)
+      .map((row) => ({ name: row.asset_number, value: row.average_availability }))
+      .sort((a, b) => a.value - b.value)
+      .slice(0, 12);
+    if (!items.length) {
+      drawBarChart(canvas, [], { height: 160 });
+      empty.textContent = availabilityNoDataMessage();
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    drawBarChart(canvas, items, { height: 160, threshold: 90, thresholdLabel: "Goal 90%" });
+  }
+
   // ---- render: Operational KPIs expanded -----------------------------------
   function renderKpiExpanded() {
     const rows = visibleAssets();
@@ -692,12 +765,74 @@
       });
   }
 
+  // ---- render: Availability expanded ---------------------------------------
+  function renderAvailabilityExpanded() {
+    const rows = visibleAvailabilityRows();
+    const assetRows = availabilityByAsset(rows);
+
+    const availabilityItems = assetRows
+      .filter((row) => row.average_availability !== null && row.average_availability !== undefined)
+      .map((row) => ({ name: row.asset_number, value: row.average_availability }))
+      .sort((a, b) => a.value - b.value);
+    drawBarChart($("availability-asset-chart"), availabilityItems, {
+      threshold: 90,
+      thresholdLabel: "Goal 90%",
+    });
+    setEmpty("availability-asset", availabilityItems.length ? null : availabilityNoDataMessage());
+
+    const hoursItems = assetRows
+      .map((row) => ({
+        name: row.asset_number,
+        baseline: row.scheduled_hours,
+        current: row.downtime_hours,
+      }))
+      .filter((row) => row.baseline > 0 || row.current > 0);
+    drawGroupedBars($("availability-hours-chart"), hoursItems, {
+      labels: ["Scheduled hours", "Downtime hours"],
+    });
+    setEmpty("availability-hours", hoursItems.length ? null : availabilityNoDataMessage());
+
+    renderAvailabilityTable(rows);
+  }
+
+  function renderAvailabilityTable(rows) {
+    const tbody = $("availability-table").querySelector("tbody");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.appendChild(
+        el("tr", {}, [el("td", { class: "metrics-empty-row", colspan: "6", text: availabilityNoDataMessage() })])
+      );
+      return;
+    }
+    rows
+      .slice()
+      .sort((a, b) => {
+        const monthCompare = String(a.month || "").localeCompare(String(b.month || ""));
+        if (monthCompare !== 0) return monthCompare;
+        return String(a.asset_number || "").localeCompare(String(b.asset_number || ""), undefined, { numeric: true });
+      })
+      .forEach((row) => {
+        tbody.appendChild(
+          el("tr", {}, [
+            el("td", { text: row.asset_name ? `${row.asset_number} · ${row.asset_name}` : row.asset_number }),
+            el("td", { text: row.month || "—" }),
+            el("td", { text: row.availability_percent == null ? "—" : `${fmtNum(row.availability_percent, 2)}%` }),
+            el("td", { text: fmtNum(row.scheduled_hours, 1) }),
+            el("td", { text: fmtNum(row.downtime_hours, 1) }),
+            el("td", { text: fmtNum(row.work_order_count, 0) }),
+          ])
+        );
+      });
+  }
+
   // ---- render orchestration ------------------------------------------------
   function renderAll() {
     renderKpiPreview();
     renderAlertPreview();
+    renderAvailabilityPreview();
     if (state.expanded === "kpis") renderKpiExpanded();
     if (state.expanded === "alerts") renderAlertExpanded();
+    if (state.expanded === "availability") renderAvailabilityExpanded();
   }
 
   // ---- card expand / collapse ----------------------------------------------
@@ -716,6 +851,7 @@
     // Draw lazily once the panel is visible (canvases have no width while hidden).
     if (next === "kpis") renderKpiExpanded();
     if (next === "alerts") renderAlertExpanded();
+    if (next === "availability") renderAvailabilityExpanded();
   }
 
   function wireCards() {

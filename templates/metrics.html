@@ -177,10 +177,9 @@
     </div>
   </article>
 
-  <!-- ============================ Availability (placeholder) ============================ -->
-  <article class="glass-card metrics-card metrics-card-disabled" id="card-availability"
-           data-card="availability" tabindex="0" role="button" aria-expanded="false"
-           aria-controls="availability-expanded">
+  <!-- ============================ Availability ============================ -->
+  <article class="glass-card metrics-card" id="card-availability" data-card="availability"
+           tabindex="0" role="button" aria-expanded="false" aria-controls="availability-expanded">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Availability</p>
@@ -191,16 +190,43 @@
     </header>
 
     <div class="metrics-preview" data-preview="availability">
-      <div class="metrics-chart-wrap metrics-chart-preview metrics-chart-placeholder" aria-hidden="true">
-        <span class="metrics-placeholder-text">Coming soon</span>
+      <p class="metrics-preview-label">Average availability by asset (%)</p>
+      <div class="metrics-chart-wrap metrics-chart-preview">
+        <canvas id="availability-preview-chart" height="160"></canvas>
       </div>
+      <p class="metrics-empty" id="availability-preview-empty" hidden></p>
     </div>
 
     <div class="metrics-expanded" id="availability-expanded" hidden>
-      <div class="metrics-panel metrics-coming-soon">
-        <p class="metrics-coming-soon-text">Availability analysis is coming soon. This metric will calculate
-           asset availability using downtime and scheduled work hours.</p>
-        <p class="metrics-hint">Future definition: Availability = (Scheduled Work Hours − Downtime) ÷ Scheduled Work Hours</p>
+      <div class="metrics-chart-grid">
+        <div class="metrics-panel">
+          <h3>Availability by Asset</h3>
+          <p class="metrics-hint">Average monthly availability percentage across the selected date range.</p>
+          <div class="metrics-chart-wrap"><canvas id="availability-asset-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="availability-asset" hidden></p>
+        </div>
+        <div class="metrics-panel">
+          <h3>Scheduled Hours vs Downtime</h3>
+          <p class="metrics-hint">Total scheduled hours and downtime hours by asset for the selected range.</p>
+          <div class="metrics-chart-wrap"><canvas id="availability-hours-chart" height="260"></canvas></div>
+          <p class="metrics-empty" data-empty="availability-hours" hidden></p>
+        </div>
+      </div>
+
+      <div class="metrics-panel">
+        <h3>Availability summary</h3>
+        <div class="metrics-table-scroll">
+          <table class="metrics-table" id="availability-table">
+            <thead>
+              <tr>
+                <th>Asset</th><th>Month</th><th>Availability</th>
+                <th>Scheduled Hours</th><th>Downtime Hours</th><th>Work Orders</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="metrics-empty" data-empty="availability-table" hidden></p>
       </div>
     </div>
   </article>
