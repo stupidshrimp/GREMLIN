@@ -38,6 +38,8 @@ class DowntimeConversionTests(unittest.TestCase):
         # Legacy / hand-entered values that name their unit are not treated as seconds.
         self.assertAlmostEqual(service._parse_downtime_minutes("3.5 hours"), 210.0)
         self.assertAlmostEqual(service._parse_downtime_minutes("2 hr"), 120.0)
+        # Plural abbreviation must not fall through to the seconds branch.
+        self.assertAlmostEqual(service._parse_downtime_minutes("2 hrs"), 120.0)
         self.assertAlmostEqual(service._parse_downtime_minutes("45 min"), 45.0)
         # An explicit seconds label matches the default bare-number behaviour.
         self.assertAlmostEqual(service._parse_downtime_minutes("7200 seconds"), 120.0)

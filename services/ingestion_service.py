@@ -15,12 +15,10 @@ Transform decisions (confirmed for this Limble account):
   ``asset_number``; the ``/tasks`` endpoint only carries a numeric ``assetID``,
   so we copy it into the ``"Asset Number"`` field the mapper reads.
 * **``downtime`` is reported by Limble in seconds** (e.g. ``12600`` == 3 h 30 m).
-  Under the default configuration it is stored in ``raw_json`` exactly as Limble
-  provides it; ``LifeDataService._parse_downtime_minutes`` is the single place
-  that normalises it (seconds -> minutes -> hours). ``downtime_unit`` is left as
-  a guard against a future source change, but changing it from the default
-  rescales the stored value and would double-convert against that seconds
-  assumption, so keep it at the default unless the mapping layer is updated too.
+  It is stored in ``raw_json`` exactly as Limble provides it;
+  ``LifeDataService._parse_downtime_minutes`` is the single place that normalises
+  it (seconds -> minutes -> hours). Ingestion deliberately does not rescale the
+  value, so there is no second conversion to keep in sync.
 * **Dates** are emitted both as the original Unix values *and* as ISO-8601 UTC
   ``*_Final`` strings, because the Weibull/event-processing path parses the
   ``*_Final`` columns and cannot read raw Unix integers.
@@ -34,8 +32,6 @@ from typing import Any, Callable
 from integrations.limble import LimbleClient
 from repositories.raw_repo import RawRepository
 
-_DOWNTIME_UNIT_FACTORS = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours": 60.0}
-
 
 class IngestionService:
     """Coordinates the Limble -> GREMLIN.db synchronization workflow."""
@@ -45,7 +41,6 @@ class IngestionService:
         limble_client: LimbleClient,
         raw_repo: RawRepository,
         *,
-        downtime_unit: str = "minutes",
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
@@ -53,10 +48,6 @@ class IngestionService:
     ) -> None:
         self.limble_client = limble_client
         self.raw_repo = raw_repo
-        unit = (downtime_unit or "minutes").strip().lower()
-        if unit not in _DOWNTIME_UNIT_FACTORS:
-            raise ValueError(f"downtime_unit must be one of {sorted(_DOWNTIME_UNIT_FACTORS)}; got {downtime_unit!r}")
-        self.downtime_unit = unit
         self.fetch_assets = fetch_assets
         self.refresh_mapping = refresh_mapping
         self.exclude_templates = exclude_templates
@@ -214,16 +205,13 @@ class IngestionService:
         # Asset hierarchy enrichment from /assets.
         asset_index.enrich(record, asset_id)
 
-        # Store downtime as Limble provides it (seconds) under the default unit;
-        # LifeDataService normalises seconds->minutes->hours downstream. A
-        # non-default downtime_unit rescales here and must not be combined with
-        # that normalisation (see module docstring).
-        minutes = self._downtime_to_minutes(task.get("downtime"))
-        if minutes is not None:
-            if self.downtime_unit != "minutes":
-                record["downtime_source_value"] = task.get("downtime")
-                record["downtime_source_unit"] = self.downtime_unit
-            record["downtime"] = minutes
+        # Store downtime exactly as Limble reports it (seconds). It is the raw
+        # source value; LifeDataService._parse_downtime_minutes is the single
+        # place that normalises it (seconds -> minutes -> hours). Pre-scaling
+        # here would double-convert against that assumption.
+        downtime = task.get("downtime")
+        if downtime not in (None, ""):
+            record["downtime"] = downtime
 
         # Emit ISO-8601 UTC datetimes alongside the original Unix timestamps so
         # the *_Final-preferring downstream parsers have a value they can read.
@@ -243,12 +231,6 @@ class IngestionService:
         record[final_key] = iso
         if datetime_key:
             record[datetime_key] = iso
-
-    def _downtime_to_minutes(self, value: Any) -> float | None:
-        number = _coerce_number(value)
-        if number is None:
-            return None
-        return number * _DOWNTIME_UNIT_FACTORS[self.downtime_unit]
 
 
 class AssetIndex:

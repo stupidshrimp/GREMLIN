@@ -1151,7 +1151,7 @@ class LifeDataService:
         if not match:
             return None
         number = float(match.group())
-        if "hour" in text or re.search(r"\bhr\b", text):
+        if "hour" in text or re.search(r"\bhrs?\b", text):
             return number * 60.0
         if "min" in text:
             return number
