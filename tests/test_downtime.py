@@ -1,3 +1,5 @@
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +66,42 @@ class DowntimeConversionTests(unittest.TestCase):
         )
         self.assertAlmostEqual(mapped["downtime_minutes"], 210.0)
         self.assertAlmostEqual(mapped["downtime_hours"], 3.5)
+
+    def test_version_bump_remaps_existing_rows_without_refresh_on_startup(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "gremlin.db"
+        # First construction creates the mapped_cmms_record schema.
+        LifeDataService(db_path, refresh_on_startup=False)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+            conn.execute("INSERT INTO import_batch (import_batch_id, status) VALUES (0, 'COMPLETED')")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS raw_cmms_record ("
+                "raw_record_id INTEGER PRIMARY KEY, import_batch_id INTEGER NOT NULL DEFAULT 0, "
+                "source_record_id TEXT, raw_json TEXT NOT NULL, raw_content_hash TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO raw_cmms_record (raw_record_id, import_batch_id, raw_json) VALUES (1, 0, ?)",
+                (json.dumps({"taskID": 1, "assetID": 7, "Asset Number": "7", "downtime": 12600}),),
+            )
+            # Simulate a pre-fix (v1) mapped row carrying the old 60x-inflated downtime.
+            conn.execute(
+                "INSERT INTO mapped_cmms_record (raw_record_id, import_batch_id, asset_number, "
+                "downtime_raw, downtime_minutes, downtime_hours, mapping_version) "
+                "VALUES (1, 0, '7', '12600', 12600, 210.0, 'v1')"
+            )
+            conn.commit()
+        # A fresh construction with refresh_on_startup=False must still remap the
+        # stale v1 row rather than leave the dashboards on the inflated value.
+        LifeDataService(db_path, refresh_on_startup=False)
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT downtime_hours, mapping_version FROM mapped_cmms_record WHERE raw_record_id = 1"
+            ).fetchone()
+        self.assertEqual(row["mapping_version"], "v2")
+        self.assertAlmostEqual(row["downtime_hours"], 3.5)
 
     def test_explicit_text_units_are_honoured(self):
         service = self._service()

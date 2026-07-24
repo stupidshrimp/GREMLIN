@@ -209,6 +209,11 @@ class ExcelValidation:
 # downtime_unit path) to minutes, used only to validate stale provenance.
 _DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours": 60.0}
 
+# Version stamp on every mapped row. Bump it whenever _map_raw_record's output
+# changes so already-mapped rows are re-derived from stored raw JSON on the next
+# service construction (see _mapped_records_need_remap). v2 == downtime seconds fix.
+_MAPPING_VERSION = "v2"
+
 DISPLAY_COLUMNS = (
     "name",
     "taskID",
@@ -289,7 +294,12 @@ class LifeDataService:
             self.db_path = Path(db_path)
         self._asset_number_options_cache: list[dict[str, str]] | None = None
         self.ensure_schema()
-        if refresh_on_startup:
+        # Always remap when the stored rows predate the current mapper version,
+        # even if refresh_on_startup is disabled (the web app and desktop GUI both
+        # build with refresh_on_startup=False). Otherwise a mapping-logic change
+        # like the downtime seconds fix would not reach an existing database until
+        # someone triggered a manual refresh.
+        if refresh_on_startup or self._mapped_records_need_remap():
             self.refresh_mapped_cmms_records()
 
     def connect(self) -> sqlite3.Connection:
@@ -994,6 +1004,26 @@ class LifeDataService:
             return self.refresh_mapped_cmms_records()
         return 0
 
+    def _mapped_records_need_remap(self) -> bool:
+        """True when any mapped row predates the current mapper version.
+
+        Drives a one-time remap after a mapping-logic change so already-mapped
+        rows are re-derived from stored raw JSON without a manual refresh. Cheap
+        after the migration runs: once every row carries the current version the
+        check short-circuits on the first mismatch it fails to find.
+        """
+        with self.connect() as conn:
+            if not self._table_exists(conn, "mapped_cmms_record"):
+                return False
+            if not self._column_exists(conn, "mapped_cmms_record", "mapping_version"):
+                return False
+            row = conn.execute(
+                "SELECT 1 FROM mapped_cmms_record "
+                "WHERE mapping_version IS NULL OR mapping_version <> ? LIMIT 1",
+                (_MAPPING_VERSION,),
+            ).fetchone()
+        return row is not None
+
     def refresh_mapped_cmms_records(self) -> int:
         """Map only new or changed raw JSON records into ``mapped_cmms_record``."""
 
@@ -1002,9 +1032,7 @@ class LifeDataService:
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
         self._asset_number_options_cache = None
-        # Bumped to v2 so already-mapped rows are re-derived from stored raw JSON
-        # after the downtime seconds->minutes fix, without needing a Limble re-sync.
-        mapping_version = "v2"
+        mapping_version = _MAPPING_VERSION
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
                 return 0
@@ -1132,7 +1160,7 @@ class LifeDataService:
             "is_corrective_wo_candidate": int(is_wo),
             "is_purchase_order_related": int(bool(self._get_alias(raw, "poIDs"))),
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
-            "mapping_version": "v2",
+            "mapping_version": _MAPPING_VERSION,
         }
 
     def _downtime_from_raw(self, raw: dict[str, Any]) -> tuple[Any, float | None]:
