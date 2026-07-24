@@ -68,11 +68,22 @@
       </section>
 
       <section class="doc-section">
-        <h3>Risk Score</h3>
+        <h3>Risk Score When Baseline Exists</h3>
         <p class="formula">Risk = 40% downtime score + 25% work-order score + 25% MTTR score + 10% repeat score</p>
         <p>
-          When baseline data exists, increases from baseline raise the score. A doubling, or activity appearing from zero,
-          scores 100 for that component. No increase scores 0. The final score is capped from 0 to 100.
+          This formula is used when at least one selected asset has baseline records in the first half of the date window.
+          Increases from baseline raise the score. A doubling, or activity appearing from zero, scores 100 for that
+          component. No increase scores 0. The final score is capped from 0 to 100.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Risk Score Without Baseline</h3>
+        <p class="formula">Risk = 45% relative downtime + 27.5% relative work-order count + 27.5% relative MTTR</p>
+        <p>
+          If no selected asset has baseline records, GREMLIN switches to relative scoring. Each component is min-max
+          ranked against the selected assets, blended with the weights above, and capped from 0 to 100. Repeat failures
+          are not included in this no-baseline formula.
         </p>
       </section>
     </div>
