@@ -65,7 +65,6 @@
     dateFrom: "",
     dateTo: "",
     dataWindow: { start: null, end: null },
-    dateInitialized: false,
     fetchToken: 0,
   };
 
@@ -296,7 +295,7 @@
       if (token !== state.fetchToken) return; // a newer request superseded this one
       state.payload = data;
       state.dataWindow = data.data_window || { start: null, end: null };
-      initDateInputs();
+      syncDateInputs();
       clearBanner();
       renderScopeHint();
       renderAll();
@@ -311,17 +310,18 @@
     }
   }
 
-  function initDateInputs() {
-    // Default the date pickers to the data's own extent the first time we learn
-    // it, without turning those displayed defaults into active API filters.
-    if (state.dateInitialized) return;
-    const from = $("metrics-date-from");
-    const to = $("metrics-date-to");
-    if (state.dataWindow.start) {
-      from.value = state.dataWindow.start;
-      to.value = state.dataWindow.end || "";
-      state.dateInitialized = true;
-    }
+  function syncDateInputs() {
+    // While no explicit date filter is active, the From/To controls only display
+    // the current data extent as a hint — they are not sent to the API. Re-sync
+    // them to whatever the active asset selection returned on each fetch so the
+    // hint never goes stale relative to what's shown. Otherwise, after the
+    // selection widens (e.g. clearing the default chips to compare every asset),
+    // editing a single field would commit the previous, narrower window's
+    // opposite bound and silently truncate the comparison.
+    if (state.dateFrom || state.dateTo) return; // respect a user-set range
+    if (!state.dataWindow.start) return; // nothing meaningful to display yet
+    $("metrics-date-from").value = state.dataWindow.start;
+    $("metrics-date-to").value = state.dataWindow.end || "";
   }
 
   // ---- canvas helpers ------------------------------------------------------
@@ -816,13 +816,11 @@
       state.selected = defaultSelection();
       state.assetQuery = "";
       search.value = "";
-      // Drop any active date filter and let the post-reset fetch re-seed the
-      // pickers from the default set's own extent (same path as first load), so
-      // they never keep stale all-asset or previously-selected bounds — which a
-      // later single-date edit would otherwise submit as the opposite bound.
+      // Drop any active date filter; the post-reset fetch re-seeds the pickers
+      // from the default set's own extent via syncDateInputs(). Blank them now so
+      // no stale bound shows while that fetch is in flight.
       state.dateFrom = "";
       state.dateTo = "";
-      state.dateInitialized = false;
       from.value = "";
       to.value = "";
       renderSelectedChips();
