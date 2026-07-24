@@ -205,6 +205,15 @@ class ExcelValidation:
     error: str = "Choose a value from the dropdown or enter a valid value."
 
 
+# Converts a legacy ``downtime_source_unit`` (written by the retired ingestion
+# downtime_unit path) to minutes, used only to validate stale provenance.
+_DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours": 60.0}
+
+# Version stamp on every mapped row. Bump it whenever _map_raw_record's output
+# changes so already-mapped rows are re-derived from stored raw JSON on the next
+# service construction (see _mapped_records_need_remap). v2 == downtime seconds fix.
+_MAPPING_VERSION = "v2"
+
 DISPLAY_COLUMNS = (
     "name",
     "taskID",
@@ -285,7 +294,12 @@ class LifeDataService:
             self.db_path = Path(db_path)
         self._asset_number_options_cache: list[dict[str, str]] | None = None
         self.ensure_schema()
-        if refresh_on_startup:
+        # Always remap when the stored rows predate the current mapper version,
+        # even if refresh_on_startup is disabled (the web app and desktop GUI both
+        # build with refresh_on_startup=False). Otherwise a mapping-logic change
+        # like the downtime seconds fix would not reach an existing database until
+        # someone triggered a manual refresh.
+        if refresh_on_startup or self._mapped_records_need_remap():
             self.refresh_mapped_cmms_records()
 
     def connect(self) -> sqlite3.Connection:
@@ -868,6 +882,10 @@ class LifeDataService:
                 "downtime_minutes": "REAL",
                 "downtime_hours": "REAL",
                 "downtime_backfill_attempted": "INTEGER NOT NULL DEFAULT 0",
+                # Databases predating this column get 'v1' on every existing row,
+                # so the startup remap gate (_mapped_records_need_remap) treats
+                # them as stale and re-derives them under the current mapper.
+                "mapping_version": "TEXT NOT NULL DEFAULT 'v1'",
             }
             for column, ddl in required_mapped_columns.items():
                 if not self._column_exists(conn, "mapped_cmms_record", column):
@@ -938,8 +956,7 @@ class LifeDataService:
                 raw = json.loads(row["raw_json"] or "{}")
             except json.JSONDecodeError:
                 raw = {}
-            downtime_raw = self._get_alias(raw, "downtime")
-            downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+            downtime_raw, downtime_minutes = self._downtime_from_raw(raw)
             updates.append({
                 "mapped_record_id": row["mapped_record_id"],
                 "downtime_raw": downtime_raw,
@@ -991,6 +1008,26 @@ class LifeDataService:
             return self.refresh_mapped_cmms_records()
         return 0
 
+    def _mapped_records_need_remap(self) -> bool:
+        """True when any mapped row predates the current mapper version.
+
+        Drives a one-time remap after a mapping-logic change so already-mapped
+        rows are re-derived from stored raw JSON without a manual refresh. Cheap
+        after the migration runs: once every row carries the current version the
+        check short-circuits on the first mismatch it fails to find.
+        """
+        with self.connect() as conn:
+            if not self._table_exists(conn, "mapped_cmms_record"):
+                return False
+            if not self._column_exists(conn, "mapped_cmms_record", "mapping_version"):
+                return False
+            row = conn.execute(
+                "SELECT 1 FROM mapped_cmms_record "
+                "WHERE mapping_version IS NULL OR mapping_version <> ? LIMIT 1",
+                (_MAPPING_VERSION,),
+            ).fetchone()
+        return row is not None
+
     def refresh_mapped_cmms_records(self) -> int:
         """Map only new or changed raw JSON records into ``mapped_cmms_record``."""
 
@@ -999,7 +1036,7 @@ class LifeDataService:
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
         self._asset_number_options_cache = None
-        mapping_version = "v1"
+        mapping_version = _MAPPING_VERSION
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
                 return 0
@@ -1079,8 +1116,7 @@ class LifeDataService:
         created_date_final = self._get_alias(raw, "createdDate_Final", "createdDateFinal")
         start_date_final = self._get_alias(raw, "startDate_Final", "startDateFinal")
         type_raw = self._get_alias(raw, "type")
-        downtime_raw = self._get_alias(raw, "downtime")
-        downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+        downtime_raw, downtime_minutes = self._downtime_from_raw(raw)
         auto_class, is_pm, is_wo, reason = self._classify_record(type_raw, task_name, request_title, requestor_description, completion_notes, raw)
         status_text = str(self._get_alias(raw, "status", "statusID") or "").lower()
         return {
@@ -1128,22 +1164,76 @@ class LifeDataService:
             "is_corrective_wo_candidate": int(is_wo),
             "is_purchase_order_related": int(bool(self._get_alias(raw, "poIDs"))),
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
-            "mapping_version": "v1",
+            "mapping_version": _MAPPING_VERSION,
         }
 
+    def _downtime_from_raw(self, raw: dict[str, Any]) -> tuple[Any, float | None]:
+        """Return the stored raw ``downtime`` and its value in minutes.
+
+        Most rows carry Limble's raw ``downtime`` in seconds. Rows imported by
+        the retired ingestion ``downtime_unit`` path instead stored ``downtime``
+        already normalised to minutes and preserved the original value/unit in
+        ``downtime_source_value`` / ``downtime_source_unit`` provenance fields.
+
+        ``RawRepository`` clears that provenance whenever a refresh supplies a
+        fresh ``downtime`` (see ``_merge_preserved_fields``), so its presence
+        marks a row whose ``downtime`` is still the pre-scaled minutes value.
+        As a belt-and-suspenders check the already-minutes shortcut is only taken
+        when the stored ``downtime`` still matches the recorded source
+        relationship; otherwise ``downtime`` is normalised as raw seconds.
+        """
+        downtime_raw = self._get_alias(raw, "downtime")
+        source_unit = self._get_alias(raw, "downtime_source_unit")
+        source_value = self._get_alias(raw, "downtime_source_value")
+        if source_unit is not None and self._downtime_matches_provenance(downtime_raw, source_value, source_unit):
+            try:
+                return downtime_raw, float(downtime_raw)
+            except (TypeError, ValueError):
+                # Not a bare number; fall back to unit-aware text parsing.
+                return downtime_raw, self._parse_downtime_minutes(downtime_raw)
+        return downtime_raw, self._parse_downtime_minutes(downtime_raw)
+
+    @staticmethod
+    def _downtime_matches_provenance(downtime: Any, source_value: Any, source_unit: Any) -> bool:
+        """True when ``downtime`` (minutes) still matches its recorded source.
+
+        Guards the already-minutes shortcut against provenance left stale by a
+        resync that refreshed ``downtime`` but not the ``downtime_source_*`` keys.
+        """
+        factor = _DOWNTIME_SOURCE_UNIT_MINUTES.get(str(source_unit).strip().lower())
+        if factor is None:
+            return False
+        try:
+            expected_minutes = float(source_value) * factor
+            actual_minutes = float(downtime)
+        except (TypeError, ValueError):
+            return False
+        return math.isclose(actual_minutes, expected_minutes, rel_tol=1e-6, abs_tol=1e-6)
+
     def _parse_downtime_minutes(self, value: Any) -> float | None:
+        """Normalise a raw CMMS downtime value to minutes.
+
+        Limble reports task ``downtime`` in **seconds** (e.g. ``12600`` == 3.5 h),
+        so a bare numeric value is seconds and must be divided by 60 to reach the
+        minutes the rest of the pipeline stores (``downtime_hours`` then divides
+        by 60 again). Explicit textual units are still honoured for legacy or
+        hand-entered values: ``"3.5 hours"`` -> 210 min, ``"45 min"`` -> 45 min.
+        """
         if value in (None, ""):
             return None
         if isinstance(value, (int, float)):
-            return float(value)
+            return float(value) / 60.0
         text = str(value).strip().lower()
         match = re.search(r"[-+]?\d*\.?\d+", text)
         if not match:
             return None
         number = float(match.group())
-        if "hour" in text or re.search(r"\bhr\b", text):
+        if "hour" in text or re.search(r"\bhrs?\b", text):
             return number * 60.0
-        return number
+        if "min" in text:
+            return number
+        # Bare number or an explicit "seconds" label: the raw Limble unit.
+        return number / 60.0
 
     def _classify_record(self, type_raw: Any, task_name: Any, request_title: Any, requestor_description: Any, completion_notes: Any, raw: dict[str, Any]) -> tuple[str, bool, bool, str]:
         type_text = str(type_raw or "").strip()
@@ -2524,7 +2614,7 @@ class LifeDataService:
             "CAST(m.task_id AS TEXT)",
             "m.created_date_final",
             "m.completed_date_final",
-            "COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT))",
+            "CAST(ROUND(m.downtime_hours, 2) AS TEXT)",
             "m.completion_notes",
             "m.request_title",
             "m.requestor_description",
@@ -2574,7 +2664,7 @@ class LifeDataService:
                        m.task_id AS taskID,
                        m.created_date_final AS createdDate_Final,
                        m.completed_date_final AS completedDate_Final,
-                       COALESCE(m.downtime_raw, CAST(m.downtime_minutes AS TEXT)) AS downtime,
+                       ROUND(m.downtime_hours, 2) AS downtime,
                        m.completion_notes AS completionNotes,
                        m.request_title AS requestTitle,
                        m.requestor_description AS requestorDescription,

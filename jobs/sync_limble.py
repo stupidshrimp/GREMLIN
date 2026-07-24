@@ -130,15 +130,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--since",
         help="Only import tasks touched on/after this date (YYYY-MM-DD), ISO datetime, or Unix timestamp.",
     )
-    parser.add_argument(
-        "--downtime-unit",
-        choices=["minutes", "seconds", "hours"],
-        default=None,
-        help=(
-            "Unit of Limble's task 'downtime' field; it is normalised to minutes on write. "
-            "Falls back to the LIMBLE_DOWNTIME_UNIT env/.env value, then 'minutes'."
-        ),
-    )
     parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
     parser.add_argument("--no-assets", action="store_true", help="Skip the /assets fetch used for name/hierarchy enrichment.")
     parser.add_argument("--no-map", action="store_true", help="Skip refreshing mapped_cmms_record after import.")
@@ -167,15 +158,11 @@ def run(args: argparse.Namespace) -> dict:
         base_url=args.base_url,
         page_limit=args.page_limit,
     )
-    # Resolve the downtime unit only after .env is loaded so a value configured
-    # there (LIMBLE_DOWNTIME_UNIT) is honoured rather than the bare default.
-    downtime_unit = args.downtime_unit or os.getenv("LIMBLE_DOWNTIME_UNIT") or "minutes"
     client = LimbleClient(config)
     raw_repo = RawRepository(db_path)
     service = IngestionService(
         limble_client=client,
         raw_repo=raw_repo,
-        downtime_unit=downtime_unit,
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         exclude_templates=not args.include_templates,

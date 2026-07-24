@@ -425,6 +425,13 @@ _SOURCE_DATE_DERIVED_FIELDS = {
 }
 _SOURCE_DATE_KEYS = frozenset(_SOURCE_DATE_DERIVED_FIELDS)
 
+# ``downtime_source_value`` / ``downtime_source_unit`` are provenance for the
+# *stored* ``downtime`` written by the retired ingestion downtime_unit path. They
+# describe how that specific value was scaled, so a refresh that supplies a fresh
+# ``downtime`` invalidates them: leaving them behind would let the mapper treat
+# the new raw seconds value as already-normalised minutes (a 60x inflation).
+_DOWNTIME_PROVENANCE_FIELDS = ("downtime_source_value", "downtime_source_unit")
+
 
 def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     """Merge an incoming Limble payload onto an existing row without dropping data.
@@ -471,6 +478,12 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
         for derived in derived_fields:
             if derived not in incoming:
                 merged.pop(derived, None)
+    # A refresh that supplies a fresh downtime value invalidates any downtime
+    # provenance it did not re-supply, so drop it rather than let it go stale.
+    if incoming.get("downtime") not in (None, ""):
+        for field in _DOWNTIME_PROVENANCE_FIELDS:
+            if field not in incoming:
+                merged.pop(field, None)
     for key in _PINNED_ASSET_IDENTITY_FIELDS:
         value = existing.get(key)
         if value not in (None, ""):
