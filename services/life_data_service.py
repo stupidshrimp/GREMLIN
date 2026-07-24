@@ -1548,7 +1548,7 @@ class LifeDataService:
                     COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
                     COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
                     COUNT(*) AS failure_count,
-                    COALESCE(SUM(COALESCE(m.downtime_hours, 0)), 0) AS downtime_hours
+                    COALESCE(SUM(CASE WHEN COALESCE(m.downtime_hours, 0) < 0 THEN 0 ELSE COALESCE(m.downtime_hours, 0) END), 0) AS downtime_hours
                 FROM mapped_cmms_record m
                 JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
                 LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
@@ -1692,7 +1692,7 @@ class LifeDataService:
                         NULLIF(TRIM(m.start_date_final), ''),
                         NULLIF(TRIM(m.created_date_final), '')
                     ) AS wo_date,
-                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                    CASE WHEN COALESCE(m.downtime_hours, 0) < 0 THEN 0 ELSE COALESCE(m.downtime_hours, 0) END AS downtime_hours
                 FROM mapped_cmms_record m
                 JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
                 LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
@@ -1922,7 +1922,7 @@ class LifeDataService:
                         NULLIF(TRIM(m.start_date_final), ''),
                         NULLIF(TRIM(m.created_date_final), '')
                     ) AS wo_date,
-                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                    CASE WHEN COALESCE(m.downtime_hours, 0) < 0 THEN 0 ELSE COALESCE(m.downtime_hours, 0) END AS downtime_hours
                 FROM mapped_cmms_record m
                 JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
                 LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
@@ -2106,7 +2106,7 @@ class LifeDataService:
                         NULLIF(TRIM(m.start_date_final), ''),
                         NULLIF(TRIM(m.created_date_final), '')
                     ) AS wo_date,
-                    COALESCE(m.downtime_hours, 0) AS downtime_hours
+                    CASE WHEN COALESCE(m.downtime_hours, 0) < 0 THEN 0 ELSE COALESCE(m.downtime_hours, 0) END AS downtime_hours
                 FROM mapped_cmms_record m
                 JOIN current_disp d ON d.mapped_record_id = m.mapped_record_id
                 LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
@@ -2270,7 +2270,7 @@ class LifeDataService:
                 SELECT
                     TRIM(m.asset_number) AS asset_number,
                     COALESCE(NULLIF(TRIM(m.asset_name), ''), '') AS asset_name,
-                    COALESCE(m.downtime_hours, 0) AS downtime_hours,
+                    CASE WHEN COALESCE(m.downtime_hours, 0) < 0 THEN 0 ELSE COALESCE(m.downtime_hours, 0) END AS downtime_hours,
                     COALESCE(
                         NULLIF(TRIM(m.completed_date_final), ''),
                         NULLIF(TRIM(m.start_date_final), ''),
