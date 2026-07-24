@@ -184,7 +184,7 @@
   color: var(--forest-700);
   margin-bottom: 0.35rem;
 }
-.metrics-chart-preview { max-width: 520px; }
+.metrics-chart-preview { width: 100%; }
 
 .metrics-chart-placeholder {
   display: flex;
