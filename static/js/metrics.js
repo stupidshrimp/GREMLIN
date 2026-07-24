@@ -20,6 +20,32 @@
   const METRICS_API = "/metrics/api/reliability";
   const ALERT_THRESHOLD = 70;
 
+  // Curated equipment the dashboard compares by default. Leadership only wants
+  // these assets on the page until someone explicitly searches for others, so
+  // the selection is seeded with this set on load and restored by Reset. The
+  // numbers mirror the Availability Dashboard's default asset groups; the group
+  // comments are kept so the list stays easy to audit against the plant floor.
+  const DEFAULT_ASSET_NUMBERS = [
+    // Salvagnini – 3101-3107
+    "3101", "3102", "3103", "3104", "3105", "3106", "3107",
+    // Building 12 Cloos Robots – R1 2743, R2 2744, R3 2745, R4 2746
+    "2743", "2744", "2745", "2746",
+    // Building 6 Finishing – EFS 4001, PFS 4002
+    "4001", "4002",
+    // Building 9 Plating Lines – Bright Dip Line 1935, Silver Line 1934, Zinc 4000
+    "1935", "1934", "4000",
+    // Building 6 LVDs and Press Brakes – LVD 3147, LVD 3150, Cincinnati Press 2499, Cincinnati 3028, Cincinnati Press 2689
+    "3147", "3150", "2499", "3028", "2689",
+    // Building 5 Mazak Lasers – Mazak Laser 3000, Mazak Laser 2728
+    "3000", "2728",
+    // Building 1 Secondary Finishing – Tumbler 505, Rumped Tumbler 1682, Ransohoff 4028, Metco Silver 758, Vapor Blast 3326, Vibetech Vibratory 2667
+    "505", "1682", "4028", "758", "3326", "2667",
+    // PPD Hedrich Dispensers – H3 3154, H2 3142, H1 3023, H4 3253
+    "3154", "3142", "3023", "3253",
+    // PPD Sandblasters – Bushing 3359, PME Retrofit 3461, Edge Restore 3325, Shield 3160, ATC Sensor 2958, Vista SD 3073
+    "3359", "3461", "3325", "3160", "2958", "3073",
+  ];
+
   // Forest palette (matches theme.css) used for the comparison bars.
   const BAR_COLOR = "#3f5e77";
   const BAR_COLOR_ALT = "#7fa6c0";
@@ -48,6 +74,19 @@
   };
 
   const $ = (id) => document.getElementById(id);
+
+  // A fresh copy of the default equipment selection so callers can mutate the
+  // returned set without disturbing the canonical DEFAULT_ASSET_NUMBERS list.
+  function defaultSelection() {
+    return new Set(DEFAULT_ASSET_NUMBERS);
+  }
+
+  // True while the active selection is exactly the curated default set, so the
+  // scope hint can say "default" instead of a bare count.
+  function selectionIsDefault() {
+    if (state.selected.size !== DEFAULT_ASSET_NUMBERS.length) return false;
+    return DEFAULT_ASSET_NUMBERS.every((number) => state.selected.has(number));
+  }
 
   function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -224,13 +263,17 @@
 
   function renderScopeHint() {
     const hint = $("metrics-scope-hint");
-    if (state.selected.size) {
+    if (selectionIsDefault()) {
       // Use the selection size (not the payload) so the count is right even
       // during the brief window before a selection-triggered refetch resolves.
+      hint.textContent =
+        `Showing the default equipment set (${state.selected.size} assets). ` +
+        "Search to add others, remove a chip to narrow, or clear all to compare every asset.";
+    } else if (state.selected.size) {
       hint.textContent = `Comparing ${state.selected.size} selected asset(s).`;
     } else {
       const total = state.payload && state.payload.assets ? state.payload.assets.length : state.assets.length;
-      hint.textContent = `No assets selected — comparing all ${total} asset(s) by default.`;
+      hint.textContent = `No assets selected — comparing all ${total} asset(s).`;
     }
   }
 
@@ -776,7 +819,8 @@
     to.addEventListener("change", onDateChange);
 
     $("metrics-reset").addEventListener("click", () => {
-      state.selected.clear();
+      // Reset restores the curated default equipment set, not an all-asset view.
+      state.selected = defaultSelection();
       state.assetQuery = "";
       search.value = "";
       const resetWindow = state.globalDataWindow.start || state.globalDataWindow.end
@@ -803,10 +847,14 @@
 
   // ---- init ----------------------------------------------------------------
   function init() {
+    // Seed the curated default equipment set before the first fetch so the
+    // dashboard opens scoped to it rather than to every asset.
+    state.selected = defaultSelection();
     wireCards();
     wireFilters();
     wireResize();
     renderSelectedChips();
+    renderScopeHint();
     // Assets (for the filter menu) and the metric payload load in parallel.
     loadAssets();
     loadMetrics();
