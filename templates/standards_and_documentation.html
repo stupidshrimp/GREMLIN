@@ -103,7 +103,8 @@
         <h3>Observation Life</h3>
         <p class="formula">Life Hours = hours from interval start to interval end</p>
         <p>
-          Interval ends come from included failures, approved PM reset events, or the analysis cutoff for right-censored current life.
+          Interval ends come from included failures, approved PM reset events that are still marked as Weibull candidates,
+          or the analysis cutoff for right-censored current life.
           GREMLIN uses schedule-adjusted weekday hours for these life intervals.
         </p>
       </section>
@@ -234,8 +235,12 @@
 
       <section class="doc-section">
         <h3>Approved PM Resets</h3>
-        <p class="formula">Approved Reset = INCLUDED_PM_RESET_EVENT and APPROVED_RESET</p>
-        <p>Approved PM resets can start a new life interval for Weibull analysis when a reset target is selected.</p>
+        <p class="formula">Approved Reset = INCLUDED_PM_RESET_EVENT and APPROVED_RESET and include_in_weibull_candidate = 1</p>
+        <p>
+          Approved PM resets can start a new life interval for Weibull analysis when a reset target is selected.
+          If the Weibull-candidate checkbox is cleared, the PM is documented as an approved reset decision but it does
+          not reset the Weibull life interval.
+        </p>
       </section>
     </div>
   </article>
