@@ -103,6 +103,38 @@ class DowntimeConversionTests(unittest.TestCase):
         self.assertEqual(row["mapping_version"], "v2")
         self.assertAlmostEqual(row["downtime_hours"], 3.5)
 
+    def test_missing_mapping_version_column_is_migrated_as_stale(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "gremlin.db"
+        # Build the full schema, then drop mapping_version to simulate a database
+        # that predates the column but already carries inflated downtime_hours.
+        LifeDataService(db_path, refresh_on_startup=False)
+        with sqlite3.connect(db_path) as conn:
+            if "mapping_version" not in {r[1] for r in conn.execute("PRAGMA table_info(mapped_cmms_record)")}:
+                self.skipTest("mapping_version column unexpectedly absent")
+            try:
+                conn.execute("ALTER TABLE mapped_cmms_record DROP COLUMN mapping_version")
+            except sqlite3.OperationalError:
+                self.skipTest("SQLite build does not support DROP COLUMN")
+            conn.execute(
+                "INSERT INTO mapped_cmms_record (raw_record_id, import_batch_id, asset_number, downtime_hours) "
+                "VALUES (1, 0, '7', 210.0)"
+            )
+            conn.commit()
+        # Reconstruction must migrate the column back in (defaulting existing rows
+        # to the stale 'v1'), so the remap gate picks them up rather than silently
+        # leaving the old 60x values.
+        LifeDataService(db_path, refresh_on_startup=False)
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(mapped_cmms_record)")}
+            self.assertIn("mapping_version", columns)
+            version = conn.execute(
+                "SELECT mapping_version FROM mapped_cmms_record WHERE raw_record_id = 1"
+            ).fetchone()["mapping_version"]
+        self.assertEqual(version, "v1")
+
     def test_explicit_text_units_are_honoured(self):
         service = self._service()
         # Legacy / hand-entered values that name their unit are not treated as seconds.

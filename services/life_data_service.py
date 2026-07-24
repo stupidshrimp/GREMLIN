@@ -882,6 +882,10 @@ class LifeDataService:
                 "downtime_minutes": "REAL",
                 "downtime_hours": "REAL",
                 "downtime_backfill_attempted": "INTEGER NOT NULL DEFAULT 0",
+                # Databases predating this column get 'v1' on every existing row,
+                # so the startup remap gate (_mapped_records_need_remap) treats
+                # them as stale and re-derives them under the current mapper.
+                "mapping_version": "TEXT NOT NULL DEFAULT 'v1'",
             }
             for column, ddl in required_mapped_columns.items():
                 if not self._column_exists(conn, "mapped_cmms_record", column):
