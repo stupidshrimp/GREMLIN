@@ -4,7 +4,39 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from repositories.raw_repo import RawRepository
+from repositories.raw_repo import RawRepository, _merge_preserved_fields
+
+
+class MergePreservedFieldsTests(unittest.TestCase):
+    def test_fresh_downtime_drops_stale_downtime_provenance(self):
+        # A row imported by the retired --downtime-unit path carries provenance
+        # describing how its stored (minutes) downtime was scaled. A refresh that
+        # supplies a fresh raw downtime (seconds) invalidates that provenance; it
+        # must be dropped so the mapper does not treat the new seconds value as
+        # already-normalised minutes.
+        existing = {
+            "taskID": 5,
+            "downtime": 210.0,
+            "downtime_source_value": 12600,
+            "downtime_source_unit": "seconds",
+        }
+        merged = _merge_preserved_fields(existing, {"taskID": 5, "downtime": 12600})
+        self.assertEqual(merged["downtime"], 12600)
+        self.assertNotIn("downtime_source_value", merged)
+        self.assertNotIn("downtime_source_unit", merged)
+
+    def test_narrow_refresh_keeps_downtime_provenance(self):
+        # A narrow payload that omits downtime must not disturb the stored value
+        # or its provenance.
+        existing = {
+            "taskID": 5,
+            "downtime": 210.0,
+            "downtime_source_value": 12600,
+            "downtime_source_unit": "seconds",
+        }
+        merged = _merge_preserved_fields(existing, {"taskID": 5, "description": "narrow"})
+        self.assertEqual(merged["downtime"], 210.0)
+        self.assertEqual(merged["downtime_source_unit"], "seconds")
 
 
 class RawRepositoryTests(unittest.TestCase):

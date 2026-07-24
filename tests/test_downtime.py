@@ -49,6 +49,22 @@ class DowntimeConversionTests(unittest.TestCase):
         self.assertAlmostEqual(mapped["downtime_minutes"], 210.0)
         self.assertAlmostEqual(mapped["downtime_hours"], 3.5)
 
+    def test_stale_provenance_after_resync_is_ignored(self):
+        service = self._service()
+        # If a resync overwrote `downtime` with fresh raw seconds but stale
+        # provenance survived, the consistency check must reject it (12600 !=
+        # 12600 s -> 210 min) and normalise as seconds, not reinflate to 210 h.
+        mapped = service._map_raw_record(
+            {
+                "taskID": 3,
+                "downtime": 12600,  # fresh raw seconds
+                "downtime_source_value": 12600,  # stale
+                "downtime_source_unit": "seconds",  # stale
+            }
+        )
+        self.assertAlmostEqual(mapped["downtime_minutes"], 210.0)
+        self.assertAlmostEqual(mapped["downtime_hours"], 3.5)
+
     def test_explicit_text_units_are_honoured(self):
         service = self._service()
         # Legacy / hand-entered values that name their unit are not treated as seconds.

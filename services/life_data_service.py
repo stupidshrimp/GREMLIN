@@ -205,6 +205,10 @@ class ExcelValidation:
     error: str = "Choose a value from the dropdown or enter a valid value."
 
 
+# Converts a legacy ``downtime_source_unit`` (written by the retired ingestion
+# downtime_unit path) to minutes, used only to validate stale provenance.
+_DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours": 60.0}
+
 DISPLAY_COLUMNS = (
     "name",
     "taskID",
@@ -1138,19 +1142,41 @@ class LifeDataService:
         the retired ingestion ``downtime_unit`` path instead stored ``downtime``
         already normalised to minutes and preserved the original value/unit in
         ``downtime_source_value`` / ``downtime_source_unit`` provenance fields.
-        Detect those so the seconds->minutes normalisation is not applied a
-        second time to a value that is already minutes.
+
+        ``RawRepository`` clears that provenance whenever a refresh supplies a
+        fresh ``downtime`` (see ``_merge_preserved_fields``), so its presence
+        marks a row whose ``downtime`` is still the pre-scaled minutes value.
+        As a belt-and-suspenders check the already-minutes shortcut is only taken
+        when the stored ``downtime`` still matches the recorded source
+        relationship; otherwise ``downtime`` is normalised as raw seconds.
         """
         downtime_raw = self._get_alias(raw, "downtime")
-        if self._get_alias(raw, "downtime_source_unit") is not None:
-            if downtime_raw in (None, ""):
-                return downtime_raw, None
+        source_unit = self._get_alias(raw, "downtime_source_unit")
+        source_value = self._get_alias(raw, "downtime_source_value")
+        if source_unit is not None and self._downtime_matches_provenance(downtime_raw, source_value, source_unit):
             try:
                 return downtime_raw, float(downtime_raw)
             except (TypeError, ValueError):
                 # Not a bare number; fall back to unit-aware text parsing.
                 return downtime_raw, self._parse_downtime_minutes(downtime_raw)
         return downtime_raw, self._parse_downtime_minutes(downtime_raw)
+
+    @staticmethod
+    def _downtime_matches_provenance(downtime: Any, source_value: Any, source_unit: Any) -> bool:
+        """True when ``downtime`` (minutes) still matches its recorded source.
+
+        Guards the already-minutes shortcut against provenance left stale by a
+        resync that refreshed ``downtime`` but not the ``downtime_source_*`` keys.
+        """
+        factor = _DOWNTIME_SOURCE_UNIT_MINUTES.get(str(source_unit).strip().lower())
+        if factor is None:
+            return False
+        try:
+            expected_minutes = float(source_value) * factor
+            actual_minutes = float(downtime)
+        except (TypeError, ValueError):
+            return False
+        return math.isclose(actual_minutes, expected_minutes, rel_tol=1e-6, abs_tol=1e-6)
 
     def _parse_downtime_minutes(self, value: Any) -> float | None:
         """Normalise a raw CMMS downtime value to minutes.
