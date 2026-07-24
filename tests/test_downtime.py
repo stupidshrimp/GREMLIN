@@ -33,6 +33,22 @@ class DowntimeConversionTests(unittest.TestCase):
         self.assertAlmostEqual(mapped["downtime_minutes"], 210.0)
         self.assertAlmostEqual(mapped["downtime_hours"], 3.5)
 
+    def test_legacy_prescaled_rows_are_not_rescaled(self):
+        service = self._service()
+        # Rows imported by the retired --downtime-unit=seconds ingestion path
+        # stored `downtime` already in minutes and kept the original seconds in
+        # provenance fields. The remap must not divide those by 60 again.
+        mapped = service._map_raw_record(
+            {
+                "taskID": 2,
+                "downtime": 210.0,  # already normalised to minutes
+                "downtime_source_value": 12600,  # original seconds
+                "downtime_source_unit": "seconds",
+            }
+        )
+        self.assertAlmostEqual(mapped["downtime_minutes"], 210.0)
+        self.assertAlmostEqual(mapped["downtime_hours"], 3.5)
+
     def test_explicit_text_units_are_honoured(self):
         service = self._service()
         # Legacy / hand-entered values that name their unit are not treated as seconds.

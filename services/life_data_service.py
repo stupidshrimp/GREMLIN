@@ -938,8 +938,7 @@ class LifeDataService:
                 raw = json.loads(row["raw_json"] or "{}")
             except json.JSONDecodeError:
                 raw = {}
-            downtime_raw = self._get_alias(raw, "downtime")
-            downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+            downtime_raw, downtime_minutes = self._downtime_from_raw(raw)
             updates.append({
                 "mapped_record_id": row["mapped_record_id"],
                 "downtime_raw": downtime_raw,
@@ -1081,8 +1080,7 @@ class LifeDataService:
         created_date_final = self._get_alias(raw, "createdDate_Final", "createdDateFinal")
         start_date_final = self._get_alias(raw, "startDate_Final", "startDateFinal")
         type_raw = self._get_alias(raw, "type")
-        downtime_raw = self._get_alias(raw, "downtime")
-        downtime_minutes = self._parse_downtime_minutes(downtime_raw)
+        downtime_raw, downtime_minutes = self._downtime_from_raw(raw)
         auto_class, is_pm, is_wo, reason = self._classify_record(type_raw, task_name, request_title, requestor_description, completion_notes, raw)
         status_text = str(self._get_alias(raw, "status", "statusID") or "").lower()
         return {
@@ -1132,6 +1130,27 @@ class LifeDataService:
             "is_completed": int("complete" in status_text or bool(completed_date_final)),
             "mapping_version": "v2",
         }
+
+    def _downtime_from_raw(self, raw: dict[str, Any]) -> tuple[Any, float | None]:
+        """Return the stored raw ``downtime`` and its value in minutes.
+
+        Most rows carry Limble's raw ``downtime`` in seconds. Rows imported by
+        the retired ingestion ``downtime_unit`` path instead stored ``downtime``
+        already normalised to minutes and preserved the original value/unit in
+        ``downtime_source_value`` / ``downtime_source_unit`` provenance fields.
+        Detect those so the seconds->minutes normalisation is not applied a
+        second time to a value that is already minutes.
+        """
+        downtime_raw = self._get_alias(raw, "downtime")
+        if self._get_alias(raw, "downtime_source_unit") is not None:
+            if downtime_raw in (None, ""):
+                return downtime_raw, None
+            try:
+                return downtime_raw, float(downtime_raw)
+            except (TypeError, ValueError):
+                # Not a bare number; fall back to unit-aware text parsing.
+                return downtime_raw, self._parse_downtime_minutes(downtime_raw)
+        return downtime_raw, self._parse_downtime_minutes(downtime_raw)
 
     def _parse_downtime_minutes(self, value: Any) -> float | None:
         """Normalise a raw CMMS downtime value to minutes.
