@@ -553,7 +553,7 @@
     if (!items.length) {
       drawBarChart(canvas, [], { height: 160 });
       empty.textContent = visibleAssets().length
-        ? "MTBF needs operating or scheduled work hours — Data Required."
+        ? "MTBF needs at least two dated corrective work orders — Data Required."
         : noDataMessage();
       empty.hidden = false;
       return;
@@ -596,7 +596,7 @@
       mtbfItems.length
         ? null
         : rows.length
-        ? "Data Required — operating or scheduled work hours are not available to compute MTBF."
+        ? "Data Required — at least two dated corrective work orders are required to compute MTBF."
         : noDataMessage()
     );
 

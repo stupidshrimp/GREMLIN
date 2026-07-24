@@ -2252,8 +2252,9 @@ class LifeDataService:
 
         Returns a JSON-friendly dict: the applied window, the full data extent (for
         defaulting the date pickers), whether scheduled/operating hours exist (they
-        do not yet, so MTBF is derived from time between failures and Availability
-        stays a placeholder), the risk-score mode, and one row per asset.
+        do not yet; MTBF therefore uses calendar hours between dated corrective
+        failures and Availability stays a placeholder), the risk-score mode, and
+        one row per asset.
         """
 
         # On a fresh database the raw layer can hold data while mapped_cmms_record
@@ -2408,8 +2409,9 @@ class LifeDataService:
         # MTTR = total downtime / number of corrective work orders.
         mttr = total_downtime / wo_count if wo_count else None
 
-        # MTBF: operating-hours data is not captured yet, so estimate mean time
-        # between corrective failures from the dated work orders (span / gaps).
+        # MTBF: use calendar hours between dated corrective work orders.
+        # If true operating-hour meter data is added later, replace this with
+        # operating exposure between failures instead of elapsed wall-clock time.
         # Fewer than two dated failures cannot yield an interval -> Data Required.
         failure_times = sorted(r["when"] for r in all_records if r["when"] is not None)
         if len(failure_times) >= 2:
