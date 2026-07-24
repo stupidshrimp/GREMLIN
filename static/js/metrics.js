@@ -38,8 +38,8 @@
     "3147", "3150", "2499", "3028", "2689",
     // Building 5 Mazak Lasers – Mazak Laser 3000, Mazak Laser 2728
     "3000", "2728",
-    // Building 1 Secondary Finishing – Tumbler 505, Rumped Tumbler 1682, Ransohoff 4028, Metco Silver 758, Vapor Blast 3326, Vibetech Vibratory 2667
-    "505", "1682", "4028", "758", "3326", "2667",
+    // Building 1 Secondary Finishing – Tumbler 505, Rumped Tumbler 1682, Ransohoff 4028, Metco Silver 758, Vapor Blast 3326, Vibetech Vibratory 2667, Pangborn 987
+    "505", "1682", "4028", "758", "3326", "2667", "987",
     // PPD Hedrich Dispensers – H3 3154, H2 3142, H1 3023, H4 3253
     "3154", "3142", "3023", "3253",
     // PPD Sandblasters – Bushing 3359, PME Retrofit 3461, Edge Restore 3325, Shield 3160, ATC Sensor 2958, Vista SD 3073
