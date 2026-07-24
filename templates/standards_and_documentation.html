@@ -220,7 +220,11 @@
       <section class="doc-section">
         <h3>Downtime</h3>
         <p class="formula">Downtime Hours = mapped downtime converted to hours</p>
-        <p>If downtime is blank, the calculation uses 0 hours. Negative downtime is treated as 0.</p>
+        <p>
+          For the documented metrics, Pareto, trend, PM-effectiveness, and downtime-driver calculations,
+          blank downtime is counted as 0 hours and negative downtime is clamped to 0 before GREMLIN sums,
+          averages, ranks, or displays downtime.
+        </p>
       </section>
 
       <section class="doc-section">
