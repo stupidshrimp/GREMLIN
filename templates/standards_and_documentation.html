@@ -22,7 +22,9 @@
     <h2>Metrics Dashboard</h2>
     <p>
       The Metrics dashboard uses corrective work orders for the selected assets and dates.
-      A work order is included when GREMLIN classifies it as a corrective work order or flags it as a corrective candidate.
+      A work order is included when its final class is corrective. If a final class has been saved,
+      that final class wins. If no final class has been saved yet, GREMLIN can use the
+      corrective-candidate flag as a fallback.
     </p>
 
     <div class="doc-section-grid">
@@ -145,13 +147,14 @@
   <article class="tab-panel" id="trends-panel" role="tabpanel" aria-labelledby="trends-tab" hidden>
     <h2>Pareto and Trend Analysis</h2>
     <p>
-      These views use included failure records that have a failure mechanism. They help explain which mechanisms create the most activity and downtime.
+      These views use included failure records that have a failure mechanism and are still marked for Weibull/event-processing inclusion.
+      They help explain which mechanisms create the most activity and downtime.
     </p>
 
     <div class="doc-section-grid">
       <section class="doc-section">
         <h3>Pareto Failure Count</h3>
-        <p class="formula">Failure Count = count of included failures in the mechanism</p>
+        <p class="formula">Failure Count = count of included failures marked as Weibull candidates in the mechanism</p>
         <p>Each included failure is grouped by its failure mode and failure mechanism.</p>
       </section>
 
@@ -169,7 +172,7 @@
 
       <section class="doc-section">
         <h3>Monthly Trend</h3>
-        <p class="formula">Monthly Count = count of included failures in each YYYY-MM bucket</p>
+        <p class="formula">Monthly Count = count of included Weibull-candidate failures in each YYYY-MM bucket</p>
         <p>
           GREMLIN buckets records by work-order date. Missing months are filled with zero so the line does not skip gaps.
         </p>
@@ -221,8 +224,12 @@
 
       <section class="doc-section">
         <h3>Included Failures</h3>
-        <p class="formula">Included Failure = current disposition category is INCLUDED_FAILURE</p>
-        <p>Failure-mode and failure-mechanism fields come from the current disposition for that work order.</p>
+        <p class="formula">Included Failure = current disposition is INCLUDED_FAILURE and include_in_weibull_candidate = 1</p>
+        <p>
+          Failure-mode and failure-mechanism fields come from the current disposition for that work order.
+          If the Weibull-candidate checkbox is cleared, the record is excluded from Weibull, Pareto,
+          and trend calculations even when its category is INCLUDED_FAILURE.
+        </p>
       </section>
 
       <section class="doc-section">
