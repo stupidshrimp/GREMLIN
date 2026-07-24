@@ -241,11 +241,6 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   gap: 1.1rem;
 }
 
-.documentation-tabs > input[type="radio"] {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
 
 .tab-list {
   display: flex;
@@ -255,28 +250,27 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   padding-bottom: 0.85rem;
 }
 
-.tab-list label {
+.tab-list button {
   cursor: pointer;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   color: var(--forest-800);
+  font: inherit;
   font-weight: 700;
   padding: 0.65rem 1rem;
   transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
 }
 
-.tab-list label:hover,
-.tab-list label:focus-visible {
+.tab-list button:hover,
+.tab-list button:focus-visible {
   transform: translateY(-1px);
   border-color: var(--forest-700);
-  outline: none;
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
 }
 
-#tab-metrics:checked ~ .tab-list label[for="tab-metrics"],
-#tab-weibull:checked ~ .tab-list label[for="tab-weibull"],
-#tab-trends:checked ~ .tab-list label[for="tab-trends"],
-#tab-data:checked ~ .tab-list label[for="tab-data"] {
+.tab-list button.active {
   background: var(--forest-800);
   border-color: var(--forest-800);
   color: #fff;
@@ -288,10 +282,7 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   animation: fadeInUp 280ms ease-out both;
 }
 
-#tab-metrics:checked ~ #metrics-panel,
-#tab-weibull:checked ~ #weibull-panel,
-#tab-trends:checked ~ #trends-panel,
-#tab-data:checked ~ #data-panel {
+.tab-panel:not([hidden]) {
   display: grid;
   gap: 1rem;
 }
@@ -335,7 +326,7 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
     grid-template-columns: 1fr;
   }
 
-  .tab-list label {
+  .tab-list button {
     width: 100%;
     text-align: center;
   }

@@ -11,19 +11,14 @@
 </section>
 
 <section class="glass-card documentation-tabs slide-in" aria-label="Analysis and metrics documentation">
-  <input type="radio" name="documentation-tab" id="tab-metrics" checked>
-  <input type="radio" name="documentation-tab" id="tab-weibull">
-  <input type="radio" name="documentation-tab" id="tab-trends">
-  <input type="radio" name="documentation-tab" id="tab-data">
-
   <div class="tab-list" role="tablist" aria-label="Documentation sections">
-    <label for="tab-metrics" id="metrics-tab-label" role="tab" tabindex="0">Metrics Dashboard</label>
-    <label for="tab-weibull" id="weibull-tab-label" role="tab" tabindex="0">Weibull Analysis</label>
-    <label for="tab-trends" id="trends-tab-label" role="tab" tabindex="0">Pareto & Trends</label>
-    <label for="tab-data" id="data-tab-label" role="tab" tabindex="0">Data Sources</label>
+    <button type="button" id="metrics-tab" class="active" role="tab" aria-selected="true" aria-controls="metrics-panel" data-tab-target="metrics-panel">Metrics Dashboard</button>
+    <button type="button" id="weibull-tab" role="tab" aria-selected="false" aria-controls="weibull-panel" data-tab-target="weibull-panel" tabindex="-1">Weibull Analysis</button>
+    <button type="button" id="trends-tab" role="tab" aria-selected="false" aria-controls="trends-panel" data-tab-target="trends-panel" tabindex="-1">Pareto & Trends</button>
+    <button type="button" id="data-tab" role="tab" aria-selected="false" aria-controls="data-panel" data-tab-target="data-panel" tabindex="-1">Data Sources</button>
   </div>
 
-  <article class="tab-panel" id="metrics-panel" role="tabpanel" aria-labelledby="metrics-tab-label">
+  <article class="tab-panel" id="metrics-panel" role="tabpanel" aria-labelledby="metrics-tab">
     <h2>Metrics Dashboard</h2>
     <p>
       The Metrics dashboard uses corrective work orders for the selected assets and dates.
@@ -94,7 +89,7 @@
     </div>
   </article>
 
-  <article class="tab-panel" id="weibull-panel" role="tabpanel" aria-labelledby="weibull-tab-label">
+  <article class="tab-panel" id="weibull-panel" role="tabpanel" aria-labelledby="weibull-tab" hidden>
     <h2>Weibull Analysis</h2>
     <p>
       Weibull analysis uses dispositioned failure and reset events for the selected asset and failure group.
@@ -147,7 +142,7 @@
     </div>
   </article>
 
-  <article class="tab-panel" id="trends-panel" role="tabpanel" aria-labelledby="trends-tab-label">
+  <article class="tab-panel" id="trends-panel" role="tabpanel" aria-labelledby="trends-tab" hidden>
     <h2>Pareto and Trend Analysis</h2>
     <p>
       These views use included failure records that have a failure mechanism. They help explain which mechanisms create the most activity and downtime.
@@ -194,7 +189,7 @@
     </div>
   </article>
 
-  <article class="tab-panel" id="data-panel" role="tabpanel" aria-labelledby="data-tab-label">
+  <article class="tab-panel" id="data-panel" role="tabpanel" aria-labelledby="data-tab" hidden>
     <h2>Where the Numbers Come From</h2>
     <p>
       GREMLIN starts with raw CMMS task data, maps it into analysis fields, then uses the current disposition decisions saved by users.
@@ -238,4 +233,55 @@
     </div>
   </article>
 </section>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+  (() => {
+    const tabs = Array.from(document.querySelectorAll('[data-tab-target]'));
+    const panels = tabs.map((tab) => document.getElementById(tab.dataset.tabTarget));
+
+    function activateTab(nextTab, shouldFocus = false) {
+      tabs.forEach((tab) => {
+        const isActive = tab === nextTab;
+        tab.classList.toggle('active', isActive);
+        tab.setAttribute('aria-selected', String(isActive));
+        tab.tabIndex = isActive ? 0 : -1;
+      });
+
+      panels.forEach((panel) => {
+        if (!panel) return;
+        panel.hidden = panel.id !== nextTab.dataset.tabTarget;
+      });
+
+      if (shouldFocus) {
+        nextTab.focus();
+      }
+    }
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', (event) => {
+        const lastIndex = tabs.length - 1;
+        let nextIndex = null;
+
+        if (event.key === 'ArrowRight') {
+          nextIndex = index === lastIndex ? 0 : index + 1;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = index === 0 ? lastIndex : index - 1;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = lastIndex;
+        }
+
+        if (nextIndex !== null) {
+          event.preventDefault();
+          activateTab(tabs[nextIndex], true);
+        }
+      });
+    });
+  })();
+</script>
 {% endblock %}
