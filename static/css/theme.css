@@ -231,3 +231,103 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   outline: 2px solid var(--forest-700);
   outline-offset: 3px;
 }
+
+.standards-hero .hero-copy {
+  max-width: 82ch;
+}
+
+.documentation-tabs {
+  display: grid;
+  gap: 1.1rem;
+}
+
+
+.tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.85rem;
+}
+
+.tab-list button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--forest-800);
+  font: inherit;
+  font-weight: 700;
+  padding: 0.65rem 1rem;
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.tab-list button:hover,
+.tab-list button:focus-visible {
+  transform: translateY(-1px);
+  border-color: var(--forest-700);
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
+}
+
+.tab-list button.active {
+  background: var(--forest-800);
+  border-color: var(--forest-800);
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(10, 58, 39, 0.18);
+}
+
+.tab-panel {
+  display: none;
+  animation: fadeInUp 280ms ease-out both;
+}
+
+.tab-panel:not([hidden]) {
+  display: grid;
+  gap: 1rem;
+}
+
+.tab-panel h2 {
+  margin-bottom: 0;
+}
+
+.doc-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.doc-section,
+.doc-callout {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 1rem;
+}
+
+.doc-section h3,
+.doc-callout h3 {
+  color: var(--forest-800);
+  margin: 0 0 0.45rem;
+}
+
+.formula {
+  color: var(--forest-900);
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-weight: 700;
+  background: rgba(214, 224, 232, 0.48);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.55rem;
+}
+
+@media (max-width: 900px) {
+  .doc-section-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-list button {
+    width: 100%;
+    text-align: center;
+  }
+}

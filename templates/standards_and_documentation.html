@@ -1,20 +1,303 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="glass-card fade-in-up">
+<section class="glass-card fade-in-up standards-hero">
   <p class="eyebrow">Standards and Documentation</p>
-  <h1>Stay compliant and audit-ready.</h1>
-  <p>Centralize reliability standards, test protocols, and traceable engineering documentation.</p>
+  <h1>How GREMLIN calculates analysis and metrics.</h1>
+  <p class="hero-copy">
+    Use the tabs below as a plain-language reference for what each number means,
+    the formula behind it, and which GREMLIN data fields feed the calculation.
+  </p>
 </section>
 
-<section class="card-grid two-col">
-  <article class="glass-card tile slide-in">
-    <h2>Standards Library</h2>
-    <p>Organize references by domain and map each requirement directly to your validation workflow.</p>
+<section class="glass-card documentation-tabs slide-in" aria-label="Analysis and metrics documentation">
+  <div class="tab-list" role="tablist" aria-label="Documentation sections">
+    <button type="button" id="metrics-tab" class="active" role="tab" aria-selected="true" aria-controls="metrics-panel" data-tab-target="metrics-panel">Metrics Dashboard</button>
+    <button type="button" id="weibull-tab" role="tab" aria-selected="false" aria-controls="weibull-panel" data-tab-target="weibull-panel" tabindex="-1">Weibull Analysis</button>
+    <button type="button" id="trends-tab" role="tab" aria-selected="false" aria-controls="trends-panel" data-tab-target="trends-panel" tabindex="-1">Pareto & Trends</button>
+    <button type="button" id="data-tab" role="tab" aria-selected="false" aria-controls="data-panel" data-tab-target="data-panel" tabindex="-1">Data Sources</button>
+  </div>
+
+  <article class="tab-panel" id="metrics-panel" role="tabpanel" aria-labelledby="metrics-tab">
+    <h2>Metrics Dashboard</h2>
+    <p>
+      The Metrics dashboard uses corrective work orders for the selected assets and dates.
+      A work order is included when its final class is corrective. If a final class has been saved,
+      that final class wins. If no final class has been saved yet, GREMLIN can use the
+      corrective-candidate flag as a fallback.
+    </p>
+
+    <div class="doc-section-grid">
+      <section class="doc-section">
+        <h3>Work Order Count</h3>
+        <p class="formula">Work Order Count = count of included corrective work orders</p>
+        <p>This is the number of corrective work orders found in the active date window.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Total Downtime</h3>
+        <p class="formula">Total Downtime Hours = sum of downtime_hours</p>
+        <p>GREMLIN adds the downtime hours from each included corrective work order. Blank downtime counts as 0.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>MTTR</h3>
+        <p class="formula">MTTR = Total Downtime Hours ÷ Work Order Count</p>
+        <p>Mean Time To Repair shows the average downtime per corrective work order.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>MTBF</h3>
+        <p class="formula">MTBF = hours between first and last dated corrective work order ÷ number of gaps</p>
+        <p>
+          GREMLIN sorts dated corrective work orders from oldest to newest. If there are fewer than two dated work orders,
+          MTBF is shown as Data Required. This is calendar time today, not operating-hour meter time.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Percent Change</h3>
+        <p class="formula">Percent Change = (Current - Baseline) ÷ Baseline × 100</p>
+        <p>
+          The selected date window is split in half. The earlier half is the baseline and the later half is current.
+          If baseline is zero and current is above zero, GREMLIN treats the change as new activity instead of a finite percent.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Risk Score When Baseline Exists</h3>
+        <p class="formula">Risk = 40% downtime score + 25% work-order score + 25% MTTR score + 10% repeat score</p>
+        <p>
+          This formula is used when at least one selected asset has baseline records in the first half of the date window.
+          Increases from baseline raise the score. A doubling, or activity appearing from zero, scores 100 for that
+          component. No increase scores 0. The final score is capped from 0 to 100.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Risk Score Without Baseline</h3>
+        <p class="formula">Risk = 45% relative downtime + 27.5% relative work-order count + 27.5% relative MTTR</p>
+        <p>
+          If no selected asset has baseline records, GREMLIN switches to relative scoring. Each component is min-max
+          ranked against the selected assets, blended with the weights above, and capped from 0 to 100. Repeat failures
+          are not included in this no-baseline formula.
+        </p>
+      </section>
+    </div>
+
+    <div class="doc-callout">
+      <h3>Risk status</h3>
+      <p><strong>High:</strong> 70 or above. <strong>Medium:</strong> 40 to 69.9. <strong>Low:</strong> below 40.</p>
+    </div>
   </article>
-  <article class="glass-card tile slide-in">
-    <h2>Documentation Hub</h2>
-    <p>Capture assumptions, decisions, and evidence in one place to support design reviews and audits.</p>
+
+  <article class="tab-panel" id="weibull-panel" role="tabpanel" aria-labelledby="weibull-tab" hidden>
+    <h2>Weibull Analysis</h2>
+    <p>
+      Weibull analysis uses dispositioned failure and reset events for the selected asset and failure group.
+      The goal is to estimate how failures behave over life hours.
+    </p>
+
+    <div class="doc-section-grid">
+      <section class="doc-section">
+        <h3>Observation Life</h3>
+        <p class="formula">Life Hours = hours from interval start to interval end</p>
+        <p>
+          Interval ends come from included failures, approved PM reset events that are still marked as Weibull candidates,
+          or the analysis cutoff for right-censored current life.
+          GREMLIN uses schedule-adjusted weekday hours for these life intervals.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Failure Indicator</h3>
+        <p class="formula">Failure = 1 for INCLUDED_FAILURE; 0 for right-censored observations</p>
+        <p>At least one included failure and at least one positive life-hour observation are required to fit Weibull parameters.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Beta (β)</h3>
+        <p class="formula">β is the Weibull shape parameter estimated by maximum likelihood</p>
+        <p>
+          β below about 1 suggests early-life or defect-driven failures. β near 1 suggests random failures.
+          β above about 1 suggests wear-out behavior.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Eta (η)</h3>
+        <p class="formula">η = (sum of all life_hours^β ÷ number of failures)^(1 ÷ β)</p>
+        <p>η is the characteristic life scale. It is useful for planning and comparing populations.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Reliability Curve</h3>
+        <p class="formula">Reliability at time t = exp(-((t ÷ η)^β))</p>
+        <p>The plotted failure probability is 1 minus reliability.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>MTTF, B10, and B50</h3>
+        <p class="formula">MTTF = η × Γ(1 + 1 ÷ β)</p>
+        <p class="formula">B10 = η × (-ln(0.90))^(1 ÷ β); B50 = η × (ln(2))^(1 ÷ β)</p>
+        <p>MTTF is mean life. B10 is the life where 10% are expected to fail. B50 is the median life.</p>
+      </section>
+    </div>
+  </article>
+
+  <article class="tab-panel" id="trends-panel" role="tabpanel" aria-labelledby="trends-tab" hidden>
+    <h2>Pareto and Trend Analysis</h2>
+    <p>
+      These views use included failure records that have a failure mechanism and are still marked for Weibull/event-processing inclusion.
+      They help explain which mechanisms create the most activity and downtime.
+    </p>
+
+    <div class="doc-section-grid">
+      <section class="doc-section">
+        <h3>Pareto Failure Count</h3>
+        <p class="formula">Failure Count = count of included failures marked as Weibull candidates in the mechanism</p>
+        <p>Each included failure is grouped by its failure mode and failure mechanism.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Pareto Downtime</h3>
+        <p class="formula">Downtime Hours = sum of downtime_hours for the mechanism</p>
+        <p>Mechanisms are sorted by downtime first, then by failure count.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Cumulative Percent</h3>
+        <p class="formula">Cumulative Percent = running downtime total ÷ total downtime × 100</p>
+        <p>This shows how much of the total downtime is explained as you move down the Pareto list.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Monthly Trend</h3>
+        <p class="formula">Monthly Count = count of included Weibull-candidate failures in each YYYY-MM bucket</p>
+        <p>
+          GREMLIN buckets records by work-order date. Missing months are filled with zero so the line does not skip gaps.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Fastest Growing</h3>
+        <p class="formula">Growth = failures in most recent 3 months - failures in previous 3 months</p>
+        <p>This is only calculated when there are at least six months of trend data.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Downtime Drivers</h3>
+        <p class="formula">Average Downtime = total downtime ÷ work order count</p>
+        <p>Downtime-driver views also group events into simple bins: 0–1, 1–4, 4–8, 8–24, and 24+ hours.</p>
+      </section>
+    </div>
+  </article>
+
+  <article class="tab-panel" id="data-panel" role="tabpanel" aria-labelledby="data-tab" hidden>
+    <h2>Where the Numbers Come From</h2>
+    <p>
+      GREMLIN starts with raw CMMS task data, maps it into analysis fields, then uses the current disposition decisions saved by users.
+    </p>
+
+    <div class="doc-section-grid">
+      <section class="doc-section">
+        <h3>Source System</h3>
+        <p>Records come from Limble CMMS imports stored in GREMLIN.db. The original raw record is kept, and mapped fields are derived from it.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Asset Filter</h3>
+        <p class="formula">Asset = mapped_cmms_record.asset_number</p>
+        <p>Most screens only use records matching the selected asset number.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Work-Order Date</h3>
+        <p class="formula">WO Date = completed_date_final, else start_date_final, else created_date_final</p>
+        <p>GREMLIN uses the best available date in that order for metrics, Pareto drilldowns, and trends.</p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Downtime</h3>
+        <p class="formula">Downtime Hours = mapped downtime converted to hours</p>
+        <p>
+          For the documented metrics, Pareto, trend, PM-effectiveness, and downtime-driver calculations,
+          blank downtime is counted as 0 hours and negative downtime is clamped to 0 before GREMLIN sums,
+          averages, ranks, or displays downtime.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Included Failures</h3>
+        <p class="formula">Included Failure = current disposition is INCLUDED_FAILURE and include_in_weibull_candidate = 1</p>
+        <p>
+          Failure-mode and failure-mechanism fields come from the current disposition for that work order.
+          If the Weibull-candidate checkbox is cleared, the record is excluded from Weibull, Pareto,
+          and trend calculations even when its category is INCLUDED_FAILURE.
+        </p>
+      </section>
+
+      <section class="doc-section">
+        <h3>Approved PM Resets</h3>
+        <p class="formula">Approved Reset = INCLUDED_PM_RESET_EVENT and APPROVED_RESET and include_in_weibull_candidate = 1</p>
+        <p>
+          Approved PM resets can start a new life interval for Weibull analysis when a reset target is selected.
+          If the Weibull-candidate checkbox is cleared, the PM is documented as an approved reset decision but it does
+          not reset the Weibull life interval.
+        </p>
+      </section>
+    </div>
   </article>
 </section>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+  (() => {
+    const tabs = Array.from(document.querySelectorAll('[data-tab-target]'));
+    const panels = tabs.map((tab) => document.getElementById(tab.dataset.tabTarget));
+
+    function activateTab(nextTab, shouldFocus = false) {
+      tabs.forEach((tab) => {
+        const isActive = tab === nextTab;
+        tab.classList.toggle('active', isActive);
+        tab.setAttribute('aria-selected', String(isActive));
+        tab.tabIndex = isActive ? 0 : -1;
+      });
+
+      panels.forEach((panel) => {
+        if (!panel) return;
+        panel.hidden = panel.id !== nextTab.dataset.tabTarget;
+      });
+
+      if (shouldFocus) {
+        nextTab.focus();
+      }
+    }
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', (event) => {
+        const lastIndex = tabs.length - 1;
+        let nextIndex = null;
+
+        if (event.key === 'ArrowRight') {
+          nextIndex = index === lastIndex ? 0 : index + 1;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = index === 0 ? lastIndex : index - 1;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = lastIndex;
+        }
+
+        if (nextIndex !== null) {
+          event.preventDefault();
+          activateTab(tabs[nextIndex], true);
+        }
+      });
+    });
+  })();
+</script>
 {% endblock %}
