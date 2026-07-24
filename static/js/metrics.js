@@ -65,10 +65,6 @@
     dateFrom: "",
     dateTo: "",
     dataWindow: { start: null, end: null },
-    // Preserve the all-asset extent learned on the initial unfiltered request so
-    // Reset can restore true global bounds even after selected-asset requests
-    // replace dataWindow with a narrower extent.
-    globalDataWindow: { start: null, end: null },
     dateInitialized: false,
     fetchToken: 0,
   };
@@ -300,9 +296,6 @@
       if (token !== state.fetchToken) return; // a newer request superseded this one
       state.payload = data;
       state.dataWindow = data.data_window || { start: null, end: null };
-      if (!state.selected.size && !state.dateFrom && !state.dateTo) {
-        state.globalDataWindow = state.dataWindow;
-      }
       initDateInputs();
       clearBanner();
       renderScopeHint();
@@ -823,13 +816,15 @@
       state.selected = defaultSelection();
       state.assetQuery = "";
       search.value = "";
-      const resetWindow = state.globalDataWindow.start || state.globalDataWindow.end
-        ? state.globalDataWindow
-        : state.dataWindow;
-      from.value = resetWindow.start || "";
-      to.value = resetWindow.end || "";
+      // Drop any active date filter and let the post-reset fetch re-seed the
+      // pickers from the default set's own extent (same path as first load), so
+      // they never keep stale all-asset or previously-selected bounds — which a
+      // later single-date edit would otherwise submit as the opposite bound.
       state.dateFrom = "";
       state.dateTo = "";
+      state.dateInitialized = false;
+      from.value = "";
+      to.value = "";
       renderSelectedChips();
       renderAssetMenu();
       loadMetrics();
