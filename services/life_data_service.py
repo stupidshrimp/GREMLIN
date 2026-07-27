@@ -2504,12 +2504,41 @@ class LifeDataService:
         }
 
     # start here.
-    # The route and Metrics page are already wired up: /metrics/api/availability
-    # calls asset_availability_metrics(), and the Availability card reads the
-    # rows returned under "availability". The query/grouping above gets each
-    # asset-month to this point with downtime and WO count filled in. If the
-    # displayed numbers look wrong, the schedule and percent rules below are the
-    # first things to check.
+    #
+    # The plumbing is done: /metrics/api/availability calls
+    # asset_availability_metrics(), and the Metrics page renders whatever comes
+    # back under "availability". You should not need to touch the route, the
+    # response assembly, or the front end — only the numbers that go into each
+    # row. Keep every row's keys and units exactly as they are, or the charts go
+    # blank:
+    #
+    #     asset_number, asset_name, month ("YYYY-MM"),
+    #     scheduled_hours, downtime_hours,
+    #     availability_percent (0-100, or None), work_order_count
+    #
+    # There are three places the real work lives, in rough order of risk:
+    #
+    # 1. The query and asset/month grouping above. This decides what counts as
+    #    downtime and, just as importantly, which asset-months exist at all.
+    #    Buckets are built only from rows that have a corrective work order, so
+    #    an asset-month that never failed produces no row and simply vanishes
+    #    from the chart instead of reading 100% available. If a clean month
+    #    should show as fully available, it has to be seeded here — no amount of
+    #    fixing the two helpers below will surface it.
+    #
+    # 2. _availability_scheduled_hours: the shift calendar. The weekday count,
+    #    the hours per day, which assets actually run 24h, and holidays or
+    #    shutdowns are all approximations right now.
+    #
+    # 3. _availability_percent_for_row: the formula itself,
+    #    (scheduled - downtime) / scheduled, clamped to 0-100. This is the part
+    #    that is most likely already correct.
+    #
+    # Before trusting any of it, confirm the units. Ingestion stores downtime in
+    # minutes (see services/ingestion_service.py), while this method reads a
+    # column named downtime_hours and treats it as hours. If that conversion is
+    # not happening upstream, every availability number here is wrong by a
+    # factor of 60 while still looking perfectly well-formed.
     @staticmethod
     def _availability_scheduled_hours(asset_number: str, month: str) -> float:
         """Return scheduled hours for one asset/month."""

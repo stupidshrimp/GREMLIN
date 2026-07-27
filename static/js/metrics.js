@@ -250,12 +250,22 @@
   }
 
   function availabilityNoDataMessage() {
+    // A failed availability request is reported on this card only; the other
+    // cards stay live on their own data.
+    if (state.availabilityPayload && state.availabilityPayload.error) {
+      return state.availabilityPayload.error;
+    }
     if (state.availabilityPayload && state.availabilityPayload.availability && state.availabilityPayload.availability.length) {
       return "No availability data for the selected assets in this date range.";
     }
     return "No availability data is available for the selected filters.";
   }
 
+  // Roll the per-asset/month rows up to one row per asset. Availability is
+  // recomputed from the summed hours rather than averaging the monthly
+  // percentages, so a short month cannot outweigh a full one — this matches the
+  // backend definition, (scheduled - downtime) / scheduled, applied across the
+  // whole selected range.
   function availabilityByAsset(rows) {
     const byAsset = new Map();
     rows.forEach((row) => {
@@ -264,18 +274,11 @@
       const bucket = byAsset.get(key) || {
         asset_number: key,
         asset_name: row.asset_name || "",
-        availability_sum: 0,
-        availability_count: 0,
         scheduled_hours: 0,
         downtime_hours: 0,
         work_order_count: 0,
       };
       if (!bucket.asset_name && row.asset_name) bucket.asset_name = row.asset_name;
-      const availability = Number(row.availability_percent);
-      if (isFinite(availability)) {
-        bucket.availability_sum += availability;
-        bucket.availability_count += 1;
-      }
       bucket.scheduled_hours += Number(row.scheduled_hours) || 0;
       bucket.downtime_hours += Number(row.downtime_hours) || 0;
       bucket.work_order_count += Number(row.work_order_count) || 0;
@@ -284,8 +287,12 @@
     return Array.from(byAsset.values()).map((bucket) => ({
       asset_number: bucket.asset_number,
       asset_name: bucket.asset_name,
-      average_availability:
-        bucket.availability_count > 0 ? bucket.availability_sum / bucket.availability_count : null,
+      // Null (not zero) when there is no schedule to divide by, so the charts
+      // drop the asset instead of drawing a misleading 0%.
+      availability_percent:
+        bucket.scheduled_hours > 0
+          ? Math.max(0, 1 - Math.max(0, bucket.downtime_hours) / bucket.scheduled_hours) * 100
+          : null,
       scheduled_hours: bucket.scheduled_hours,
       downtime_hours: bucket.downtime_hours,
       work_order_count: bucket.work_order_count,
@@ -306,7 +313,16 @@
       const query = params.toString();
       const url = query ? `${METRICS_API}?${query}` : METRICS_API;
       const availabilityUrl = query ? `${AVAILABILITY_API}?${query}` : AVAILABILITY_API;
-      const [data, availabilityData] = await Promise.all([getJson(url), getJson(availabilityUrl)]);
+      // The availability endpoint is still being built out, so a failure there
+      // must not take down the KPI and Alerting cards with it. Catch it here and
+      // keep the error on the availability card alone.
+      const [data, availabilityData] = await Promise.all([
+        getJson(url),
+        getJson(availabilityUrl).catch((err) => ({
+          availability: [],
+          error: err.message || "Could not load availability data.",
+        })),
+      ]);
       if (token !== state.fetchToken) return; // a newer request superseded this one
       state.payload = data;
       state.availabilityPayload = availabilityData;
@@ -606,8 +622,8 @@
     const canvas = $("availability-preview-chart");
     const empty = $("availability-preview-empty");
     const items = availabilityByAsset(visibleAvailabilityRows())
-      .filter((row) => row.average_availability !== null && row.average_availability !== undefined)
-      .map((row) => ({ name: row.asset_number, value: row.average_availability }))
+      .filter((row) => row.availability_percent !== null && row.availability_percent !== undefined)
+      .map((row) => ({ name: row.asset_number, value: row.availability_percent }))
       .sort((a, b) => a.value - b.value)
       .slice(0, 12);
     if (!items.length) {
@@ -771,8 +787,8 @@
     const assetRows = availabilityByAsset(rows);
 
     const availabilityItems = assetRows
-      .filter((row) => row.average_availability !== null && row.average_availability !== undefined)
-      .map((row) => ({ name: row.asset_number, value: row.average_availability }))
+      .filter((row) => row.availability_percent !== null && row.availability_percent !== undefined)
+      .map((row) => ({ name: row.asset_number, value: row.availability_percent }))
       .sort((a, b) => a.value - b.value);
     drawBarChart($("availability-asset-chart"), availabilityItems, {
       threshold: 90,
