@@ -3,6 +3,7 @@ import math
 import os
 import tempfile
 from functools import wraps
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -72,26 +73,34 @@ _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
 
 
+def _configured_db_path() -> Path:
+    """Return the database GREMLIN opens: GREMLIN_DB_PATH if set, else the default.
+
+    Error messages report this path, so they always name the file that was
+    actually tried rather than the default an override replaced.
+    """
+
+    override = os.environ.get("GREMLIN_DB_PATH")
+    return Path(override) if override else DEFAULT_DB_PATH
+
+
 def get_life_data_service() -> LifeDataService:
     """Return a shared LifeDataService, building it on first use."""
 
     global _life_data_service, _life_data_service_error
     if _life_data_service is not None:
         return _life_data_service
-    db_path_override = os.environ.get("GREMLIN_DB_PATH")
+    db_path = _configured_db_path()
     try:
-        if db_path_override:
-            db_path = db_path_override
-        else:
-            # Fall back to the single default location, but never let SQLite create
-            # a brand-new empty database there (on Linux a Windows path is just an
-            # ordinary local filename, so the miss would go unnoticed).
-            if not DEFAULT_DB_PATH.is_file():
-                raise RuntimeError(
-                    f"GREMLIN.db was not found at {DEFAULT_DB_PATH}. "
-                    "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
-                )
-            db_path = DEFAULT_DB_PATH
+        # Never let SQLite create a brand-new empty database at the default
+        # location (on Linux a Windows path is just an ordinary local filename,
+        # so the miss would go unnoticed). An explicit GREMLIN_DB_PATH is the
+        # operator's own choice and is passed through as given.
+        if db_path == DEFAULT_DB_PATH and not db_path.is_file():
+            raise RuntimeError(
+                f"GREMLIN.db was not found at {db_path}. "
+                "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
+            )
         _life_data_service = LifeDataService(db_path=db_path, refresh_on_startup=False)
         _life_data_service_error = None
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as JSON
@@ -133,7 +142,7 @@ def _service_or_api_error() -> LifeDataService:
         return get_life_data_service()
     except Exception as exc:  # noqa: BLE001
         raise LifeDataApiError(
-            f"GREMLIN could not open the analysis database at {DEFAULT_DB_PATH}. "
+            f"GREMLIN could not open the analysis database at {_configured_db_path()}. "
             f"Set GREMLIN_DB_PATH to a reachable GREMLIN.db file. Details: {exc}",
             status_code=503,
         ) from exc

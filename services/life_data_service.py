@@ -291,8 +291,8 @@ class LifeDataService:
             reason = "your Windows account does not have permission to write to the shared database or its folder"
             action = "Confirm you can edit files in the shared folder, then reopen GREMLIN."
         elif "unable to open" in reason_lower or "no such file" in reason_lower or "path" in reason_lower:
-            reason = "GREMLIN could not open the shared database path"
-            action = "Confirm one of the mapped drive letters can reach the shared database folder."
+            reason = "GREMLIN could not open the database path"
+            action = "Confirm the database file above exists and that its folder is reachable."
         elif "disk" in reason_lower or "space" in reason_lower or "full" in reason_lower:
             reason = "the shared drive may be out of space or unavailable"
             action = "Check the shared drive status and free space, then try again."
