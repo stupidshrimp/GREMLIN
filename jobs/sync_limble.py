@@ -1,4 +1,4 @@
-"""Sync Limble CMMS data into GREMLIN.db.
+r"""Sync Limble CMMS data into GREMLIN.db.
 
 This is the script that replaces the old Excel import: it pulls tasks (and
 assets, for enrichment) from the Limble API and upserts them into the raw import
@@ -21,7 +21,7 @@ Database location (first non-empty wins):
 
     --db <path>           explicit path
     GREMLIN_DB_PATH       environment variable
-    (otherwise the shared GREMLIN.db default is probed and must already exist)
+    (otherwise C:\GREMLIN\GREMLIN.db is used and must already exist)
 
 Common examples
 ---------------
@@ -99,9 +99,9 @@ def _resolve_db_path(explicit: str | None, *, must_exist: bool, create: bool) ->
     was_explicit = bool(db_path)
     if not db_path:
         try:
-            from services.life_data_service import resolve_default_db_path
+            from services.life_data_service import DEFAULT_DB_PATH
 
-            db_path = str(resolve_default_db_path())
+            db_path = str(DEFAULT_DB_PATH)
         except Exception:  # noqa: BLE001 - fall through to the error below
             db_path = None
     if not db_path:
@@ -111,7 +111,7 @@ def _resolve_db_path(explicit: str | None, *, must_exist: bool, create: bool) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     if must_exist and not path.is_file():
-        hint = "" if was_explicit else " (the shared default could not be reached)"
+        hint = "" if was_explicit else " (the default database location)"
         raise SystemExit(
             f"GREMLIN.db not found at: {path}{hint}\n"
             "Pass --db to point at an existing database, set GREMLIN_DB_PATH, "

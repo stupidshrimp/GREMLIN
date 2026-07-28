@@ -12,13 +12,13 @@ from repositories.failure_repo import FailureRepository
 from repositories.metrics_repo import MetricsRepository
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
+    DEFAULT_DB_PATH,
     DISPLAY_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
     WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
     LifeDataService,
-    resolve_default_db_path,
 )
 
 app = Flask(__name__)
@@ -64,13 +64,24 @@ reliability_service = ReliabilityService(
 )
 
 # The Life Data Analysis / Weibull backend reuses the desktop GUI's LifeDataService
-# unchanged. The GUI hardcodes the shared Windows database; here the same path can be
-# overridden with the GREMLIN_DB_PATH environment variable so the Flask app can run
-# wherever GREMLIN.db is reachable. The service is created lazily and any startup
-# failure is surfaced to the page instead of crashing the whole app.
+# unchanged. Both open the single default database location, which can be overridden
+# with the GREMLIN_DB_PATH environment variable so the Flask app can run wherever
+# GREMLIN.db is reachable. The service is created lazily and any startup failure is
+# surfaced to the page instead of crashing the whole app.
 MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
+
+
+def _configured_db_path() -> Path:
+    """Return the database GREMLIN opens: GREMLIN_DB_PATH if set, else the default.
+
+    Error messages report this path, so they always name the file that was
+    actually tried rather than the default an override replaced.
+    """
+
+    override = os.environ.get("GREMLIN_DB_PATH")
+    return Path(override) if override else DEFAULT_DB_PATH
 
 
 def get_life_data_service() -> LifeDataService:
@@ -79,21 +90,18 @@ def get_life_data_service() -> LifeDataService:
     global _life_data_service, _life_data_service_error
     if _life_data_service is not None:
         return _life_data_service
-    db_path_override = os.environ.get("GREMLIN_DB_PATH")
+    db_path = _configured_db_path()
     try:
-        if db_path_override:
-            db_path = db_path_override
-        else:
-            # Fall back to the shared default the desktop GUI uses, but never let
-            # SQLite create a brand-new empty database at an unreachable share
-            # (on Linux a Windows UNC path is just a long local filename).
-            resolved = resolve_default_db_path()
-            if not Path(resolved).is_file():
-                raise RuntimeError(
-                    "The shared GREMLIN.db could not be reached. "
-                    "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
-                )
-            db_path = resolved
+        # With no override, never let SQLite create a brand-new empty database at
+        # the default location (on Linux a Windows path is just an ordinary local
+        # filename, so the miss would go unnoticed). An explicit GREMLIN_DB_PATH is
+        # the operator's own choice and is passed through as given -- including
+        # when it names the default path -- so SQLite may create that file.
+        if not os.environ.get("GREMLIN_DB_PATH") and not db_path.is_file():
+            raise RuntimeError(
+                f"GREMLIN.db was not found at {db_path}. "
+                "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
+            )
         _life_data_service = LifeDataService(db_path=db_path, refresh_on_startup=False)
         _life_data_service_error = None
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as JSON
@@ -135,7 +143,7 @@ def _service_or_api_error() -> LifeDataService:
         return get_life_data_service()
     except Exception as exc:  # noqa: BLE001
         raise LifeDataApiError(
-            "GREMLIN could not open the shared analysis database. "
+            f"GREMLIN could not open the analysis database at {_configured_db_path()}. "
             f"Set GREMLIN_DB_PATH to a reachable GREMLIN.db file. Details: {exc}",
             status_code=503,
         ) from exc

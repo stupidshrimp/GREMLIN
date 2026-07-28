@@ -13,7 +13,6 @@ import json
 import math
 import re
 import sqlite3
-import string
 import threading
 import zipfile
 from dataclasses import dataclass
@@ -30,101 +29,14 @@ WEEKDAY_24H_ASSET_NUMBERS = {"3101", "3102", "3103", "3104", "3105", "3106", "31
 DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 20.0
 FULL_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 24.0
 
-# Primary location for GREMLIN.db. The database now lives in the user's local
-# OneDrive Documents folder instead of the network share, so this is probed first
-# and the shared network locations below are kept only as fallbacks. Override with
-# the GREMLIN_DB_PATH environment variable to point at a different file.
-LOCAL_DEFAULT_DB_PATH = r"C:\Users\tim.kim\OneDrive - S & C Electric Company\Documents\GREMLIN.db"
-
-_DEFAULT_DB_RELATIVE_PATHS = (
-    # Drives mapped at the \\sandc.ws\depts share root reach the database through
-    # the Facilities\FACIL\... folder chain. Probe this first so a mapped drive
-    # resolves to the real shared location instead of an empty stub path.
-    r"Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db",
-    # Drives mapped directly at the "901 Reliability Projects" project folder.
-    r"Weibull Data\\Database\\GREMLIN.db",
-)
-
-_DEFAULT_DB_UNC_PATHS = (
-    r"\\sandc.ws\depts\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db",
-    r"Weibull Data\\Database\\GREMLIN.db"
-)
-
-
-def _drive_letters_in_lookup_order() -> tuple[str, ...]:
-    """Return mapped-drive letters with Z first, then the remaining alphabet."""
-
-    return ("Z",) + tuple(letter for letter in string.ascii_uppercase if letter != "Z")
-
-
-def _build_default_db_path_candidates() -> tuple[Path, ...]:
-        """Build every supported shared database location."""
-
-        candidates: list[Path] = []
-        seen: set[str] = set()
-
-        def append_candidate(candidate: Path) -> None:
-            candidate_key = str(candidate).casefold()
-            if candidate_key not in seen:
-                candidates.append(candidate)
-                seen.add(candidate_key)
-
-        # ✅ Local OneDrive Documents copy (highest priority). The database was moved
-        # off the network drive to this local location, so probe it first.
-        append_candidate(Path(LOCAL_DEFAULT_DB_PATH))
-
-        # Shared network share (legacy fallback).
-        append_candidate(Path(
-            r"\\sandc.ws\depts\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects\Weibull Data\Database\GREMLIN.db"
-        ))
-
-        # Existing logic (unchanged)
-        for drive_letter in _drive_letters_in_lookup_order():
-            for relative_path in _DEFAULT_DB_RELATIVE_PATHS:
-                append_candidate(Path(f"{drive_letter}:\\{relative_path}"))
-
-        for unc_path in _DEFAULT_DB_UNC_PATHS:
-            append_candidate(Path(unc_path))
-
-        return tuple(candidates)
-
-
-
-DEFAULT_DB_PATH_CANDIDATES = _build_default_db_path_candidates()
-# The first candidate is the local OneDrive Documents location (see above).
-DEFAULT_DB_PATH = DEFAULT_DB_PATH_CANDIDATES[0]
+# The one and only location for GREMLIN.db. GREMLIN no longer probes mapped
+# drive letters, UNC shares, or user folders for the database; it opens this
+# single path. Override with the GREMLIN_DB_PATH environment variable to point
+# at a different file.
+DEFAULT_DB_PATH = Path(r"C:\GREMLIN\GREMLIN.db")
 DB_WRITE_TIMEOUT_SECONDS = 30
 _DEFAULT_DB_PATH_SENTINEL = object()
 _LOCK_WAIT_CONTEXT = threading.local()
-
-
-def resolve_default_db_path(requested_path: Path | str = DEFAULT_DB_PATH) -> Path:
-    """Return the first reachable GREMLIN.db path among supported shared locations.
-
-    GREMLIN historically used the Z: mapped drive, but some Windows profiles map
-    the same share under a different drive letter, some include an additional
-    ``Facilities`` folder segment, and some reach the database through the
-    ``\\\\sandc.ws\\depts`` UNC share.  When the requested path is one of the known
-    shared GREMLIN defaults, use the first candidate that already contains the
-    database file so SQLite does not create a new empty database on the wrong
-    mapped drive.  If none are reachable, fall back to the requested/default
-    path so the normal startup error can explain that the share is unavailable.
-    Probe errors from inaccessible mapped drives are treated as unavailable
-    candidates so later mapped drives can still be discovered.
-    """
-
-    requested = Path(requested_path)
-    default_candidate_keys = {str(candidate).casefold() for candidate in DEFAULT_DB_PATH_CANDIDATES}
-    if str(requested).casefold() not in default_candidate_keys:
-        return requested
-
-    for candidate in DEFAULT_DB_PATH_CANDIDATES:
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return requested
 
 
 @contextmanager
@@ -286,10 +198,7 @@ class LifeDataService:
 
     def __init__(self, db_path: Path | str | object = _DEFAULT_DB_PATH_SENTINEL, *, refresh_on_startup: bool = True) -> None:
         if db_path is _DEFAULT_DB_PATH_SENTINEL:
-            # Pick the first reachable shared candidate (UNC or any mapped drive)
-            # instead of opening only the UNC path, so default/session reuse works
-            # on profiles where the share is mapped to a drive letter.
-            self.db_path = resolve_default_db_path(DEFAULT_DB_PATH)
+            self.db_path = DEFAULT_DB_PATH
         else:
             self.db_path = Path(db_path)
         self._asset_number_options_cache: list[dict[str, str]] | None = None
@@ -382,8 +291,8 @@ class LifeDataService:
             reason = "your Windows account does not have permission to write to the shared database or its folder"
             action = "Confirm you can edit files in the shared folder, then reopen GREMLIN."
         elif "unable to open" in reason_lower or "no such file" in reason_lower or "path" in reason_lower:
-            reason = "GREMLIN could not open the shared database path"
-            action = "Confirm one of the mapped drive letters can reach the shared database folder."
+            reason = "GREMLIN could not open the database path"
+            action = "Confirm the database file above exists and that its folder is reachable."
         elif "disk" in reason_lower or "space" in reason_lower or "full" in reason_lower:
             reason = "the shared drive may be out of space or unavailable"
             action = "Check the shared drive status and free space, then try again."
