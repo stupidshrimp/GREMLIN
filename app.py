@@ -92,11 +92,12 @@ def get_life_data_service() -> LifeDataService:
         return _life_data_service
     db_path = _configured_db_path()
     try:
-        # Never let SQLite create a brand-new empty database at the default
-        # location (on Linux a Windows path is just an ordinary local filename,
-        # so the miss would go unnoticed). An explicit GREMLIN_DB_PATH is the
-        # operator's own choice and is passed through as given.
-        if db_path == DEFAULT_DB_PATH and not db_path.is_file():
+        # With no override, never let SQLite create a brand-new empty database at
+        # the default location (on Linux a Windows path is just an ordinary local
+        # filename, so the miss would go unnoticed). An explicit GREMLIN_DB_PATH is
+        # the operator's own choice and is passed through as given -- including
+        # when it names the default path -- so SQLite may create that file.
+        if not os.environ.get("GREMLIN_DB_PATH") and not db_path.is_file():
             raise RuntimeError(
                 f"GREMLIN.db was not found at {db_path}. "
                 "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
