@@ -5,7 +5,8 @@
  *   - three clickable cards (Operational KPIs, Alerting Readiness, Availability)
  *     that show a small preview while collapsed and expand to full charts/tables;
  *   - all charts compare assets against each other (x-axis = asset, y-axis = the
- *     selected performance metric).
+ *     selected performance metric), with the bars ranked largest to smallest so
+ *     the assets that need attention sit at the left edge of every chart.
  *
  * Data comes from /metrics/api/reliability, which reuses the same maintenance /
  * corrective-work-order dataset as the Life Data Analysis pages. The full set of
@@ -337,6 +338,17 @@
     return { ctx, width: cssWidth, height: cssHeight };
   }
 
+  // Every comparison chart is read left-to-right as a ranking, so bars are
+  // always ordered largest to smallest. Returns a sorted copy — the payload rows
+  // behind `items` must keep the natural asset-number order the API sent them
+  // in, which the (stable) sort then reuses as the tie-break for equal values.
+  // `valueOf` reads the magnitude to rank by; it defaults to `item.value` for
+  // single-series charts.
+  function sortedDesc(items, valueOf) {
+    const magnitude = valueOf || ((item) => item.value);
+    return items.slice().sort((a, b) => (Number(magnitude(b)) || 0) - (Number(magnitude(a)) || 0));
+  }
+
   function tickLabel(value) {
     const n = Number(value) || 0;
     if (Math.abs(n) >= 1000) return Math.round(n / 100) / 10 + "k";
@@ -546,10 +558,7 @@
     const canvas = $("kpis-preview-chart");
     const empty = $("kpis-preview-empty");
     const rows = visibleAssets().filter((r) => r.mtbf_hours !== null && r.mtbf_hours !== undefined);
-    const items = rows
-      .map((r) => ({ name: r.asset_number, value: r.mtbf_hours }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 12);
+    const items = sortedDesc(rows.map((r) => ({ name: r.asset_number, value: r.mtbf_hours }))).slice(0, 12);
     if (!items.length) {
       drawBarChart(canvas, [], { height: 160 });
       empty.textContent = visibleAssets().length
@@ -565,14 +574,13 @@
   function renderAlertPreview() {
     const canvas = $("alerts-preview-chart");
     const empty = $("alerts-preview-empty");
-    const items = visibleAssets()
-      .map((r) => ({
+    const items = sortedDesc(
+      visibleAssets().map((r) => ({
         name: r.asset_number,
         value: r.risk_score || 0,
         color: (r.risk_score || 0) >= ALERT_THRESHOLD ? WARN : BAR_COLOR,
       }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 12);
+    ).slice(0, 12);
     if (!items.length) {
       drawBarChart(canvas, [], { height: 160 });
       empty.textContent = noDataMessage();
@@ -587,9 +595,11 @@
   function renderKpiExpanded() {
     const rows = visibleAssets();
 
-    const mtbfItems = rows
-      .filter((r) => r.mtbf_hours !== null && r.mtbf_hours !== undefined)
-      .map((r) => ({ name: r.asset_number, value: r.mtbf_hours }));
+    const mtbfItems = sortedDesc(
+      rows
+        .filter((r) => r.mtbf_hours !== null && r.mtbf_hours !== undefined)
+        .map((r) => ({ name: r.asset_number, value: r.mtbf_hours }))
+    );
     drawBarChart($("kpis-mtbf-chart"), mtbfItems);
     setEmpty(
       "kpis-mtbf",
@@ -600,17 +610,19 @@
         : noDataMessage()
     );
 
-    const mttrItems = rows
-      .filter((r) => r.mttr_hours !== null && r.mttr_hours !== undefined)
-      .map((r) => ({ name: r.asset_number, value: r.mttr_hours }));
+    const mttrItems = sortedDesc(
+      rows
+        .filter((r) => r.mttr_hours !== null && r.mttr_hours !== undefined)
+        .map((r) => ({ name: r.asset_number, value: r.mttr_hours }))
+    );
     drawBarChart($("kpis-mttr-chart"), mttrItems);
     setEmpty("kpis-mttr", mttrItems.length ? null : noDataMessage());
 
-    const wocItems = rows.map((r) => ({ name: r.asset_number, value: r.work_order_count }));
+    const wocItems = sortedDesc(rows.map((r) => ({ name: r.asset_number, value: r.work_order_count })));
     drawBarChart($("kpis-woc-chart"), wocItems);
     setEmpty("kpis-woc", wocItems.length ? null : noDataMessage());
 
-    const dtItems = rows.map((r) => ({ name: r.asset_number, value: r.total_downtime_hours }));
+    const dtItems = sortedDesc(rows.map((r) => ({ name: r.asset_number, value: r.total_downtime_hours })));
     drawBarChart($("kpis-downtime-chart"), dtItems);
     setEmpty("kpis-downtime", dtItems.length ? null : noDataMessage());
 
@@ -650,19 +662,26 @@
   function renderAlertExpanded() {
     const rows = visibleAssets();
 
-    const riskItems = rows
-      .map((r) => ({
+    const riskItems = sortedDesc(
+      rows.map((r) => ({
         name: r.asset_number,
         value: r.risk_score || 0,
         color: (r.risk_score || 0) >= ALERT_THRESHOLD ? WARN : BAR_COLOR,
       }))
-      .sort((a, b) => b.value - a.value);
+    );
     drawBarChart($("alerts-risk-chart"), riskItems, { threshold: ALERT_THRESHOLD, thresholdLabel: "Alert threshold (70)" });
     setEmpty("alerts-risk", riskItems.length ? null : noDataMessage());
 
-    const spikeItems = rows
-      .map((r) => ({ name: r.asset_number, current: r.current_downtime_hours, baseline: r.baseline_downtime_hours }))
-      .filter((it) => (it.current || 0) > 0 || (it.baseline || 0) > 0);
+    // Each group here is two bars, so rank by whichever period is taller: that
+    // keeps the chart descending left-to-right like the single-series ones, and
+    // an asset that improved sharply still sorts by the downtime it used to
+    // carry instead of dropping into the tail where the drop goes unnoticed.
+    const spikeItems = sortedDesc(
+      rows
+        .map((r) => ({ name: r.asset_number, current: r.current_downtime_hours, baseline: r.baseline_downtime_hours }))
+        .filter((it) => (it.current || 0) > 0 || (it.baseline || 0) > 0),
+      (it) => Math.max(Number(it.current) || 0, Number(it.baseline) || 0)
+    );
     drawGroupedBars($("alerts-spike-chart"), spikeItems, { labels: ["Baseline downtime", "Current downtime"] });
     setEmpty(
       "alerts-spike",
