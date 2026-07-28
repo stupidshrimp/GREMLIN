@@ -3,7 +3,6 @@ import math
 import os
 import tempfile
 from functools import wraps
-from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -12,13 +11,13 @@ from repositories.failure_repo import FailureRepository
 from repositories.metrics_repo import MetricsRepository
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
+    DEFAULT_DB_PATH,
     DISPLAY_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
     WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
     LifeDataService,
-    resolve_default_db_path,
 )
 
 app = Flask(__name__)
@@ -64,10 +63,10 @@ reliability_service = ReliabilityService(
 )
 
 # The Life Data Analysis / Weibull backend reuses the desktop GUI's LifeDataService
-# unchanged. The GUI hardcodes the shared Windows database; here the same path can be
-# overridden with the GREMLIN_DB_PATH environment variable so the Flask app can run
-# wherever GREMLIN.db is reachable. The service is created lazily and any startup
-# failure is surfaced to the page instead of crashing the whole app.
+# unchanged. Both open the single default database location, which can be overridden
+# with the GREMLIN_DB_PATH environment variable so the Flask app can run wherever
+# GREMLIN.db is reachable. The service is created lazily and any startup failure is
+# surfaced to the page instead of crashing the whole app.
 MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
@@ -84,16 +83,15 @@ def get_life_data_service() -> LifeDataService:
         if db_path_override:
             db_path = db_path_override
         else:
-            # Fall back to the shared default the desktop GUI uses, but never let
-            # SQLite create a brand-new empty database at an unreachable share
-            # (on Linux a Windows UNC path is just a long local filename).
-            resolved = resolve_default_db_path()
-            if not Path(resolved).is_file():
+            # Fall back to the single default location, but never let SQLite create
+            # a brand-new empty database there (on Linux a Windows path is just an
+            # ordinary local filename, so the miss would go unnoticed).
+            if not DEFAULT_DB_PATH.is_file():
                 raise RuntimeError(
-                    "The shared GREMLIN.db could not be reached. "
+                    f"GREMLIN.db was not found at {DEFAULT_DB_PATH}. "
                     "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
                 )
-            db_path = resolved
+            db_path = DEFAULT_DB_PATH
         _life_data_service = LifeDataService(db_path=db_path, refresh_on_startup=False)
         _life_data_service_error = None
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as JSON
@@ -135,7 +133,7 @@ def _service_or_api_error() -> LifeDataService:
         return get_life_data_service()
     except Exception as exc:  # noqa: BLE001
         raise LifeDataApiError(
-            "GREMLIN could not open the shared analysis database. "
+            f"GREMLIN could not open the analysis database at {DEFAULT_DB_PATH}. "
             f"Set GREMLIN_DB_PATH to a reachable GREMLIN.db file. Details: {exc}",
             status_code=503,
         ) from exc
