@@ -230,6 +230,9 @@
   function originPill(origin) {
     if (origin === "code") return el("span", "dev-pill dev-pill-ok", "in code");
     if (origin === "internal") return el("span", "dev-pill dev-pill-muted", "sqlite");
+    // "unknown" means the reference schema could not be built, so no comparison
+    // was possible -- not that the table is orphaned.
+    if (origin === "unknown") return el("span", "dev-pill dev-pill-muted", "not compared");
     return el("span", "dev-pill dev-pill-warn", "orphaned");
   }
 

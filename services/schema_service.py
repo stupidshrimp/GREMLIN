@@ -70,6 +70,18 @@ MAX_CELL_CHARS = 2000
 # service's error handling as an unhandled 500 rather than a bad-request.
 _SQLITE_MAX_INT = 2**63 - 1
 
+# Ceiling on the size of any single string or blob SQLite will produce.
+#
+# MAX_CELL_CHARS truncates a value only *after* Python already holds it, which is
+# too late: `SELECT randomblob(1000000000)` is materialised in full first, and a
+# 200 MB blob measured at ~394 MB of resident memory. The progress handler does
+# not help either -- it is invoked between VM instructions and fires zero times
+# while one allocation opcode runs, so the query deadline never triggers. This
+# limit makes SQLite refuse to build the value at all ("string or blob too big").
+# Generous next to any real GREMLIN value: the largest legitimate cell is a
+# Limble raw_json payload, which is kilobytes.
+MAX_VALUE_BYTES = 8 * 1024 * 1024
+
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
 
@@ -185,6 +197,14 @@ class SchemaService:
         conn.row_factory = sqlite3.Row
         # Blocks VACUUM INTO / ATTACH, which mode=ro alone allows.
         conn.set_authorizer(_readonly_authorizer)
+        # setlimit is Python 3.11+. Without it an oversized value is merely
+        # truncated after the fact, which does not bound memory.
+        if hasattr(conn, "setlimit"):
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
+        # Bound every connection, not just the query paths: the catalogue
+        # COUNT(*) helper runs on a rollback-journal database, where a long read
+        # holds a lock that delays GREMLIN's writers.
+        self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
         return conn
 
     @staticmethod
@@ -392,7 +412,6 @@ class SchemaService:
                     raise SchemaServiceError(f"Unknown column {order_by!r} on {table}.")
                 order_clause = f" ORDER BY {self._quote(order_by)} {'DESC' if descending else 'ASC'}"
 
-            self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
             total = self._row_count(conn, table)
             sql = f"SELECT * FROM {self._quote(table)}{order_clause} LIMIT ? OFFSET ?"
             try:
@@ -431,7 +450,6 @@ class SchemaService:
 
         started = time.monotonic()
         with self.connect() as conn:
-            self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
             try:
                 cursor = conn.execute(statement)
                 rows = cursor.fetchmany(max_rows + 1)
@@ -621,6 +639,11 @@ def reset_reference_schema_cache() -> None:
 def _classify_table(name: str, reference: dict[str, Any]) -> str:
     if name.startswith(_INTERNAL_TABLE_PREFIX):
         return "internal"
+    # A failed reference build yields an empty table list. Calling everything
+    # "orphaned" on the back of that would libel core tables like
+    # raw_cmms_record, so say the comparison could not be made instead.
+    if reference.get("error"):
+        return "unknown"
     if name in set(reference.get("tables", [])):
         return "code"
     return "orphaned"
@@ -629,6 +652,8 @@ def _classify_table(name: str, reference: dict[str, Any]) -> str:
 def _origin_note(name: str, reference: dict[str, Any]) -> str | None:
     if name.startswith(_INTERNAL_TABLE_PREFIX):
         return "SQLite internal bookkeeping table."
+    if reference.get("error"):
+        return "Could not be compared: the reference schema failed to build."
     if name in set(reference.get("tables", [])):
         return None
     for prefix, note in _KNOWN_ORPHAN_PREFIXES.items():
@@ -694,4 +719,9 @@ def _friendly_sqlite_error(exc: sqlite3.Error) -> str:
         return f"Query aborted after {QUERY_TIMEOUT_SECONDS:.0f}s. Narrow it with a WHERE clause or LIMIT."
     if "one statement at a time" in lowered:
         return "Run one statement at a time."
+    if "too big" in lowered:
+        return (
+            f"A single value exceeded the {MAX_VALUE_BYTES // (1024 * 1024)} MB cap. "
+            "Narrow the query (for example with substr()) rather than selecting the whole value."
+        )
     return message

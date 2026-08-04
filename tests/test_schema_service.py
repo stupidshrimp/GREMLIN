@@ -2,8 +2,12 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from services import schema_service
 
 from services.schema_service import (
     MAX_CELL_CHARS,
@@ -98,6 +102,38 @@ class SchemaServiceTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 with self.assertRaises(SchemaServiceError):
                     self.service.run_query(statement)
+
+    def test_oversized_values_are_refused_before_materialising(self):
+        # MAX_CELL_CHARS truncates only after Python holds the value, and the
+        # progress handler does not fire during a single allocation opcode, so
+        # SQLite has to refuse to build the value in the first place.
+        if not hasattr(sqlite3.Connection, "setlimit"):
+            self.skipTest("sqlite3.Connection.setlimit requires Python 3.11+")
+        with self.assertRaises(SchemaServiceError) as ctx:
+            self.service.run_query("SELECT randomblob(1000000000)")
+        self.assertIn("exceeded", str(ctx.exception).lower())
+        # A normal-sized value is unaffected.
+        self.assertEqual(len(self.service.run_query("SELECT randomblob(4096)")["rows"]), 1)
+
+    def test_every_connection_carries_the_query_deadline(self):
+        # The catalogue COUNT(*) helper has no deadline of its own, so connect()
+        # must install one -- otherwise opening the Schema or Pipeline panel on a
+        # huge table holds a read lock against GREMLIN's writers indefinitely.
+        # Checked behaviourally: a long statement on a plain connection must be
+        # aborted once the deadline is short.
+        slow = (
+            "WITH RECURSIVE counter(x) AS ("
+            "  SELECT 1 UNION ALL SELECT x + 1 FROM counter WHERE x < 100000000"
+            ") SELECT COUNT(*) FROM counter"
+        )
+        with mock.patch.object(schema_service, "QUERY_TIMEOUT_SECONDS", 0.05):
+            started = time.monotonic()
+            with self.service.connect() as conn:
+                with self.assertRaises(sqlite3.OperationalError) as ctx:
+                    conn.execute(slow).fetchone()
+            elapsed = time.monotonic() - started
+        self.assertIn("interrupted", str(ctx.exception).lower())
+        self.assertLess(elapsed, 10, "the deadline did not abort the statement")
 
     def test_informational_pragmas_still_work(self):
         payload = self.service.run_query("PRAGMA table_info(raw_cmms_record)")
@@ -251,6 +287,24 @@ class SchemaServiceTests(unittest.TestCase):
     def test_table_detail_surfaces_per_table_drift(self):
         detail = self.service.table_detail("mapped_cmms_record")
         self.assertIn("legacy_scratch_column", detail["drift"]["extra_in_file"])
+
+    def test_failed_reference_build_does_not_report_false_orphans(self):
+        # An empty reference table list must not be read as "nothing is in the
+        # code", which would brand core tables like raw_cmms_record as orphaned.
+        import services.schema_service as module
+
+        module.reset_reference_schema_cache()
+        module._REFERENCE_CACHE = {"tables": [], "columns": {}, "error": "simulated build failure"}
+        self.addCleanup(module.reset_reference_schema_cache)
+
+        by_name = {table["name"]: table for table in self.service.tables()}
+        self.assertEqual(by_name["raw_cmms_record"]["origin"], "unknown")
+        self.assertEqual(by_name["mapped_cmms_record"]["origin"], "unknown")
+        self.assertNotIn("orphaned", {table["origin"] for table in by_name.values()})
+        self.assertIn("could not be compared", by_name["raw_cmms_record"]["note"].lower())
+
+        drift = self.service.drift_report()
+        self.assertFalse(drift["available"])
 
 
 class DeveloperUnlockTests(unittest.TestCase):
