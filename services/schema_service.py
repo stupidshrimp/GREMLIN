@@ -665,6 +665,16 @@ class SchemaService:
 # Reference schema (what the current code would build from scratch)
 # ----------------------------------------------------------------------
 _REFERENCE_CACHE: dict[str, Any] | None = None
+_REFERENCE_FAILED_AT: float = 0.0
+
+# How long a failed reference build is remembered before it is retried. A
+# success is cached for the life of the process -- the schema code cannot change
+# under a running server -- but a failure is usually transient (an unwritable
+# temp directory, a full disk), and caching it forever left the Drift and Schema
+# panels degraded until someone restarted GREMLIN. Retrying every request instead
+# would make a persistent failure pay the full bootstrap cost each time, so the
+# retry is rate-limited rather than unlimited.
+_REFERENCE_RETRY_SECONDS = 60.0
 
 
 def _reference_schema() -> dict[str, Any]:
@@ -675,20 +685,32 @@ def _reference_schema() -> dict[str, Any]:
     stale when the schema code changes.
     """
 
-    global _REFERENCE_CACHE
+    global _REFERENCE_CACHE, _REFERENCE_FAILED_AT
     if _REFERENCE_CACHE is not None:
-        return _REFERENCE_CACHE
+        if not _REFERENCE_CACHE.get("error"):
+            return _REFERENCE_CACHE
+        if time.monotonic() - _REFERENCE_FAILED_AT < _REFERENCE_RETRY_SECONDS:
+            return _REFERENCE_CACHE
 
-    tmpdir = tempfile.mkdtemp(prefix="gremlin_reference_schema_")
-    reference_path = Path(tmpdir) / "reference.db"
+    # mkdtemp is inside the try: on a read-only filesystem or a full disk it
+    # raises, and that has to degrade to "drift unavailable" like any other
+    # build failure rather than propagating out of the panel.
+    tmpdir: str | None = None
     try:
+        tmpdir = tempfile.mkdtemp(prefix="gremlin_reference_schema_")
+        reference_path = Path(tmpdir) / "reference.db"
+
         from repositories.raw_repo import RawRepository
         from services.life_data_service import LifeDataService
 
         RawRepository(reference_path).ensure_schema()
         LifeDataService(reference_path, refresh_on_startup=False)
 
-        with sqlite3.connect(reference_path) as conn:
+        # Closed explicitly: sqlite3's own context manager commits or rolls back
+        # but does not close, which is the leak that ClosingSqliteConnection
+        # exists to avoid on the request paths.
+        conn = sqlite3.connect(reference_path)
+        try:
             conn.row_factory = sqlite3.Row
             names = [
                 row["name"]
@@ -700,23 +722,29 @@ def _reference_schema() -> dict[str, Any]:
                 name: {row["name"] for row in conn.execute(f'PRAGMA table_info("{name}")').fetchall()}
                 for name in names
             }
+        finally:
+            conn.close()
         _REFERENCE_CACHE = {"tables": names, "columns": columns, "error": None}
+        _REFERENCE_FAILED_AT = 0.0
     except Exception as exc:  # noqa: BLE001 - degrade to "drift unavailable"
         _REFERENCE_CACHE = {
             "tables": [],
             "columns": {},
             "error": f"Could not build the reference schema: {exc}",
         }
+        _REFERENCE_FAILED_AT = time.monotonic()
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     return _REFERENCE_CACHE
 
 
 def reset_reference_schema_cache() -> None:
     """Drop the cached reference schema (used by tests)."""
 
-    global _REFERENCE_CACHE
+    global _REFERENCE_CACHE, _REFERENCE_FAILED_AT
     _REFERENCE_CACHE = None
+    _REFERENCE_FAILED_AT = 0.0
 
 
 def _classify_table(name: str, reference: dict[str, Any]) -> str:

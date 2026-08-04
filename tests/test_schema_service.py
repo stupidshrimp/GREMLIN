@@ -383,6 +383,34 @@ class SchemaServiceTests(unittest.TestCase):
         detail = self.service.table_detail("mapped_cmms_record")
         self.assertIn("legacy_scratch_column", detail["drift"]["extra_in_file"])
 
+    def test_failed_reference_build_is_retried_but_rate_limited(self):
+        # A transient failure (unwritable temp dir, full disk) must not leave the
+        # Drift panel degraded until someone restarts GREMLIN -- but retrying on
+        # every request would make a persistent failure pay the full bootstrap
+        # cost each time.
+        schema_service.reset_reference_schema_cache()
+        self.addCleanup(schema_service.reset_reference_schema_cache)
+
+        calls = []
+        real_mkdtemp = schema_service.tempfile.mkdtemp
+
+        def _failing_mkdtemp(*args, **kwargs):
+            calls.append(1)
+            raise OSError("simulated: read-only filesystem")
+
+        with mock.patch.object(schema_service.tempfile, "mkdtemp", _failing_mkdtemp):
+            first = schema_service._reference_schema()
+            second = schema_service._reference_schema()
+        self.assertTrue(first["error"])
+        self.assertEqual(len(calls), 1, "a failure inside the retry window was rebuilt")
+
+        # Past the retry window it tries again, and a now-healthy build succeeds.
+        with mock.patch.object(schema_service, "_REFERENCE_RETRY_SECONDS", 0.0):
+            with mock.patch.object(schema_service.tempfile, "mkdtemp", real_mkdtemp):
+                recovered = schema_service._reference_schema()
+        self.assertIsNone(recovered["error"])
+        self.assertIn("raw_cmms_record", recovered["tables"])
+
     def test_failed_reference_build_does_not_report_false_orphans(self):
         # An empty reference table list must not be read as "nothing is in the
         # code", which would brand core tables like raw_cmms_record as orphaned.
@@ -390,6 +418,8 @@ class SchemaServiceTests(unittest.TestCase):
 
         module.reset_reference_schema_cache()
         module._REFERENCE_CACHE = {"tables": [], "columns": {}, "error": "simulated build failure"}
+        # Inside the retry window, so the cached failure is not rebuilt.
+        module._REFERENCE_FAILED_AT = time.monotonic()
         self.addCleanup(module.reset_reference_schema_cache)
 
         by_name = {table["name"]: table for table in self.service.tables()}
