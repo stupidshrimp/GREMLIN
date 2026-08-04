@@ -1,0 +1,609 @@
+"""Read-only introspection of GREMLIN.db for the developer dashboard and CLI.
+
+GREMLIN has no ``.sql`` schema file: the shape of ``GREMLIN.db`` is defined only
+by Python, in :mod:`repositories.raw_repo` (the two raw import tables) and
+:mod:`services.life_data_service` (the mapped/disposition/Weibull layers). Both
+are deliberately *adaptive* -- ``ensure_schema`` only ever creates missing tables
+and adds missing columns, and never drops or rewrites anything. A long-lived
+GREMLIN.db therefore drifts away from the source:
+
+* legacy columns the application stopped using are still physically present;
+* tables from removed features (the ``availability_*`` set, which now lives only
+  under ``Reference/``) are never cleaned up;
+* a database predating a migration may still be missing newer columns.
+
+So reading the source does not tell you what is actually in the file. This module
+answers that question from the file itself, and reports the difference.
+
+The reference schema is not hardcoded. It is built by pointing the real
+``RawRepository``/``LifeDataService`` bootstrap at a throwaway database and
+introspecting the result, so the drift report stays correct as the schema code
+evolves instead of rotting against a duplicated table list.
+
+Safety
+------
+Every connection this module opens is a SQLite ``mode=ro`` URI connection, so
+writes are impossible at the driver level rather than by inspecting SQL text.
+That matters here: GREMLIN.db is expected to live on a shared drive, uses
+rollback-journal mode, and serialises writers through ``BEGIN IMMEDIATE`` with a
+30 second busy timeout (see :meth:`services.life_data_service.LifeDataService.write_connection`).
+A dev-tools query that took the writer slot would stall every other GREMLIN user.
+Read-only connections never acquire it.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import sqlite3
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterable
+
+# A query that runs longer than this is aborted through the progress handler.
+QUERY_TIMEOUT_SECONDS = 15.0
+# Progress-handler granularity (VM instructions between deadline checks).
+_PROGRESS_INSTRUCTIONS = 10_000
+
+# Row/cell caps so a `SELECT * FROM raw_cmms_record` cannot serialise every
+# stored Limble payload into one JSON response.
+DEFAULT_ROW_LIMIT = 100
+MAX_ROW_LIMIT = 1000
+MAX_CELL_CHARS = 2000
+
+# Tables SQLite maintains for itself. They are neither app schema nor drift.
+_INTERNAL_TABLE_PREFIX = "sqlite_"
+
+# Feature whose tables are still in real databases but whose code was removed
+# from the app (it survives only under Reference/availability_dashboard/).
+_KNOWN_ORPHAN_PREFIXES = {
+    "availability_": "Removed Availability Dashboard feature (code now only under Reference/).",
+}
+
+
+class SchemaServiceError(RuntimeError):
+    """Raised when the database cannot be opened or a request is not valid."""
+
+
+class SchemaService:
+    """Read-only schema, data and query access to a GREMLIN.db file."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+
+    # ------------------------------------------------------------------
+    # Connections
+    # ------------------------------------------------------------------
+    def _readonly_uri(self) -> str:
+        """Build a ``mode=ro`` URI for the database path.
+
+        ``as_uri`` percent-escapes the path, which keeps a Windows-style default
+        path (``C:\\GREMLIN\\GREMLIN.db``) usable even when the app runs on Linux
+        and that string is just an ordinary relative filename.
+        """
+
+        try:
+            base = self.db_path.resolve().as_uri()
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise SchemaServiceError(f"Could not build a database URI for {self.db_path}: {exc}") from exc
+        return f"{base}?mode=ro"
+
+    def connect(self) -> sqlite3.Connection:
+        """Open a read-only connection. Writes fail at the driver level."""
+
+        if not self.db_path.is_file():
+            raise SchemaServiceError(
+                f"No database file at {self.db_path}. "
+                "Set GREMLIN_DB_PATH to a reachable GREMLIN.db file."
+            )
+        try:
+            conn = sqlite3.connect(self._readonly_uri(), uri=True, timeout=5.0)
+        except sqlite3.Error as exc:
+            raise SchemaServiceError(f"Could not open {self.db_path} read-only: {exc}") from exc
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @staticmethod
+    def _guard_runtime(conn: sqlite3.Connection, timeout_seconds: float) -> None:
+        """Abort any statement that outlives ``timeout_seconds``."""
+
+        deadline = time.monotonic() + timeout_seconds
+
+        def _abort() -> int:
+            return 1 if time.monotonic() > deadline else 0
+
+        conn.set_progress_handler(_abort, _PROGRESS_INSTRUCTIONS)
+
+    # ------------------------------------------------------------------
+    # Overview
+    # ------------------------------------------------------------------
+    def overview(self) -> dict[str, Any]:
+        """File-level facts about the database: size, PRAGMAs, object counts."""
+
+        info: dict[str, Any] = {
+            "db_path": str(self.db_path),
+            "resolved_path": str(self.db_path.resolve()) if self.db_path.exists() else None,
+            "exists": self.db_path.is_file(),
+            "sqlite_version": sqlite3.sqlite_version,
+        }
+        if not info["exists"]:
+            info["error"] = f"No database file at {self.db_path}."
+            return info
+
+        stat = self.db_path.stat()
+        info["size_bytes"] = stat.st_size
+        info["modified_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+
+        with self.connect() as conn:
+            for pragma in ("page_size", "page_count", "journal_mode", "encoding", "user_version", "freelist_count"):
+                try:
+                    info[pragma] = conn.execute(f"PRAGMA {pragma}").fetchone()[0]
+                except (sqlite3.Error, TypeError, IndexError):
+                    info[pragma] = None
+            counts = conn.execute(
+                """
+                SELECT type, COUNT(*) AS count
+                FROM sqlite_master
+                WHERE name NOT LIKE 'sqlite_%'
+                GROUP BY type
+                """
+            ).fetchall()
+            info["object_counts"] = {row["type"]: row["count"] for row in counts}
+        return info
+
+    # ------------------------------------------------------------------
+    # Table listing / detail
+    # ------------------------------------------------------------------
+    def _object_names(self, conn: sqlite3.Connection, kinds: Iterable[str] = ("table", "view")) -> list[str]:
+        placeholders = ", ".join("?" for _ in kinds)
+        rows = conn.execute(
+            f"SELECT name FROM sqlite_master WHERE type IN ({placeholders}) ORDER BY name",
+            tuple(kinds),
+        ).fetchall()
+        return [row["name"] for row in rows]
+
+    def _assert_known_table(self, conn: sqlite3.Connection, table: str) -> str:
+        """Whitelist ``table`` against the live catalogue.
+
+        SQLite cannot parameterise an identifier, so a table name always ends up
+        interpolated into the SQL text. Accepting only names that already exist
+        in ``sqlite_master`` is what makes that safe; quoting is a second layer.
+        """
+
+        if table in self._object_names(conn):
+            return table
+        raise SchemaServiceError(f"Unknown table or view: {table!r}")
+
+    @staticmethod
+    def _quote(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    def _row_count(self, conn: sqlite3.Connection, table: str) -> int | None:
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM {self._quote(table)}").fetchone()
+        except sqlite3.Error:
+            return None
+        return int(row[0]) if row else None
+
+    def tables(self, *, include_row_counts: bool = True) -> list[dict[str, Any]]:
+        """Every table and view in the file, annotated with its origin."""
+
+        reference = _reference_schema()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT name, type
+                FROM sqlite_master
+                WHERE type IN ('table', 'view')
+                ORDER BY type, name
+                """
+            ).fetchall()
+            results = []
+            for row in rows:
+                name = row["name"]
+                entry: dict[str, Any] = {
+                    "name": name,
+                    "type": row["type"],
+                    "origin": _classify_table(name, reference),
+                    "note": _origin_note(name, reference),
+                    "column_count": len(self._columns(conn, name)),
+                    "row_count": self._row_count(conn, name) if include_row_counts else None,
+                }
+                results.append(entry)
+        return results
+
+    def _columns(self, conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+        rows = conn.execute(f"PRAGMA table_info({self._quote(table)})").fetchall()
+        return [
+            {
+                "position": row["cid"],
+                "name": row["name"],
+                "type": row["type"] or "",
+                "not_null": bool(row["notnull"]),
+                "default": row["dflt_value"],
+                "primary_key": bool(row["pk"]),
+            }
+            for row in rows
+        ]
+
+    def table_detail(self, table: str) -> dict[str, Any]:
+        """Columns, foreign keys, indexes, DDL and per-table drift."""
+
+        reference = _reference_schema()
+        with self.connect() as conn:
+            table = self._assert_known_table(conn, table)
+            quoted = self._quote(table)
+            columns = self._columns(conn, table)
+
+            foreign_keys = [
+                {
+                    "column": row["from"],
+                    "references_table": row["table"],
+                    "references_column": row["to"],
+                    "on_update": row["on_update"],
+                    "on_delete": row["on_delete"],
+                }
+                for row in conn.execute(f"PRAGMA foreign_key_list({quoted})").fetchall()
+            ]
+
+            indexes = []
+            for row in conn.execute(f"PRAGMA index_list({quoted})").fetchall():
+                index_columns = [
+                    entry["name"]
+                    for entry in conn.execute(f"PRAGMA index_info({self._quote(row['name'])})").fetchall()
+                    if entry["name"] is not None
+                ]
+                indexes.append(
+                    {
+                        "name": row["name"],
+                        "unique": bool(row["unique"]),
+                        "origin": row["origin"],
+                        "columns": index_columns,
+                    }
+                )
+
+            ddl_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')",
+                (table,),
+            ).fetchone()
+
+            return {
+                "name": table,
+                "origin": _classify_table(table, reference),
+                "note": _origin_note(table, reference),
+                "row_count": self._row_count(conn, table),
+                "columns": columns,
+                "foreign_keys": foreign_keys,
+                "indexes": indexes,
+                "ddl": ddl_row["sql"] if ddl_row else None,
+                "drift": _table_drift(table, [column["name"] for column in columns], reference),
+            }
+
+    # ------------------------------------------------------------------
+    # Data browsing
+    # ------------------------------------------------------------------
+    def table_rows(
+        self,
+        table: str,
+        *,
+        limit: int = DEFAULT_ROW_LIMIT,
+        offset: int = 0,
+        order_by: str | None = None,
+        descending: bool = False,
+    ) -> dict[str, Any]:
+        """A capped, paginated page of rows from one table."""
+
+        limit = max(1, min(int(limit), MAX_ROW_LIMIT))
+        offset = max(0, int(offset))
+        with self.connect() as conn:
+            table = self._assert_known_table(conn, table)
+            column_names = [column["name"] for column in self._columns(conn, table)]
+            order_clause = ""
+            if order_by:
+                # Same rule as the table name: only a column that genuinely
+                # exists is allowed anywhere near the SQL text.
+                if order_by not in column_names:
+                    raise SchemaServiceError(f"Unknown column {order_by!r} on {table}.")
+                order_clause = f" ORDER BY {self._quote(order_by)} {'DESC' if descending else 'ASC'}"
+
+            self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
+            total = self._row_count(conn, table)
+            sql = f"SELECT * FROM {self._quote(table)}{order_clause} LIMIT ? OFFSET ?"
+            try:
+                cursor = conn.execute(sql, (limit, offset))
+                rows = cursor.fetchall()
+            except sqlite3.Error as exc:
+                raise SchemaServiceError(_friendly_sqlite_error(exc)) from exc
+            columns = [description[0] for description in cursor.description or []]
+
+        return {
+            "table": table,
+            "columns": columns or column_names,
+            "rows": [[_cell(value) for value in row] for row in rows],
+            "total_rows": total,
+            "limit": limit,
+            "offset": offset,
+            "order_by": order_by,
+            "descending": descending,
+        }
+
+    # ------------------------------------------------------------------
+    # Query console
+    # ------------------------------------------------------------------
+    def run_query(self, sql: str, *, max_rows: int = DEFAULT_ROW_LIMIT) -> dict[str, Any]:
+        """Run one read-only statement and return capped results.
+
+        No SQL parsing decides what is allowed: the connection is ``mode=ro``, so
+        SQLite itself rejects anything that would write. Multi-statement input is
+        rejected by the driver for the same reason -- one statement per execute.
+        """
+
+        statement = (sql or "").strip().rstrip(";").strip()
+        if not statement:
+            raise SchemaServiceError("Enter a SQL statement to run.")
+        max_rows = max(1, min(int(max_rows), MAX_ROW_LIMIT))
+
+        started = time.monotonic()
+        with self.connect() as conn:
+            self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
+            try:
+                cursor = conn.execute(statement)
+                rows = cursor.fetchmany(max_rows + 1)
+            except sqlite3.Error as exc:
+                raise SchemaServiceError(_friendly_sqlite_error(exc)) from exc
+            columns = [description[0] for description in cursor.description or []]
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+
+        truncated = len(rows) > max_rows
+        return {
+            "columns": columns,
+            "rows": [[_cell(value) for value in row] for row in rows[:max_rows]],
+            "row_count": min(len(rows), max_rows),
+            "truncated": truncated,
+            "max_rows": max_rows,
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+    # ------------------------------------------------------------------
+    # Pipeline + drift
+    # ------------------------------------------------------------------
+    def pipeline(self) -> dict[str, Any]:
+        """Row counts along the ingestion -> analysis path, plus recent imports.
+
+        This is the fastest way to see *where* a data problem starts: a healthy
+        database shrinks monotonically down these stages, so the first stage that
+        is unexpectedly zero is the one to investigate.
+        """
+
+        stages = [
+            ("raw_cmms_record", "Raw Limble payloads"),
+            ("mapped_cmms_record", "Mapped CMMS records"),
+            ("event_disposition", "Event dispositions"),
+            ("event_processing_record", "Event processing records"),
+            ("weibull_observation", "Weibull observations"),
+            ("analysis_dataset", "Analysis datasets"),
+            ("weibull_result", "Weibull results"),
+            ("approved_weibull_parameter", "Approved parameters"),
+        ]
+        with self.connect() as conn:
+            present = set(self._object_names(conn, ("table",)))
+            counts = [
+                {
+                    "table": name,
+                    "label": label,
+                    "present": name in present,
+                    "row_count": self._row_count(conn, name) if name in present else None,
+                }
+                for name, label in stages
+            ]
+            batches: list[dict[str, Any]] = []
+            if "import_batch" in present:
+                columns = {column["name"] for column in self._columns(conn, "import_batch")}
+                wanted = [
+                    column
+                    for column in (
+                        "import_batch_id",
+                        "source_system",
+                        "status",
+                        "import_started_at",
+                        "import_completed_at",
+                        "raw_row_count",
+                    )
+                    if column in columns
+                ]
+                if wanted:
+                    select = ", ".join(self._quote(column) for column in wanted)
+                    order = "import_batch_id" if "import_batch_id" in columns else wanted[0]
+                    try:
+                        rows = conn.execute(
+                            f"SELECT {select} FROM import_batch ORDER BY {self._quote(order)} DESC LIMIT 10"
+                        ).fetchall()
+                        batches = [{key: _cell(row[key]) for key in wanted} for row in rows]
+                    except sqlite3.Error:
+                        batches = []
+        return {"stages": counts, "recent_batches": batches}
+
+    def drift_report(self) -> dict[str, Any]:
+        """Differences between what the code builds and what the file contains."""
+
+        reference = _reference_schema()
+        if reference.get("error"):
+            return {"available": False, "error": reference["error"]}
+
+        with self.connect() as conn:
+            live_tables = set(self._object_names(conn, ("table",)))
+            live_columns = {
+                table: {column["name"] for column in self._columns(conn, table)}
+                for table in live_tables
+            }
+
+        expected_tables = set(reference["tables"])
+        app_tables = {name for name in live_tables if not name.startswith(_INTERNAL_TABLE_PREFIX)}
+
+        missing_tables = sorted(expected_tables - live_tables)
+        extra_tables = sorted(app_tables - expected_tables)
+
+        column_drift = []
+        for table in sorted(expected_tables & live_tables):
+            expected_columns = set(reference["columns"].get(table, set()))
+            actual_columns = live_columns.get(table, set())
+            missing = sorted(expected_columns - actual_columns)
+            extra = sorted(actual_columns - expected_columns)
+            if missing or extra:
+                column_drift.append(
+                    {
+                        "table": table,
+                        "missing_in_file": missing,
+                        "extra_in_file": extra,
+                    }
+                )
+
+        return {
+            "available": True,
+            "missing_tables": [
+                {"name": name, "note": "Defined in code but absent from this file."}
+                for name in missing_tables
+            ],
+            "extra_tables": [
+                {"name": name, "note": _origin_note(name, reference) or "Not defined by current schema code."}
+                for name in extra_tables
+            ],
+            "column_drift": column_drift,
+            "reference_table_count": len(expected_tables),
+            "live_table_count": len(app_tables),
+        }
+
+
+# ----------------------------------------------------------------------
+# Reference schema (what the current code would build from scratch)
+# ----------------------------------------------------------------------
+_REFERENCE_CACHE: dict[str, Any] | None = None
+
+
+def _reference_schema() -> dict[str, Any]:
+    """Introspect a throwaway database built by the real bootstrap code.
+
+    Running the actual ``ensure_schema`` paths -- rather than parsing DDL strings
+    or keeping a duplicate table list here -- means the drift report cannot go
+    stale when the schema code changes.
+    """
+
+    global _REFERENCE_CACHE
+    if _REFERENCE_CACHE is not None:
+        return _REFERENCE_CACHE
+
+    tmpdir = tempfile.mkdtemp(prefix="gremlin_reference_schema_")
+    reference_path = Path(tmpdir) / "reference.db"
+    try:
+        from repositories.raw_repo import RawRepository
+        from services.life_data_service import LifeDataService
+
+        RawRepository(reference_path).ensure_schema()
+        LifeDataService(reference_path, refresh_on_startup=False)
+
+        with sqlite3.connect(reference_path) as conn:
+            conn.row_factory = sqlite3.Row
+            names = [
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                ).fetchall()
+            ]
+            columns = {
+                name: {row["name"] for row in conn.execute(f'PRAGMA table_info("{name}")').fetchall()}
+                for name in names
+            }
+        _REFERENCE_CACHE = {"tables": names, "columns": columns, "error": None}
+    except Exception as exc:  # noqa: BLE001 - degrade to "drift unavailable"
+        _REFERENCE_CACHE = {
+            "tables": [],
+            "columns": {},
+            "error": f"Could not build the reference schema: {exc}",
+        }
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return _REFERENCE_CACHE
+
+
+def reset_reference_schema_cache() -> None:
+    """Drop the cached reference schema (used by tests)."""
+
+    global _REFERENCE_CACHE
+    _REFERENCE_CACHE = None
+
+
+def _classify_table(name: str, reference: dict[str, Any]) -> str:
+    if name.startswith(_INTERNAL_TABLE_PREFIX):
+        return "internal"
+    if name in set(reference.get("tables", [])):
+        return "code"
+    return "orphaned"
+
+
+def _origin_note(name: str, reference: dict[str, Any]) -> str | None:
+    if name.startswith(_INTERNAL_TABLE_PREFIX):
+        return "SQLite internal bookkeeping table."
+    if name in set(reference.get("tables", [])):
+        return None
+    for prefix, note in _KNOWN_ORPHAN_PREFIXES.items():
+        if name.startswith(prefix):
+            return note
+    return "Present in the file but not created by current schema code."
+
+
+def _table_drift(table: str, actual_columns: list[str], reference: dict[str, Any]) -> dict[str, Any]:
+    if reference.get("error") or table not in reference.get("columns", {}):
+        return {"missing_in_file": [], "extra_in_file": []}
+    expected = set(reference["columns"][table])
+    actual = set(actual_columns)
+    return {
+        "missing_in_file": sorted(expected - actual),
+        "extra_in_file": sorted(actual - expected),
+    }
+
+
+# ----------------------------------------------------------------------
+# Value / error presentation
+# ----------------------------------------------------------------------
+def _cell(value: Any) -> Any:
+    """Make one column value safe and small enough to JSON-serialise.
+
+    ``raw_cmms_record.raw_json`` holds a full Limble payload per row, so
+    untruncated values would dominate every response that touches it.
+    """
+
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<BLOB {len(bytes(value))} bytes>"
+    text = str(value)
+    if len(text) > MAX_CELL_CHARS:
+        return text[:MAX_CELL_CHARS] + f"… (truncated, {len(text)} chars)"
+    return text
+
+
+def _friendly_sqlite_error(exc: sqlite3.Error) -> str:
+    """Turn SQLite's terser failures into something a developer can act on."""
+
+    message = str(exc)
+    lowered = message.lower()
+    if "readonly" in lowered or "read-only" in lowered:
+        return (
+            "This console is read-only. GREMLIN.db is shared and serialises writers, "
+            "so the dev dashboard never opens a writable connection."
+        )
+    if "interrupted" in lowered:
+        return f"Query aborted after {QUERY_TIMEOUT_SECONDS:.0f}s. Narrow it with a WHERE clause or LIMIT."
+    if "one statement at a time" in lowered:
+        return "Run one statement at a time."
+    return message
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def is_plain_identifier(name: str) -> bool:
+    """True for names needing no quoting (used by the CLI report)."""
+
+    return bool(_IDENTIFIER_RE.match(name or ""))

@@ -1,11 +1,13 @@
 import io
 import math
 import os
+import secrets
+import sys
 import tempfile
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from repositories.analysis_repo import AnalysisRepository
 from repositories.failure_repo import FailureRepository
@@ -20,8 +22,14 @@ from services.life_data_service import (
     DatabaseWriteError,
     LifeDataService,
 )
+from services.schema_service import SchemaService, SchemaServiceError
 
 app = Flask(__name__)
+
+# Needed for the developer dashboard's PIN session. A stable value keeps the
+# unlock across restarts when one is configured; otherwise a per-process random
+# key simply means developers re-enter the PIN after a restart.
+app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
 
 ICONS = {
     "home": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 3.7 10A1 1 0 0 0 3.3 11.1a1 1 0 0 0 1 .7h1v7.3c0 .5.4.9.9.9h4.8v-5.3c0-.5.4-.9.9-.9h1.8c.5 0 .9.4.9.9V20h4.8c.5 0 .9-.4.9-.9v-7.3h1a1 1 0 0 0 .6-1.8L12 3.2Z"/></svg>',
@@ -29,6 +37,7 @@ ICONS = {
     "chart": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.8a1 1 0 0 1-1-1V4.2a1 1 0 1 1 2 0v14.6h14.6a1 1 0 1 1 0 2H4.5Z"/><path d="M8.1 16.1a1 1 0 0 1-1-1v-3.4a1 1 0 1 1 2 0v3.4a1 1 0 0 1-1 1Zm4 0a1 1 0 0 1-1-1V8.6a1 1 0 1 1 2 0v6.5a1 1 0 0 1-1 1Zm4 0a1 1 0 0 1-1-1v-5a1 1 0 1 1 2 0v5a1 1 0 0 1-1 1Z"/></svg>',
     "docs": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.8h7.8c.2 0 .5.1.6.3l3.8 3.8c.2.2.3.4.3.6v13.7c0 .5-.4.9-.9.9H6c-.5 0-.9-.4-.9-.9V3.7c0-.5.4-.9.9-.9Zm7.2 1.9v2.6c0 .5.4.9.9.9h2.6L13.2 4.7ZM8.2 11.2c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Zm0 3.8c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Z"/></svg>',
     "settings": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 2.9a1 1 0 0 1 2 0v1.3a7.8 7.8 0 0 1 2.1.9l.9-.9a1 1 0 1 1 1.4 1.4l-.9.9c.4.6.7 1.4.9 2.1h1.3a1 1 0 1 1 0 2h-1.3a7.8 7.8 0 0 1-.9 2.1l.9.9a1 1 0 1 1-1.4 1.4l-.9-.9c-.6.4-1.4.7-2.1.9v1.3a1 1 0 1 1-2 0v-1.3a7.8 7.8 0 0 1-2.1-.9l-.9.9a1 1 0 1 1-1.4-1.4l.9-.9a7.8 7.8 0 0 1-.9-2.1H3.6a1 1 0 1 1 0-2h1.3c.2-.8.5-1.5.9-2.1l-.9-.9A1 1 0 0 1 6.3 4l.9.9c.6-.4 1.4-.7 2.1-.9V2.9Zm1 5.1a3.8 3.8 0 1 0 0 7.7 3.8 3.8 0 0 0 0-7.7Z"/></svg>',
+    "code": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.4 17.6a1 1 0 0 1-1.4 0l-4.9-4.9a1 1 0 0 1 0-1.4l4.9-4.9a1 1 0 1 1 1.4 1.4L5.2 12l4.2 4.2a1 1 0 0 1 0 1.4Zm5.2 0a1 1 0 0 1 0-1.4l4.2-4.2-4.2-4.2a1 1 0 1 1 1.4-1.4l4.9 4.9a1 1 0 0 1 0 1.4l-4.9 4.9a1 1 0 0 1-1.4 0Z"/></svg>',
 }
 
 PAGES = [
@@ -52,6 +61,12 @@ PAGES = [
         "icon": ICONS["docs"],
     },
     {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
+    {
+        "route": "/developer",
+        "template": "developer_dashboard.html",
+        "title": "Developer",
+        "icon": ICONS["code"],
+    },
 ]
 
 
@@ -71,6 +86,14 @@ reliability_service = ReliabilityService(
 MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
+
+# Developer dashboard access. The PIN is a shared speed bump for an app that has
+# no user accounts -- it keeps the dev tooling out of the way of normal users on
+# the plant network, and is not a substitute for real authentication. Override it
+# with GREMLIN_DEV_PIN.
+DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
+DEV_SESSION_KEY = "dev_dashboard_unlocked"
+_schema_service: SchemaService | None = None
 
 
 def _configured_db_path() -> Path:
@@ -595,6 +618,196 @@ def api_weibull_report():
         download_name=f"{report_number}.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+# ---------------------------------------------------------------------------
+# Developer dashboard
+#
+# A PIN-gated workspace for developers and maintainers. The database explorer is
+# one panel among several: the dashboard also reports app/runtime configuration,
+# the health of GREMLIN.db as a file, how far data has travelled down the
+# ingestion -> Weibull pipeline, and where the live file's schema has drifted
+# from what the schema code would build today.
+#
+# Every database read goes through SchemaService, which only ever opens
+# `mode=ro` connections. That is deliberate: GREMLIN.db is expected to sit on a
+# shared drive and serialises writers through BEGIN IMMEDIATE, so a dev query
+# holding the writer slot would stall every other GREMLIN user.
+# ---------------------------------------------------------------------------
+
+
+def get_schema_service() -> SchemaService:
+    """Return a shared read-only SchemaService for the configured database."""
+
+    global _schema_service
+    if _schema_service is None or _schema_service.db_path != _configured_db_path():
+        _schema_service = SchemaService(_configured_db_path())
+    return _schema_service
+
+
+def _dev_unlocked() -> bool:
+    return bool(session.get(DEV_SESSION_KEY))
+
+
+def dev_api(view):
+    """Gate a dev JSON endpoint behind the PIN and normalise its errors."""
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _dev_unlocked():
+            return jsonify({"error": "Developer dashboard is locked. Enter the PIN to continue."}), 403
+        try:
+            return view(*args, **kwargs)
+        except SchemaServiceError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001 - last-resort guard for the API
+            return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+    return wrapped
+
+
+@app.route("/developer")
+def developer_dashboard():
+    if not _dev_unlocked():
+        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS)
+    return render_template(
+        "developer_dashboard.html",
+        page_title="Developer",
+        nav_links=NAV_LINKS,
+        db_path=str(_configured_db_path()),
+    )
+
+
+@app.route("/developer/unlock", methods=["POST"])
+def developer_unlock():
+    submitted = (request.form.get("pin") or "").strip()
+    # compare_digest keeps the check constant-time; both sides must be str.
+    if secrets.compare_digest(submitted, DEV_DASHBOARD_PIN):
+        session[DEV_SESSION_KEY] = True
+        return redirect(url_for("developer_dashboard"))
+    return (
+        render_template(
+            "developer_lock.html",
+            page_title="Developer",
+            nav_links=NAV_LINKS,
+            error="Incorrect PIN.",
+        ),
+        403,
+    )
+
+
+@app.route("/developer/lock", methods=["POST"])
+def developer_lock():
+    session.pop(DEV_SESSION_KEY, None)
+    return redirect(url_for("developer_dashboard"))
+
+
+@app.route("/developer/api/runtime")
+@dev_api
+def api_dev_runtime():
+    """App-level configuration: how this process is wired, independent of the DB."""
+
+    try:
+        from importlib.metadata import version as _package_version
+
+        flask_version = _package_version("flask")
+    except Exception:  # noqa: BLE001 - version reporting must never break the page
+        flask_version = "unknown"
+
+    service_status = "not initialised"
+    service_error = _life_data_service_error
+    if _life_data_service is not None:
+        service_status = "ready"
+    elif service_error:
+        service_status = "failed"
+
+    routes = sorted(
+        (
+            {
+                "rule": str(rule),
+                "endpoint": rule.endpoint,
+                "methods": sorted(rule.methods - {"HEAD", "OPTIONS"}),
+            }
+            for rule in app.url_map.iter_rules()
+            if rule.endpoint != "static"
+        ),
+        key=lambda entry: entry["rule"],
+    )
+
+    return jsonify(
+        {
+            "python_version": sys.version.split()[0],
+            "flask_version": flask_version,
+            "db_path": str(_configured_db_path()),
+            "db_path_source": "GREMLIN_DB_PATH" if os.environ.get("GREMLIN_DB_PATH") else "default",
+            "default_db_path": str(DEFAULT_DB_PATH),
+            "secret_key_source": "GREMLIN_SECRET_KEY" if os.environ.get("GREMLIN_SECRET_KEY") else "per-process random",
+            "life_data_service_status": service_status,
+            "life_data_service_error": service_error,
+            "route_count": len(routes),
+            "routes": routes,
+        }
+    )
+
+
+@app.route("/developer/api/overview")
+@dev_api
+def api_dev_overview():
+    return jsonify(get_schema_service().overview())
+
+
+@app.route("/developer/api/pipeline")
+@dev_api
+def api_dev_pipeline():
+    return jsonify(get_schema_service().pipeline())
+
+
+@app.route("/developer/api/drift")
+@dev_api
+def api_dev_drift():
+    return jsonify(get_schema_service().drift_report())
+
+
+@app.route("/developer/api/tables")
+@dev_api
+def api_dev_tables():
+    return jsonify({"tables": get_schema_service().tables()})
+
+
+@app.route("/developer/api/tables/<table>")
+@dev_api
+def api_dev_table_detail(table):
+    return jsonify(get_schema_service().table_detail(table))
+
+
+@app.route("/developer/api/tables/<table>/rows")
+@dev_api
+def api_dev_table_rows(table):
+    def _int_arg(name: str, default: int) -> int:
+        raw = request.args.get(name)
+        if raw in (None, ""):
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise SchemaServiceError(f"{name} must be a whole number.")
+
+    return jsonify(
+        get_schema_service().table_rows(
+            table,
+            limit=_int_arg("limit", 50),
+            offset=_int_arg("offset", 0),
+            order_by=(request.args.get("order_by") or "").strip() or None,
+            descending=request.args.get("dir") == "desc",
+        )
+    )
+
+
+@app.route("/developer/api/query", methods=["POST"])
+@dev_api
+def api_dev_query():
+    payload = request.get_json(silent=True) or {}
+    return jsonify(get_schema_service().run_query(payload.get("sql") or ""))
 
 
 @app.errorhandler(404)

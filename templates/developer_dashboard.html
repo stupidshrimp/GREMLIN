@@ -1,6 +1,148 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+{% endblock %}
+
 {% block content %}
-<h1>Developer Dashboard</h1>
-<div class="placeholder-box"></div>
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>Inspect GREMLIN's runtime and database.</h1>
+    <p>
+      Runtime configuration, database health, pipeline throughput, schema drift and a
+      read-only SQL console. Every database connection opened by this page is
+      <code>mode=ro</code>, so nothing here can write to <code>GREMLIN.db</code> or take
+      the writer lock other users depend on.
+    </p>
+    <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
+  </div>
+  <form method="post" action="{{ url_for('developer_lock') }}" class="dev-hero-actions">
+    <button type="submit" class="btn-secondary">Lock</button>
+  </form>
+</section>
+
+<div id="dev-status" class="dev-banner" role="status" hidden></div>
+
+<nav class="dev-tabs" aria-label="Developer sections">
+  <button type="button" class="dev-tab is-active" data-tab="overview" aria-selected="true">Overview</button>
+  <button type="button" class="dev-tab" data-tab="pipeline" aria-selected="false">Pipeline</button>
+  <button type="button" class="dev-tab" data-tab="schema" aria-selected="false">Schema</button>
+  <button type="button" class="dev-tab" data-tab="drift" aria-selected="false">Drift</button>
+  <button type="button" class="dev-tab" data-tab="data" aria-selected="false">Data browser</button>
+  <button type="button" class="dev-tab" data-tab="console" aria-selected="false">SQL console</button>
+</nav>
+
+<!-- Overview: the file itself plus how this process is configured. -->
+<section class="dev-panel is-active" data-panel="overview" aria-label="Overview">
+  <div class="dev-panel-grid">
+    <div class="glass-card slide-in">
+      <h2>Database file</h2>
+      <dl class="dev-facts" id="dev-overview-facts"><dd class="dev-muted">Loading…</dd></dl>
+    </div>
+    <div class="glass-card slide-in">
+      <h2>Runtime</h2>
+      <dl class="dev-facts" id="dev-runtime-facts"><dd class="dev-muted">Loading…</dd></dl>
+    </div>
+  </div>
+  <div class="glass-card slide-in">
+    <h2>Registered routes</h2>
+    <p class="dev-muted">Every endpoint this Flask process serves.</p>
+    <div class="dev-table-scroll" id="dev-routes"></div>
+  </div>
+</section>
+
+<!-- Pipeline: where data stops flowing, and the recent import history. -->
+<section class="dev-panel" data-panel="pipeline" aria-label="Pipeline">
+  <div class="glass-card slide-in">
+    <h2>Ingestion to analysis</h2>
+    <p class="dev-muted">
+      Row counts along the path data takes through GREMLIN. Counts shrink as records are
+      filtered, so the first stage that is unexpectedly empty is where to start debugging.
+    </p>
+    <div id="dev-pipeline-stages" class="dev-stage-list"></div>
+  </div>
+  <div class="glass-card slide-in">
+    <h2>Recent import batches</h2>
+    <div class="dev-table-scroll" id="dev-batches"></div>
+  </div>
+</section>
+
+<!-- Schema: the live catalogue, table by table. -->
+<section class="dev-panel" data-panel="schema" aria-label="Schema">
+  <div class="dev-split">
+    <div class="glass-card slide-in dev-split-list">
+      <h2>Tables</h2>
+      <input type="search" id="dev-table-filter" placeholder="Filter tables…" autocomplete="off"
+             aria-label="Filter tables">
+      <div id="dev-table-list" class="dev-table-list"></div>
+    </div>
+    <div class="glass-card slide-in dev-split-detail">
+      <div id="dev-table-detail"><p class="dev-muted">Select a table to see its columns, keys and indexes.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Drift: code-defined schema vs what is actually in the file. -->
+<section class="dev-panel" data-panel="drift" aria-label="Schema drift">
+  <div class="glass-card slide-in">
+    <h2>Code versus file</h2>
+    <p class="dev-muted">
+      GREMLIN's schema code only ever adds missing tables and columns — it never drops or
+      rewrites anything. This compares the live file against a throwaway database built by
+      the current bootstrap code, so anything listed here exists only in one of the two.
+    </p>
+    <div id="dev-drift"><p class="dev-muted">Loading…</p></div>
+  </div>
+</section>
+
+<!-- Data browser: paginated rows from one table. -->
+<section class="dev-panel" data-panel="data" aria-label="Data browser">
+  <div class="glass-card slide-in">
+    <h2>Browse rows</h2>
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-data-table">Table</label>
+        <select id="dev-data-table"></select>
+      </div>
+      <div class="dev-field">
+        <label for="dev-data-limit">Rows per page</label>
+        <select id="dev-data-limit">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="250">250</option>
+        </select>
+      </div>
+      <div class="dev-field dev-field-actions">
+        <button type="button" class="btn-secondary" id="dev-data-prev">Previous</button>
+        <button type="button" class="btn-secondary" id="dev-data-next">Next</button>
+      </div>
+    </div>
+    <p class="dev-muted" id="dev-data-summary"></p>
+    <div class="dev-table-scroll" id="dev-data-rows"></div>
+  </div>
+</section>
+
+<!-- SQL console: read-only, capped, and time-limited. -->
+<section class="dev-panel" data-panel="console" aria-label="SQL console">
+  <div class="glass-card slide-in">
+    <h2>Read-only SQL console</h2>
+    <p class="dev-muted">
+      Runs one statement on a <code>mode=ro</code> connection. Writes are rejected by SQLite
+      itself, results are capped, and a query running longer than 15 seconds is aborted.
+    </p>
+    <textarea id="dev-sql" rows="6" spellcheck="false"
+              aria-label="SQL statement">SELECT name, type FROM sqlite_master ORDER BY type, name;</textarea>
+    <div class="dev-controls">
+      <button type="button" class="btn-primary" id="dev-run-sql">Run query</button>
+      <span class="dev-muted" id="dev-sql-meta"></span>
+    </div>
+    <div class="dev-table-scroll" id="dev-sql-results"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/developer_dashboard.js') }}"></script>
 {% endblock %}

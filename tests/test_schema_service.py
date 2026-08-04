@@ -1,0 +1,187 @@
+import json
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from services.schema_service import (
+    MAX_CELL_CHARS,
+    SchemaService,
+    SchemaServiceError,
+    reset_reference_schema_cache,
+)
+from services.life_data_service import LifeDataService
+from repositories.raw_repo import RawRepository
+
+
+def _build_database(path: Path) -> None:
+    """Create a database the way the app does, then add legacy/orphan drift."""
+
+    RawRepository(path).ensure_schema()
+    LifeDataService(path, refresh_on_startup=False)
+    with sqlite3.connect(path) as conn:
+        # A table from the removed Availability Dashboard, as real files still have.
+        conn.execute("CREATE TABLE availability_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT)")
+        # A legacy column the current schema code would not create.
+        conn.execute("ALTER TABLE mapped_cmms_record ADD COLUMN legacy_scratch_column TEXT")
+        conn.execute(
+            "INSERT INTO import_batch (source_system, status, raw_row_count) VALUES ('Limble', 'COMPLETED', 2)"
+        )
+        conn.executemany(
+            "INSERT INTO raw_cmms_record (import_batch_id, source_record_id, raw_json) VALUES (?, ?, ?)",
+            [
+                (1, "1001", json.dumps({"taskID": 1001, "Asset Number": "3101"})),
+                (1, "1002", json.dumps({"taskID": 1002, "Asset Number": "3102"})),
+            ],
+        )
+
+
+class SchemaServiceTests(unittest.TestCase):
+    def setUp(self):
+        reset_reference_schema_cache()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "gremlin.db"
+        _build_database(self.db_path)
+        self.service = SchemaService(self.db_path)
+
+    # -- connection safety ------------------------------------------------
+    def test_connection_is_read_only(self):
+        with self.service.connect() as conn:
+            with self.assertRaises(sqlite3.OperationalError) as ctx:
+                conn.execute("CREATE TABLE should_not_exist (id INTEGER)")
+        self.assertIn("readonly", str(ctx.exception).lower())
+
+    def test_write_query_is_rejected_with_a_clear_message(self):
+        with self.assertRaises(SchemaServiceError) as ctx:
+            self.service.run_query("DELETE FROM raw_cmms_record")
+        self.assertIn("read-only", str(ctx.exception).lower())
+
+    def test_missing_database_reports_the_path(self):
+        service = SchemaService(Path(self._tmp.name) / "absent.db")
+        with self.assertRaises(SchemaServiceError) as ctx:
+            service.connect()
+        self.assertIn("absent.db", str(ctx.exception))
+
+    # -- table listing / detail -------------------------------------------
+    def test_tables_classify_origin(self):
+        by_name = {table["name"]: table for table in self.service.tables()}
+        self.assertEqual(by_name["mapped_cmms_record"]["origin"], "code")
+        self.assertEqual(by_name["raw_cmms_record"]["origin"], "code")
+        self.assertEqual(by_name["availability_settings"]["origin"], "orphaned")
+        self.assertIn("Availability", by_name["availability_settings"]["note"])
+
+    def test_table_row_counts(self):
+        by_name = {table["name"]: table for table in self.service.tables()}
+        self.assertEqual(by_name["raw_cmms_record"]["row_count"], 2)
+
+    def test_table_detail_reports_columns_and_indexes(self):
+        detail = self.service.table_detail("raw_cmms_record")
+        column_names = {column["name"] for column in detail["columns"]}
+        self.assertIn("raw_json", column_names)
+        self.assertIn("import_batch_id", column_names)
+        self.assertTrue(detail["ddl"].strip().upper().startswith("CREATE TABLE"))
+        self.assertTrue(any(fk["references_table"] == "import_batch" for fk in detail["foreign_keys"]))
+        self.assertTrue(detail["indexes"])
+
+    def test_unknown_table_is_rejected(self):
+        with self.assertRaises(SchemaServiceError):
+            self.service.table_detail("no_such_table")
+
+    def test_table_name_injection_is_rejected(self):
+        # The name is not in sqlite_master, so it never reaches the SQL text.
+        with self.assertRaises(SchemaServiceError):
+            self.service.table_rows('raw_cmms_record"; DROP TABLE raw_cmms_record; --')
+        with self.service.connect() as conn:
+            still_there = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_cmms_record'"
+            ).fetchone()
+        self.assertIsNotNone(still_there)
+
+    # -- data browsing -----------------------------------------------------
+    def test_table_rows_paginates(self):
+        first = self.service.table_rows("raw_cmms_record", limit=1, offset=0)
+        second = self.service.table_rows("raw_cmms_record", limit=1, offset=1)
+        self.assertEqual(first["total_rows"], 2)
+        self.assertEqual(len(first["rows"]), 1)
+        self.assertNotEqual(first["rows"][0], second["rows"][0])
+
+    def test_table_rows_rejects_unknown_order_column(self):
+        with self.assertRaises(SchemaServiceError):
+            self.service.table_rows("raw_cmms_record", order_by="not_a_column")
+
+    def test_table_rows_accepts_known_order_column(self):
+        payload = self.service.table_rows("raw_cmms_record", order_by="raw_record_id", descending=True)
+        self.assertEqual(payload["order_by"], "raw_record_id")
+        self.assertEqual(len(payload["rows"]), 2)
+
+    def test_long_values_are_truncated(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO raw_cmms_record (import_batch_id, source_record_id, raw_json) VALUES (?, ?, ?)",
+                (1, "9999", "x" * (MAX_CELL_CHARS + 500)),
+            )
+        payload = self.service.run_query("SELECT raw_json FROM raw_cmms_record WHERE source_record_id = '9999'")
+        self.assertIn("truncated", payload["rows"][0][0])
+        self.assertLess(len(payload["rows"][0][0]), MAX_CELL_CHARS + 100)
+
+    # -- query console -----------------------------------------------------
+    def test_run_query_returns_rows(self):
+        payload = self.service.run_query("SELECT COUNT(*) AS n FROM raw_cmms_record")
+        self.assertEqual(payload["columns"], ["n"])
+        self.assertEqual(payload["rows"], [[2]])
+
+    def test_run_query_caps_rows(self):
+        payload = self.service.run_query("SELECT * FROM raw_cmms_record", max_rows=1)
+        self.assertEqual(payload["row_count"], 1)
+        self.assertTrue(payload["truncated"])
+
+    def test_empty_query_is_rejected(self):
+        with self.assertRaises(SchemaServiceError):
+            self.service.run_query("   ")
+
+    def test_trailing_semicolon_is_accepted(self):
+        payload = self.service.run_query("SELECT 1 AS one;")
+        self.assertEqual(payload["rows"], [[1]])
+
+    # -- overview / pipeline / drift ---------------------------------------
+    def test_overview_reports_file_facts(self):
+        overview = self.service.overview()
+        self.assertTrue(overview["exists"])
+        self.assertGreater(overview["size_bytes"], 0)
+        self.assertGreaterEqual(overview["object_counts"].get("table", 0), 20)
+
+    def test_pipeline_counts_stages(self):
+        pipeline = self.service.pipeline()
+        stages = {stage["table"]: stage for stage in pipeline["stages"]}
+        self.assertTrue(stages["raw_cmms_record"]["present"])
+        self.assertEqual(stages["raw_cmms_record"]["row_count"], 2)
+        self.assertEqual(len(pipeline["recent_batches"]), 1)
+        self.assertEqual(pipeline["recent_batches"][0]["status"], "COMPLETED")
+
+    def test_drift_detects_orphan_table_and_legacy_column(self):
+        drift = self.service.drift_report()
+        self.assertTrue(drift["available"])
+        extra_names = {entry["name"] for entry in drift["extra_tables"]}
+        self.assertIn("availability_settings", extra_names)
+
+        mapped = next(entry for entry in drift["column_drift"] if entry["table"] == "mapped_cmms_record")
+        self.assertIn("legacy_scratch_column", mapped["extra_in_file"])
+
+    def test_drift_reports_column_missing_from_file(self):
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                conn.execute("ALTER TABLE mapped_cmms_record DROP COLUMN mapping_version")
+            except sqlite3.OperationalError:
+                self.skipTest("SQLite build does not support DROP COLUMN")
+        drift = SchemaService(self.db_path).drift_report()
+        mapped = next(entry for entry in drift["column_drift"] if entry["table"] == "mapped_cmms_record")
+        self.assertIn("mapping_version", mapped["missing_in_file"])
+
+    def test_table_detail_surfaces_per_table_drift(self):
+        detail = self.service.table_detail("mapped_cmms_record")
+        self.assertIn("legacy_scratch_column", detail["drift"]["extra_in_file"])
+
+
+if __name__ == "__main__":
+    unittest.main()
