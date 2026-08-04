@@ -229,6 +229,31 @@ class SchemaService:
         return conn
 
     @staticmethod
+    def _require_value_limit(conn: sqlite3.Connection) -> None:
+        """Refuse to read stored values when SQLite cannot cap their size.
+
+        Guards every path that reads arbitrary values, not just the console.
+        Without ``setlimit`` there is no pre-materialisation bound and nothing
+        downstream can substitute for one: the value is built inside SQLite
+        before Python sees it, row-at-a-time streaming still receives the first
+        row whole, and the progress handler does not fire during a single
+        allocation opcode. Reading a legacy table that happens to hold one huge
+        TEXT or BLOB would exhaust the process just as an invented value would.
+
+        The metadata panels do not go through here: ``pipeline`` selects six
+        named scalar columns, and ``table_detail`` reads defaults out of PRAGMA
+        output, so neither can encounter an unbounded value.
+        """
+
+        if not hasattr(conn, "setlimit"):
+            raise SchemaServiceError(
+                "Reading row values requires Python 3.11 or newer: on older versions SQLite "
+                "cannot be told to refuse oversized values, so one large TEXT or BLOB could "
+                "exhaust the server's memory. The Overview, Schema, Drift and Pipeline panels "
+                "do not read row values and are unaffected."
+            )
+
+    @staticmethod
     def _collect_rows(cursor: sqlite3.Cursor, max_rows: int) -> tuple[list[list[Any]], bool]:
         """Read up to ``max_rows`` rows without ever holding a whole page raw.
 
@@ -450,6 +475,7 @@ class SchemaService:
         # bound as a parameter at all, and simply returns no rows once clamped.
         offset = min(max(0, int(offset)), _SQLITE_MAX_INT)
         with self.connect() as conn:
+            self._require_value_limit(conn)
             table = self._assert_known_table(conn, table)
             column_names = [column["name"] for column in self._columns(conn, table)]
             order_clause = ""
@@ -507,18 +533,7 @@ class SchemaService:
 
         started = time.monotonic()
         with self.connect() as conn:
-            # Without setlimit there is no pre-materialisation bound at all, and
-            # nothing downstream can help: the value is built before Python sees
-            # it, and the progress handler does not fire during the allocation.
-            # Refuse the arbitrary-SQL path rather than run it unprotected. The
-            # rest of the dashboard stays available, since it only reads values
-            # already stored in the database.
-            if not hasattr(conn, "setlimit"):
-                raise SchemaServiceError(
-                    "The SQL console requires Python 3.11 or newer: on older versions SQLite "
-                    "cannot be told to refuse oversized values, so a single query could exhaust "
-                    "the server's memory. The other dashboard panels are unaffected."
-                )
+            self._require_value_limit(conn)
             try:
                 cursor = conn.execute(statement)
                 rows, truncated = self._collect_rows(cursor, max_rows)

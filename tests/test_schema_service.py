@@ -130,9 +130,11 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertLess(payload["row_count"], 20)
         self.assertTrue(all(str(row[1]).startswith("<BLOB") for row in payload["rows"]))
 
-    def test_console_refuses_to_run_without_a_value_limit(self):
+    def test_value_reading_refuses_without_a_value_limit(self):
         # On Python 3.10 there is no setlimit and therefore no pre-materialisation
-        # bound; the console must refuse rather than run unprotected.
+        # bound. Every path that reads arbitrary stored values must refuse --
+        # scoping this to the console alone still left the row browser exposed to
+        # a legacy table holding one huge TEXT or BLOB.
         real_connect = self.service.connect
 
         class _NoSetlimit:
@@ -150,12 +152,20 @@ class SchemaServiceTests(unittest.TestCase):
             def __exit__(self, *exc):
                 return self._conn.__exit__(*exc)
 
-        with mock.patch.object(
-            self.service, "connect", lambda: _NoSetlimit(real_connect())
-        ):
-            with self.assertRaises(SchemaServiceError) as ctx:
-                self.service.run_query("SELECT 1")
-        self.assertIn("python 3.11", str(ctx.exception).lower())
+        with mock.patch.object(self.service, "connect", lambda: _NoSetlimit(real_connect())):
+            for label, call in (
+                ("run_query", lambda: self.service.run_query("SELECT 1")),
+                ("table_rows", lambda: self.service.table_rows("raw_cmms_record")),
+            ):
+                with self.subTest(path=label):
+                    with self.assertRaises(SchemaServiceError) as ctx:
+                        call()
+                    self.assertIn("python 3.11", str(ctx.exception).lower())
+
+            # Metadata panels read no arbitrary values, so they stay available.
+            self.assertTrue(self.service.tables())
+            self.assertTrue(self.service.pipeline()["stages"])
+            self.assertTrue(self.service.table_detail("raw_cmms_record")["columns"])
 
     def test_every_connection_carries_the_query_deadline(self):
         # The catalogue COUNT(*) helper has no deadline of its own, so connect()
