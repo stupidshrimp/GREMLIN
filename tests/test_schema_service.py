@@ -46,16 +46,67 @@ class SchemaServiceTests(unittest.TestCase):
         self.service = SchemaService(self.db_path)
 
     # -- connection safety ------------------------------------------------
-    def test_connection_is_read_only(self):
+    def test_connection_rejects_writes(self):
         with self.service.connect() as conn:
+            with self.assertRaises(sqlite3.DatabaseError) as ctx:
+                conn.execute("CREATE TABLE should_not_exist (id INTEGER)")
+        self.assertIn("not authorized", str(ctx.exception).lower())
+
+    def test_source_database_is_still_opened_read_only(self):
+        # The authorizer is the outer guard, but mode=ro must stay underneath it:
+        # it is what keeps the dashboard from ever taking the writer lock that
+        # every other GREMLIN process contends for. Check it without the
+        # authorizer so this fails if the URI silently loses mode=ro.
+        conn = sqlite3.connect(self.service._readonly_uri(), uri=True)
+        try:
             with self.assertRaises(sqlite3.OperationalError) as ctx:
                 conn.execute("CREATE TABLE should_not_exist (id INTEGER)")
-        self.assertIn("readonly", str(ctx.exception).lower())
+            self.assertIn("readonly", str(ctx.exception).lower())
+        finally:
+            conn.close()
 
     def test_write_query_is_rejected_with_a_clear_message(self):
         with self.assertRaises(SchemaServiceError) as ctx:
             self.service.run_query("DELETE FROM raw_cmms_record")
-        self.assertIn("read-only", str(ctx.exception).lower())
+        self.assertIn("only read statements", str(ctx.exception).lower())
+
+    def test_vacuum_into_cannot_write_a_copy_of_the_database(self):
+        # mode=ro protects the source file but still lets SQLite create new
+        # files, which would put a full copy of GREMLIN.db wherever the process
+        # can write -- including Flask's unauthenticated /static/ route.
+        target = Path(self._tmp.name) / "exfiltrated.db"
+        with self.assertRaises(SchemaServiceError):
+            self.service.run_query(f"VACUUM INTO '{target}'")
+        self.assertFalse(target.exists())
+
+    def test_attach_database_is_blocked(self):
+        target = Path(self._tmp.name) / "side.db"
+        with self.assertRaises(SchemaServiceError):
+            self.service.run_query(f"ATTACH DATABASE '{target}' AS side")
+        self.assertFalse(target.exists())
+
+    def test_ddl_and_pragma_writes_are_blocked(self):
+        for statement in (
+            "CREATE TABLE nope (id INTEGER)",
+            "DROP TABLE raw_cmms_record",
+            "UPDATE raw_cmms_record SET raw_json = '{}'",
+            "PRAGMA user_version = 99",
+            "PRAGMA writable_schema = ON",
+        ):
+            with self.subTest(statement=statement):
+                with self.assertRaises(SchemaServiceError):
+                    self.service.run_query(statement)
+
+    def test_informational_pragmas_still_work(self):
+        payload = self.service.run_query("PRAGMA table_info(raw_cmms_record)")
+        self.assertTrue(payload["rows"])
+
+    def test_connection_closes_on_context_exit(self):
+        conn = self.service.connect()
+        with conn:
+            conn.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
     def test_missing_database_reports_the_path(self):
         service = SchemaService(Path(self._tmp.name) / "absent.db")

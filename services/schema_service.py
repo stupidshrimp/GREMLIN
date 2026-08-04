@@ -22,13 +22,24 @@ evolves instead of rotting against a duplicated table list.
 
 Safety
 ------
-Every connection this module opens is a SQLite ``mode=ro`` URI connection, so
-writes are impossible at the driver level rather than by inspecting SQL text.
-That matters here: GREMLIN.db is expected to live on a shared drive, uses
+Two independent mechanisms, because neither is sufficient alone.
+
+``mode=ro`` URI connections stop any write to *the source database*. That
+matters here: GREMLIN.db is expected to live on a shared drive, uses
 rollback-journal mode, and serialises writers through ``BEGIN IMMEDIATE`` with a
 30 second busy timeout (see :meth:`services.life_data_service.LifeDataService.write_connection`).
 A dev-tools query that took the writer slot would stall every other GREMLIN user.
 Read-only connections never acquire it.
+
+``mode=ro`` does **not** stop SQLite from creating and writing *other* files.
+``VACUUM INTO 'static/copy.db'`` and ``ATTACH DATABASE 'x.db' AS side`` both
+succeed on a read-only connection, and either would let an unlocked user drop a
+complete copy of GREMLIN.db somewhere Flask serves without a PIN. So every
+connection also installs a default-deny SQLite authorizer that permits only
+reads, function calls and a fixed list of informational pragmas. The authorizer
+is enforced by SQLite while compiling each statement, so it cannot be dodged by
+formatting or by nesting the write inside a subquery -- unlike a scan of the SQL
+text, which is why no such scan is attempted.
 """
 
 from __future__ import annotations
@@ -39,6 +50,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable
+
+from services.life_data_service import ClosingSqliteConnection
 
 # A query that runs longer than this is aborted through the progress handler.
 QUERY_TIMEOUT_SECONDS = 15.0
@@ -53,6 +66,58 @@ MAX_CELL_CHARS = 2000
 
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
+
+# Authorizer actions that only ever read. SQLITE_FUNCTION covers aggregates such
+# as COUNT(); extension loading is disabled by default in Python's sqlite3, so no
+# file-touching function is reachable through it.
+_READ_ACTIONS = frozenset(
+    {
+        sqlite3.SQLITE_SELECT,
+        sqlite3.SQLITE_READ,
+        sqlite3.SQLITE_FUNCTION,
+        sqlite3.SQLITE_RECURSIVE,
+    }
+)
+
+# Informational pragmas only. Everything this module needs for introspection is
+# here; anything that could alter the file (journal_mode=, user_version=, …) is
+# absent and therefore denied.
+_ALLOWED_PRAGMAS = frozenset(
+    {
+        "application_id",
+        "collation_list",
+        "compile_options",
+        "data_version",
+        "database_list",
+        "encoding",
+        "foreign_key_list",
+        "freelist_count",
+        "function_list",
+        "index_info",
+        "index_list",
+        "index_xinfo",
+        "journal_mode",
+        "page_count",
+        "page_size",
+        "table_info",
+        "table_xinfo",
+        "user_version",
+    }
+)
+
+
+def _readonly_authorizer(action: int, arg1: str | None, _arg2: str | None, _db: str | None, _trigger: str | None) -> int:
+    """Default-deny authorizer: reads and informational pragmas only.
+
+    SQLite consults this while preparing each statement, so a denied action
+    fails at compile time no matter how the SQL is written.
+    """
+
+    if action in _READ_ACTIONS:
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA:
+        return sqlite3.SQLITE_OK if (arg1 or "").lower() in _ALLOWED_PRAGMAS else sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_DENY
 
 # Feature whose tables are still in real databases but whose code was removed
 # from the app (it survives only under Reference/availability_dashboard/).
@@ -89,7 +154,13 @@ class SchemaService:
         return f"{base}?mode=ro"
 
     def connect(self) -> sqlite3.Connection:
-        """Open a read-only connection. Writes fail at the driver level."""
+        """Open a guarded read-only connection.
+
+        ``ClosingSqliteConnection`` is reused from the life-data service so that
+        ``with self.connect() as conn`` actually closes the handle: the stock
+        ``sqlite3.Connection`` context manager only commits or rolls back, which
+        would leak a descriptor per request until the collector ran.
+        """
 
         if not self.db_path.is_file():
             raise SchemaServiceError(
@@ -97,10 +168,17 @@ class SchemaService:
                 "Set GREMLIN_DB_PATH to a reachable GREMLIN.db file."
             )
         try:
-            conn = sqlite3.connect(self._readonly_uri(), uri=True, timeout=5.0)
+            conn = sqlite3.connect(
+                self._readonly_uri(),
+                uri=True,
+                timeout=5.0,
+                factory=ClosingSqliteConnection,
+            )
         except sqlite3.Error as exc:
             raise SchemaServiceError(f"Could not open {self.db_path} read-only: {exc}") from exc
         conn.row_factory = sqlite3.Row
+        # Blocks VACUUM INTO / ATTACH, which mode=ro alone allows.
+        conn.set_authorizer(_readonly_authorizer)
         return conn
 
     @staticmethod
@@ -587,6 +665,12 @@ def _friendly_sqlite_error(exc: sqlite3.Error) -> str:
 
     message = str(exc)
     lowered = message.lower()
+    if "not authorized" in lowered:
+        return (
+            "Only read statements are allowed here. Anything that could write a file "
+            "-- INSERT/UPDATE/DELETE, DDL, ATTACH, VACUUM INTO -- is blocked, as are "
+            "pragmas other than the informational ones."
+        )
     if "readonly" in lowered or "read-only" in lowered:
         return (
             "This console is read-only. GREMLIN.db is shared and serialises writers, "
