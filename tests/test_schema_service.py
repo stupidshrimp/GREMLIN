@@ -7,6 +7,7 @@ from pathlib import Path
 
 from services.schema_service import (
     MAX_CELL_CHARS,
+    MAX_ROW_LIMIT,
     SchemaService,
     SchemaServiceError,
     reset_reference_schema_cache,
@@ -157,6 +158,16 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertEqual(first["total_rows"], 2)
         self.assertEqual(len(first["rows"]), 1)
         self.assertNotEqual(first["rows"][0], second["rows"][0])
+
+    def test_oversized_pagination_is_clamped_not_fatal(self):
+        # An offset beyond SQLite's INTEGER range raises OverflowError, which is
+        # not an sqlite3.Error and would otherwise surface as a 500.
+        payload = self.service.table_rows("raw_cmms_record", offset=10**30)
+        self.assertEqual(payload["rows"], [])
+        self.assertLessEqual(payload["offset"], 2**63 - 1)
+        self.assertEqual(self.service.table_rows("raw_cmms_record", limit=10**30)["limit"], MAX_ROW_LIMIT)
+        self.assertEqual(self.service.table_rows("raw_cmms_record", limit=-5)["limit"], 1)
+        self.assertEqual(self.service.table_rows("raw_cmms_record", offset=-5)["offset"], 0)
 
     def test_table_rows_rejects_unknown_order_column(self):
         with self.assertRaises(SchemaServiceError):

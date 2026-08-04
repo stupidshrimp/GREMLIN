@@ -65,6 +65,11 @@ DEFAULT_ROW_LIMIT = 100
 MAX_ROW_LIMIT = 1000
 MAX_CELL_CHARS = 2000
 
+# Largest value SQLite accepts as an INTEGER parameter. Binding anything beyond
+# it raises OverflowError, which is not an sqlite3.Error and so would escape the
+# service's error handling as an unhandled 500 rather than a bad-request.
+_SQLITE_MAX_INT = 2**63 - 1
+
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
 
@@ -373,7 +378,9 @@ class SchemaService:
         """A capped, paginated page of rows from one table."""
 
         limit = max(1, min(int(limit), MAX_ROW_LIMIT))
-        offset = max(0, int(offset))
+        # Clamped at both ends: an offset past SQLite's integer range cannot be
+        # bound as a parameter at all, and simply returns no rows once clamped.
+        offset = min(max(0, int(offset)), _SQLITE_MAX_INT)
         with self.connect() as conn:
             table = self._assert_known_table(conn, table)
             column_names = [column["name"] for column in self._columns(conn, table)]
