@@ -33,7 +33,6 @@ Read-only connections never acquire it.
 
 from __future__ import annotations
 
-import re
 import shutil
 import sqlite3
 import tempfile
@@ -598,12 +597,3 @@ def _friendly_sqlite_error(exc: sqlite3.Error) -> str:
     if "one statement at a time" in lowered:
         return "Run one statement at a time."
     return message
-
-
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def is_plain_identifier(name: str) -> bool:
-    """True for names needing no quoting (used by the CLI report)."""
-
-    return bool(_IDENTIFIER_RE.match(name or ""))
