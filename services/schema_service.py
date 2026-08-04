@@ -92,6 +92,15 @@ MAX_VALUE_BYTES = 8 * 1024 * 1024
 # a page has drawn too much in total.
 MAX_RESULT_BYTES = 32 * 1024 * 1024
 
+# Floor for the per-value cap, so a very wide result still shows something.
+_MIN_VALUE_BYTES = 4 * 1024
+
+# Assumed width when a statement's shape cannot be probed (see
+# ``_probe_column_count``). Deliberately wide, which yields a small per-value
+# cap: the statements that cannot be probed are pragmas, whose values are names
+# and types measured in bytes.
+_UNPROBEABLE_COLUMNS = 512
+
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
 
@@ -227,6 +236,43 @@ class SchemaService:
         # holds a lock that delays GREMLIN's writers.
         self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
         return conn
+
+    @staticmethod
+    def _apply_row_width_limit(conn: sqlite3.Connection, column_count: int) -> None:
+        """Scale the per-value cap so one whole *row* stays inside the budget.
+
+        ``MAX_VALUE_BYTES`` bounds a single value and ``MAX_RESULT_BYTES`` bounds
+        a page between rows, but neither bounds one wide row: 20 columns of a
+        4 MB blob are each legal and together took the process from 12 MB to
+        165 MB in a single row.
+
+        This must be applied *before* ``execute``. SQLite captures the limit when
+        it prepares a statement, and CPython's ``execute`` already steps once --
+        measured at 89 MB of growth before any ``fetch`` -- so lowering the limit
+        after inspecting ``cursor.description`` is far too late.
+        """
+
+        columns = max(1, column_count)
+        limit = max(_MIN_VALUE_BYTES, min(MAX_VALUE_BYTES, MAX_RESULT_BYTES // columns))
+        if hasattr(conn, "setlimit"):
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limit)
+
+    @staticmethod
+    def _probe_column_count(conn: sqlite3.Connection, statement: str) -> int | None:
+        """Column count of ``statement`` without materialising any row.
+
+        Wrapping in ``LIMIT 0`` compiles the statement and reports its shape
+        while stepping zero times, so nothing is allocated. Returns None when the
+        statement will not nest -- pragmas, chiefly -- and the caller must assume
+        a width instead.
+        """
+
+        try:
+            cursor = conn.execute(f"SELECT * FROM ({statement}) LIMIT 0")
+            cursor.fetchall()
+            return len(cursor.description or [])
+        except sqlite3.Error:
+            return None
 
     @staticmethod
     def _require_value_limit(conn: sqlite3.Connection) -> None:
@@ -487,6 +533,8 @@ class SchemaService:
                 order_clause = f" ORDER BY {self._quote(order_by)} {'DESC' if descending else 'ASC'}"
 
             total = self._row_count(conn, table)
+            # The column count is already known here, so the row cap is exact.
+            self._apply_row_width_limit(conn, len(column_names))
             sql = f"SELECT * FROM {self._quote(table)}{order_clause} LIMIT ? OFFSET ?"
             try:
                 cursor = conn.execute(sql, (limit, offset))
@@ -534,6 +582,10 @@ class SchemaService:
         started = time.monotonic()
         with self.connect() as conn:
             self._require_value_limit(conn)
+            # Learn the result's width before running it for real, so the
+            # per-value cap can be scaled to keep one row inside the budget.
+            probed = self._probe_column_count(conn, statement)
+            self._apply_row_width_limit(conn, probed if probed else _UNPROBEABLE_COLUMNS)
             try:
                 cursor = conn.execute(statement)
                 rows, truncated = self._collect_rows(cursor, max_rows)
@@ -843,8 +895,13 @@ def _friendly_sqlite_error(exc: sqlite3.Error) -> str:
     if "one statement at a time" in lowered:
         return "Run one statement at a time."
     if "too big" in lowered:
+        # The cap is not a fixed number: it scales down with the width of the
+        # result so that one row stays inside MAX_RESULT_BYTES, so quoting
+        # MAX_VALUE_BYTES here would misreport what actually applied.
         return (
-            f"A single value exceeded the {MAX_VALUE_BYTES // (1024 * 1024)} MB cap. "
-            "Narrow the query (for example with substr()) rather than selecting the whole value."
+            f"A value was too large to return. Each value is capped so that one whole row stays "
+            f"under {MAX_RESULT_BYTES // (1024 * 1024)} MB, so the cap is smaller the more columns "
+            f"a result has (at most {MAX_VALUE_BYTES // (1024 * 1024)} MB for a single column). "
+            "Select fewer columns, or narrow the value with substr()."
         )
     return message

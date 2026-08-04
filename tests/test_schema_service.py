@@ -111,7 +111,7 @@ class SchemaServiceTests(unittest.TestCase):
             self.skipTest("sqlite3.Connection.setlimit requires Python 3.11+")
         with self.assertRaises(SchemaServiceError) as ctx:
             self.service.run_query("SELECT randomblob(1000000000)")
-        self.assertIn("exceeded", str(ctx.exception).lower())
+        self.assertIn("too large to return", str(ctx.exception).lower())
         # A normal-sized value is unaffected.
         self.assertEqual(len(self.service.run_query("SELECT randomblob(4096)")["rows"]), 1)
 
@@ -166,6 +166,31 @@ class SchemaServiceTests(unittest.TestCase):
             self.assertTrue(self.service.tables())
             self.assertTrue(self.service.pipeline()["stages"])
             self.assertTrue(self.service.table_detail("raw_cmms_record")["columns"])
+
+    def test_one_wide_row_is_bounded(self):
+        # Each value is under MAX_VALUE_BYTES and there is only one row, so
+        # neither the per-value cap nor the between-rows budget applies: 20
+        # columns of a 4 MB blob took the process from 12 MB to 165 MB.
+        if not hasattr(sqlite3.Connection, "setlimit"):
+            self.skipTest("sqlite3.Connection.setlimit requires Python 3.11+")
+        columns = ", ".join(f"randomblob(4000000) AS c{i}" for i in range(20))
+        with self.assertRaises(SchemaServiceError) as ctx:
+            self.service.run_query(f"SELECT {columns}")
+        self.assertIn("too large to return", str(ctx.exception).lower())
+
+    def test_narrow_results_keep_the_full_per_value_allowance(self):
+        # Scaling the cap by width must not punish ordinary single-column reads.
+        if not hasattr(sqlite3.Connection, "setlimit"):
+            self.skipTest("sqlite3.Connection.setlimit requires Python 3.11+")
+        payload = self.service.run_query("SELECT randomblob(2000000) AS one")
+        self.assertEqual(payload["row_count"], 1)
+        self.assertTrue(str(payload["rows"][0][0]).startswith("<BLOB"))
+
+    def test_pragma_still_runs_when_its_shape_cannot_be_probed(self):
+        # PRAGMA does not nest inside SELECT * FROM (...), so the width probe
+        # fails and the caller must assume a width rather than erroring.
+        payload = self.service.run_query("PRAGMA table_info(raw_cmms_record)")
+        self.assertTrue(payload["rows"])
 
     def test_every_connection_carries_the_query_deadline(self):
         # The catalogue COUNT(*) helper has no deadline of its own, so connect()
@@ -261,12 +286,14 @@ class SchemaServiceTests(unittest.TestCase):
         # The byte budget can end a page before `limit` rows. Advancing by the
         # requested limit then skips everything the budget cut -- on this table
         # it left 25 of 30 rows permanently unreachable.
+        # 2 MB each: under the width-scaled per-value cap for this 12-column
+        # table (~2.7 MB) but enough that the 32 MB page budget ends a page early.
         with sqlite3.connect(self.db_path) as conn:
             for i in range(30):
                 conn.execute(
                     "INSERT INTO raw_cmms_record (import_batch_id, source_record_id, raw_json) "
                     "VALUES (1, ?, ?)",
-                    (f"big{i}", "x" * 7_000_000),
+                    (f"big{i}", "x" * 2_000_000),
                 )
         seen: list[str] = []
         offset = 0
