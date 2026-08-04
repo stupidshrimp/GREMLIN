@@ -115,6 +115,48 @@ class SchemaServiceTests(unittest.TestCase):
         # A normal-sized value is unaffected.
         self.assertEqual(len(self.service.run_query("SELECT randomblob(4096)")["rows"]), 1)
 
+    def test_aggregate_result_size_is_bounded(self):
+        # Values individually under MAX_VALUE_BYTES still add up: 25 rows of a
+        # 4 MB blob grew the process by ~100 MB before this was bounded.
+        if not hasattr(sqlite3.Connection, "setlimit"):
+            self.skipTest("sqlite3.Connection.setlimit requires Python 3.11+")
+        payload = self.service.run_query(
+            "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 200) "
+            "SELECT i, randomblob(4000000) FROM r",
+            max_rows=200,
+        )
+        self.assertTrue(payload["truncated"])
+        # 32 MB budget / 4 MB per row -> a handful of rows, nowhere near 200.
+        self.assertLess(payload["row_count"], 20)
+        self.assertTrue(all(str(row[1]).startswith("<BLOB") for row in payload["rows"]))
+
+    def test_console_refuses_to_run_without_a_value_limit(self):
+        # On Python 3.10 there is no setlimit and therefore no pre-materialisation
+        # bound; the console must refuse rather than run unprotected.
+        real_connect = self.service.connect
+
+        class _NoSetlimit:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def __getattr__(self, name):
+                if name == "setlimit":
+                    raise AttributeError(name)
+                return getattr(self._conn, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self._conn.__exit__(*exc)
+
+        with mock.patch.object(
+            self.service, "connect", lambda: _NoSetlimit(real_connect())
+        ):
+            with self.assertRaises(SchemaServiceError) as ctx:
+                self.service.run_query("SELECT 1")
+        self.assertIn("python 3.11", str(ctx.exception).lower())
+
     def test_every_connection_carries_the_query_deadline(self):
         # The catalogue COUNT(*) helper has no deadline of its own, so connect()
         # must install one -- otherwise opening the Schema or Pipeline panel on a

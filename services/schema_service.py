@@ -82,6 +82,16 @@ _SQLITE_MAX_INT = 2**63 - 1
 # Limble raw_json payload, which is kilobytes.
 MAX_VALUE_BYTES = 8 * 1024 * 1024
 
+# Ceiling on the raw bytes one result page may draw from SQLite.
+#
+# MAX_VALUE_BYTES bounds a single value but not their sum: 25 rows of a 4 MB
+# blob are each well under the per-value cap and still grew the process from
+# 34 MB to 137 MB. Rows are therefore consumed one at a time, converted to their
+# capped display form immediately, and the raw row dropped -- so peak memory is
+# roughly one row rather than a whole page, and this budget stops the scan once
+# a page has drawn too much in total.
+MAX_RESULT_BYTES = 32 * 1024 * 1024
+
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
 
@@ -217,6 +227,33 @@ class SchemaService:
         # holds a lock that delays GREMLIN's writers.
         self._guard_runtime(conn, QUERY_TIMEOUT_SECONDS)
         return conn
+
+    @staticmethod
+    def _collect_rows(cursor: sqlite3.Cursor, max_rows: int) -> tuple[list[list[Any]], bool]:
+        """Read up to ``max_rows`` rows without ever holding a whole page raw.
+
+        ``fetchall``/``fetchmany`` materialise every row before anything can cap
+        them, so a page of individually-legal values still adds up. Converting
+        each row as it arrives keeps only the capped display form, and the byte
+        budget stops a scan whose values are large but under the per-value cap.
+
+        Returns the rows and whether more were available than were returned.
+        """
+
+        rows: list[list[Any]] = []
+        remaining = MAX_RESULT_BYTES
+        truncated = False
+        for raw in cursor:
+            if len(rows) >= max_rows:
+                truncated = True
+                break
+            remaining -= _raw_row_bytes(raw)
+            rows.append([_cell(value) for value in raw])
+            del raw
+            if remaining <= 0:
+                truncated = True
+                break
+        return rows, truncated
 
     @staticmethod
     def _guard_runtime(conn: sqlite3.Connection, timeout_seconds: float) -> None:
@@ -427,7 +464,7 @@ class SchemaService:
             sql = f"SELECT * FROM {self._quote(table)}{order_clause} LIMIT ? OFFSET ?"
             try:
                 cursor = conn.execute(sql, (limit, offset))
-                rows = cursor.fetchall()
+                rows, _ = self._collect_rows(cursor, limit)
             except sqlite3.Error as exc:
                 raise SchemaServiceError(_friendly_sqlite_error(exc)) from exc
             columns = [description[0] for description in cursor.description or []]
@@ -435,7 +472,7 @@ class SchemaService:
         return {
             "table": table,
             "columns": columns or column_names,
-            "rows": [[_cell(value) for value in row] for row in rows],
+            "rows": rows,
             "total_rows": total,
             "limit": limit,
             "offset": offset,
@@ -461,19 +498,30 @@ class SchemaService:
 
         started = time.monotonic()
         with self.connect() as conn:
+            # Without setlimit there is no pre-materialisation bound at all, and
+            # nothing downstream can help: the value is built before Python sees
+            # it, and the progress handler does not fire during the allocation.
+            # Refuse the arbitrary-SQL path rather than run it unprotected. The
+            # rest of the dashboard stays available, since it only reads values
+            # already stored in the database.
+            if not hasattr(conn, "setlimit"):
+                raise SchemaServiceError(
+                    "The SQL console requires Python 3.11 or newer: on older versions SQLite "
+                    "cannot be told to refuse oversized values, so a single query could exhaust "
+                    "the server's memory. The other dashboard panels are unaffected."
+                )
             try:
                 cursor = conn.execute(statement)
-                rows = cursor.fetchmany(max_rows + 1)
+                rows, truncated = self._collect_rows(cursor, max_rows)
             except sqlite3.Error as exc:
                 raise SchemaServiceError(_friendly_sqlite_error(exc)) from exc
             columns = [description[0] for description in cursor.description or []]
         elapsed_ms = (time.monotonic() - started) * 1000.0
 
-        truncated = len(rows) > max_rows
         return {
             "columns": columns,
-            "rows": [[_cell(value) for value in row] for row in rows[:max_rows]],
-            "row_count": min(len(rows), max_rows),
+            "rows": rows,
+            "row_count": len(rows),
             "truncated": truncated,
             "max_rows": max_rows,
             "elapsed_ms": round(elapsed_ms, 1),
@@ -687,6 +735,18 @@ def _table_drift(table: str, actual_columns: list[str], reference: dict[str, Any
 # ----------------------------------------------------------------------
 # Value / error presentation
 # ----------------------------------------------------------------------
+def _raw_row_bytes(row: Any) -> int:
+    """Approximate the bytes SQLite handed over for one row, before capping."""
+
+    total = 0
+    for value in row:
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            total += len(value)
+        elif isinstance(value, str):
+            total += len(value)
+    return total
+
+
 def _cell(value: Any) -> Any:
     """Make one column value safe and small enough to JSON-serialise.
 
