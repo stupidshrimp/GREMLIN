@@ -44,6 +44,17 @@ def _format_bytes(size: int | None) -> str:
     return f"{value:.1f} GB"
 
 
+def _md(value: object) -> str:
+    """Escape a value for use inside a Markdown table cell.
+
+    A bare ``|`` ends the cell and silently shifts every column after it, so a
+    column default such as ``'a|b'`` -- or any identifier containing a pipe --
+    would corrupt the table rather than fail visibly.
+    """
+
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
 def build_report(service: SchemaService) -> str:
     lines: list[str] = []
     add = lines.append
@@ -74,7 +85,7 @@ def build_report(service: SchemaService) -> str:
     add("| --- | --- | --- |")
     for stage in pipeline["stages"]:
         rows = "missing" if not stage["present"] else f"{stage['row_count']:,}"
-        add(f"| {stage['label']} | `{stage['table']}` | {rows} |")
+        add(f"| {_md(stage['label'])} | `{_md(stage['table'])}` | {rows} |")
     add("")
 
     # Drift ------------------------------------------------------------------
@@ -109,9 +120,9 @@ def build_report(service: SchemaService) -> str:
             add("| Table | Missing in file | Extra in file |")
             add("| --- | --- | --- |")
             for entry in drift["column_drift"]:
-                missing = ", ".join(f"`{name}`" for name in entry["missing_in_file"]) or "—"
-                extra = ", ".join(f"`{name}`" for name in entry["extra_in_file"]) or "—"
-                add(f"| `{entry['table']}` | {missing} | {extra} |")
+                missing = ", ".join(f"`{_md(name)}`" for name in entry["missing_in_file"]) or "—"
+                extra = ", ".join(f"`{_md(name)}`" for name in entry["extra_in_file"]) or "—"
+                add(f"| `{_md(entry['table'])}` | {missing} | {extra} |")
             add("")
         if not (drift["missing_tables"] or drift["extra_tables"] or drift["column_drift"]):
             add("No drift: this file matches what the current code would build.")
@@ -125,7 +136,7 @@ def build_report(service: SchemaService) -> str:
     add("| --- | --- | --- | --- |")
     for table in tables:
         rows = f"{table['row_count']:,}" if isinstance(table["row_count"], int) else "—"
-        add(f"| `{table['name']}` | {table['origin']} | {rows} | {table['column_count']} |")
+        add(f"| `{_md(table['name'])}` | {_md(table['origin'])} | {rows} | {table['column_count']} |")
     add("")
 
     for table in tables:
@@ -144,9 +155,9 @@ def build_report(service: SchemaService) -> str:
         add("| Column | Type | Not null | Default | PK |")
         add("| --- | --- | --- | --- | --- |")
         for column in detail["columns"]:
-            default = "—" if column["default"] is None else f"`{column['default']}`"
+            default = "—" if column["default"] is None else f"`{_md(column['default'])}`"
             add(
-                f"| `{column['name']}` | {column['type'] or '—'} | "
+                f"| `{_md(column['name'])}` | {_md(column['type']) or '—'} | "
                 f"{'yes' if column['not_null'] else ''} | {default} | "
                 f"{'yes' if column['primary_key'] else ''} |"
             )
@@ -198,8 +209,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(report, encoding="utf-8")
+        # Report an unwritable destination the same way an unreadable database is
+        # reported, rather than as a traceback.
+        try:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            print(f"error: could not write {args.out}: {exc}", file=sys.stderr)
+            return 1
         print(f"Wrote {args.out} ({len(report):,} chars).")
     else:
         print(report)
