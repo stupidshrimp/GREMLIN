@@ -88,9 +88,13 @@ _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
 
 # Developer dashboard access. The PIN is a shared speed bump for an app that has
-# no user accounts -- it keeps the dev tooling out of the way of normal users on
-# the plant network, and is not a substitute for real authentication. Override it
-# with GREMLIN_DEV_PIN.
+# no user accounts: it keeps dev tooling out of the way of normal users on the
+# plant network. It is deliberately NOT authentication, and the default is a
+# known value in a public repository -- so treat anyone who can reach this port
+# as able to read the whole database through the dashboard. That trade-off was
+# made knowingly in favour of the page working with no configuration; if it ever
+# needs to hold against the network, set GREMLIN_DEV_PIN (and consider failing
+# closed when it is unset) rather than assuming this default protects anything.
 DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
 _schema_service: SchemaService | None = None
