@@ -687,8 +687,11 @@ def developer_dashboard():
 @app.route("/developer/unlock", methods=["POST"])
 def developer_unlock():
     submitted = (request.form.get("pin") or "").strip()
-    # compare_digest keeps the check constant-time; both sides must be str.
-    if secrets.compare_digest(submitted, DEV_DASHBOARD_PIN):
+    # compare_digest keeps the check constant-time. Compare as UTF-8 bytes: on
+    # str arguments it rejects any non-ASCII character with a TypeError, so a
+    # stray accented character typed into the PIN box would surface as a 500
+    # with a traceback instead of an ordinary "Incorrect PIN".
+    if secrets.compare_digest(submitted.encode("utf-8"), DEV_DASHBOARD_PIN.encode("utf-8")):
         session[DEV_SESSION_KEY] = True
         return redirect(url_for("developer_dashboard"))
     return (

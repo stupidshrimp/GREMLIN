@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -232,6 +233,47 @@ class SchemaServiceTests(unittest.TestCase):
     def test_table_detail_surfaces_per_table_drift(self):
         detail = self.service.table_detail("mapped_cmms_record")
         self.assertIn("legacy_scratch_column", detail["drift"]["extra_in_file"])
+
+
+class DeveloperUnlockTests(unittest.TestCase):
+    """The PIN gate must reject bad input, never crash on it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        db_path = Path(self._tmp.name) / "gremlin.db"
+        _build_database(db_path)
+        os.environ["GREMLIN_DB_PATH"] = str(db_path)
+        os.environ["GREMLIN_SECRET_KEY"] = "test-key"
+        self.addCleanup(os.environ.pop, "GREMLIN_DB_PATH", None)
+        self.addCleanup(os.environ.pop, "GREMLIN_SECRET_KEY", None)
+
+        import app as app_module
+
+        app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
+        self.app_module = app_module
+        self.client = app_module.app.test_client()
+
+    def test_correct_pin_unlocks(self):
+        self.assertEqual(self.client.post("/developer/unlock", data={"pin": "1336"}).status_code, 302)
+        self.assertEqual(self.client.get("/developer/api/tables").status_code, 200)
+
+    def test_bad_pins_are_rejected_without_erroring(self):
+        # compare_digest raises TypeError on non-ASCII str, which would turn a
+        # mistyped PIN into a 500 with a traceback.
+        for pin in ("0000", "", "   ", "13é6", "🔒", "1336" * 99):
+            with self.subTest(pin=pin):
+                response = self.client.post("/developer/unlock", data={"pin": pin})
+                self.assertEqual(response.status_code, 403)
+
+    def test_api_is_locked_until_unlocked(self):
+        self.assertEqual(self.client.get("/developer/api/tables").status_code, 403)
+        self.assertEqual(self.client.post("/developer/api/query", json={"sql": "SELECT 1"}).status_code, 403)
+
+    def test_developer_page_is_not_linked_from_the_sidebar(self):
+        # The page is meant to be reachable only by typing its URL.
+        self.assertNotIn("/developer", [link["url"] for link in self.app_module.NAV_LINKS])
+        self.assertNotIn(b'href="/developer"', self.client.get("/").data)
 
 
 if __name__ == "__main__":
