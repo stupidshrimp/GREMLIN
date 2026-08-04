@@ -247,6 +247,31 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertEqual(self.service.table_rows("raw_cmms_record", limit=-5)["limit"], 1)
         self.assertEqual(self.service.table_rows("raw_cmms_record", offset=-5)["offset"], 0)
 
+    def test_pagination_reaches_every_row_when_pages_end_early(self):
+        # The byte budget can end a page before `limit` rows. Advancing by the
+        # requested limit then skips everything the budget cut -- on this table
+        # it left 25 of 30 rows permanently unreachable.
+        with sqlite3.connect(self.db_path) as conn:
+            for i in range(30):
+                conn.execute(
+                    "INSERT INTO raw_cmms_record (import_batch_id, source_record_id, raw_json) "
+                    "VALUES (1, ?, ?)",
+                    (f"big{i}", "x" * 7_000_000),
+                )
+        seen: list[str] = []
+        offset = 0
+        for _ in range(50):  # generous ceiling; the loop should end well before this
+            payload = self.service.table_rows("raw_cmms_record", limit=50, offset=offset)
+            seen.extend(str(row[3]) for row in payload["rows"])
+            self.assertGreater(payload["next_offset"], offset, "pagination made no progress")
+            offset = payload["next_offset"]
+            if not payload["has_more"]:
+                break
+        else:
+            self.fail("pagination did not terminate")
+        self.assertEqual(len(seen), payload["total_rows"])
+        self.assertEqual(len(set(seen)), len(seen), "a row was returned twice")
+
     def test_table_rows_rejects_unknown_order_column(self):
         with self.assertRaises(SchemaServiceError):
             self.service.table_rows("raw_cmms_record", order_by="not_a_column")

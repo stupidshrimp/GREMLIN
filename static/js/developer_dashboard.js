@@ -30,7 +30,10 @@
     loaded: new Set(), // panel keys already fetched
     tables: [], // [{name, type, origin, note, row_count, column_count}]
     selectedTable: null,
-    data: { table: null, offset: 0, limit: 50, total: null },
+    // `history` records the offset each page started at. Pages can be shorter
+    // than `limit` when the server's byte budget ends one early, so neither
+    // direction can be navigated by arithmetic on `limit`.
+    data: { table: null, offset: 0, limit: 50, total: null, nextOffset: null, history: [] },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -443,13 +446,16 @@
     try {
       const payload = await getJSON(`${API.rows(table)}?${params.toString()}`);
       state.data.total = payload.total_rows;
+      state.data.nextOffset = payload.next_offset;
       const first = payload.total_rows === 0 ? 0 : payload.offset + 1;
       const last = payload.offset + payload.rows.length;
+      const short = payload.rows.length < payload.limit && payload.has_more;
       $("dev-data-summary").textContent =
-        `Showing ${formatNumber(first)}–${formatNumber(last)} of ${formatNumber(payload.total_rows)} rows.`;
+        `Showing ${formatNumber(first)}–${formatNumber(last)} of ${formatNumber(payload.total_rows)} rows.` +
+        (short ? " Page ended early because these rows are large." : "");
       replaceChildren($("dev-data-rows"), buildTable(payload.columns, payload.rows));
-      $("dev-data-prev").disabled = payload.offset <= 0;
-      $("dev-data-next").disabled = last >= (payload.total_rows || 0);
+      $("dev-data-prev").disabled = state.data.history.length === 0;
+      $("dev-data-next").disabled = !payload.has_more;
     } catch (err) {
       $("dev-data-summary").textContent = "";
       replaceChildren($("dev-data-rows"), el("p", "dev-error", err.message));
@@ -487,6 +493,7 @@
     data: async () => {
       if (!state.tables.length) await loadTables();
       state.data.offset = 0;
+      state.data.history = [];
       await loadRows();
     },
     console: async () => {},
@@ -527,18 +534,26 @@
     });
     $("dev-data-table").addEventListener("change", () => {
       state.data.offset = 0;
+      state.data.history = [];
       loadRows();
     });
     $("dev-data-limit").addEventListener("change", () => {
       state.data.offset = 0;
+      state.data.history = [];
       loadRows();
     });
     $("dev-data-prev").addEventListener("click", () => {
-      state.data.offset = Math.max(0, state.data.offset - state.data.limit);
+      // Step back to where the previous page actually started.
+      const previous = state.data.history.pop();
+      state.data.offset = previous === undefined ? 0 : previous;
       loadRows();
     });
     $("dev-data-next").addEventListener("click", () => {
-      state.data.offset += state.data.limit;
+      // Resume where the server said this page stopped, which is not
+      // offset + limit when the byte budget ended the page early.
+      if (state.data.nextOffset === null || state.data.nextOffset <= state.data.offset) return;
+      state.data.history.push(state.data.offset);
+      state.data.offset = state.data.nextOffset;
       loadRows();
     });
 

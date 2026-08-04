@@ -469,6 +469,13 @@ class SchemaService:
                 raise SchemaServiceError(_friendly_sqlite_error(exc)) from exc
             columns = [description[0] for description in cursor.description or []]
 
+        # The byte budget can end a page early, so the next page does not begin at
+        # offset + limit. Return where to resume rather than letting the caller
+        # infer it: advancing by the requested limit would skip every row the
+        # budget cut, and on a table of large values most rows became unreachable.
+        # _collect_rows always yields at least one row when any remain, so this
+        # always makes progress.
+        next_offset = offset + len(rows)
         return {
             "table": table,
             "columns": columns or column_names,
@@ -476,6 +483,8 @@ class SchemaService:
             "total_rows": total,
             "limit": limit,
             "offset": offset,
+            "next_offset": next_offset,
+            "has_more": bool(rows) and (total is None or next_offset < total),
             "order_by": order_by,
             "descending": descending,
         }
