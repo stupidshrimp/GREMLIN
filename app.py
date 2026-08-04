@@ -186,10 +186,16 @@ def _disposition_kind() -> str:
     return kind
 
 
+# Pages that exist and are routable but are deliberately kept out of the
+# sidebar. Standards and Documentation is reached from the Life Data Analysis
+# landing page instead; the developer dashboard is unlisted on purpose, so it is
+# only reachable by typing its URL (and then entering the PIN).
+UNLISTED_ROUTES = {"/standards-and-documentation", "/developer"}
+
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
     for page in PAGES
-    if page["route"] != "/standards-and-documentation"
+    if page["route"] not in UNLISTED_ROUTES
 ]
 
 
