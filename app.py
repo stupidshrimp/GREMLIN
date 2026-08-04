@@ -810,8 +810,6 @@ def api_dev_table_rows(table):
             table,
             limit=_int_arg("limit", 50),
             offset=_int_arg("offset", 0),
-            order_by=(request.args.get("order_by") or "").strip() or None,
-            descending=request.args.get("dir") == "desc",
         )
     )
 

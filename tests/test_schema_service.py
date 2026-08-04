@@ -309,13 +309,26 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertEqual(len(seen), payload["total_rows"])
         self.assertEqual(len(set(seen)), len(seen), "a row was returned twice")
 
-    def test_table_rows_rejects_unknown_order_column(self):
-        with self.assertRaises(SchemaServiceError):
-            self.service.table_rows("raw_cmms_record", order_by="not_a_column")
+    def test_materialising_sorts_are_refused(self):
+        # A sort, DISTINCT or GROUP BY no index covers fills SQLite's sorter
+        # before the first row is yielded, so no cap here can bound it; measured
+        # at 11 -> 80 MB for a single fetched row. Index-satisfied sorts stream
+        # and stay allowed.
+        for statement in (
+            "SELECT raw_record_id, raw_json FROM raw_cmms_record ORDER BY raw_json",
+            "SELECT DISTINCT raw_json FROM raw_cmms_record",
+            "SELECT raw_json, COUNT(*) FROM raw_cmms_record GROUP BY raw_json",
+            "SELECT * FROM (SELECT raw_record_id FROM raw_cmms_record ORDER BY raw_json)",
+        ):
+            with self.subTest(statement=statement):
+                with self.assertRaises(SchemaServiceError) as ctx:
+                    self.service.run_query(statement)
+                self.assertIn("sort, group or de-duplicate", str(ctx.exception).lower())
 
-    def test_table_rows_accepts_known_order_column(self):
-        payload = self.service.table_rows("raw_cmms_record", order_by="raw_record_id", descending=True)
-        self.assertEqual(payload["order_by"], "raw_record_id")
+    def test_index_satisfied_sorts_are_allowed(self):
+        payload = self.service.run_query(
+            "SELECT raw_record_id FROM raw_cmms_record ORDER BY raw_record_id"
+        )
         self.assertEqual(len(payload["rows"]), 2)
 
     def test_long_values_are_truncated(self):

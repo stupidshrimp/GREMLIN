@@ -258,6 +258,33 @@ class SchemaService:
             conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limit)
 
     @staticmethod
+    def _plan_materialises_a_sort(conn: sqlite3.Connection, statement: str) -> bool:
+        """True when SQLite would build a temporary B-tree to run ``statement``.
+
+        A sort, DISTINCT or GROUP BY that no index can satisfy has to consume the
+        entire result into a sorter before it yields a single row, so every cap
+        in this module applies too late -- fetching *one* row of
+        ``SELECT i, b FROM t ORDER BY b`` over 120 MB of blobs took the process
+        from 11 MB to 80 MB. Nothing bounds it from here: ``temp_store = FILE``
+        and a small ``cache_size`` made no difference (measured), and
+        ``hard_heap_limit`` is process-global, so using it would let a dashboard
+        query push GREMLIN's own analysis into SQLITE_NOMEM.
+
+        Asking the planner is what makes this checkable rather than guessable: it
+        reports the temp B-tree wherever it appears, including inside a subquery,
+        so it cannot be dodged by reformatting the way a scan of the SQL text
+        could. Sorts an index already satisfies are not flagged, because those
+        stream and never materialise.
+        """
+
+        try:
+            plan = conn.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
+        except sqlite3.Error:
+            # Not plannable (pragmas). Those return small, bounded result sets.
+            return False
+        return any("TEMP B-TREE" in str(row[3]).upper() for row in plan)
+
+    @staticmethod
     def _probe_column_count(conn: sqlite3.Connection, statement: str) -> int | None:
         """Column count of ``statement`` without materialising any row.
 
@@ -511,10 +538,14 @@ class SchemaService:
         *,
         limit: int = DEFAULT_ROW_LIMIT,
         offset: int = 0,
-        order_by: str | None = None,
-        descending: bool = False,
     ) -> dict[str, Any]:
-        """A capped, paginated page of rows from one table."""
+        """A capped, paginated page of rows from one table.
+
+        Deliberately unsorted. Ordering by a column no index covers makes SQLite
+        materialise the whole table into a sorter before returning the first row,
+        which none of this module's caps can bound -- the same reason the console
+        refuses such statements. Rows come back in storage order.
+        """
 
         limit = max(1, min(int(limit), MAX_ROW_LIMIT))
         # Clamped at both ends: an offset past SQLite's integer range cannot be
@@ -524,18 +555,10 @@ class SchemaService:
             self._require_value_limit(conn)
             table = self._assert_known_table(conn, table)
             column_names = [column["name"] for column in self._columns(conn, table)]
-            order_clause = ""
-            if order_by:
-                # Same rule as the table name: only a column that genuinely
-                # exists is allowed anywhere near the SQL text.
-                if order_by not in column_names:
-                    raise SchemaServiceError(f"Unknown column {order_by!r} on {table}.")
-                order_clause = f" ORDER BY {self._quote(order_by)} {'DESC' if descending else 'ASC'}"
-
             total = self._row_count(conn, table)
             # The column count is already known here, so the row cap is exact.
             self._apply_row_width_limit(conn, len(column_names))
-            sql = f"SELECT * FROM {self._quote(table)}{order_clause} LIMIT ? OFFSET ?"
+            sql = f"SELECT * FROM {self._quote(table)} LIMIT ? OFFSET ?"
             try:
                 cursor = conn.execute(sql, (limit, offset))
                 rows, _ = self._collect_rows(cursor, limit)
@@ -559,8 +582,6 @@ class SchemaService:
             "offset": offset,
             "next_offset": next_offset,
             "has_more": bool(rows) and (total is None or next_offset < total),
-            "order_by": order_by,
-            "descending": descending,
         }
 
     # ------------------------------------------------------------------
@@ -582,6 +603,13 @@ class SchemaService:
         started = time.monotonic()
         with self.connect() as conn:
             self._require_value_limit(conn)
+            if self._plan_materialises_a_sort(conn, statement):
+                raise SchemaServiceError(
+                    "This query would sort, group or de-duplicate the whole result before "
+                    "returning any of it, which no row or byte cap can bound. Narrow it with a "
+                    "WHERE clause, order by an indexed column so SQLite can stream the rows, or "
+                    "browse the table in the Data panel instead."
+                )
             # Learn the result's width before running it for real, so the
             # per-value cap can be scaled to keep one row inside the budget.
             probed = self._probe_column_count(conn, statement)
