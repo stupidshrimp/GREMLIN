@@ -44,6 +44,7 @@ text, which is why no such scan is attempted.
 
 from __future__ import annotations
 
+import math
 import shutil
 import sqlite3
 import tempfile
@@ -650,8 +651,14 @@ def _cell(value: Any) -> Any:
     untruncated values would dominate every response that touches it.
     """
 
-    if value is None or isinstance(value, (int, float, bool)):
+    if value is None or isinstance(value, bool) or isinstance(value, int):
         return value
+    if isinstance(value, float):
+        # Infinity/NaN are not valid JSON. Python's encoder emits them as bare
+        # `Infinity`/`NaN` tokens, which the browser's strict JSON.parse rejects
+        # -- so one `SELECT 1e999` would fail the whole response rather than
+        # showing an odd value. Render them as text instead.
+        return value if math.isfinite(value) else repr(value).replace("inf", "Infinity").replace("nan", "NaN")
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"<BLOB {len(bytes(value))} bytes>"
     text = str(value)

@@ -188,6 +188,13 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertEqual(payload["row_count"], 1)
         self.assertTrue(payload["truncated"])
 
+    def test_non_finite_floats_are_rendered_as_text(self):
+        # Bare Infinity/NaN tokens are not valid JSON, so the browser's strict
+        # JSON.parse would reject the entire successful response.
+        self.assertEqual(self.service.run_query("SELECT 1e999 AS v")["rows"], [["Infinity"]])
+        self.assertEqual(self.service.run_query("SELECT -1e999 AS v")["rows"], [["-Infinity"]])
+        self.assertEqual(self.service.run_query("SELECT 1.5 AS v")["rows"], [[1.5]])
+
     def test_empty_query_is_rejected(self):
         with self.assertRaises(SchemaServiceError):
             self.service.run_query("   ")
