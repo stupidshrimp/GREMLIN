@@ -195,6 +195,17 @@ class SchemaService:
         except sqlite3.Error as exc:
             raise SchemaServiceError(f"Could not open {self.db_path} read-only: {exc}") from exc
         conn.row_factory = sqlite3.Row
+        # Decode TEXT leniently. sqlite3 decodes strictly by default and raises
+        # "Could not decode to UTF-8" for the whole statement, so one row of
+        # mis-encoded text makes an entire table unbrowsable. GREMLIN.db is
+        # long-lived and its raw tables came from a legacy Excel/CSV importer,
+        # so Latin-1 bytes in asset names are a realistic thing to find -- and a
+        # tool whose job is to show what is actually in the file should show it,
+        # damage included, rather than refuse the request. Undecodable bytes
+        # render as U+FFFD, which is indistinguishable from a stored U+FFFD;
+        # that trade is fine for inspection, but do not treat these strings as
+        # byte-exact.
+        conn.text_factory = lambda raw: raw.decode("utf-8", errors="replace")
         # Blocks VACUUM INTO / ATTACH, which mode=ro alone allows.
         conn.set_authorizer(_readonly_authorizer)
         # setlimit is Python 3.11+. Without it an oversized value is merely

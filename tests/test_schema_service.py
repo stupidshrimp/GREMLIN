@@ -225,6 +225,24 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertLess(len(payload["rows"][0][0]), MAX_CELL_CHARS + 100)
 
     # -- query console -----------------------------------------------------
+    def test_invalid_utf8_text_does_not_break_a_table(self):
+        # sqlite3 decodes TEXT strictly by default and fails the whole statement,
+        # so one legacy-encoded row would make the table unbrowsable. The raw
+        # tables came from an Excel/CSV importer, so this is realistic data.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO raw_cmms_record (import_batch_id, source_record_id, raw_json) "
+                "VALUES (1, 'latin1', CAST(? AS TEXT))",
+                (b'{"name":"Pumpe f\xe4r K\xfchlung"}',),
+            )
+        payload = self.service.table_rows("raw_cmms_record")
+        self.assertEqual(len(payload["rows"]), 3)
+        text = self.service.run_query(
+            "SELECT raw_json FROM raw_cmms_record WHERE source_record_id = 'latin1'"
+        )["rows"][0][0]
+        self.assertIn("�", text)
+        self.assertIn("Pumpe", text)
+
     def test_run_query_returns_rows(self):
         payload = self.service.run_query("SELECT COUNT(*) AS n FROM raw_cmms_record")
         self.assertEqual(payload["columns"], ["n"])
