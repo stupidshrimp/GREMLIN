@@ -1,0 +1,498 @@
+/* Developer dashboard styling.
+ *
+ * Reuses the theme.css palette and the shared .glass-card / .btn-* primitives so
+ * the dev tooling matches the rest of GREMLIN. Everything here is scoped under a
+ * .dev- prefix to keep it out of the product pages.
+ */
+
+/* --- Lock screen --------------------------------------------------------- */
+
+.dev-lock {
+  max-width: 560px;
+}
+
+.dev-lock-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.dev-lock-form label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.dev-lock-form input {
+  font-family: inherit;
+  font-size: 1.1rem;
+  letter-spacing: 0.3em;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  width: 180px;
+}
+
+.dev-lock-form input:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+}
+
+.dev-lock-error {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(192, 57, 43, 0.1);
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  color: #96261a;
+  font-weight: 600;
+}
+
+.dev-lock-hint {
+  margin-top: 14px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* --- Hero ---------------------------------------------------------------- */
+
+.dev-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.dev-hero-copy {
+  min-width: 0;
+}
+
+.dev-hero-path {
+  margin-top: 10px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.dev-hero-actions {
+  flex-shrink: 0;
+}
+
+/* --- Status banner ------------------------------------------------------- */
+
+.dev-banner {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--forest-100);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.dev-banner.is-error {
+  background: rgba(192, 57, 43, 0.1);
+  border-color: rgba(192, 57, 43, 0.3);
+  color: #96261a;
+}
+
+/* --- Tabs ---------------------------------------------------------------- */
+
+.dev-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 16px;
+}
+
+.dev-tab {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.dev-tab:hover {
+  color: var(--text);
+  border-color: var(--forest-500);
+}
+
+.dev-tab.is-active {
+  background: var(--forest-700);
+  border-color: var(--forest-700);
+  color: #fff;
+}
+
+.dev-panel {
+  display: none;
+}
+
+.dev-panel.is-active {
+  display: block;
+}
+
+/* Grid and flex items default to min-width:auto, so a wide table would widen
+   its track instead of scrolling inside it -- which pushes the whole page into
+   horizontal overflow. Allowing these to shrink keeps wide content scrolling in
+   its own container and the page body at viewport width.
+   `.content` is the shared layout column from theme.css; it is scoped by :has()
+   so only the developer page is affected. */
+body:has(.dev-tabs) .content,
+.dev-panel,
+.dev-panel-grid > *,
+.dev-split > * {
+  min-width: 0;
+}
+
+.dev-panel .glass-card + .glass-card,
+.dev-panel .dev-panel-grid + .glass-card {
+  margin-top: 18px;
+}
+
+.dev-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.dev-panel h2 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+}
+
+.dev-panel h3 {
+  margin: 22px 0 8px;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.dev-muted {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.dev-error {
+  color: #96261a;
+  font-weight: 600;
+}
+
+/* --- Fact lists ---------------------------------------------------------- */
+
+.dev-facts {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr;
+  gap: 6px 18px;
+  margin: 12px 0 0;
+  font-size: 0.9rem;
+}
+
+.dev-facts dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.dev-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- Tables -------------------------------------------------------------- */
+
+.dev-table-scroll {
+  /* Wide result sets scroll inside the card instead of the page. */
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.dev-data-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.dev-data-table th,
+.dev-data-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 460px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-data-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-weight: 700;
+  z-index: 1;
+}
+
+.dev-data-table tbody tr:hover {
+  background: rgba(85, 116, 143, 0.06);
+}
+
+.dev-null {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* --- Pipeline ------------------------------------------------------------ */
+
+.dev-stage-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.dev-stage {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.dev-stage-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dev-stage-label code {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* --- Pills --------------------------------------------------------------- */
+
+.dev-pill {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--forest-100);
+  color: var(--forest-800);
+  white-space: nowrap;
+}
+
+.dev-pill-ok {
+  background: rgba(47, 143, 91, 0.14);
+  color: #1f6b41;
+}
+
+.dev-pill-warn {
+  background: rgba(192, 57, 43, 0.12);
+  color: #96261a;
+}
+
+.dev-pill-muted {
+  background: var(--forest-100);
+  color: var(--muted);
+}
+
+/* --- Schema explorer ----------------------------------------------------- */
+
+.dev-split {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .dev-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dev-split-list #dev-table-filter {
+  font: inherit;
+  width: 100%;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.dev-table-list {
+  display: grid;
+  gap: 6px;
+  max-height: 620px;
+  overflow-y: auto;
+}
+
+.dev-table-item {
+  font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.dev-table-item:hover {
+  border-color: var(--forest-500);
+}
+
+.dev-table-item.is-active {
+  border-color: var(--forest-700);
+  background: var(--forest-100);
+}
+
+.dev-table-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dev-table-name {
+  font-weight: 600;
+  /* break-word rather than anywhere: only hyphenate a name that genuinely
+     cannot fit, instead of splitting every name at the column edge. */
+  overflow-wrap: break-word;
+}
+
+.dev-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dev-detail-head h2 {
+  margin: 0;
+}
+
+.dev-ddl {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--forest-950);
+  color: #e6eef5;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+
+.dev-callout {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  background: rgba(192, 57, 43, 0.08);
+  font-size: 0.88rem;
+}
+
+.dev-callout p {
+  margin: 4px 0;
+}
+
+/* --- Drift --------------------------------------------------------------- */
+
+.dev-drift-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.dev-drift-list code {
+  font-weight: 700;
+}
+
+/* --- Controls ------------------------------------------------------------ */
+
+.dev-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.dev-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dev-field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dev-field select {
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  min-width: 180px;
+}
+
+.dev-field-actions {
+  flex-direction: row;
+  gap: 8px;
+}
+
+.dev-controls button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* --- SQL console --------------------------------------------------------- */
+
+#dev-sql {
+  width: 100%;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--forest-950);
+  color: #e6eef5;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+#dev-sql:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
