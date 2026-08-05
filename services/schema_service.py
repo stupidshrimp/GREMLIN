@@ -324,9 +324,14 @@ class SchemaService:
         allocation opcode. Reading a legacy table that happens to hold one huge
         TEXT or BLOB would exhaust the process just as an invented value would.
 
-        The metadata panels do not go through here: ``pipeline`` selects six
-        named scalar columns, and ``table_detail`` reads defaults out of PRAGMA
-        output, so neither can encounter an unbounded value.
+        The metadata panels do not go through here, but not because their values
+        are inherently small -- that reasoning was wrong once already. SQLite
+        types are dynamic, so ``import_batch.source_system`` can hold megabytes
+        however scalar it looks. ``pipeline`` is safe because it truncates in SQL
+        with ``substr``, which bounds the read on every runtime rather than
+        relying on ``setlimit``; ``table_detail`` is safe because PRAGMA output
+        is bounded by the DDL. Anything that reads values another way must call
+        this.
         """
 
         if not hasattr(conn, "setlimit"):
