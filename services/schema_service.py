@@ -101,6 +101,17 @@ _MIN_VALUE_BYTES = 4 * 1024
 # and types measured in bytes.
 _UNPROBEABLE_COLUMNS = 512
 
+# Length at which the pipeline panel truncates a batch value in SQL.
+#
+# Those columns are nominally scalars -- a status, a source name, two timestamps
+# -- but SQLite types are dynamic, so a legacy or hand-edited row can hold
+# anything. Truncating in the query rather than after the fetch is what bounds
+# it: substr() keeps SQLite from handing the whole value to Python (10 rows of
+# 3 MB measured at 41.7 MB fetched plain, 13.0 MB through substr), and unlike
+# the setlimit-based caps it works on Python 3.10 too, so the panel stays both
+# available and bounded there.
+_BATCH_VALUE_CHARS = 4096
+
 # Tables SQLite maintains for itself. They are neither app schema nor drift.
 _INTERNAL_TABLE_PREFIX = "sqlite_"
 
@@ -679,7 +690,14 @@ class SchemaService:
                     if column in columns
                 ]
                 if wanted:
-                    select = ", ".join(self._quote(column) for column in wanted)
+                    # Truncate text in SQL rather than after the fetch. typeof()
+                    # keeps numbers numeric; only text and blobs are shortened.
+                    select = ", ".join(
+                        f"CASE WHEN typeof({self._quote(column)}) IN ('text', 'blob') "
+                        f"THEN substr({self._quote(column)}, 1, {_BATCH_VALUE_CHARS}) "
+                        f"ELSE {self._quote(column)} END AS {self._quote(column)}"
+                        for column in wanted
+                    )
                     order = "import_batch_id" if "import_batch_id" in columns else wanted[0]
                     try:
                         rows = conn.execute(

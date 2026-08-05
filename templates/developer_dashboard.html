@@ -132,8 +132,10 @@
       Runs one statement on a <code>mode=ro</code> connection. Writes are rejected by SQLite
       itself, results are capped, and a query running longer than 15 seconds is aborted.
     </p>
+    <!-- No ORDER BY: an unindexed sort is refused (it would materialise the whole
+         result), so a prefilled statement carrying one would fail on first click. -->
     <textarea id="dev-sql" rows="6" spellcheck="false"
-              aria-label="SQL statement">SELECT name, type FROM sqlite_master ORDER BY type, name;</textarea>
+              aria-label="SQL statement">SELECT name, type FROM sqlite_master;</textarea>
     <div class="dev-controls">
       <button type="button" class="btn-primary" id="dev-run-sql">Run query</button>
       <span class="dev-muted" id="dev-sql-meta"></span>

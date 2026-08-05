@@ -325,6 +325,24 @@ class SchemaServiceTests(unittest.TestCase):
                     self.service.run_query(statement)
                 self.assertIn("sort, group or de-duplicate", str(ctx.exception).lower())
 
+    def test_pipeline_bounds_oversized_batch_values(self):
+        # import_batch columns are nominally scalars, but SQLite types are
+        # dynamic: a legacy or hand-edited row can hold a huge string, and this
+        # read does not go through _collect_rows. Truncating in SQL bounds it on
+        # every runtime, including one without setlimit.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch (source_system, status, raw_row_count) VALUES (?, ?, ?)",
+                ("L" * 3_000_000, "COMPLETED", 7),
+            )
+        batches = self.service.pipeline()["recent_batches"]
+        self.assertTrue(batches)
+        longest = max(len(str(value)) for batch in batches for value in batch.values())
+        self.assertLessEqual(longest, MAX_CELL_CHARS + 100)
+        # Numeric columns keep their type through the CASE/substr wrapper.
+        self.assertIsInstance(batches[0]["import_batch_id"], int)
+        self.assertIsInstance(batches[0]["raw_row_count"], int)
+
     def test_index_satisfied_sorts_are_allowed(self):
         payload = self.service.run_query(
             "SELECT raw_record_id FROM raw_cmms_record ORDER BY raw_record_id"
