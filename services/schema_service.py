@@ -445,8 +445,22 @@ class SchemaService:
         return '"' + identifier.replace('"', '""') + '"'
 
     def _row_count(self, conn: sqlite3.Connection, table: str) -> int | None:
+        """Count rows, or return None when counting would be unbounded.
+
+        Counting a table is a cheap scan, but a *view* carries its own query: one
+        defined with an unindexed ORDER BY or DISTINCT makes COUNT(*) run that
+        sort, which materialises the view's values before returning the single
+        number. Measured at 17 MB -> 47 MB for a view over a 60 MB table, and it
+        would run just from opening the Schema panel. The deadline bounds how
+        long that takes but not how much it allocates, so check the plan first
+        and report the count as unknown rather than pay it.
+        """
+
+        count_sql = f"SELECT COUNT(*) FROM {self._quote(table)}"
+        if self._plan_materialises_a_sort(conn, count_sql):
+            return None
         try:
-            row = conn.execute(f"SELECT COUNT(*) FROM {self._quote(table)}").fetchone()
+            row = conn.execute(count_sql).fetchone()
         except sqlite3.Error:
             return None
         return int(row[0]) if row else None

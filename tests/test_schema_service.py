@@ -343,6 +343,18 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertIsInstance(batches[0]["import_batch_id"], int)
         self.assertIsInstance(batches[0]["raw_row_count"], int)
 
+    def test_view_row_count_skips_materialising_plans(self):
+        # A view whose definition sorts makes COUNT(*) run that sort, which
+        # materialises its values -- and it would fire just from opening the
+        # Schema panel. Counting a plain table or view is unaffected.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("CREATE VIEW v_sorted AS SELECT raw_record_id, raw_json FROM raw_cmms_record ORDER BY raw_json")
+            conn.execute("CREATE VIEW v_plain AS SELECT raw_record_id FROM raw_cmms_record")
+        by_name = {entry["name"]: entry for entry in self.service.tables()}
+        self.assertIsNone(by_name["v_sorted"]["row_count"], "a materialising view was counted anyway")
+        self.assertEqual(by_name["v_plain"]["row_count"], 2)
+        self.assertEqual(by_name["raw_cmms_record"]["row_count"], 2)
+
     def test_index_satisfied_sorts_are_allowed(self):
         payload = self.service.run_query(
             "SELECT raw_record_id FROM raw_cmms_record ORDER BY raw_record_id"
