@@ -186,29 +186,6 @@
 }
 .metrics-chart-preview { width: 100%; }
 
-.metrics-chart-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 120px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  background: repeating-linear-gradient(
-    45deg,
-    rgba(213, 224, 232, 0.35),
-    rgba(213, 224, 232, 0.35) 10px,
-    rgba(237, 242, 246, 0.55) 10px,
-    rgba(237, 242, 246, 0.55) 20px
-  );
-}
-.metrics-placeholder-text {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--muted);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.metrics-card-disabled { opacity: 0.96; }
 
 /* ---- expanded state ------------------------------------------------------ */
 .metrics-expanded {
@@ -254,8 +231,6 @@
   text-align: center;
 }
 
-.metrics-coming-soon { text-align: center; gap: 0.6rem; padding: 1.6rem 1rem; }
-.metrics-coming-soon-text { font-size: 1rem; color: var(--forest-800); font-weight: 600; }
 
 /* ---- tables -------------------------------------------------------------- */
 .metrics-table-scroll {
@@ -325,4 +300,141 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 @media (max-width: 900px) {
   .metrics-chart-grid { grid-template-columns: 1fr; }
   .metrics-field-grow { flex-basis: 100%; }
+}
+
+/* ---- availability -------------------------------------------------------- */
+/* The availability card ignores the page's asset and date filters, so it says
+   so in its header rather than leaving the reader to wonder why the controls
+   above do not move it. */
+.metrics-card-scope {
+  margin-top: 0.35rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--forest-700);
+  background: var(--forest-100);
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  display: inline-block;
+}
+
+.availability-controls { padding: 0.85rem 1rem; }
+.availability-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
+}
+.availability-control-row .metrics-field { min-width: 12rem; }
+.availability-control-row .metrics-hint { flex: 1 1 18rem; margin: 0; }
+
+.availability-charts { display: grid; gap: 1.1rem; }
+
+.availability-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.availability-mode-toggle { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
+
+table.availability-table td:first-child,
+table.availability-table th:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--surface, #fff);
+  font-weight: 600;
+}
+table.availability-table thead th:first-child { background: var(--forest-100); }
+.availability-cell { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* A flagged month means downtime exceeded scheduled hours, so the value is
+   clamped to 0% -- it needs to read as a problem, not as a normal low score. */
+.availability-cell.is-flagged {
+  color: #c0392b;
+  font-weight: 700;
+}
+/* No work orders logged at all reports 100%, which is indistinguishable from a
+   genuinely perfect month unless it is marked. */
+.availability-cell.is-no-data {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.availability-summary-row td { font-weight: 600; background: var(--forest-100); }
+.availability-summary-row td:first-child { background: var(--forest-100); }
+
+.availability-input {
+  width: 5.2rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  background: #fff;
+}
+.availability-input:focus {
+  outline: 2px solid var(--forest-400, #2f8f5b);
+  outline-offset: 1px;
+}
+
+@media (max-width: 860px) {
+  .availability-control-row { flex-direction: column; align-items: stretch; }
+}
+
+/* ---- availability configuration (Settings page) -------------------------- */
+.availability-config-groups { display: grid; gap: 0.6rem; }
+
+.availability-config-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+.availability-config-group > summary {
+  cursor: pointer;
+  padding: 0.7rem 0.9rem;
+  font-weight: 600;
+  color: var(--forest-800);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.availability-config-summary { font-weight: 500; color: var(--muted); font-size: 0.82rem; }
+
+.availability-config-body {
+  padding: 0 0.9rem 0.9rem;
+  display: grid;
+  gap: 0.75rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.8rem;
+}
+.availability-config-row { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+.availability-config-field { display: grid; gap: 0.25rem; font-size: 0.8rem; color: var(--forest-700); }
+.availability-config-wide { width: 100%; }
+.availability-config-assets {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.availability-config-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  color: var(--forest-700);
+}
+
+/* Schedule edits recompute every month, so the warning has to read as one. */
+.lda-warning {
+  font-size: 0.85rem;
+  color: #8a3b2f;
+  background: rgba(192, 57, 43, 0.08);
+  border: 1px solid rgba(192, 57, 43, 0.25);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
 }

@@ -19,39 +19,24 @@
 
   const ASSET_API = "/life-data-analysis/api/assets";
   const METRICS_API = "/metrics/api/reliability";
+  const AVAILABILITY_API = "/metrics/api/availability";
   const ALERT_THRESHOLD = 70;
-
-  // Curated equipment the dashboard compares by default. Leadership only wants
-  // these assets on the page until someone explicitly searches for others, so
-  // the selection is seeded with this set on load and restored by Reset. The
-  // numbers mirror the Availability Dashboard's default asset groups; the group
-  // comments are kept so the list stays easy to audit against the plant floor.
-  const DEFAULT_ASSET_NUMBERS = [
-    // Salvagnini – 3101-3107
-    "3101", "3102", "3103", "3104", "3105", "3106", "3107",
-    // Building 12 Cloos Robots – R1 2743, R2 2744, R3 2745, R4 2746
-    "2743", "2744", "2745", "2746",
-    // Building 6 Finishing – EFS 4001, PFS 4002
-    "4001", "4002",
-    // Building 9 Plating Lines – Bright Dip Line 1935, Silver Line 1934, Zinc 4000
-    "1935", "1934", "4000",
-    // Building 6 LVDs and Press Brakes – LVD 3147, LVD 3150, Cincinnati Press 2499, Cincinnati 3028, Cincinnati Press 2689
-    "3147", "3150", "2499", "3028", "2689",
-    // Building 5 Mazak Lasers – Mazak Laser 3000, Mazak Laser 2728
-    "3000", "2728",
-    // Building 1 Secondary Finishing – Tumbler 505, Rumped Tumbler 1682, Ransohoff 4028, Metco Silver 758, Vapor Blast 3326, Vibetech Vibratory 2667, Pangborn 987
-    "505", "1682", "4028", "758", "3326", "2667", "987",
-    // PPD Hedrich Dispensers – H3 3154, H2 3142, H1 3023, H4 3253
-    "3154", "3142", "3023", "3253",
-    // PPD Sandblasters – Bushing 3359, PME Retrofit 3461, Edge Restore 3325, Shield 3160, ATC Sensor 2958, Vista SD 3073
-    "3359", "3461", "3325", "3160", "2958", "3073",
-  ];
 
   // Forest palette (matches theme.css) used for the comparison bars.
   const BAR_COLOR = "#3f5e77";
   const BAR_COLOR_ALT = "#7fa6c0";
   const ACCENT = "#2f8f5b";
   const WARN = "#c0392b";
+
+  // Per-asset bar colours for the availability charts. Seven entries covers the
+  // largest group (Salvagnini and Building 1 Secondary Finishing); the palette
+  // wraps for anything larger.
+  const SERIES_COLORS = [
+    "#3f5e77", "#7fa6c0", "#2f8f5b", "#8fbf6a",
+    "#c9a227", "#a1668f", "#5b7f8c",
+  ];
+  const AVERAGE_LINE = "#1f4d33";
+  const GOAL_LINE = "#c0392b";
 
   const state = {
     assets: [], // [{asset_number, asset_name}]
@@ -60,6 +45,17 @@
     expanded: null, // currently expanded card key or null
     dropdownOpen: false,
     assetQuery: "",
+    // Availability is fetched separately and shares none of the filter state:
+    // the card always shows every configured group over whole months.
+    availability: null,
+    availabilityWindow: 5,
+    availabilityError: "",
+    // Per-group table mode: "availability" (read-only) or "ot" (editable).
+    availabilityTableMode: {},
+    // Asset numbers the Availability config considers in scope. Seeds the KPI /
+    // Alerts default comparison set, so the plant equipment list lives in one
+    // place (the availability config) rather than being duplicated here.
+    defaultAssets: [],
     // Active API date filters. The inputs may display the default data extent,
     // but these stay empty until the user explicitly changes the date range so
     // the backend can keep its default unbounded semantics.
@@ -72,16 +68,20 @@
   const $ = (id) => document.getElementById(id);
 
   // A fresh copy of the default equipment selection so callers can mutate the
-  // returned set without disturbing the canonical DEFAULT_ASSET_NUMBERS list.
+  // returned set without disturbing the canonical list. The list comes from the
+  // Availability configuration, which is the single source of truth for which
+  // assets the plant reports on; before it loads this is empty, which the API
+  // reads as "every asset".
   function defaultSelection() {
-    return new Set(DEFAULT_ASSET_NUMBERS);
+    return new Set(state.defaultAssets);
   }
 
   // True while the active selection is exactly the curated default set, so the
   // scope hint can say "default" instead of a bare count.
   function selectionIsDefault() {
-    if (state.selected.size !== DEFAULT_ASSET_NUMBERS.length) return false;
-    return DEFAULT_ASSET_NUMBERS.every((number) => state.selected.has(number));
+    if (!state.defaultAssets.length) return false;
+    if (state.selected.size !== state.defaultAssets.length) return false;
+    return state.defaultAssets.every((number) => state.selected.has(number));
   }
 
   function el(tag, attrs, children) {
@@ -747,12 +747,391 @@
       });
   }
 
+  // ---- availability --------------------------------------------------------
+  // The availability chart is the one shape the shared helpers above cannot
+  // draw: N bars per month (one per asset) with an Average and a Goal line
+  // overlaid. The y-axis is pinned to 0-100% to match the workbook, which fixes
+  // its value axis rather than auto-scaling.
+  function drawAvailabilityChart(canvas, group, opts) {
+    const options = opts || {};
+    const height = options.height || 300;
+    const { ctx, width: W, height: H } = setupCanvas(canvas, height);
+    ctx.clearRect(0, 0, W, H);
+
+    const labels = group.month_labels || [];
+    const assets = group.assets || [];
+    if (!labels.length || !assets.length) return;
+
+    const left = 52;
+    const right = W - 12;
+    const top = 26;
+    const bottom = H - 46;
+    const plotH = Math.max(1, bottom - top);
+    const slot = (right - left) / labels.length;
+    // gapWidth 75 in the workbook: the gap is 75% of one bar's width.
+    const groupW = slot / (1 + 0.75 / assets.length);
+    const barW = Math.max(2, groupW / assets.length);
+
+    const y = (value) => bottom - Math.max(0, Math.min(1, value)) * plotH;
+
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= 5; i += 1) {
+      const frac = i / 5;
+      const gy = bottom - frac * plotH;
+      ctx.strokeStyle = "#eef2f6";
+      ctx.beginPath();
+      ctx.moveTo(left, gy);
+      ctx.lineTo(right, gy);
+      ctx.stroke();
+      ctx.fillStyle = "#5e7082";
+      ctx.textAlign = "right";
+      ctx.fillText(Math.round(frac * 100) + "%", left - 6, gy);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    ctx.strokeStyle = "#c4d2dd";
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.stroke();
+
+    // Bars, grouped by month.
+    labels.forEach((label, monthIndex) => {
+      const baseX = left + monthIndex * slot + (slot - groupW) / 2;
+      assets.forEach((asset, assetIndex) => {
+        const value = asset.values[monthIndex];
+        if (value === null || value === undefined) return;
+        const x = baseX + assetIndex * barW;
+        const barTop = y(value);
+        ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+        ctx.fillRect(x, barTop, Math.max(1, barW - 1), bottom - barTop);
+        // A flagged month is one where downtime exceeded scheduled hours, so
+        // the bar sits at zero. Mark it rather than let it read as "no data".
+        if (asset.flagged && asset.flagged[monthIndex]) {
+          ctx.fillStyle = WARN;
+          ctx.fillRect(x, bottom - 3, Math.max(1, barW - 1), 3);
+        }
+      });
+
+      ctx.fillStyle = "#5e7082";
+      ctx.font = "10px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(label, left + monthIndex * slot + slot / 2, bottom + 16);
+    });
+
+    // Average and Goal lines, centred on each month's group of bars.
+    const centre = (index) => left + index * slot + slot / 2;
+    const drawLine = (values, color, dashed) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash(dashed ? [5, 4] : []);
+      ctx.beginPath();
+      let started = false;
+      values.forEach((value, index) => {
+        if (value === null || value === undefined) {
+          started = false;
+          return;
+        }
+        const px = centre(index);
+        const py = y(value);
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      if (dashed) return;
+      ctx.fillStyle = color;
+      values.forEach((value, index) => {
+        if (value === null || value === undefined) return;
+        ctx.beginPath();
+        ctx.arc(centre(index), y(value), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    };
+    drawLine(group.average || [], AVERAGE_LINE, false);
+    drawLine(group.goal || [], GOAL_LINE, true);
+
+    // Legend across the top.
+    const entries = assets
+      .map((asset, index) => ({ color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name }))
+      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    let lx = left;
+    let ly = 10;
+    entries.forEach((entry) => {
+      const w = 14 + ctx.measureText(entry.text).width + 12;
+      if (lx + w > right && ly === 10) {
+        lx = left;
+        ly = 20;
+      }
+      ctx.fillStyle = entry.color;
+      ctx.fillRect(lx, ly - 4, 9, 9);
+      ctx.fillStyle = "#5e7082";
+      ctx.fillText(entry.text, lx + 13, ly);
+      lx += w;
+    });
+    ctx.textBaseline = "alphabetic";
+  }
+
+  async function loadAvailability() {
+    try {
+      const data = await getJson(`${AVAILABILITY_API}?months=${state.availabilityWindow}`);
+      state.availability = data;
+      state.availabilityError = "";
+      if (Array.isArray(data.all_asset_numbers) && data.all_asset_numbers.length) {
+        state.defaultAssets = data.all_asset_numbers.slice();
+      }
+      return data;
+    } catch (err) {
+      state.availability = null;
+      state.availabilityError = err.message || "Could not load availability data.";
+      return null;
+    }
+  }
+
+  function availabilityBasisText() {
+    const data = state.availability;
+    if (!data) return "";
+    const groups = data.groups || [];
+    // State the assumptions on the page so a screenshot carries them: config
+    // changes apply to every month, so a number is only meaningful alongside
+    // the schedule it was computed with.
+    const schedules = groups
+      .map((g) => `${g.asset_group} ${Number(g.net_scheduled_hours_per_day).toFixed(1)} net h/day`)
+      .join(" · ");
+    const stamp = (data.generated_at || "").replace("T", " ");
+    return `Computed ${stamp} · ${data.timezone || "local"} · ${schedules}`;
+  }
+
+  function renderAvailabilityPreview() {
+    const canvas = $("availability-preview-chart");
+    const empty = $("availability-preview-empty");
+    const data = state.availability;
+    if (!canvas) return;
+
+    if (!data || !(data.groups || []).length) {
+      drawBarChart(canvas, [], { height: 160 });
+      empty.textContent =
+        state.availabilityError || (data && data.empty_reason) || "No availability data is available yet.";
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+
+    // Collapsed preview: the most recent month's average per group, ranked, so
+    // the groups needing attention sit at the left edge like every other card.
+    const lastIndex = (data.months || []).length - 1;
+    const items = data.groups
+      .map((group) => ({
+        name: group.asset_group,
+        value: (group.average || [])[lastIndex],
+      }))
+      .filter((item) => item.value !== null && item.value !== undefined)
+      .map((item) => ({ ...item, value: item.value * 100 }));
+
+    const label = $("availability-preview-label");
+    if (label && lastIndex >= 0) {
+      const months = data.groups[0].month_labels || [];
+      label.textContent = `Average availability by group — ${months[lastIndex] || ""}`;
+    }
+    drawBarChart(canvas, sortedDesc(items), { height: 160, valueSuffix: "%" });
+  }
+
+  function availabilityCell(row) {
+    if (!row) return el("td", { class: "availability-cell", text: "—" });
+    const attrs = { class: "availability-cell" };
+    const parts = [];
+    if (row.no_wo_entries) {
+      attrs.class += " is-no-data";
+      parts.push(row.note);
+    }
+    if (row.flagged) {
+      attrs.class += " is-flagged";
+      parts.push(
+        `Downtime ${row.adjusted_downtime_hours} h exceeded scheduled ${row.adjusted_scheduled_hours} h`
+      );
+    }
+    if (row.linked_downtime_hours > 0) {
+      parts.push(`Includes ${row.linked_downtime_hours} h linked downtime`);
+    }
+    if (row.overlap_count > 0) {
+      parts.push(`${row.overlap_count} WO(s) cross a month boundary`);
+    }
+    if (parts.length) attrs.title = parts.join(" · ");
+    attrs.text = row.availability === null || row.availability === undefined
+      ? "—"
+      : `${(row.availability * 100).toFixed(2)}%`;
+    return el("td", attrs);
+  }
+
+  async function saveAvailabilityValue(url, body, onDone) {
+    try {
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      clearBanner();
+      if (onDone) await onDone();
+    } catch (err) {
+      showBanner(err.message || "Could not save.", "error");
+    }
+  }
+
+  function renderAvailabilityTable(group, data) {
+    const months = data.months || [];
+    const labels = group.month_labels || [];
+    const mode = state.availabilityTableMode[group.asset_group] || "availability";
+    const byKey = {};
+    (group.rows || []).forEach((row) => {
+      byKey[`${row.asset_number}|${row.month}`] = row;
+    });
+
+    const head = el("tr", {}, [el("th", { text: mode === "ot" ? "Asset — OT hours" : "Asset" })].concat(
+      labels.map((label) => el("th", { text: label }))
+    ));
+
+    const body = group.assets.map((asset) =>
+      el("tr", {}, [el("td", { text: asset.display_name })].concat(
+        months.map((month) => {
+          const row = byKey[`${asset.asset_number}|${month}`];
+          if (mode !== "ot") return availabilityCell(row);
+          const input = el("input", {
+            type: "number",
+            min: "0",
+            step: "0.5",
+            class: "availability-input",
+            value: row ? String(row.manual_ot_hours) : "0",
+          });
+          input.addEventListener("change", () => {
+            saveAvailabilityValue(
+              `${AVAILABILITY_API}/ot`,
+              { asset_number: asset.asset_number, month, hours: Number(input.value) },
+              refreshAvailability
+            );
+          });
+          return el("td", {}, [input]);
+        })
+      ))
+    );
+
+    const averageRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Average" })].concat(
+      (group.average || []).map((value) =>
+        el("td", { text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%` })
+      )
+    ));
+
+    const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
+      months.map((month, index) => {
+        const input = el("input", {
+          type: "number",
+          min: "0",
+          max: "100",
+          step: "0.5",
+          class: "availability-input",
+          value: (((group.goal || [])[index] ?? 0.95) * 100).toFixed(2),
+        });
+        input.addEventListener("change", () => {
+          saveAvailabilityValue(
+            `${AVAILABILITY_API}/goal`,
+            { asset_group: group.asset_group, month, goal_percent: Number(input.value) / 100 },
+            refreshAvailability
+          );
+        });
+        return el("td", {}, [input]);
+      })
+    ));
+
+    return el("div", { class: "metrics-table-scroll" }, [
+      el("table", { class: "metrics-table availability-table" }, [
+        el("thead", {}, [head]),
+        el("tbody", {}, body.concat([averageRow, goalRow])),
+      ]),
+    ]);
+  }
+
+  function renderAvailabilityExpanded() {
+    const host = $("availability-charts");
+    const data = state.availability;
+    if (!host) return;
+    host.innerHTML = "";
+
+    const basis = $("availability-basis");
+    if (basis) basis.textContent = availabilityBasisText();
+
+    if (!data || !(data.groups || []).length) {
+      setEmpty(
+        "availability",
+        state.availabilityError || (data && data.empty_reason) || "No availability data is available yet."
+      );
+      return;
+    }
+    setEmpty("availability", "");
+
+    data.groups.forEach((group) => {
+      const canvas = el("canvas", { height: "300" });
+      const mode = state.availabilityTableMode[group.asset_group] || "availability";
+      const toggle = el("button", {
+        type: "button",
+        class: "btn-secondary availability-mode-toggle",
+        text: mode === "ot" ? "Show availability %" : "Edit OT hours",
+      });
+      toggle.addEventListener("click", () => {
+        state.availabilityTableMode[group.asset_group] = mode === "ot" ? "availability" : "ot";
+        renderAvailabilityExpanded();
+      });
+
+      host.appendChild(
+        el("div", { class: "metrics-panel availability-group" }, [
+          el("div", { class: "availability-group-head" }, [
+            el("h3", { text: `${group.asset_group} Availability % by Month` }),
+            toggle,
+          ]),
+          el("p", {
+            class: "metrics-hint",
+            text: `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day`,
+          }),
+          el("div", { class: "metrics-chart-wrap" }, [canvas]),
+          renderAvailabilityTable(group, data),
+        ])
+      );
+      drawAvailabilityChart(canvas, group, { height: 300 });
+    });
+  }
+
+  // Draws whichever availability views are currently on screen. Both the first
+  // load and every refresh go through here, so a card expanded while the first
+  // fetch is still in flight gets drawn as soon as the data lands instead of
+  // keeping the empty state it was opened with.
+  function renderAvailability() {
+    renderAvailabilityPreview();
+    if (state.expanded === "availability") renderAvailabilityExpanded();
+  }
+
+  async function refreshAvailability() {
+    await loadAvailability();
+    renderAvailability();
+  }
+
   // ---- render orchestration ------------------------------------------------
   function renderAll() {
     renderKpiPreview();
     renderAlertPreview();
+    renderAvailabilityPreview();
     if (state.expanded === "kpis") renderKpiExpanded();
     if (state.expanded === "alerts") renderAlertExpanded();
+    if (state.expanded === "availability") renderAvailabilityExpanded();
   }
 
   // ---- card expand / collapse ----------------------------------------------
@@ -771,6 +1150,7 @@
     // Draw lazily once the panel is visible (canvases have no width while hidden).
     if (next === "kpis") renderKpiExpanded();
     if (next === "alerts") renderAlertExpanded();
+    if (next === "availability") renderAvailabilityExpanded();
   }
 
   function wireCards() {
@@ -857,17 +1237,35 @@
     });
   }
 
+  function wireAvailability() {
+    const windowSelect = $("availability-window");
+    if (!windowSelect) return;
+    windowSelect.value = String(state.availabilityWindow);
+    windowSelect.addEventListener("change", () => {
+      state.availabilityWindow = Number(windowSelect.value) || 5;
+      refreshAvailability();
+    });
+  }
+
   // ---- init ----------------------------------------------------------------
-  function init() {
-    // Seed the curated default equipment set before the first fetch so the
-    // dashboard opens scoped to it rather than to every asset.
-    state.selected = defaultSelection();
+  async function init() {
     wireCards();
     wireFilters();
+    wireAvailability();
     wireResize();
+
+    // Availability loads first because it also supplies the curated equipment
+    // list the KPI and Alerts cards default to comparing. That list used to be
+    // duplicated here; sourcing it from the availability config keeps the plant
+    // equipment defined in exactly one place. If the request fails the
+    // selection stays empty, which the metrics API reads as "every asset".
+    await loadAvailability();
+    state.selected = defaultSelection();
     renderSelectedChips();
     renderScopeHint();
-    // Assets (for the filter menu) and the metric payload load in parallel.
+    renderAvailability();
+    if (state.availabilityError) showBanner(state.availabilityError, "error");
+
     loadAssets();
     loadMetrics();
   }

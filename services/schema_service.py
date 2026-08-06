@@ -8,8 +8,8 @@ and adds missing columns, and never drops or rewrites anything. A long-lived
 GREMLIN.db therefore drifts away from the source:
 
 * legacy columns the application stopped using are still physically present;
-* tables from removed features (the ``availability_*`` set, which now lives only
-  under ``Reference/``) are never cleaned up;
+* tables from removed or reworked features (``availability_results``, left
+  behind when availability moved to recomputing on request) are never cleaned up;
 * a database predating a migration may still be missing newer columns.
 
 So reading the source does not tell you what is actually in the file. This module
@@ -167,10 +167,18 @@ def _readonly_authorizer(action: int, arg1: str | None, _arg2: str | None, _db: 
         return sqlite3.SQLITE_OK if (arg1 or "").lower() in _ALLOWED_PRAGMAS else sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_DENY
 
-# Feature whose tables are still in real databases but whose code was removed
-# from the app (it survives only under Reference/availability_dashboard/).
-_KNOWN_ORPHAN_PREFIXES = {
-    "availability_": "Removed Availability Dashboard feature (code now only under Reference/).",
+# Tables that are still in real databases but that current schema code does not
+# create. The Availability Dashboard's config tables are live again and are
+# built by repositories/availability_repo.py, so only the results table is a
+# genuine leftover: results are recomputed on every request now and are never
+# stored, but the old rows are left in place rather than dropped because they
+# are somebody's data to discard, not ours.
+_KNOWN_ORPHAN_TABLES = {
+    "availability_results": (
+        "Leftover from the earlier Availability Dashboard attempt. Availability "
+        "results are now recomputed on request and never stored; this table is "
+        "unused and safe to drop."
+    ),
 }
 
 
@@ -817,11 +825,16 @@ def _reference_schema() -> dict[str, Any]:
         tmpdir = tempfile.mkdtemp(prefix="gremlin_reference_schema_")
         reference_path = Path(tmpdir) / "reference.db"
 
+        from repositories.availability_repo import AvailabilityRepository
         from repositories.raw_repo import RawRepository
         from services.life_data_service import LifeDataService
 
         RawRepository(reference_path).ensure_schema()
         LifeDataService(reference_path, refresh_on_startup=False)
+        # Availability owns its own config tables, so the reference has to run
+        # that bootstrap too -- otherwise every live availability_* table would
+        # be reported as drift.
+        AvailabilityRepository(reference_path).ensure_schema()
 
         # Closed explicitly: sqlite3's own context manager commits or rolls back
         # but does not close, which is the leak that ClosingSqliteConnection
@@ -884,9 +897,9 @@ def _origin_note(name: str, reference: dict[str, Any]) -> str | None:
         return "Could not be compared: the reference schema failed to build."
     if name in set(reference.get("tables", [])):
         return None
-    for prefix, note in _KNOWN_ORPHAN_PREFIXES.items():
-        if name.startswith(prefix):
-            return note
+    note = _KNOWN_ORPHAN_TABLES.get(name)
+    if note is not None:
+        return note
     return "Present in the file but not created by current schema code."
 
 

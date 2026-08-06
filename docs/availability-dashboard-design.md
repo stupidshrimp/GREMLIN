@@ -230,7 +230,15 @@ Notes:
 - **No work orders means 100%.** An asset nobody logs work against is
   indistinguishable from a perfect one, so the workbook's `Total WO Count`,
   `Zero Downtime WO Count`, `No WO Entries Flag` and note columns are carried
-  over and surfaced on the card.
+  over and surfaced on the card. When the *whole database* holds no work orders,
+  the card shows an empty state instead of nine charts of flat 100% — "no
+  downtime recorded" and "no data" are the same arithmetic and very different
+  facts.
+- **Availability is `null`, not 0% or 100%, when there are no scheduled hours.**
+  Only reachable by configuring a group down to zero net hours, but either
+  substitute renders as a real number: 0% reads as a total outage and 100% as a
+  perfect month. The Average line skips undefined months rather than dragging
+  toward zero.
 
 ## 4. Data model
 
@@ -346,3 +354,10 @@ Plus regression guards for the decisions above:
 
 Existing tests build temp-file SQLite databases (`tests/test_downtime.py`); the
 same pattern applies.
+
+Test work orders are seeded as Limble-shaped `raw_json` and mapped by
+`LifeDataService`, not written straight into `mapped_cmms_record`. Two reasons:
+the mapper re-derives mapped rows whenever its version changes, so hand-written
+mapped rows are silently replaced; and going through the real path means the
+classifier actually runs, so the return-to-service guard asserts that production
+really does mislabel that row as a PM *and* that availability counts it anyway.

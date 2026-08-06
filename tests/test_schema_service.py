@@ -17,6 +17,7 @@ from services.schema_service import (
     reset_reference_schema_cache,
 )
 from services.life_data_service import LifeDataService
+from repositories.availability_repo import AvailabilityRepository
 from repositories.raw_repo import RawRepository
 
 
@@ -25,9 +26,13 @@ def _build_database(path: Path) -> None:
 
     RawRepository(path).ensure_schema()
     LifeDataService(path, refresh_on_startup=False)
+    AvailabilityRepository(path).ensure_schema()
     with sqlite3.connect(path) as conn:
-        # A table from the removed Availability Dashboard, as real files still have.
-        conn.execute("CREATE TABLE availability_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT)")
+        # A leftover from the earlier Availability Dashboard attempt, as real
+        # files still have. Availability's config tables are live again and are
+        # built by AvailabilityRepository; only the stored-results table is
+        # genuinely orphaned now that results are recomputed on request.
+        conn.execute("CREATE TABLE availability_results (id INTEGER PRIMARY KEY, availability_percent REAL)")
         # A legacy column the current schema code would not create.
         conn.execute("ALTER TABLE mapped_cmms_record ADD COLUMN legacy_scratch_column TEXT")
         conn.execute(
@@ -234,8 +239,12 @@ class SchemaServiceTests(unittest.TestCase):
         by_name = {table["name"]: table for table in self.service.tables()}
         self.assertEqual(by_name["mapped_cmms_record"]["origin"], "code")
         self.assertEqual(by_name["raw_cmms_record"]["origin"], "code")
-        self.assertEqual(by_name["availability_settings"]["origin"], "orphaned")
-        self.assertIn("Availability", by_name["availability_settings"]["note"])
+        self.assertEqual(by_name["availability_results"]["origin"], "orphaned")
+        self.assertIn("Availability", by_name["availability_results"]["note"])
+        # The availability config tables are created by code again, so they must
+        # no longer be reported as leftovers of a removed feature.
+        self.assertEqual(by_name["availability_asset_groups"]["origin"], "code")
+        self.assertEqual(by_name["availability_settings"]["origin"], "code")
 
     def test_table_row_counts(self):
         by_name = {table["name"]: table for table in self.service.tables()}
@@ -434,7 +443,8 @@ class SchemaServiceTests(unittest.TestCase):
         drift = self.service.drift_report()
         self.assertTrue(drift["available"])
         extra_names = {entry["name"] for entry in drift["extra_tables"]}
-        self.assertIn("availability_settings", extra_names)
+        self.assertIn("availability_results", extra_names)
+        self.assertNotIn("availability_asset_groups", extra_names)
 
         mapped = next(entry for entry in drift["column_drift"] if entry["table"] == "mapped_cmms_record")
         self.assertIn("legacy_scratch_column", mapped["extra_in_file"])

@@ -1,0 +1,180 @@
+"""Assembles the Availability card's payload from storage and the calculator.
+
+Thin orchestration only: load configuration, resolve the month window, load
+work orders, compute, and shape the result for JSON. The arithmetic lives in
+``availability_service`` and the storage in
+``repositories.availability_repo``; keeping this layer free of both makes each
+testable on its own.
+
+Every call recomputes. There is no cache and no recalculate button -- see
+``docs/availability-dashboard-design.md`` §2.5.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any
+
+from services.availability_service import (
+    DEFAULT_WINDOW_MONTHS,
+    build_series,
+    compute_rows,
+    resolve_window,
+)
+
+# Guard rails for the window control. One month is the smallest useful chart;
+# thirty-six keeps a stray query string from asking for centuries of columns.
+MIN_WINDOW_MONTHS = 1
+MAX_WINDOW_MONTHS = 36
+
+
+def clamp_window_months(value: Any, default: int = DEFAULT_WINDOW_MONTHS) -> int:
+    """Coerce a requested window length into the supported range."""
+
+    try:
+        months = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(MIN_WINDOW_MONTHS, min(MAX_WINDOW_MONTHS, months))
+
+
+def _iso(value: date | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: date | None = None) -> dict:
+    """Compute every group's chart series for the requested month window."""
+
+    today = today or date.today()
+    months = clamp_window_months(months)
+
+    groups = repository.load_groups()
+    included = [group for group in groups if group.include]
+    assets = sorted({asset for group in included for asset in group.asset_numbers})
+
+    earliest, latest = repository.data_extent(assets)
+    window = resolve_window(today, months=months, data_earliest=earliest, data_latest=latest)
+
+    # With no work orders at all, every asset would compute to 100% and the page
+    # would show nine charts of flat perfection. "No downtime recorded" and "no
+    # data" are the same arithmetic and very different facts, so say which one
+    # this is rather than drawing the optimistic version.
+    if earliest is None or not window:
+        return {
+            "months": [],
+            "month_labels": [],
+            "window_months": months,
+            "groups": [],
+            "all_asset_numbers": assets,
+            "timezone": repository.load_timezone(),
+            "generated_at": datetime.now().replace(microsecond=0).isoformat(),
+            "data_earliest": _iso(earliest),
+            "data_latest": _iso(latest),
+            "empty_reason": (
+                "No work orders have been imported yet."
+                if earliest is None
+                else "No complete month of work-order data is available yet."
+            ),
+        }
+
+    work_orders = repository.load_work_orders(assets)
+    rows = compute_rows(
+        included,
+        window,
+        work_orders,
+        linked_rules=repository.load_linked_rules(),
+        display_names=repository.load_display_names(),
+        manual_ot=repository.load_manual_ot(),
+    )
+    series = build_series(rows, included, window, goals=repository.load_goals())
+
+    detail: dict[str, list[dict]] = {}
+    for row in rows:
+        detail.setdefault(row.asset_group, []).append(
+            {
+                "asset_number": row.asset_number,
+                "display_name": row.display_name,
+                "month": row.month.isoformat(),
+                "month_label": row.month_label,
+                "scheduled_hours": round(row.scheduled_hours, 2),
+                "manual_ot_hours": round(row.manual_ot_hours, 2),
+                "adjusted_scheduled_hours": round(row.adjusted_scheduled_hours, 2),
+                "direct_downtime_hours": round(row.direct_downtime_hours, 2),
+                "linked_downtime_hours": round(row.linked_downtime_hours, 2),
+                "adjusted_downtime_hours": round(row.adjusted_downtime_hours, 2),
+                "availability": row.availability,
+                "flagged": row.flagged,
+                "overlap_count": row.overlap_count,
+                "total_wo_count": row.total_wo_count,
+                "zero_downtime_wo_count": row.zero_downtime_wo_count,
+                "no_wo_entries": row.no_wo_entries,
+                "note": row.note,
+                "downtime_logic": row.downtime_logic,
+            }
+        )
+
+    return {
+        "months": [m.isoformat() for m in window],
+        "month_labels": [s.month_labels for s in series][0] if series else [],
+        "window_months": months,
+        "timezone": repository.load_timezone(),
+        "generated_at": datetime.now().replace(microsecond=0).isoformat(),
+        "data_earliest": _iso(earliest),
+        "data_latest": _iso(latest),
+        "all_asset_numbers": assets,
+        "groups": [
+            {
+                "asset_group": chart.asset_group,
+                "net_scheduled_hours_per_day": chart.net_scheduled_hours_per_day,
+                "month_labels": chart.month_labels,
+                "assets": chart.assets,
+                "average": chart.average,
+                "goal": chart.goal,
+                "rows": detail.get(chart.asset_group, []),
+            }
+            for chart in series
+        ],
+    }
+
+
+def build_config(repository) -> dict:
+    """The editable configuration behind the card, for the Settings page."""
+
+    groups = repository.load_groups()
+    display_names = repository.load_display_names()
+    return {
+        "timezone": repository.load_timezone(),
+        "groups": [
+            {
+                "asset_group": group.asset_group,
+                "asset_numbers": list(group.asset_numbers),
+                "schedule_hours_per_day": group.schedule_hours_per_day,
+                "break_hours_per_day": group.break_hours_per_day,
+                "lunch_hours_per_day": group.lunch_hours_per_day,
+                "setup_hours_per_day": group.setup_hours_per_day,
+                "net_scheduled_hours_per_day": group.net_scheduled_hours_per_day,
+                "include": group.include,
+                "notes": group.notes,
+                "sort_order": group.sort_order,
+            }
+            for group in groups
+        ],
+        "display_names": display_names,
+        "linked_rules": [
+            {
+                "rule_group": rule.rule_group,
+                "parent_asset_number": rule.parent_asset_number,
+                "linked_asset_number": rule.linked_asset_number,
+                "impact_factor": rule.impact_factor,
+            }
+            for rule in repository.load_linked_rules()
+        ],
+        "goals": [
+            {"asset_group": group, "month": month.isoformat(), "goal_percent": value}
+            for (group, month), value in sorted(repository.load_goals().items())
+        ],
+        "manual_ot": [
+            {"asset_number": asset, "month": month.isoformat(), "hours": value}
+            for (asset, month), value in sorted(repository.load_manual_ot().items())
+        ],
+    }
