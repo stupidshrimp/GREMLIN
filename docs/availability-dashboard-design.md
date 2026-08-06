@@ -70,6 +70,17 @@ calendar months; a `Mar 15 – Apr 20` range has no meaning.
 The current (partial) month is excluded — a partial month always reads low. The
 workbook includes it, which is a bug worth not copying.
 
+**The default window is the 5 most recent complete months.** On 2026-08-06 that
+is Mar–Jul 2026. The window is then clamped to the months that actually have
+work-order data, so a database with three months of history shows three months
+rather than two empty columns.
+
+The workbook's rolling-window routine is named `UpdateRollingFiveMonthWindow`
+but sets `MAX_MONTHS = 12`; five appears to have been the original intent, and
+the workbook currently renders eight columns because that is how much 2026 data
+exists. Neither number is load-bearing — the user picks the window, and five is
+only where it starts.
+
 ### 2.3 The card ignores the asset filter
 
 The card renders all nine groups and every asset in them, exactly like the
@@ -141,7 +152,11 @@ Mitigations, in place of versioning:
 - `updated_at` on every config table.
 - The chart states its basis — `Computed 2026-08-06 · Salvagnini 18.0 net h/day`
   — so assumptions travel with any screenshot or export.
-- Saving a schedule change confirms first: *"This recomputes all N months."*
+- Saving a schedule change confirms first. The message must **not** cite the
+  length of the currently displayed window — a schedule change applies to every
+  month that has data, including months scrolled out of view and months already
+  reported. Word it as scope, not count: *"This changes availability for every
+  month, including ones already reported."*
 
 ### 2.6 Config lives in SQLite, seeded from code
 
@@ -326,6 +341,8 @@ Plus regression guards for the decisions above:
 - Adjusted downtime exceeding scheduled hours clamps to 0% and sets `Flagged`.
 - An asset with no work orders reports 100% **and** its no-entries note.
 - The current partial month is absent from the window.
+- The default window is the 5 most recent complete months, and clamps to fewer
+  when the database holds less history.
 
 Existing tests build temp-file SQLite databases (`tests/test_downtime.py`); the
 same pattern applies.
