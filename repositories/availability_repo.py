@@ -33,6 +33,7 @@ from services.availability_config import (
     DEFAULT_TIMEZONE,
 )
 from services.availability_service import AssetGroup, LinkedRule, WorkOrder
+from services.life_data_service import database_write_error
 
 DB_WRITE_TIMEOUT_SECONDS = 30
 
@@ -186,9 +187,16 @@ class AvailabilityRepository:
             conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
-        except Exception:
+        except Exception as exc:
             if conn is not None:
                 conn.rollback()
+            # Translate the everyday shared-drive failures -- another user
+            # holding the writer slot, a read-only share, a full disk -- into the
+            # actionable message the rest of GREMLIN uses. Left raw, a
+            # "database is locked" surfaces as a generic 500 that tells a plant
+            # user nothing they can do something about.
+            if isinstance(exc, (sqlite3.Error, OSError)):
+                raise database_write_error(exc, self.db_path) from exc
             raise
         finally:
             if conn is not None:
@@ -214,8 +222,10 @@ class AvailabilityRepository:
             self._migrate_legacy_tables(conn)
             self._seed(conn)
             conn.commit()
-        except Exception:
+        except Exception as exc:
             conn.rollback()
+            if isinstance(exc, (sqlite3.Error, OSError)):
+                raise database_write_error(exc, self.db_path) from exc
             raise
         finally:
             conn.close()
@@ -509,6 +519,32 @@ class AvailabilityRepository:
             return float(minutes) / 60.0
         except (TypeError, ValueError):
             return 0.0
+
+    def has_any_work_orders(self) -> bool:
+        """Whether the database holds any dated work order at all.
+
+        Separates "nothing has been imported" from "nothing for the assets this
+        dashboard is configured to chart" -- two empty screens that need
+        different explanations. Deliberately an existence check rather than a
+        count or a load, so it stays cheap enough to run on every request.
+        """
+
+        if not self._table_exists("mapped_cmms_record"):
+            return False
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM mapped_cmms_record
+                WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
+                  AND COALESCE(
+                        NULLIF(TRIM(created_date_final), ''),
+                        NULLIF(TRIM(created_datetime_raw), ''),
+                        NULLIF(TRIM(created_date_raw), '')
+                      ) IS NOT NULL
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
 
     def data_extent(self, asset_numbers: list[str] | None = None) -> tuple[date | None, date | None]:
         """Earliest and latest month that holds a work order, in plant time."""

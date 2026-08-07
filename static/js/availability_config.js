@@ -15,6 +15,7 @@
 
   const CONFIG_API = "/metrics/api/availability/config";
   const RULES_API = "/metrics/api/availability/linked-rules";
+  const DISPLAY_NAME_API = "/metrics/api/availability/display-name";
 
   const groupsHost = document.getElementById("settings-availability-groups");
   const rulesHost = document.getElementById("settings-linked-rules");
@@ -156,6 +157,46 @@
       }
     });
 
+    // Display names are what the chart labels its bars with, so they are edited
+    // next to the membership that decides which bars exist. Saved per asset on
+    // blur rather than batched with the schedule: a label is a cosmetic fix
+    // someone makes in passing, and it carries none of the schedule's
+    // recompute-every-month weight.
+    const displayNames = el("div", { class: "availability-config-names" },
+      group.asset_numbers.map((asset) => {
+        const input = el("input", {
+          type: "text",
+          class: "availability-config-name-input",
+          value: (config.display_names || {})[asset] || asset,
+          "aria-label": `Display name for asset ${asset}`,
+        });
+        input.addEventListener("change", async () => {
+          const name = input.value.trim();
+          if (!name) {
+            input.value = (config.display_names || {})[asset] || asset;
+            show("settings-availability-status", "A display name cannot be blank.", "error");
+            return;
+          }
+          try {
+            await request(DISPLAY_NAME_API, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ asset_number: asset, display_name: name }),
+            });
+            config.display_names = config.display_names || {};
+            config.display_names[asset] = name;
+            show("settings-availability-status", `Renamed ${asset} to “${name}”.`, "success");
+          } catch (err) {
+            show("settings-availability-status", err.message || "Could not save the display name.", "error");
+          }
+        });
+        return el("label", { class: "availability-config-field" }, [
+          el("span", { text: asset }),
+          input,
+        ]);
+      })
+    );
+
     return el("details", { class: "availability-config-group" }, [
       el("summary", {}, [
         el("span", { text: group.asset_group }),
@@ -180,6 +221,12 @@
           el("span", { text: "Asset numbers (comma separated)" }),
           assetsInput,
         ]),
+        group.asset_numbers.length
+          ? el("div", { class: "availability-config-wide" }, [
+              el("p", { class: "availability-config-names-label", text: "Chart labels" }),
+              displayNames,
+            ])
+          : null,
         el("label", { class: "availability-config-check" }, [
           includeBox,
           el("span", { text: "Include this group on the dashboard" }),

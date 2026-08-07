@@ -239,10 +239,14 @@ Notes:
 - **No work orders means 100%.** An asset nobody logs work against is
   indistinguishable from a perfect one, so the workbook's `Total WO Count`,
   `Zero Downtime WO Count`, `No WO Entries Flag` and note columns are carried
-  over and surfaced on the card. When the *whole database* holds no work orders,
-  the card shows an empty state instead of nine charts of flat 100% — "no
-  downtime recorded" and "no data" are the same arithmetic and very different
-  facts.
+  over and surfaced on the card. When *nothing at all* can be computed, the card
+  shows an empty state instead of nine charts of flat 100% — "no downtime
+  recorded" and "no data" are the same arithmetic and very different facts.
+  Three situations produce that empty card and each names the thing to go fix:
+  no asset groups configured, work orders present but none for the configured
+  assets (a configuration gap, not a missing import), or no complete month yet.
+  Once *any* charted asset has data the window resolves normally, and the quiet
+  assets render at 100% with their no-entry note.
 - **Availability is `null`, not 0% or 100%, when there are no scheduled hours.**
   Only reachable by configuring a group down to zero net hours, but either
   substitute renders as a real number: 0% reads as a total outage and 100% as a
@@ -338,6 +342,11 @@ Editing is split by how often a value changes and how much it moves:
   confirm step. `templates/settings.html` has an empty "System Configuration"
   tile and a working fetch/banner pattern in the CMMS-refresh card to copy.
 
+  Display names sit inside each group's panel, next to the membership that
+  decides which bars exist, and save per asset on blur. They are the one
+  Settings edit that does *not* take the recompute warning: a chart label is
+  cosmetic and carries none of the schedule's blast radius.
+
 Schedule editor rules:
 
 - Net hours is **derived and read-only** — the workbook has it as a formula
@@ -369,8 +378,12 @@ does, or the card would read a different database than every other page.
   should be shaped so subtracting exception hours is a drop-in later.
 - **No authorization.** Anyone who can reach the app can change any config. The
   dev PIN guards only the developer dashboard.
-- **Concurrent edits are last-write-wins.** Acceptable at this edit frequency;
-  route through `write_connection` so the existing failure popup applies.
+- **Concurrent edits are last-write-wins.** Acceptable at this edit frequency.
+  Writes go through `write_connection`, which converts SQLite and OS failures
+  via the shared `database_write_error` helper, so "another user is saving",
+  "the share is read-only" and "the drive is full" reach the user as the same
+  actionable 503 the rest of GREMLIN produces rather than as a bare
+  `database is locked` 500.
 
 ## 7. Tests
 

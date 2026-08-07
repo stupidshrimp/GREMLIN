@@ -438,3 +438,28 @@ table.availability-table thead th:first-child { background: var(--forest-100); }
   border-radius: 10px;
   padding: 0.6rem 0.8rem;
 }
+
+/* Chart labels are edited alongside the membership that decides which bars
+   exist, so they lay out as a compact grid rather than a stack. */
+.availability-config-names {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.5rem 0.9rem;
+}
+.availability-config-names-label {
+  margin: 0 0 0.3rem;
+  font-size: 0.8rem;
+  color: var(--forest-700);
+}
+.availability-config-name-input {
+  width: 100%;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  background: #fff;
+}
+.availability-config-name-input:focus {
+  outline: 2px solid var(--forest-400, #2f8f5b);
+  outline-offset: 1px;
+}

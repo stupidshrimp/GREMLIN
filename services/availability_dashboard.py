@@ -42,6 +42,27 @@ def _iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _empty_reason(repository, charted: list[str], earliest: date | None) -> str:
+    """Explain an empty card in terms of the thing the user would need to fix.
+
+    Three different situations produce no charts, and they need three different
+    answers: nothing imported, nothing configured, or nothing complete yet.
+    Reporting the first for all of them sends someone to re-run a Limble sync
+    when the real problem is that no asset group has been set up.
+    """
+
+    if not charted:
+        return "No asset groups are configured with assets yet."
+    if earliest is None:
+        if repository.has_any_work_orders():
+            return (
+                "No work orders were found for the configured asset groups. "
+                "Check that the asset numbers in Settings match the ones in Limble."
+            )
+        return "No work orders have been imported yet."
+    return "No complete month of work-order data is available yet."
+
+
 def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: date | None = None) -> dict:
     """Compute every group's chart series for the requested month window."""
 
@@ -75,10 +96,13 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
     latest = charted_months[-1] if charted_months else None
     window = resolve_window(today, months=months, data_earliest=earliest, data_latest=latest)
 
-    # With no work orders at all, every asset would compute to 100% and the page
-    # would show nine charts of flat perfection. "No downtime recorded" and "no
-    # data" are the same arithmetic and very different facts, so say which one
-    # this is rather than drawing the optimistic version.
+    # With nothing to compute from, every asset would come out at 100% and the
+    # page would show nine charts of flat perfection. "No downtime recorded" and
+    # "no data" are the same arithmetic and very different facts, so show an
+    # empty state instead -- but name the right fact. A database holding work
+    # orders for assets nobody has added to a group yet is a configuration gap,
+    # not a missing import, and telling the user nothing has been imported would
+    # send them to fix the wrong thing.
     if earliest is None or not window:
         return {
             "months": [],
@@ -90,11 +114,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
             "generated_at": datetime.now().replace(microsecond=0).isoformat(),
             "data_earliest": _iso(earliest),
             "data_latest": _iso(latest),
-            "empty_reason": (
-                "No work orders have been imported yet."
-                if earliest is None
-                else "No complete month of work-order data is available yet."
-            ),
+            "empty_reason": _empty_reason(repository, charted, earliest),
         }
 
     rows = compute_rows(

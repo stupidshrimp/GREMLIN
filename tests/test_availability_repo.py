@@ -14,10 +14,11 @@ import unittest
 from datetime import date
 from pathlib import Path
 
+import repositories.availability_repo
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
 from repositories.raw_repo import RawRepository
 from services.availability_dashboard import build_config, build_dashboard, clamp_window_months
-from services.life_data_service import LifeDataService
+from services.life_data_service import DatabaseWriteError, LifeDataService
 
 # Availability Data, January 2026, the Salvagnini group -- full stored precision.
 JANUARY_DOWNTIME_HOURS = {
@@ -492,7 +493,57 @@ class DashboardTests(AvailabilityTestCase):
         data = build_dashboard(self.repo, months=5, today=date(2026, 8, 6))
         self.assertEqual(data["groups"], [])
         self.assertEqual(data["months"], [])
-        self.assertIn("No work orders", data["empty_reason"])
+        self.assertEqual(data["empty_reason"], "No work orders have been imported yet.")
+
+    def test_work_orders_for_unconfigured_assets_are_not_reported_as_an_empty_import(self):
+        """Three empty screens, three different things to go fix.
+
+        A database holding work orders only for assets nobody has added to a
+        group is a configuration gap. Reporting "nothing imported" would send
+        someone to re-run a Limble sync that is already working.
+        """
+
+        self.add_work_order("99999", "2026-06-15 15:00:00", 4.0)
+        data = build_dashboard(self.repo, months=5, today=date(2026, 8, 6))
+        self.assertEqual(data["groups"], [])
+        self.assertIn("configured asset groups", data["empty_reason"])
+        self.assertNotIn("imported", data["empty_reason"])
+
+    def test_no_configured_assets_says_so(self):
+        for group in self.repo.load_groups():
+            self.repo.save_group_schedule(
+                group.asset_group,
+                schedule_hours_per_day=group.schedule_hours_per_day,
+                break_hours_per_day=group.break_hours_per_day,
+                lunch_hours_per_day=group.lunch_hours_per_day,
+                setup_hours_per_day=group.setup_hours_per_day,
+                include=group.include,
+                asset_numbers=[],
+            )
+        self.add_work_order("3101", "2026-06-15 15:00:00", 4.0)
+        data = build_dashboard(self.repo, months=5, today=date(2026, 8, 6))
+        self.assertIn("No asset groups are configured", data["empty_reason"])
+
+    def test_an_asset_with_no_work_orders_still_charts_when_others_have_data(self):
+        """The per-asset no-entry note only applies once the window can resolve."""
+
+        # Building 6 Finishing, so no linked rule feeds the quiet asset --
+        # in Salvagnini a silent machine still inherits its neighbours' hours.
+        self.add_work_order("4001", "2026-06-15 15:00:00", 4.0)
+        data = build_dashboard(self.repo, months=1, today=date(2026, 7, 15))
+        group = next(g for g in data["groups"] if g["asset_group"] == "Building 6 Finishing")
+        quiet = next(r for r in group["rows"] if r["asset_number"] == "4002")
+        self.assertEqual(quiet["availability"], 1.0)
+        self.assertTrue(quiet["no_wo_entries"])
+        self.assertEqual(quiet["note"], "No WO entries this month")
+        # And the asset that does have data is not at 100%.
+        busy = next(r for r in group["rows"] if r["asset_number"] == "4001")
+        self.assertLess(busy["availability"], 1.0)
+
+    def test_has_any_work_orders_ignores_undated_rows(self):
+        self.assertFalse(self.repo.has_any_work_orders())
+        self.add_work_order("3101", "2026-06-15 15:00:00", 1.0)
+        self.assertTrue(self.repo.has_any_work_orders())
 
     def test_manual_overtime_reaches_the_dashboard(self):
         self.seed_salvagnini_january()
@@ -579,6 +630,46 @@ class DashboardTests(AvailabilityTestCase):
         self.assertEqual(len(config["linked_rules"]), 13)
         self.assertIn("3101", config["display_names"])
         self.assertEqual(config["timezone"], "America/Chicago")
+
+
+class WriteFailureTests(AvailabilityTestCase):
+    """A blocked write must arrive as advice, not as a stack trace.
+
+    GREMLIN.db sits on a network share and serialises writers through
+    ``BEGIN IMMEDIATE``, so "another user is saving" is an everyday event. Left
+    as a raw ``sqlite3.OperationalError: database is locked`` it reaches the API
+    as a generic 500; as a DatabaseWriteError it becomes the actionable 503 the
+    rest of the app already uses.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._patched = repositories.availability_repo.DB_WRITE_TIMEOUT_SECONDS
+        repositories.availability_repo.DB_WRITE_TIMEOUT_SECONDS = 1
+        self.addCleanup(
+            setattr, repositories.availability_repo, "DB_WRITE_TIMEOUT_SECONDS", self._patched
+        )
+
+    def _hold_the_writer_slot(self):
+        blocker = sqlite3.connect(self.db_path, timeout=1)
+        blocker.execute("PRAGMA busy_timeout = 0")
+        blocker.execute("BEGIN IMMEDIATE")
+        self.addCleanup(blocker.close)
+        self.addCleanup(blocker.rollback)
+
+    def test_a_locked_database_raises_the_actionable_error(self):
+        self._hold_the_writer_slot()
+        repo = AvailabilityRepository(self.db_path)
+        with self.assertRaises(DatabaseWriteError) as ctx:
+            repo.save_goal("Salvagnini", "2026-01-01", 0.9)
+        message = str(ctx.exception)
+        self.assertIn("another GREMLIN user", message)
+        self.assertIn(str(self.db_path), message)
+
+    def test_a_config_error_is_not_dressed_up_as_a_write_failure(self):
+        repo = AvailabilityRepository(self.db_path)
+        with self.assertRaises(AvailabilityConfigError):
+            repo.save_goal("Salvagnini", "2026-01-01", 5.0)
 
 
 class ApiTests(AvailabilityTestCase):

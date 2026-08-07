@@ -71,6 +71,44 @@ class DatabaseWriteError(RuntimeError):
     """User-facing error raised when GREMLIN cannot safely write to SQLite."""
 
 
+def database_write_error(exc: sqlite3.Error | OSError, db_path: Path | str) -> DatabaseWriteError:
+    """Turn a SQLite/OS write failure into something a plant user can act on.
+
+    Module level so every writer to the shared database reports failures the
+    same way. GREMLIN.db lives on a network share and serialises writers through
+    ``BEGIN IMMEDIATE``, so "another user is saving", "the share is read-only"
+    and "the drive is full" are the everyday failures. A raw
+    ``sqlite3.OperationalError: database is locked`` names none of them.
+    """
+
+    raw_reason = str(exc).strip() or exc.__class__.__name__
+    reason_lower = raw_reason.lower()
+    if "locked" in reason_lower or "busy" in reason_lower:
+        reason = (
+            f"another GREMLIN user or program is writing to the shared database and it stayed locked "
+            f"for more than {DB_WRITE_TIMEOUT_SECONDS} seconds"
+        )
+        action = "Wait a moment, then try saving again. If this keeps happening, ask other users to finish their save first."
+    elif "readonly" in reason_lower or "permission" in reason_lower or "access" in reason_lower:
+        reason = "your Windows account does not have permission to write to the shared database or its folder"
+        action = "Confirm you can edit files in the shared folder, then reopen GREMLIN."
+    elif "unable to open" in reason_lower or "no such file" in reason_lower or "path" in reason_lower:
+        reason = "GREMLIN could not open the database path"
+        action = "Confirm the database file above exists and that its folder is reachable."
+    elif "disk" in reason_lower or "space" in reason_lower or "full" in reason_lower:
+        reason = "the shared drive may be out of space or unavailable"
+        action = "Check the shared drive status and free space, then try again."
+    else:
+        reason = raw_reason
+        action = "Try again. If it repeats, send this message to the GREMLIN maintainer."
+    return DatabaseWriteError(
+        "GREMLIN could not write to the shared database.\n\n"
+        f"Database: {db_path}\n"
+        f"Reason: {reason}.\n"
+        f"What to do: {action}"
+    )
+
+
 RECORD_CLASSES = (
     "CORRECTIVE_WO",
     "PM",
@@ -279,32 +317,8 @@ class LifeDataService:
             return
 
     def _database_write_error(self, exc: sqlite3.Error | OSError) -> DatabaseWriteError:
-        raw_reason = str(exc).strip() or exc.__class__.__name__
-        reason_lower = raw_reason.lower()
-        if "locked" in reason_lower or "busy" in reason_lower:
-            reason = (
-                f"another GREMLIN user or program is writing to the shared database and it stayed locked "
-                f"for more than {DB_WRITE_TIMEOUT_SECONDS} seconds"
-            )
-            action = "Wait a moment, then try saving again. If this keeps happening, ask other users to finish their save first."
-        elif "readonly" in reason_lower or "permission" in reason_lower or "access" in reason_lower:
-            reason = "your Windows account does not have permission to write to the shared database or its folder"
-            action = "Confirm you can edit files in the shared folder, then reopen GREMLIN."
-        elif "unable to open" in reason_lower or "no such file" in reason_lower or "path" in reason_lower:
-            reason = "GREMLIN could not open the database path"
-            action = "Confirm the database file above exists and that its folder is reachable."
-        elif "disk" in reason_lower or "space" in reason_lower or "full" in reason_lower:
-            reason = "the shared drive may be out of space or unavailable"
-            action = "Check the shared drive status and free space, then try again."
-        else:
-            reason = raw_reason
-            action = "Try again. If it repeats, send this message to the GREMLIN maintainer."
-        return DatabaseWriteError(
-            "GREMLIN could not write to the shared database.\n\n"
-            f"Database: {self.db_path}\n"
-            f"Reason: {reason}.\n"
-            f"What to do: {action}"
-        )
+        return database_write_error(exc, self.db_path)
+
 
     def ensure_schema(self) -> None:
         """Create all downstream REL-compliant tables in the existing GREMLIN.db."""
