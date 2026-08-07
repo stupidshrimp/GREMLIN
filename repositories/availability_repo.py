@@ -425,14 +425,45 @@ class AvailabilityRepository:
     # ------------------------------------------------------------------
     # Work orders
     # ------------------------------------------------------------------
-    def _zone(self) -> ZoneInfo | timezone:
-        name = self.load_timezone()
+    def _resolve_zone(self, name: str) -> tuple[ZoneInfo | timezone, str | None]:
+        """Load the plant timezone, reporting why if it could not be loaded.
+
+        Falling back to UTC keeps the dashboard computable, but it must not be
+        silent: UTC bucketing moves work orders created near local midnight into
+        the wrong month, and it defeats ``plant_today`` exactly when that guard
+        matters -- during the first UTC hours of a new month. A number that is
+        quietly wrong is worse than a page that says why.
+        """
+
         try:
-            return ZoneInfo(name)
+            return ZoneInfo(name), None
         except (ZoneInfoNotFoundError, ValueError, KeyError):
-            # Never fail the dashboard over a bad timezone name; UTC keeps the
-            # months computable and the misconfiguration visible in settings.
-            return timezone.utc
+            pass
+
+        # ZoneInfo raises the same error for "there is no timezone database" and
+        # "that is not a timezone", but the two need opposite remedies: install a
+        # package, or fix a typo. Probing a key every database contains tells
+        # them apart, so the message names the thing actually worth doing.
+        try:
+            ZoneInfo("UTC")
+        except Exception:
+            return timezone.utc, (
+                f"The timezone database is unavailable, so '{name}' could not be loaded and months "
+                "are being bucketed in UTC. Work orders created near local midnight may land in the "
+                "wrong month. Install the 'tzdata' package (pip install -r requirements.txt)."
+            )
+        return timezone.utc, (
+            f"'{name}' is not a recognised timezone, so months are being bucketed in UTC. "
+            "Set a valid IANA name such as 'America/Chicago'."
+        )
+
+    def _zone(self) -> ZoneInfo | timezone:
+        return self._resolve_zone(self.load_timezone())[0]
+
+    def timezone_warning(self) -> str | None:
+        """The reason the plant timezone could not be used, if it could not."""
+
+        return self._resolve_zone(self.load_timezone())[1]
 
     def plant_today(self) -> date:
         """Today's date on the plant's clock, not the server's.

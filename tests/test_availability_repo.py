@@ -9,8 +9,10 @@ reproduces the workbook end to end.
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
+import zoneinfo
 from datetime import date, datetime
 from datetime import timezone as dt_timezone
 from pathlib import Path
@@ -413,6 +415,76 @@ class SeedOnceTests(AvailabilityTestCase):
         repo.replace_linked_rules([])
         AvailabilityRepository(legacy).ensure_schema()
         self.assertEqual(len(repo.load_linked_rules()), 0)
+
+
+class TimezoneAvailabilityTests(AvailabilityTestCase):
+    """A missing timezone database must not quietly become UTC.
+
+    GREMLIN ships to Windows, where Python has no system IANA database, so
+    without the ``tzdata`` package ``ZoneInfo`` cannot load the plant timezone at
+    all. Falling back to UTC keeps the page working but moves work orders
+    created near local midnight into the wrong month -- and defeats
+    ``plant_today`` during exactly the hours it exists for.
+    """
+
+    def _without_timezone_database(self):
+        """Simulate a stock Windows install: no tzpath, no tzdata package."""
+
+        original_path = list(zoneinfo.TZPATH)
+        zoneinfo.reset_tzpath([])
+        zoneinfo.ZoneInfo.clear_cache()
+        patched = mock.patch.dict(sys.modules, {"tzdata": None})
+        patched.start()
+
+        def restore():
+            patched.stop()
+            zoneinfo.reset_tzpath(original_path)
+            zoneinfo.ZoneInfo.clear_cache()
+
+        self.addCleanup(restore)
+
+    def test_tzdata_is_a_declared_dependency(self):
+        """The fix is a runtime dependency, not just a nicer error message."""
+
+        requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text()
+        packages = [
+            line.strip().lower()
+            for line in requirements.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        self.assertIn("tzdata", packages)
+
+    def test_a_working_timezone_produces_no_warning(self):
+        self.assertIsNone(self.repo.timezone_warning())
+
+    def test_a_missing_database_is_reported_not_hidden(self):
+        self._without_timezone_database()
+        warning = self.repo.timezone_warning()
+        self.assertIsNotNone(warning)
+        self.assertIn("tzdata", warning)
+        self.assertIn("UTC", warning)
+
+    def test_the_dashboard_payload_carries_the_warning(self):
+        self._without_timezone_database()
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15))
+        self.assertIn("tzdata", data["timezone_warning"])
+
+    def test_an_unrecognised_name_is_not_blamed_on_a_missing_database(self):
+        """Same exception, opposite remedies: install a package vs fix a typo."""
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE availability_settings SET timezone = 'Mars/Olympus' WHERE id = 1")
+        warning = self.repo.timezone_warning()
+        self.assertIn("not a recognised timezone", warning)
+        self.assertNotIn("tzdata", warning)
+
+    def test_the_page_still_computes_when_the_timezone_cannot_be_loaded(self):
+        self._without_timezone_database()
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15))
+        group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        row = next(r for r in group["rows"] if r["asset_number"] == "3101")
+        self.assertEqual(row["direct_downtime_hours"], 10.0)
 
 
 class PlantTimezoneTests(AvailabilityTestCase):

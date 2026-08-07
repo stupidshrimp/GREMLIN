@@ -50,6 +50,10 @@
     availability: null,
     availabilityWindow: 5,
     availabilityError: "",
+    // A misconfiguration the page can compute around but must not hide -- kept
+    // separate from availabilityError so a warning never reads as a failure,
+    // and never stands in for the empty-state explanation.
+    availabilityWarning: "",
     // Per-group table mode: "availability" (read-only) or "ot" (editable).
     availabilityTableMode: {},
     // Asset numbers the Availability config considers in scope. Seeds the KPI /
@@ -898,6 +902,11 @@
       const data = await getJson(`${AVAILABILITY_API}?months=${state.availabilityWindow}`);
       state.availability = data;
       state.availabilityError = "";
+      // A timezone that could not be loaded is a misconfiguration, not a
+      // failure: the page still computes, in UTC, which quietly moves work
+      // orders created near local midnight into the wrong month. Surface it
+      // rather than letting the numbers look ordinary.
+      state.availabilityWarning = data.timezone_warning || "";
       if (Array.isArray(data.all_asset_numbers) && data.all_asset_numbers.length) {
         state.defaultAssets = data.all_asset_numbers.slice();
       }
@@ -1128,6 +1137,10 @@
   function renderAvailability() {
     renderAvailabilityPreview();
     if (state.expanded === "availability") renderAvailabilityExpanded();
+    // Re-asserted on every render, not just the first load: the numbers stay
+    // wrong for as long as the misconfiguration lasts.
+    if (state.availabilityError) showBanner(state.availabilityError, "error");
+    else if (state.availabilityWarning) showBanner(state.availabilityWarning, "info");
   }
 
   async function refreshAvailability() {
@@ -1282,7 +1295,6 @@
     renderSelectedChips();
     renderScopeHint();
     renderAvailability();
-    if (state.availabilityError) showBanner(state.availabilityError, "error");
 
     loadAssets();
     loadMetrics();

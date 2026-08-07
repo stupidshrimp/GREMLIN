@@ -311,6 +311,16 @@ Changes from the earlier attempt's schema:
   correct only during DST, so January is off by an hour. This only affects work
   orders created within an hour of a month boundary, but `zoneinfo` costs nothing.
 
+  `zoneinfo` does need a timezone database, and Python has none on Windows —
+  which is where GREMLIN runs (`start_gremlin.bat`, `C:\GREMLIN\GREMLIN.db`).
+  `tzdata` is therefore a declared runtime dependency. If it is missing anyway,
+  the card falls back to UTC so the page still computes, but says so: silent UTC
+  bucketing moves work orders created near local midnight into the wrong month
+  and defeats the plant-clock rule above during exactly the hours it exists for.
+  A missing database and an unrecognised timezone name raise the same exception
+  but need opposite remedies, so the two are told apart and the message names
+  the one worth acting on.
+
 `availability_goal_percent` and `availability_manual_ot` are keyed by month, so
 editing one month's value cannot disturb another. Only the schedule, membership
 and link rules are global across time, per §2.5.
