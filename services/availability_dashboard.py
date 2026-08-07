@@ -66,7 +66,10 @@ def _empty_reason(repository, charted: list[str], earliest: date | None) -> str:
 def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: date | None = None) -> dict:
     """Compute every group's chart series for the requested month window."""
 
-    today = today or date.today()
+    # The plant's clock, not the server's: whether a month has finished must be
+    # judged on the same timezone the work orders are bucketed by, or a UTC
+    # server charts July as complete while the plant is still working July 31.
+    today = today or repository.plant_today()
     months = clamp_window_months(months)
 
     groups = repository.load_groups()

@@ -11,8 +11,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
+from datetime import timezone as dt_timezone
 from pathlib import Path
+from unittest import mock
 
 import repositories.availability_repo
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
@@ -360,6 +362,104 @@ class LegacySchemaMigrationTests(unittest.TestCase):
         self.assertEqual(self.repo.load_manual_ot()[("3101", date(2026, 2, 1))], 8.0)
         self.assertEqual(self.repo.load_goals()[("Salvagnini", date(2026, 2, 1))], 0.9)
         self.assertEqual(self.repo.load_display_names()["3101"], "MV")
+
+
+class SeedOnceTests(AvailabilityTestCase):
+    """An empty configuration is a configuration, not an uninitialised database."""
+
+    def test_a_deliberately_emptied_rule_set_survives_a_restart(self):
+        """Otherwise Salvagnini's availability changes on its own overnight.
+
+        A count-based seed cannot tell "the user deleted every rule" from "this
+        database is new", so it restores all thirteen defaults on the next
+        process start and quietly rewrites the numbers.
+        """
+
+        self.assertEqual(len(self.repo.load_linked_rules()), 13)
+        self.repo.replace_linked_rules([])
+        self.assertEqual(len(self.repo.load_linked_rules()), 0)
+
+        AvailabilityRepository(self.db_path).ensure_schema()  # next process start
+        self.assertEqual(len(self.repo.load_linked_rules()), 0)
+        AvailabilityRepository(self.db_path).ensure_schema()  # and the one after
+        self.assertEqual(len(self.repo.load_linked_rules()), 0)
+
+    def test_a_narrowed_rule_set_is_not_topped_back_up(self):
+        self.repo.replace_linked_rules(
+            [{"parent_asset_number": "3102", "linked_asset_number": "3101", "impact_factor": 0.25}]
+        )
+        AvailabilityRepository(self.db_path).ensure_schema()
+        rules = self.repo.load_linked_rules()
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].impact_factor, 0.25)
+
+    def test_a_fresh_database_still_gets_its_defaults(self):
+        fresh = Path(self._tmp.name) / "fresh.db"
+        repo = AvailabilityRepository(fresh)
+        repo.ensure_schema()
+        self.assertEqual(len(repo.load_linked_rules()), 13)
+        self.assertEqual(len(repo.load_groups()), 10)
+
+    def test_a_legacy_database_seeds_once_on_upgrade_then_stops(self):
+        """The flag defaults to 0, so an upgraded database is filled in once."""
+
+        legacy = Path(self._tmp.name) / "legacy.db"
+        with sqlite3.connect(legacy) as conn:
+            conn.executescript(_LEGACY_SCHEMA)
+            conn.execute("INSERT INTO availability_settings(id, selected_year) VALUES (1, 2026)")
+        repo = AvailabilityRepository(legacy)
+        repo.ensure_schema()
+        self.assertEqual(len(repo.load_linked_rules()), 13)
+        repo.replace_linked_rules([])
+        AvailabilityRepository(legacy).ensure_schema()
+        self.assertEqual(len(repo.load_linked_rules()), 0)
+
+
+class PlantTimezoneTests(AvailabilityTestCase):
+    """Month completeness is judged on the plant's clock, not the server's."""
+
+    def _at(self, utc_instant):
+        """Run with the wall clock pinned to a given UTC instant."""
+
+        real = repositories.availability_repo.datetime
+
+        class Frozen(real):
+            @classmethod
+            def now(cls, tz=None):
+                return utc_instant.astimezone(tz) if tz else utc_instant.replace(tzinfo=None)
+
+        return mock.patch.object(repositories.availability_repo, "datetime", Frozen)
+
+    def test_plant_today_lags_a_utc_server_across_midnight(self):
+        # 02:00 UTC on 1 August is 21:00 on 31 July in Chicago.
+        with self._at(datetime(2026, 8, 1, 2, 0, tzinfo=dt_timezone.utc)):
+            self.assertEqual(self.repo.plant_today(), date(2026, 7, 31))
+
+    def test_a_month_is_not_charted_until_it_is_over_where_the_plant_is(self):
+        """July's downtime is still arriving; charting it against full
+        scheduled hours would report an availability that only reads high."""
+
+        self.add_work_order("3101", "2026-06-15 15:00:00", 4.0)
+        self.add_work_order("3101", "2026-07-15 15:00:00", 4.0)
+        with self._at(datetime(2026, 8, 1, 2, 0, tzinfo=dt_timezone.utc)):
+            data = build_dashboard(self.repo, months=12)
+        self.assertNotIn("2026-07-01", data["months"])
+        self.assertIn("2026-06-01", data["months"])
+
+    def test_the_month_appears_once_the_plant_has_rolled_over(self):
+        self.add_work_order("3101", "2026-06-15 15:00:00", 4.0)
+        self.add_work_order("3101", "2026-07-15 15:00:00", 4.0)
+        # 12:00 UTC on 1 August is 07:00 on 1 August in Chicago.
+        with self._at(datetime(2026, 8, 1, 12, 0, tzinfo=dt_timezone.utc)):
+            data = build_dashboard(self.repo, months=12)
+        self.assertIn("2026-07-01", data["months"])
+
+    def test_an_explicit_today_still_wins(self):
+        """Tests and callers keep their injection point."""
+
+        self.add_work_order("3101", "2026-06-15 15:00:00", 4.0)
+        data = build_dashboard(self.repo, months=1, today=date(2026, 7, 15))
+        self.assertEqual(data["months"], ["2026-06-01"])
 
 
 class UnmigratedMappedTableTests(AvailabilityTestCase):

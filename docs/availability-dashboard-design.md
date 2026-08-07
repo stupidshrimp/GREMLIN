@@ -75,6 +75,13 @@ is Mar–Jul 2026. The window is then clamped to the months that actually have
 work-order data, so a database with three months of history shows three months
 rather than two empty columns.
 
+"Complete" is judged on the **plant's** clock, not the server's. Work orders are
+bucketed into months in plant local time, so the question "is this month over?"
+has to be asked on the same timezone. A UTC-hosted app would otherwise chart July
+as complete during the first hours of August while the plant is still working
+July 31 — a month whose downtime is still arriving, measured against its full
+scheduled hours, which makes availability read high.
+
 The workbook's rolling-window routine is named `UpdateRollingFiveMonthWindow`
 but sets `MAX_MONTHS = 12`; five appears to have been the original intent, and
 the workbook currently renders eight columns because that is how much 2026 data
@@ -179,8 +186,21 @@ Rejected: a JSON/YAML file (the app runs from a git checkout via
 needs its own locking and loses atomicity), and code-only constants (any goal
 change would need a developer, defeating the point).
 
-Defaults seed from `availability_config.py` with `INSERT OR IGNORE`, so a fresh
-database works with zero setup while user edits persist.
+Defaults seed from `availability_config.py`, so a fresh database works with zero
+setup while user edits persist.
+
+Seeding is gated on a stored `seeded_defaults` flag, **not** on the tables being
+empty. Emptiness is not the same as uninitialised: a user who deletes every
+linked-downtime rule has configured an empty rule set, and a count-based guard
+would read that as a fresh database and restore all thirteen on the next process
+start — silently changing Salvagnini's availability overnight. The flag defaults
+to 0, so a database from the earlier attempt still seeds once on upgrade and is
+authoritative from then on.
+
+One consequence worth knowing: adding an asset to `DEFAULT_DISPLAY_NAMES` in a
+later code change will not appear in an already-seeded database. That is the
+intended trade — §2.6 makes the database authoritative once configured, and
+labels are editable in Settings.
 
 ### 2.7 One source of truth for group membership
 

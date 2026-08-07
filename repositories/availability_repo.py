@@ -45,6 +45,7 @@ _TABLES: dict[str, str] = {
     "availability_settings": """
         id INTEGER PRIMARY KEY CHECK (id = 1),
         timezone TEXT NOT NULL DEFAULT 'America/Chicago',
+        seeded_defaults INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT
     """,
     "availability_asset_groups": """
@@ -100,7 +101,7 @@ _TABLES: dict[str, str] = {
 }
 
 _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "availability_settings": ("id", "timezone", "updated_at"),
+    "availability_settings": ("id", "timezone", "seeded_defaults", "updated_at"),
     "availability_asset_groups": (
         "id", "asset_group", "schedule_hours_per_day", "break_hours_per_day",
         "lunch_hours_per_day", "setup_hours_per_day", "include_flag", "notes",
@@ -274,17 +275,28 @@ class AvailabilityRepository:
             conn.execute(f"ALTER TABLE {staging} RENAME TO {table}")
 
     def _seed(self, conn: sqlite3.Connection) -> None:
-        """Populate defaults on a database that has none.
+        """Populate defaults exactly once, on a database that has never had them.
 
-        ``INSERT OR IGNORE`` throughout, and the group seed is skipped entirely
-        once any group exists, so an installation someone has already
-        configured is never overwritten by a code update.
+        Gated on a stored ``seeded_defaults`` flag rather than on the tables
+        being empty. Emptiness is not the same as uninitialised: a user who
+        deletes every linked-downtime rule has *configured* an empty rule set,
+        and a count-based guard would treat that as a fresh database and restore
+        all thirteen on the next restart -- silently changing Salvagnini's
+        availability to something nobody asked for.
+
+        The flag defaults to 0, so a database from the earlier attempt seeds
+        once on upgrade and is authoritative from then on.
         """
 
         conn.execute(
             "INSERT OR IGNORE INTO availability_settings(id, timezone, updated_at) VALUES (1, ?, ?)",
             (DEFAULT_TIMEZONE, _now()),
         )
+        already_seeded = conn.execute(
+            "SELECT seeded_defaults FROM availability_settings WHERE id = 1"
+        ).fetchone()
+        if already_seeded is not None and int(already_seeded[0] or 0):
+            return
 
         if conn.execute("SELECT COUNT(*) FROM availability_asset_groups").fetchone()[0] == 0:
             for order, (name, assets, sched, brk, lunch, setup, include, notes) in enumerate(
@@ -321,6 +333,8 @@ class AvailabilityRepository:
                     " VALUES (?, ?, ?, ?, ?)",
                     (rule_group, parent, linked, factor, _now()),
                 )
+
+        conn.execute("UPDATE availability_settings SET seeded_defaults = 1 WHERE id = 1")
 
     # ------------------------------------------------------------------
     # Reads
@@ -419,6 +433,19 @@ class AvailabilityRepository:
             # Never fail the dashboard over a bad timezone name; UTC keeps the
             # months computable and the misconfiguration visible in settings.
             return timezone.utc
+
+    def plant_today(self) -> date:
+        """Today's date on the plant's clock, not the server's.
+
+        Work orders are bucketed into months in plant local time, so the
+        decision "is this month over yet?" has to be asked on the same clock. A
+        UTC server would otherwise call July complete during the first hours of
+        August while the plant is still working July 31 -- charting a month
+        whose downtime is still arriving against its full scheduled hours, which
+        makes availability read high.
+        """
+
+        return datetime.now(self._zone()).date()
 
     @staticmethod
     def _parse_utc(value: object) -> datetime | None:
