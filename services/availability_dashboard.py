@@ -50,9 +50,29 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
 
     groups = repository.load_groups()
     included = [group for group in groups if group.include]
-    assets = sorted({asset for group in included for asset in group.asset_numbers})
+    charted = sorted({asset for group in included for asset in group.asset_numbers})
+    linked_rules = repository.load_linked_rules()
 
-    earliest, latest = repository.data_extent(assets)
+    # Work orders must be loaded for a wider set than the charts draw. A linked
+    # rule can point at an asset that is not a member of any included group --
+    # after it is removed from a group's membership, or after a group is
+    # excluded -- and if its downtime is never loaded, the still-active rule
+    # silently contributes zero instead of the parent's real linked hours.
+    scope = sorted(set(charted) | {
+        rule.linked_asset_number for rule in linked_rules if rule.impact_factor > 0
+    })
+    work_orders = repository.load_work_orders(scope)
+
+    # The window follows the assets that are actually charted, so a stale rule
+    # pointing at a decommissioned asset cannot stretch the axis into months
+    # nothing on screen has data for.
+    charted_months = sorted({
+        date(order.created_local.year, order.created_local.month, 1)
+        for order in work_orders
+        if order.asset_number in set(charted)
+    })
+    earliest = charted_months[0] if charted_months else None
+    latest = charted_months[-1] if charted_months else None
     window = resolve_window(today, months=months, data_earliest=earliest, data_latest=latest)
 
     # With no work orders at all, every asset would compute to 100% and the page
@@ -65,7 +85,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
             "month_labels": [],
             "window_months": months,
             "groups": [],
-            "all_asset_numbers": assets,
+            "all_asset_numbers": charted,
             "timezone": repository.load_timezone(),
             "generated_at": datetime.now().replace(microsecond=0).isoformat(),
             "data_earliest": _iso(earliest),
@@ -77,12 +97,11 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
             ),
         }
 
-    work_orders = repository.load_work_orders(assets)
     rows = compute_rows(
         included,
         window,
         work_orders,
-        linked_rules=repository.load_linked_rules(),
+        linked_rules=linked_rules,
         display_names=repository.load_display_names(),
         manual_ot=repository.load_manual_ot(),
     )
@@ -121,7 +140,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
         "generated_at": datetime.now().replace(microsecond=0).isoformat(),
         "data_earliest": _iso(earliest),
         "data_latest": _iso(latest),
-        "all_asset_numbers": assets,
+        "all_asset_numbers": charted,
         "groups": [
             {
                 "asset_group": chart.asset_group,

@@ -129,6 +129,15 @@ before anyone questions the numbers:
 
 All 13 seeded rules are Salvagnini at 0.5. Other groups compute direct-only.
 
+**Rules outlive membership.** A rule can name an asset that is no longer in any
+included group — after it is removed from a group, or after its group is
+excluded. Work orders are therefore loaded for group members *plus* every asset
+named by a live rule, while only group members are charted. Loading just the
+members would make the rule contribute zero, which reads as an improvement in
+the parent's availability rather than as missing data. The month window still
+follows the charted assets, so a decommissioned asset's history cannot stretch
+the axis.
+
 ### 2.5 Nothing derived is stored — every request recalculates
 
 Availability results are a pure function of (config + work orders) and are
@@ -243,8 +252,8 @@ Notes:
 ## 4. Data model
 
 Seven config tables. All already exist in production databases from the earlier
-attempt; `CREATE TABLE IF NOT EXISTS` plus `INSERT OR IGNORE` preserves any data
-already in them.
+attempt, but **with a different schema**, so they are migrated on bootstrap
+rather than merely created — see §4.1.
 
 | Table | Holds |
 |---|---|
@@ -274,6 +283,40 @@ Changes from the earlier attempt's schema:
 `availability_goal_percent` and `availability_manual_ot` are keyed by month, so
 editing one month's value cannot disturb another. Only the schedule, membership
 and link rules are global across time, per §2.5.
+
+### 4.1 Migrating the earlier attempt's tables
+
+An earlier draft of this plan claimed `CREATE TABLE IF NOT EXISTS` plus
+`INSERT OR IGNORE` was enough to reuse the existing tables. That is true of
+their *data* and false of their *schema*, and the schema changed in three ways:
+
+| Table | Legacy shape | Now |
+|---|---|---|
+| `availability_settings` | `selected_year NOT NULL`, `utc_offset_hours`, `last_updated` | `timezone`, `updated_at` |
+| `availability_asset_groups` | `net_scheduled_hours_per_day NOT NULL` | derived, not stored; `updated_at` added |
+| `availability_manual_ot` | keyed `(asset_group, asset_number, month_date)` | keyed `(asset_number, month_date)` |
+
+Everything else gained `updated_at`, and `availability_linked_downtime_rules`
+gained a `UNIQUE(parent, linked)` constraint it did not have.
+
+Left unmigrated, the first availability request on an existing installation
+fails with `no column named timezone` — which is the *expected* state of every
+real database, not an edge case.
+
+So `ensure_schema` compares each table's columns against the target and rebuilds
+any that differ: create the new shape, copy the columns the two have in common,
+swap it in. That also repairs the missing unique constraint, which
+`ALTER TABLE ADD COLUMN` cannot. Columns that existed only in the old shape are
+dropped — they have no meaning under the current model. Rows that collide on a
+newly-narrowed key (an asset whose overtime was recorded under two groups) keep
+the later edit.
+
+The rebuild runs with foreign keys disabled on its own connection, because
+SQLite only honours a `foreign_keys` change outside a transaction, and
+`availability_asset_group_assets` references the group table being rebuilt.
+Group ids are copied, so those references survive.
+
+`availability_results` is not migrated and not dropped — see §2.5.
 
 ## 5. Interfaces
 

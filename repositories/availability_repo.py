@@ -36,63 +36,98 @@ from services.availability_service import AssetGroup, LinkedRule, WorkOrder
 
 DB_WRITE_TIMEOUT_SECONDS = 30
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS availability_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    timezone TEXT NOT NULL DEFAULT 'America/Chicago',
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS availability_asset_groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_group TEXT NOT NULL UNIQUE,
-    schedule_hours_per_day REAL NOT NULL,
-    break_hours_per_day REAL NOT NULL DEFAULT 0,
-    lunch_hours_per_day REAL NOT NULL DEFAULT 0,
-    setup_hours_per_day REAL NOT NULL DEFAULT 0,
-    include_flag INTEGER NOT NULL DEFAULT 1,
-    notes TEXT,
-    sort_order INTEGER NOT NULL,
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS availability_asset_group_assets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_group_id INTEGER NOT NULL,
-    asset_number TEXT NOT NULL,
-    sort_order INTEGER NOT NULL,
-    UNIQUE(asset_group_id, asset_number),
-    FOREIGN KEY(asset_group_id) REFERENCES availability_asset_groups(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS availability_asset_display_names (
-    asset_number TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS availability_linked_downtime_rules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    rule_group TEXT NOT NULL DEFAULT '',
-    parent_asset_number TEXT NOT NULL,
-    linked_asset_number TEXT NOT NULL,
-    impact_factor REAL NOT NULL DEFAULT 0.5,
-    updated_at TEXT,
-    UNIQUE(parent_asset_number, linked_asset_number)
-);
-CREATE TABLE IF NOT EXISTS availability_goal_percent (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_group TEXT NOT NULL,
-    month_date TEXT NOT NULL,
-    goal_percent REAL NOT NULL DEFAULT 0.95,
-    updated_at TEXT,
-    UNIQUE(asset_group, month_date)
-);
-CREATE TABLE IF NOT EXISTS availability_manual_ot (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    asset_number TEXT NOT NULL,
-    month_date TEXT NOT NULL,
-    manual_ot_hours REAL NOT NULL DEFAULT 0,
-    updated_at TEXT,
-    UNIQUE(asset_number, month_date)
-);
-"""
+# One entry per configuration table: the body of its CREATE TABLE, and the
+# columns it is expected to have. Kept per-table rather than as one script so
+# the same definition can both create a table and rebuild a legacy one (see
+# _migrate_legacy_tables).
+_TABLES: dict[str, str] = {
+    "availability_settings": """
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        timezone TEXT NOT NULL DEFAULT 'America/Chicago',
+        updated_at TEXT
+    """,
+    "availability_asset_groups": """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_group TEXT NOT NULL UNIQUE,
+        schedule_hours_per_day REAL NOT NULL,
+        break_hours_per_day REAL NOT NULL DEFAULT 0,
+        lunch_hours_per_day REAL NOT NULL DEFAULT 0,
+        setup_hours_per_day REAL NOT NULL DEFAULT 0,
+        include_flag INTEGER NOT NULL DEFAULT 1,
+        notes TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT
+    """,
+    "availability_asset_group_assets": """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_group_id INTEGER NOT NULL,
+        asset_number TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(asset_group_id, asset_number),
+        FOREIGN KEY(asset_group_id) REFERENCES availability_asset_groups(id) ON DELETE CASCADE
+    """,
+    "availability_asset_display_names": """
+        asset_number TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        updated_at TEXT
+    """,
+    "availability_linked_downtime_rules": """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_group TEXT NOT NULL DEFAULT '',
+        parent_asset_number TEXT NOT NULL,
+        linked_asset_number TEXT NOT NULL,
+        impact_factor REAL NOT NULL DEFAULT 0.5,
+        updated_at TEXT,
+        UNIQUE(parent_asset_number, linked_asset_number)
+    """,
+    "availability_goal_percent": """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_group TEXT NOT NULL,
+        month_date TEXT NOT NULL,
+        goal_percent REAL NOT NULL DEFAULT 0.95,
+        updated_at TEXT,
+        UNIQUE(asset_group, month_date)
+    """,
+    "availability_manual_ot": """
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_number TEXT NOT NULL,
+        month_date TEXT NOT NULL,
+        manual_ot_hours REAL NOT NULL DEFAULT 0,
+        updated_at TEXT,
+        UNIQUE(asset_number, month_date)
+    """,
+}
+
+_EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "availability_settings": ("id", "timezone", "updated_at"),
+    "availability_asset_groups": (
+        "id", "asset_group", "schedule_hours_per_day", "break_hours_per_day",
+        "lunch_hours_per_day", "setup_hours_per_day", "include_flag", "notes",
+        "sort_order", "updated_at",
+    ),
+    "availability_asset_group_assets": ("id", "asset_group_id", "asset_number", "sort_order"),
+    "availability_asset_display_names": ("asset_number", "display_name", "updated_at"),
+    "availability_linked_downtime_rules": (
+        "id", "rule_group", "parent_asset_number", "linked_asset_number",
+        "impact_factor", "updated_at",
+    ),
+    "availability_goal_percent": ("id", "asset_group", "month_date", "goal_percent", "updated_at"),
+    "availability_manual_ot": ("id", "asset_number", "month_date", "manual_ot_hours", "updated_at"),
+}
+
+# Tables whose legacy shape can produce more than one row per new unique key, so
+# the copy has to resolve the collision instead of failing. availability_manual_ot
+# was keyed (asset_group, asset_number, month_date) and is now keyed
+# (asset_number, month_date): if an asset ever moved between groups it has two
+# rows for one month. Ordering by id and letting the later row win keeps the most
+# recent edit, which is the one the user last intended.
+_MIGRATION_ORDER_BY: dict[str, str] = {
+    "availability_manual_ot": "id",
+}
+
+_SCHEMA = "\n".join(
+    f"CREATE TABLE IF NOT EXISTS {name} ({body});" for name, body in _TABLES.items()
+)
 
 
 class AvailabilityConfigError(ValueError):
@@ -163,9 +198,70 @@ class AvailabilityRepository:
     # Schema and seeding
     # ------------------------------------------------------------------
     def ensure_schema(self) -> None:
-        with self.write_connection() as conn:
+        """Create, migrate and seed the availability configuration tables.
+
+        Runs on its own connection with foreign keys disabled, because migrating
+        a legacy table means rebuilding it, and SQLite only honours a
+        ``foreign_keys`` change outside a transaction.
+        """
+
+        conn = self.connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("BEGIN IMMEDIATE")
             conn.executescript(_SCHEMA)
+            self._migrate_legacy_tables(conn)
             self._seed(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _migrate_legacy_tables(self, conn: sqlite3.Connection) -> None:
+        """Bring tables left by the earlier attempt up to the current shape.
+
+        ``CREATE TABLE IF NOT EXISTS`` preserves the *data* in an existing table
+        but does nothing about its *schema*, and this feature's schema changed:
+        ``updated_at`` was added everywhere, ``availability_settings`` swapped
+        ``selected_year``/``utc_offset_hours`` for a timezone name, and
+        ``availability_manual_ot`` dropped ``asset_group`` from its key. Without
+        this step, a database from the earlier attempt -- the expected state for
+        every existing installation -- fails on the first request with
+        ``no column named timezone``.
+
+        Any table whose columns differ from the target is rebuilt: create the
+        new shape, copy the columns the two have in common, swap it in. That
+        also repairs missing UNIQUE constraints, which ``ALTER TABLE ADD COLUMN``
+        cannot. Columns that only existed in the old shape are dropped; they
+        have no meaning under the current model.
+        """
+
+        for table, expected in _EXPECTED_COLUMNS.items():
+            actual = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if not actual or tuple(actual) == expected:
+                continue
+
+            shared = [column for column in expected if column in actual]
+            staging = f"{table}__migrating"
+            conn.execute(f"DROP TABLE IF EXISTS {staging}")
+            conn.execute(f"CREATE TABLE {staging} ({_TABLES[table]})")
+            if shared:
+                columns = ", ".join(shared)
+                order_by = _MIGRATION_ORDER_BY.get(table)
+                # OR REPLACE, not a plain INSERT: a legacy row set can collide on
+                # a unique key the old shape did not have, and losing the whole
+                # migration to one duplicate would be worse than keeping the
+                # later row.
+                conn.execute(
+                    f"INSERT OR REPLACE INTO {staging} ({columns}) "
+                    f"SELECT {columns} FROM {table}"
+                    + (f" ORDER BY {order_by}" if order_by else "")
+                )
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {staging} RENAME TO {table}")
 
     def _seed(self, conn: sqlite3.Connection) -> None:
         """Populate defaults on a database that has none.

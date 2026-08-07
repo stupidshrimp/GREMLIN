@@ -224,6 +224,143 @@ class WorkOrderLoadingTests(AvailabilityTestCase):
         self.assertEqual(self.repo.load_work_orders(), [])
 
 
+# The schema the earlier Availability Dashboard attempt left in real databases.
+# Kept verbatim rather than derived, so it stays a fixed description of what is
+# actually out there even as the current schema moves on.
+_LEGACY_SCHEMA = """
+CREATE TABLE availability_settings (id INTEGER PRIMARY KEY CHECK (id=1), selected_year INTEGER NOT NULL,
+    utc_offset_hours REAL NOT NULL DEFAULT 5, last_updated TEXT);
+CREATE TABLE availability_asset_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_group TEXT NOT NULL UNIQUE,
+    schedule_hours_per_day REAL NOT NULL, break_hours_per_day REAL NOT NULL DEFAULT 0,
+    lunch_hours_per_day REAL NOT NULL DEFAULT 0, setup_hours_per_day REAL NOT NULL DEFAULT 0,
+    net_scheduled_hours_per_day REAL NOT NULL, include_flag INTEGER NOT NULL DEFAULT 1, notes TEXT,
+    sort_order INTEGER NOT NULL);
+CREATE TABLE availability_asset_group_assets (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_group_id INTEGER NOT NULL,
+    asset_number TEXT NOT NULL, sort_order INTEGER NOT NULL, UNIQUE(asset_group_id, asset_number));
+CREATE TABLE availability_asset_display_names (asset_number TEXT PRIMARY KEY, display_name TEXT NOT NULL);
+CREATE TABLE availability_linked_downtime_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, rule_group TEXT NOT NULL,
+    parent_asset_number TEXT NOT NULL, linked_asset_number TEXT NOT NULL, impact_factor REAL NOT NULL DEFAULT 0.5);
+CREATE TABLE availability_manual_ot (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_group TEXT NOT NULL,
+    asset_number TEXT NOT NULL, month_date TEXT NOT NULL, manual_ot_hours REAL NOT NULL DEFAULT 0,
+    UNIQUE(asset_group, asset_number, month_date));
+CREATE TABLE availability_goal_percent (id INTEGER PRIMARY KEY AUTOINCREMENT, asset_group TEXT NOT NULL,
+    month_date TEXT NOT NULL, goal_percent REAL NOT NULL DEFAULT 0.95, UNIQUE(asset_group, month_date));
+CREATE TABLE availability_results (id INTEGER PRIMARY KEY, availability_percent REAL);
+"""
+
+
+class LegacySchemaMigrationTests(unittest.TestCase):
+    """A database from the earlier attempt must upgrade, not break.
+
+    ``CREATE TABLE IF NOT EXISTS`` keeps a legacy table's *data* but leaves its
+    *schema* alone, and this feature's schema changed: ``updated_at`` was added
+    everywhere, ``availability_settings`` swapped ``selected_year`` and
+    ``utc_offset_hours`` for a timezone name, and ``availability_manual_ot``
+    dropped ``asset_group`` from its unique key. Without migration the first
+    availability request fails with ``no column named timezone`` -- and that is
+    the expected state of every existing installation, not an edge case.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "legacy.db"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript(_LEGACY_SCHEMA)
+            conn.execute("INSERT INTO availability_settings(id, selected_year, utc_offset_hours) VALUES (1, 2026, 5)")
+            conn.execute(
+                "INSERT INTO availability_asset_groups(id, asset_group, schedule_hours_per_day,"
+                " break_hours_per_day, lunch_hours_per_day, setup_hours_per_day,"
+                " net_scheduled_hours_per_day, include_flag, notes, sort_order)"
+                " VALUES (1, 'Salvagnini', 24, 1, 2, 3, 18, 1, 'legacy notes', 1)"
+            )
+            conn.execute(
+                "INSERT INTO availability_asset_group_assets(asset_group_id, asset_number, sort_order)"
+                " VALUES (1, '3101', 1)"
+            )
+            conn.execute(
+                "INSERT INTO availability_asset_display_names(asset_number, display_name)"
+                " VALUES ('3101', 'LEGACY-MV')"
+            )
+            conn.execute(
+                "INSERT INTO availability_linked_downtime_rules"
+                "(rule_group, parent_asset_number, linked_asset_number, impact_factor)"
+                " VALUES ('SALV', '3102', '3101', 0.25)"
+            )
+            conn.execute(
+                "INSERT INTO availability_goal_percent(asset_group, month_date, goal_percent)"
+                " VALUES ('Salvagnini', '2026-01-01', 0.97)"
+            )
+            # One asset/month under two groups -- only representable once now.
+            conn.execute(
+                "INSERT INTO availability_manual_ot(asset_group, asset_number, month_date, manual_ot_hours)"
+                " VALUES ('Old Group', '3101', '2026-01-01', 10)"
+            )
+            conn.execute(
+                "INSERT INTO availability_manual_ot(asset_group, asset_number, month_date, manual_ot_hours)"
+                " VALUES ('Salvagnini', '3101', '2026-01-01', 40)"
+            )
+        self.repo = AvailabilityRepository(self.db_path)
+
+    def test_a_legacy_database_bootstraps(self):
+        self.repo.ensure_schema()
+        self.assertEqual(self.repo.load_timezone(), "America/Chicago")
+
+    def test_migration_is_idempotent(self):
+        self.repo.ensure_schema()
+        self.repo.ensure_schema()
+        self.assertEqual(self.repo.load_display_names()["3101"], "LEGACY-MV")
+
+    def test_user_edits_survive_the_migration(self):
+        self.repo.ensure_schema()
+        self.assertEqual(self.repo.load_goals()[("Salvagnini", date(2026, 1, 1))], 0.97)
+        self.assertEqual(self.repo.load_display_names()["3101"], "LEGACY-MV")
+        rules = self.repo.load_linked_rules()
+        self.assertEqual([(r.parent_asset_number, r.linked_asset_number, r.impact_factor) for r in rules],
+                         [("3102", "3101", 0.25)])
+        group = next(g for g in self.repo.load_groups() if g.asset_group == "Salvagnini")
+        self.assertEqual(group.net_scheduled_hours_per_day, 18.0)
+        self.assertEqual(group.notes, "legacy notes")
+        self.assertEqual(group.asset_numbers, ("3101",))
+
+    def test_overtime_rows_colliding_on_the_new_key_keep_the_later_edit(self):
+        self.repo.ensure_schema()
+        self.assertEqual(self.repo.load_manual_ot()[("3101", date(2026, 1, 1))], 40.0)
+
+    def test_seeding_does_not_re_add_groups_the_legacy_database_already_had(self):
+        self.repo.ensure_schema()
+        names = [g.asset_group for g in self.repo.load_groups()]
+        self.assertEqual(names, ["Salvagnini"])
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_the_orphaned_results_table_is_left_alone(self):
+        """Those rows are the operator's to discard, not ours."""
+
+        self.repo.ensure_schema()
+        with sqlite3.connect(self.db_path) as conn:
+            found = conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'availability_results'"
+            ).fetchone()
+        self.assertIsNotNone(found)
+
+    def test_no_staging_tables_are_left_behind(self):
+        self.repo.ensure_schema()
+        with sqlite3.connect(self.db_path) as conn:
+            leftovers = conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE '%__migrating'"
+            ).fetchall()
+        self.assertEqual(leftovers, [])
+
+    def test_writes_work_after_migrating(self):
+        self.repo.ensure_schema()
+        self.repo.save_manual_ot("3101", "2026-02-01", 8)
+        self.repo.save_goal("Salvagnini", "2026-02-01", 0.9)
+        self.repo.save_display_name("3101", "MV")
+        self.assertEqual(self.repo.load_manual_ot()[("3101", date(2026, 2, 1))], 8.0)
+        self.assertEqual(self.repo.load_goals()[("Salvagnini", date(2026, 2, 1))], 0.9)
+        self.assertEqual(self.repo.load_display_names()["3101"], "MV")
+
+
 class ConfigWriteTests(AvailabilityTestCase):
     def test_schedule_edits_persist_and_net_is_rederived(self):
         self.repo.save_group_schedule(
@@ -369,6 +506,65 @@ class DashboardTests(AvailabilityTestCase):
             (436.0 - 10.0) / 436.0,
             places=12,
         )
+
+    def test_a_linked_asset_outside_the_group_still_contributes(self):
+        """A rule pointing at a non-member must not silently contribute zero.
+
+        Rules outlive membership: an asset removed from a group, or a group
+        excluded, leaves rules that still name it. If its downtime is never
+        loaded the parent quietly loses those hours, which reads as an
+        improvement rather than as missing data.
+        """
+
+        self.add_work_order("3102", "2026-01-15 15:00:00", 12.5)
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+
+        def linked_hours_for_3102():
+            data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15))
+            group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+            return next(r for r in group["rows"] if r["asset_number"] == "3102")["linked_downtime_hours"]
+
+        self.assertEqual(linked_hours_for_3102(), 5.0)  # 10.0 x 0.5
+
+        # Decommission 3101 from the group; the 3102 -> 3101 rule remains.
+        self.repo.save_group_schedule(
+            "Salvagnini",
+            schedule_hours_per_day=24, break_hours_per_day=1,
+            lunch_hours_per_day=2, setup_hours_per_day=3, include=True,
+            asset_numbers=["3102", "3103", "3104", "3105", "3106", "3107"],
+        )
+        self.assertEqual(linked_hours_for_3102(), 5.0)
+
+    def test_a_linked_asset_outside_the_group_is_not_charted(self):
+        self.add_work_order("3102", "2026-01-15 15:00:00", 12.5)
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+        self.repo.save_group_schedule(
+            "Salvagnini",
+            schedule_hours_per_day=24, break_hours_per_day=1,
+            lunch_hours_per_day=2, setup_hours_per_day=3, include=True,
+            asset_numbers=["3102", "3103", "3104", "3105", "3106", "3107"],
+        )
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15))
+        group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        self.assertNotIn("3101", [a["asset_number"] for a in group["assets"]])
+        self.assertNotIn("3101", data["all_asset_numbers"])
+
+    def test_the_window_follows_charted_assets_not_stale_rules(self):
+        """A decommissioned asset's history must not stretch the axis."""
+
+        self.add_work_order("3102", "2026-06-15 15:00:00", 4.0)
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+        self.repo.save_group_schedule(
+            "Salvagnini",
+            schedule_hours_per_day=24, break_hours_per_day=1,
+            lunch_hours_per_day=2, setup_hours_per_day=3, include=True,
+            asset_numbers=["3102"],
+        )
+        # June is the only month a charted asset has data in, so it is both
+        # bounds. January belongs to 3101, which is loaded for its linked hours
+        # but is no longer charted, so it must not pull the window back.
+        data = build_dashboard(self.repo, months=12, today=date(2026, 8, 6))
+        self.assertEqual(data["months"], ["2026-06-01"])
 
     def test_window_length_is_clamped(self):
         self.assertEqual(clamp_window_months(0), 1)
