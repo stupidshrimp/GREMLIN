@@ -193,6 +193,27 @@ def resolve_window(
     return month_span(start, end)
 
 
+def format_month_labels(months: list[date]) -> list[str]:
+    """Axis labels for a window, disambiguated when it spans more than a year.
+
+    A window inside one calendar year uses the bare month name, matching the
+    workbook. Once it crosses a year boundary the same name repeats -- a
+    24-month window shows two columns labelled ``Jun`` -- and those labels head
+    the editable Goal and OT columns, so a reader has no way to tell which year
+    a cell belongs to.
+
+    The year is then appended to *every* label rather than only the repeated
+    ones: a mix of ``Jun`` and ``Jun 25`` reads as two different kinds of thing
+    rather than as the same thing disambiguated.
+    """
+
+    if not months:
+        return []
+    if len({month.year for month in months}) == 1:
+        return [MONTH_LABELS[month.month - 1] for month in months]
+    return [f"{MONTH_LABELS[month.month - 1]} {month.year % 100:02d}" for month in months]
+
+
 def weekday_count(year: int, month: int) -> int:
     """Mon-Fri days in the month.
 
@@ -384,7 +405,7 @@ def build_series(
         chart = GroupSeries(
             asset_group=group.asset_group,
             months=list(months),
-            month_labels=[MONTH_LABELS[m.month - 1] for m in months],
+            month_labels=format_month_labels(months),
             net_scheduled_hours_per_day=group.net_scheduled_hours_per_day,
         )
 

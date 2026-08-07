@@ -797,6 +797,13 @@
     ctx.lineTo(right, bottom);
     ctx.stroke();
 
+    // With a long window the month labels are both wider (they carry the year
+    // once the window spans one) and closer together, so draw every nth to keep
+    // them legible instead of letting them overlap into a smear.
+    ctx.font = "10px Inter, sans-serif";
+    const widestLabel = labels.reduce((w, label) => Math.max(w, ctx.measureText(label).width), 0);
+    const labelStep = Math.max(1, Math.ceil((widestLabel + 8) / slot));
+
     // Bars, grouped by month.
     labels.forEach((label, monthIndex) => {
       const baseX = left + monthIndex * slot + (slot - groupW) / 2;
@@ -815,10 +822,14 @@
         }
       });
 
-      ctx.fillStyle = "#5e7082";
-      ctx.font = "10px Inter, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(label, left + monthIndex * slot + slot / 2, bottom + 16);
+      // Always label the last month; it is the one a reader looks for first.
+      const isLast = monthIndex === labels.length - 1;
+      if (monthIndex % labelStep === 0 || isLast) {
+        ctx.fillStyle = "#5e7082";
+        ctx.font = "10px Inter, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(label, left + monthIndex * slot + slot / 2, bottom + 16);
+      }
     });
 
     // Average and Goal lines, centred on each month's group of bars.

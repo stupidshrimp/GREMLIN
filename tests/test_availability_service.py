@@ -20,6 +20,7 @@ from services.availability_service import (
     availability_percent,
     build_series,
     compute_rows,
+    format_month_labels,
     last_complete_month,
     resolve_window,
     weekday_count,
@@ -333,6 +334,40 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(add_months(date(2026, 1, 1), -1), date(2025, 12, 1))
         self.assertEqual(add_months(date(2026, 12, 1), 1), date(2027, 1, 1))
         self.assertEqual(last_complete_month(date(2026, 1, 20)), date(2025, 12, 1))
+
+
+class MonthLabelTests(unittest.TestCase):
+    """Labels head the editable Goal and OT columns, so they must be unambiguous."""
+
+    def test_a_single_year_window_uses_bare_month_names(self):
+        months = [date(2026, m, 1) for m in (3, 4, 5, 6, 7)]
+        self.assertEqual(format_month_labels(months), ["Mar", "Apr", "May", "Jun", "Jul"])
+
+    def test_a_window_spanning_years_carries_the_year(self):
+        months = [date(2025, 12, 1), date(2026, 1, 1)]
+        self.assertEqual(format_month_labels(months), ["Dec 25", "Jan 26"])
+
+    def test_a_long_window_never_repeats_a_label(self):
+        months = [add_months(date(2025, 6, 1), i) for i in range(24)]
+        labels = format_month_labels(months)
+        self.assertEqual(len(labels), len(set(labels)))
+
+    def test_every_label_carries_the_year_not_only_the_repeats(self):
+        """A mix of 'Jun' and 'Jun 25' reads as two kinds of thing."""
+
+        months = [add_months(date(2025, 6, 1), i) for i in range(13)]
+        labels = format_month_labels(months)
+        self.assertTrue(all(len(label.split()) == 2 for label in labels), labels)
+
+    def test_the_series_uses_the_disambiguated_labels(self):
+        months = [date(2025, 12, 1), date(2026, 1, 1)]
+        orders = [WorkOrder("3101", datetime(2025, 12, 5, 9, 0), 4.0)]
+        rows = compute_rows([SALVAGNINI], months, orders)
+        series = build_series(rows, [SALVAGNINI], months)[0]
+        self.assertEqual(series.month_labels, ["Dec 25", "Jan 26"])
+
+    def test_an_empty_window_has_no_labels(self):
+        self.assertEqual(format_month_labels([]), [])
 
 
 class GroupHandlingTests(unittest.TestCase):

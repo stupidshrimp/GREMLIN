@@ -246,6 +246,13 @@ availability          = max(0, (adjusted_scheduled_h − adjusted_downtime_h)
 Group `Average` is the unweighted mean of its assets' availability for that
 month, matching the workbook's `=AVERAGE(...)`. `Goal` defaults to 0.95.
 
+Month labels carry the year whenever the window spans more than one calendar
+year (`Dec 25`, `Jan 26`); a single-year window uses the bare name as the
+workbook does. Those labels head the editable Goal and OT columns, so a repeated
+`Jun` would leave a reader unable to tell which year a cell belongs to. The year
+is added to every label in that case rather than only the repeated ones, since a
+mix of `Jun` and `Jun 25` reads as two different kinds of thing.
+
 Notes:
 
 - **Downtime is bucketed by created date**, not completion date. A work order's
