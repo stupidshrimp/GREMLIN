@@ -10,8 +10,10 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from repositories.analysis_repo import AnalysisRepository
+from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
 from repositories.failure_repo import FailureRepository
 from repositories.metrics_repo import MetricsRepository
+from services.availability_dashboard import build_config, build_dashboard, clamp_window_months
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
     DEFAULT_DB_PATH,
@@ -98,6 +100,7 @@ _life_data_service_error: str | None = None
 DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
 _schema_service: SchemaService | None = None
+_availability_repository: AvailabilityRepository | None = None
 
 
 def _configured_db_path() -> Path:
@@ -281,6 +284,203 @@ def api_metrics_reliability():
             end_date=end,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Availability Dashboard JSON API
+#
+# The Availability card is deliberately independent of the Metrics page's shared
+# asset and date filters: it always renders every configured group over whole
+# calendar months, because the Average line is a group-level statistic and
+# linked downtime makes an asset's number depend on assets a filter could hide.
+# See docs/availability-dashboard-design.md §2.2-2.3.
+#
+# Nothing derived is stored, so every request recomputes against the current
+# schedule. Config edits therefore apply to all months, including reported ones.
+# ---------------------------------------------------------------------------
+
+
+def get_availability_repository() -> AvailabilityRepository:
+    """Return a shared AvailabilityRepository for the configured database.
+
+    Rebuilt when the configured path changes so the card can never read a
+    different database than the rest of the site.
+    """
+
+    global _availability_repository
+    db_path = _configured_db_path()
+    if _availability_repository is None or _availability_repository.db_path != db_path:
+        if not os.environ.get("GREMLIN_DB_PATH") and not db_path.is_file():
+            raise RuntimeError(
+                f"GREMLIN.db was not found at {db_path}. "
+                "Set the GREMLIN_DB_PATH environment variable to a valid GREMLIN.db file."
+            )
+        repository = AvailabilityRepository(db_path)
+        repository.ensure_schema()
+        _availability_repository = repository
+    return _availability_repository
+
+
+def _bootstrap_mapped_records() -> None:
+    """Bring mapped_cmms_record up to date before availability reads it.
+
+    The Availability card is the Metrics page's *first* request -- it also
+    supplies the equipment list the other cards default to -- so it can no
+    longer rely on some earlier endpoint having constructed LifeDataService.
+    Two things only that construction does:
+
+    * ``ensure_schema`` adds columns a database predating a migration lacks;
+    * ``ensure_mapped_records_available`` maps raw rows when the mapped table is
+      still empty, which is the state right after an import.
+
+    Without this the first visit after an upgrade fails on a missing column, and
+    the first visit after an import reports "no work orders imported" while the
+    raw rows sit there unmapped. Neither is retried once another request repairs
+    things, so the card stays wrong for that whole page view.
+    """
+
+    get_life_data_service().ensure_mapped_records_available()
+
+
+def availability_api(view):
+    """Normalise availability endpoint errors into the page's JSON shape."""
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        try:
+            return view(*args, **kwargs)
+        except AvailabilityConfigError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except DatabaseWriteError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client as JSON
+            return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+    return wrapped
+
+
+def _json_body() -> dict:
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise AvailabilityConfigError("Expected a JSON object body.")
+    return body
+
+
+def _required_number(body: dict, key: str) -> float:
+    if key not in body:
+        raise AvailabilityConfigError(f"Missing '{key}'.")
+    try:
+        return float(body[key])
+    except (TypeError, ValueError) as exc:
+        raise AvailabilityConfigError(f"'{key}' must be a number.") from exc
+
+
+@app.route("/metrics/api/availability")
+@availability_api
+def api_availability():
+    """Monthly availability for every configured asset group.
+
+    ``months`` sets the window length and defaults to the five most recent
+    complete months, clamped to the months that hold work-order data.
+    """
+
+    repository = get_availability_repository()
+    _bootstrap_mapped_records()
+    months = clamp_window_months(request.values.get("months"))
+    return jsonify(build_dashboard(repository, months=months))
+
+
+@app.route("/metrics/api/availability/config")
+@availability_api
+def api_availability_config():
+    return jsonify(build_config(get_availability_repository()))
+
+
+@app.route("/metrics/api/availability/config/group/<path:asset_group>", methods=["PUT"])
+@availability_api
+def api_availability_save_group(asset_group: str):
+    """Update one group's shift schedule and, optionally, its membership.
+
+    Net hours per day is derived from the parts on every read, so it is
+    intentionally not accepted here -- a stored net could drift from the
+    schedule/break/lunch/setup values it is supposed to summarise.
+    """
+
+    body = _json_body()
+    repository = get_availability_repository()
+    assets = body.get("asset_numbers")
+    if assets is not None and not isinstance(assets, list):
+        raise AvailabilityConfigError("'asset_numbers' must be a list.")
+    repository.save_group_schedule(
+        asset_group,
+        schedule_hours_per_day=_required_number(body, "schedule_hours_per_day"),
+        break_hours_per_day=_required_number(body, "break_hours_per_day"),
+        lunch_hours_per_day=_required_number(body, "lunch_hours_per_day"),
+        setup_hours_per_day=_required_number(body, "setup_hours_per_day"),
+        include=bool(body.get("include", True)),
+        asset_numbers=assets,
+    )
+    return jsonify(build_config(repository))
+
+
+@app.route("/metrics/api/availability/config/group/<path:asset_group>/reset", methods=["POST"])
+@availability_api
+def api_availability_reset_group(asset_group: str):
+    repository = get_availability_repository()
+    repository.reset_group_to_defaults(asset_group)
+    return jsonify(build_config(repository))
+
+
+@app.route("/metrics/api/availability/goal", methods=["PUT"])
+@availability_api
+def api_availability_save_goal():
+    body = _json_body()
+    group = str(body.get("asset_group") or "").strip()
+    month = str(body.get("month") or "").strip()
+    if not group or not month:
+        raise AvailabilityConfigError("Both 'asset_group' and 'month' are required.")
+    repository = get_availability_repository()
+    repository.save_goal(group, month, _required_number(body, "goal_percent"))
+    return jsonify({"ok": True})
+
+
+@app.route("/metrics/api/availability/ot", methods=["PUT"])
+@availability_api
+def api_availability_save_ot():
+    body = _json_body()
+    asset = str(body.get("asset_number") or "").strip()
+    month = str(body.get("month") or "").strip()
+    if not asset or not month:
+        raise AvailabilityConfigError("Both 'asset_number' and 'month' are required.")
+    repository = get_availability_repository()
+    repository.save_manual_ot(asset, month, _required_number(body, "hours"))
+    return jsonify({"ok": True})
+
+
+@app.route("/metrics/api/availability/display-name", methods=["PUT"])
+@availability_api
+def api_availability_save_display_name():
+    body = _json_body()
+    asset = str(body.get("asset_number") or "").strip()
+    if not asset:
+        raise AvailabilityConfigError("'asset_number' is required.")
+    repository = get_availability_repository()
+    repository.save_display_name(asset, str(body.get("display_name") or ""))
+    return jsonify({"ok": True})
+
+
+@app.route("/metrics/api/availability/linked-rules", methods=["PUT"])
+@availability_api
+def api_availability_save_linked_rules():
+    body = _json_body()
+    rules = body.get("rules")
+    if not isinstance(rules, list):
+        raise AvailabilityConfigError("'rules' must be a list.")
+    repository = get_availability_repository()
+    repository.replace_linked_rules(rules)
+    return jsonify(build_config(repository))
 
 
 @app.route("/standards-and-documentation")

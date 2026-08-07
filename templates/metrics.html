@@ -177,31 +177,52 @@
     </div>
   </article>
 
-  <!-- ============================ Availability (placeholder) ============================ -->
-  <article class="glass-card metrics-card metrics-card-disabled" id="card-availability"
+  <!-- ============================ Availability ============================ -->
+  <!-- This card is deliberately independent of the filter bar above: it always
+       shows every configured asset group over whole calendar months. The Average
+       line is a group-level statistic, and linked downtime makes an asset's
+       number depend on assets an filter could hide. -->
+  <article class="glass-card metrics-card" id="card-availability"
            data-card="availability" tabindex="0" role="button" aria-expanded="false"
            aria-controls="availability-expanded">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Availability</p>
-        <h2>Asset availability</h2>
-        <p class="metrics-card-desc">Track availability from downtime and scheduled work hours.</p>
+        <h2>Asset availability by month</h2>
+        <p class="metrics-card-desc">Availability = (Scheduled Hours − Downtime) ÷ Scheduled Hours, per asset
+           group. Counts all downtime, whatever the work order was called.</p>
+        <p class="metrics-card-scope">All asset groups · all downtime · monthly — not affected by the filters above.</p>
       </div>
       <span class="metrics-card-toggle" aria-hidden="true"></span>
     </header>
 
     <div class="metrics-preview" data-preview="availability">
-      <div class="metrics-chart-wrap metrics-chart-preview metrics-chart-placeholder" aria-hidden="true">
-        <span class="metrics-placeholder-text">Coming soon</span>
+      <p class="metrics-preview-label" id="availability-preview-label">Average availability by month</p>
+      <div class="metrics-chart-wrap metrics-chart-preview">
+        <canvas id="availability-preview-chart" height="160"></canvas>
       </div>
+      <p class="metrics-empty" id="availability-preview-empty" hidden></p>
     </div>
 
     <div class="metrics-expanded" id="availability-expanded" hidden>
-      <div class="metrics-panel metrics-coming-soon">
-        <p class="metrics-coming-soon-text">Availability analysis is coming soon. This metric will calculate
-           asset availability using downtime and scheduled work hours.</p>
-        <p class="metrics-hint">Future definition: Availability = (Scheduled Work Hours − Downtime) ÷ Scheduled Work Hours</p>
+      <div class="metrics-panel availability-controls">
+        <div class="availability-control-row">
+          <div class="metrics-field">
+            <label for="availability-window">Months shown</label>
+            <select id="availability-window">
+              <option value="3">Last 3 months</option>
+              <option value="5" selected>Last 5 months</option>
+              <option value="6">Last 6 months</option>
+              <option value="12">Last 12 months</option>
+              <option value="24">Last 24 months</option>
+            </select>
+          </div>
+          <p class="metrics-hint" id="availability-basis"></p>
+        </div>
       </div>
+
+      <div id="availability-charts" class="availability-charts"></div>
+      <p class="metrics-empty" data-empty="availability" hidden></p>
     </div>
   </article>
 </section>
