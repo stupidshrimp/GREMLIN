@@ -1165,15 +1165,22 @@
   }
 
   function wireCards() {
+    // The whole card is the toggle, so both handlers have to let events from the
+    // controls inside its expanded body through. Keyboard matters more than
+    // click here: Space is how you open a <select> and Enter is how you commit a
+    // number input, so swallowing them does not merely collapse the panel, it
+    // makes the month window and the Goal/OT editors unusable without a mouse.
+    const INTERACTIVE = "a, button, input, select, textarea, .metrics-table-scroll";
     document.querySelectorAll(".metrics-card").forEach((card) => {
       const key = card.getAttribute("data-card");
       const activate = () => setExpanded(key);
+      const fromControl = (event) => Boolean(event.target.closest(INTERACTIVE));
       card.addEventListener("click", (event) => {
-        // Ignore clicks on interactive children inside the expanded body.
-        if (event.target.closest("a, button, input, select, textarea, .metrics-table-scroll")) return;
+        if (fromControl(event)) return;
         activate();
       });
       card.addEventListener("keydown", (event) => {
+        if (fromControl(event)) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           activate();

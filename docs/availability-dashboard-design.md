@@ -374,6 +374,15 @@ Editing is split by how often a value changes and how much it moves:
   Settings edit that does *not* take the recompute warning: a chart label is
   cosmetic and carries none of the schedule's blast radius.
 
+The Availability card is the first Metrics card to put focusable controls inside
+an expanded body, which makes the card-level toggle a hazard: the whole card is
+a `role="button"`, so a bubbled Space or Enter would collapse the panel out from
+under the control being used. Both the click and keydown handlers therefore
+ignore events originating in an interactive descendant. Keyboard matters more
+than click here — Space opens a `<select>` and Enter commits a number input, so
+swallowing them doesn't merely collapse the panel, it makes the month window and
+the Goal/OT editors unusable without a mouse.
+
 Schedule editor rules:
 
 - Net hours is **derived and read-only** — the workbook has it as a formula
