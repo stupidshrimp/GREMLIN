@@ -366,6 +366,27 @@ Code placement follows the existing layout: the calculator becomes
 through `_configured_db_path()` / `GREMLIN_DB_PATH` like `get_life_data_service()`
 does, or the card would read a different database than every other page.
 
+**Availability is the Metrics page's first request** — it also supplies the
+equipment list the other cards default to (§2.7) — so it cannot assume another
+endpoint has already built `LifeDataService`. `api_availability` therefore
+bootstraps it, which does two things nothing else would:
+
+- `ensure_schema` adds columns a database predating a migration is missing. A
+  long-lived GREMLIN.db only ever gains columns, so meeting one mid-migration is
+  a real state, not a hypothetical.
+- `ensure_mapped_records_available` maps raw rows when `mapped_cmms_record` is
+  still empty — the state right after an import.
+
+Without it, the first visit after an upgrade 500s on a missing column and the
+first visit after an import reports "no work orders imported" while the raw rows
+sit there unmapped. Neither is retried once a later request repairs things, so
+the card stays wrong for the whole page view.
+
+As defence in depth the work-order query is also schema-adaptive: it selects
+only the columns `PRAGMA table_info` reports, substituting `NULL` for the rest,
+so a missing column degrades to the fallbacks those fields already have instead
+of raising. `RawRepository` is deliberately schema-aware for the same reason.
+
 ## 6. Known gaps
 
 - **Weekends are hardcoded.** Any group that genuinely runs 7 days has its

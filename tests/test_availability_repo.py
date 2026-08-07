@@ -362,6 +362,59 @@ class LegacySchemaMigrationTests(unittest.TestCase):
         self.assertEqual(self.repo.load_display_names()["3101"], "MV")
 
 
+class UnmigratedMappedTableTests(AvailabilityTestCase):
+    """A GREMLIN.db predating a mapped_cmms_record migration must not 500.
+
+    The card is the Metrics page's first request, so it is the one that meets an
+    un-migrated database after an upgrade. Long-lived GREMLIN.db files only ever
+    gain columns, so "the column isn't there yet" is a real state, not a
+    hypothetical.
+    """
+
+    def _drop_column(self, column):
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                conn.execute(f"ALTER TABLE mapped_cmms_record DROP COLUMN {column}")
+            except sqlite3.OperationalError:
+                self.skipTest("SQLite build does not support DROP COLUMN")
+
+    def test_a_missing_downtime_hours_column_falls_back_to_minutes(self):
+        self.add_work_order("3101", "2026-01-15 15:00:00", 2.0)
+        self._drop_column("downtime_hours")
+        orders = self.repo.load_work_orders(["3101"])
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0].downtime_hours, 2.0)
+
+    def test_loading_falls_back_to_whichever_date_columns_remain(self):
+        """The fallback chain must narrow to the columns that exist, not break."""
+
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 2.0,
+            completedDate_Final="2026-01-16 12:00:00",
+        )
+        # The two secondary completed-date columns; completed_date_final itself
+        # is indexed, so SQLite will not drop it.
+        self._drop_column("completed_datetime_raw")
+        self._drop_column("completed_date_raw")
+        orders = self.repo.load_work_orders(["3101"])
+        self.assertEqual(len(orders), 1)
+        self.assertIsNotNone(orders[0].completed_local)
+        self.assertEqual(orders[0].completed_local.day, 16)
+
+    def test_the_existence_check_survives_a_missing_column(self):
+        self.add_work_order("3101", "2026-01-15 15:00:00", 2.0)
+        self._drop_column("created_datetime_raw")
+        self.assertTrue(self.repo.has_any_work_orders())
+
+    def test_the_dashboard_still_computes_on_an_unmigrated_database(self):
+        self.add_work_order("3101", "2026-01-15 15:00:00", 2.0)
+        self._drop_column("downtime_hours")
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15))
+        group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        row = next(r for r in group["rows"] if r["asset_number"] == "3101")
+        self.assertEqual(row["direct_downtime_hours"], 2.0)
+
+
 class ConfigWriteTests(AvailabilityTestCase):
     def test_schedule_edits_persist_and_net_is_rederived(self):
         self.repo.save_group_schedule(
@@ -770,6 +823,29 @@ class ApiTests(AvailabilityTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.get_json()["linked_rules"]), 1)
+
+    def test_raw_records_are_mapped_on_demand_before_availability_reads_them(self):
+        """Availability is the page's first request, so it must bootstrap itself.
+
+        Right after an import the raw rows are present and mapped_cmms_record is
+        still empty. Reporting "no work orders have been imported" then is not
+        just unhelpful, it is the opposite of true -- and nothing retries the
+        card once a later request populates the table.
+        """
+
+        self.add_work_order("3101", "2026-06-15 15:00:00", 2.0)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM mapped_cmms_record")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM mapped_cmms_record").fetchone()[0], 0)
+        self.app_module._life_data_service = None
+
+        response = self.client.get("/metrics/api/availability?months=1")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertIsNone(data.get("empty_reason"))
+        group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        row = next(r for r in group["rows"] if r["asset_number"] == "3101")
+        self.assertEqual(row["direct_downtime_hours"], 2.0)
 
     def test_the_metrics_page_still_renders(self):
         self.assertEqual(self.client.get("/metrics").status_code, 200)

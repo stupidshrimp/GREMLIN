@@ -321,6 +321,27 @@ def get_availability_repository() -> AvailabilityRepository:
     return _availability_repository
 
 
+def _bootstrap_mapped_records() -> None:
+    """Bring mapped_cmms_record up to date before availability reads it.
+
+    The Availability card is the Metrics page's *first* request -- it also
+    supplies the equipment list the other cards default to -- so it can no
+    longer rely on some earlier endpoint having constructed LifeDataService.
+    Two things only that construction does:
+
+    * ``ensure_schema`` adds columns a database predating a migration lacks;
+    * ``ensure_mapped_records_available`` maps raw rows when the mapped table is
+      still empty, which is the state right after an import.
+
+    Without this the first visit after an upgrade fails on a missing column, and
+    the first visit after an import reports "no work orders imported" while the
+    raw rows sit there unmapped. Neither is retried once another request repairs
+    things, so the card stays wrong for that whole page view.
+    """
+
+    get_life_data_service().ensure_mapped_records_available()
+
+
 def availability_api(view):
     """Normalise availability endpoint errors into the page's JSON shape."""
 
@@ -366,6 +387,7 @@ def api_availability():
     """
 
     repository = get_availability_repository()
+    _bootstrap_mapped_records()
     months = clamp_window_months(request.values.get("months"))
     return jsonify(build_dashboard(repository, months=months))
 

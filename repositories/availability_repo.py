@@ -461,20 +461,21 @@ class AvailabilityRepository:
         if not self._table_exists("mapped_cmms_record"):
             return []
 
-        sql = [
-            "SELECT TRIM(asset_number) AS asset_number, created_date_final, created_datetime_raw,",
-            "       created_date_raw, completed_date_final, completed_datetime_raw, completed_date_raw,",
-            "       downtime_minutes, downtime_hours, task_id",
-            "FROM mapped_cmms_record",
-            "WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''",
-        ]
-        params: list[str] = []
-        wanted = [str(a).strip() for a in (asset_numbers or []) if str(a).strip()]
-        if wanted:
-            sql.append(f"AND TRIM(asset_number) IN ({','.join('?' for _ in wanted)})")
-            params.extend(wanted)
-
         with self.connect() as conn:
+            present = self._mapped_columns(conn)
+            if "asset_number" not in present:
+                return []
+            columns = ", ".join(["TRIM(asset_number) AS asset_number"] + self._select_expressions(present))
+            sql = [
+                f"SELECT {columns}",
+                "FROM mapped_cmms_record",
+                "WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''",
+            ]
+            params: list[str] = []
+            wanted = [str(a).strip() for a in (asset_numbers or []) if str(a).strip()]
+            if wanted:
+                sql.append(f"AND TRIM(asset_number) IN ({','.join('?' for _ in wanted)})")
+                params.extend(wanted)
             rows = conn.execute("\n".join(sql), params).fetchall()
 
         zone = self._zone()
@@ -520,6 +521,41 @@ class AvailabilityRepository:
         except (TypeError, ValueError):
             return 0.0
 
+    # Columns this module reads from mapped_cmms_record. A long-lived GREMLIN.db
+    # only ever gains columns, so one that predates a migration is missing some
+    # of these -- and the availability card is now the Metrics page's first
+    # request, so it can be the one that meets an un-migrated database. Selecting
+    # them unconditionally turns that into a 500; substituting NULL degrades to
+    # the fallbacks these fields already have. Same approach RawRepository takes.
+    _OPTIONAL_MAPPED_COLUMNS = (
+        "created_date_final", "created_datetime_raw", "created_date_raw",
+        "completed_date_final", "completed_datetime_raw", "completed_date_raw",
+        "downtime_minutes", "downtime_hours", "task_id",
+    )
+
+    def _mapped_columns(self, conn: sqlite3.Connection) -> set[str]:
+        return {row[1] for row in conn.execute("PRAGMA table_info(mapped_cmms_record)")}
+
+    @classmethod
+    def _select_expressions(cls, present: set[str]) -> list[str]:
+        return [
+            column if column in present else f"NULL AS {column}"
+            for column in cls._OPTIONAL_MAPPED_COLUMNS
+        ]
+
+    @staticmethod
+    def _created_expression(present: set[str]) -> str | None:
+        """COALESCE over whichever created-date columns this database has."""
+
+        candidates = [
+            f"NULLIF(TRIM({column}), '')"
+            for column in ("created_date_final", "created_datetime_raw", "created_date_raw")
+            if column in present
+        ]
+        if not candidates:
+            return None
+        return f"COALESCE({', '.join(candidates)})"
+
     def has_any_work_orders(self) -> bool:
         """Whether the database holds any dated work order at all.
 
@@ -532,15 +568,15 @@ class AvailabilityRepository:
         if not self._table_exists("mapped_cmms_record"):
             return False
         with self.connect() as conn:
+            present = self._mapped_columns(conn)
+            created = self._created_expression(present)
+            if "asset_number" not in present or created is None:
+                return False
             row = conn.execute(
-                """
+                f"""
                 SELECT 1 FROM mapped_cmms_record
                 WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
-                  AND COALESCE(
-                        NULLIF(TRIM(created_date_final), ''),
-                        NULLIF(TRIM(created_datetime_raw), ''),
-                        NULLIF(TRIM(created_date_raw), '')
-                      ) IS NOT NULL
+                  AND {created} IS NOT NULL
                 LIMIT 1
                 """
             ).fetchone()
