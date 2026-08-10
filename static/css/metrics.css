@@ -416,6 +416,7 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+.availability-group-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .availability-mode-toggle { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
 
 table.availability-table td:first-child,
@@ -464,6 +465,214 @@ table.availability-table thead th:first-child { background: var(--forest-100); z
 
 @media (max-width: 860px) {
   .availability-control-row { flex-direction: column; align-items: stretch; }
+}
+
+/* ---- availability drill-down modal --------------------------------------- */
+/* Clicking a bar opens the rows it was computed from. The dialog is a three-row
+   grid -- header, toolbar, table -- and only the last row scrolls, so the
+   heading that says which chart and which bar this is stays on screen for the
+   whole scroll, and the table's own <thead> sticks to the top of that row. */
+body.metrics-modal-open { overflow: hidden; }
+
+.metrics-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  /* Above the chart tooltip (80) and the loading veil (60): both belong to the
+     page this dialog is covering. */
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.75rem, 3vw, 2rem);
+  background: rgba(29, 39, 49, 0.45);
+  backdrop-filter: blur(2px);
+  animation: metricsModalFade 160ms ease-out both;
+}
+
+.metrics-modal {
+  width: min(1180px, 100%);
+  max-height: min(88vh, 60rem);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 28px 70px rgba(6, 43, 28, 0.34);
+  display: grid;
+  /* minmax(0, 1fr): without the zero minimum the table row refuses to shrink
+     below its content height and the dialog grows past its own max-height. */
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  animation: metricsModalIn 200ms ease-out both;
+}
+.metrics-modal:focus { outline: none; }
+
+@keyframes metricsModalFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes metricsModalIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .metrics-modal-backdrop, .metrics-modal { animation: none; }
+}
+
+.metrics-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.2rem 0.85rem;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--border);
+  /* The grid already pins this row. Sticky is what keeps it pinned if the
+     dialog ever has to scroll as a whole -- a very short viewport, or a future
+     layout change -- and the z-index keeps it over the table's sticky head. */
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+.metrics-modal-heading h2 {
+  margin: 0.1rem 0 0.3rem;
+  font-size: 1.15rem;
+  color: var(--forest-900);
+}
+.metrics-modal-sub { font-size: 0.82rem; color: var(--muted); }
+.metrics-modal-focus {
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--forest-800);
+}
+
+.metrics-modal-close {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--forest-800);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.metrics-modal-close:hover { background: var(--forest-100); border-color: var(--forest-500); }
+.metrics-modal-close:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+
+.metrics-modal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 1.2rem;
+  background: var(--forest-100);
+  border-bottom: 1px solid var(--border);
+}
+.metrics-modal-toolbar .metrics-hint { margin: 0; }
+.metrics-modal-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--forest-800);
+  cursor: pointer;
+}
+.metrics-modal-check input { width: 16px; height: 16px; accent-color: var(--forest-700); }
+.metrics-modal-check:has(input:disabled) { color: var(--muted); cursor: default; }
+
+/* The table fills the last grid row and is the only thing that scrolls, so it
+   sits flush against the dialog's edges rather than carrying its own frame. */
+.metrics-modal .metrics-table-scroll {
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.metrics-modal .metrics-table-scroll:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: -2px;
+}
+
+/* ---- sortable column headings -------------------------------------------- */
+.metrics-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.metrics-sort:hover { color: var(--forest-900); text-decoration: underline; }
+.metrics-sort:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.metrics-sort-mark { color: var(--muted); font-size: 0.68rem; }
+.metrics-sort.is-active .metrics-sort-mark { color: var(--forest-700); }
+th.is-numeric .metrics-sort { justify-content: flex-end; }
+
+/* ---- drill-down table ---------------------------------------------------- */
+/* Row backgrounds are opaque, not tinted: the asset column is sticky, and a
+   semi-transparent cell would show the cells sliding underneath it. */
+table.availability-detail-table tbody tr { background: #fff; }
+table.availability-detail-table tbody tr:nth-child(even) { background: #f6f8fa; }
+table.availability-detail-table tbody tr.is-attention { background: #fdf8e7; }
+table.availability-detail-table tbody tr.is-attention:nth-child(even) { background: #f6f0dc; }
+table.availability-detail-table tbody tr.is-focused,
+table.availability-detail-table tbody tr.is-focused:nth-child(even) { background: #dceee4; }
+
+table.availability-detail-table td:first-child,
+table.availability-detail-table th:first-child {
+  position: sticky;
+  left: 0;
+  background: inherit;
+  z-index: 1;
+}
+table.availability-detail-table thead th:first-child { background: var(--forest-100); z-index: 3; }
+/* The marker goes on the cell rather than the row: a box-shadow on a <tr> under
+   border-collapse renders inconsistently across browsers. */
+table.availability-detail-table tbody tr.is-focused td:first-child {
+  box-shadow: inset 3px 0 0 var(--forest-700);
+}
+
+.availability-detail-asset { font-weight: 600; }
+.availability-detail-sub {
+  display: block;
+  font-weight: 500;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.availability-detail-delta.is-below { color: #a5281b; font-weight: 700; }
+.availability-detail-delta.is-above { color: var(--forest-700); }
+
+.availability-detail-notes { white-space: normal; min-width: 15rem; max-width: 26rem; }
+.availability-detail-flag {
+  display: inline-block;
+  margin: 0.1rem 0.3rem 0.1rem 0;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.availability-detail-flag.is-flagged { background: rgba(192, 57, 43, 0.14); color: #a5281b; }
+.availability-detail-flag.is-no-data { background: rgba(94, 112, 130, 0.16); color: #4a5b6b; }
+.availability-detail-flag.is-overlap { background: rgba(214, 167, 0, 0.22); color: #8a6d00; }
+.availability-detail-flag.is-linked { background: rgba(47, 143, 91, 0.14); color: var(--forest-900); }
+.availability-detail-quiet { color: var(--muted); }
+
+@media (max-width: 860px) {
+  .metrics-modal-backdrop { padding: 0; }
+  .metrics-modal {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border: none;
+    border-radius: 0;
+  }
 }
 
 /* ---- availability configuration (Settings page) -------------------------- */

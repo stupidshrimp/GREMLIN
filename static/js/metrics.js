@@ -56,6 +56,11 @@
     availabilityWarning: "",
     // Per-group table mode: "availability" (read-only) or "ot" (editable).
     availabilityTableMode: {},
+    // Open availability drill-down, or null. Holds which group is being read,
+    // which bar was clicked, and how its table is currently sorted/filtered --
+    // not the rows themselves, so a refresh underneath it redraws live data
+    // rather than a snapshot taken when it opened.
+    availabilityDetail: null,
     // Asset numbers the Availability config considers in scope. Seeds the KPI /
     // Alerts default comparison set, so the plant equipment list lives in one
     // place (the availability config) rather than being duplicated here.
@@ -550,26 +555,27 @@
   // these tables are short far more often than not. Both axes count — the
   // availability table hides months off the right the same way the KPI table
   // hides assets off the bottom.
+  function markScrollRegion(wrap, label) {
+    // A pixel of tolerance: sub-pixel row heights round the scroll size just
+    // past the client size on tables that visibly fit.
+    const scrolls =
+      wrap.scrollHeight > wrap.clientHeight + 1 || wrap.scrollWidth > wrap.clientWidth + 1;
+    if (!scrolls) {
+      wrap.removeAttribute("tabindex");
+      wrap.removeAttribute("role");
+      wrap.removeAttribute("aria-label");
+      return;
+    }
+    wrap.setAttribute("tabindex", "0");
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-label", `${label} (scrollable)`);
+  }
+
   function syncScrollRegions() {
     document.querySelectorAll(".metrics-card .metrics-table-scroll").forEach((wrap) => {
-      // A pixel of tolerance: sub-pixel row heights round the scroll size just
-      // past the client size on tables that visibly fit.
-      const scrolls =
-        wrap.scrollHeight > wrap.clientHeight + 1 || wrap.scrollWidth > wrap.clientWidth + 1;
-      if (!scrolls) {
-        wrap.removeAttribute("tabindex");
-        wrap.removeAttribute("role");
-        wrap.removeAttribute("aria-label");
-        return;
-      }
       const panel = wrap.closest(".metrics-panel");
       const heading = panel ? panel.querySelector("h3") : null;
-      wrap.setAttribute("tabindex", "0");
-      wrap.setAttribute("role", "region");
-      wrap.setAttribute(
-        "aria-label",
-        `${heading ? heading.textContent.trim() : "Table"} (scrollable)`
-      );
+      markScrollRegion(wrap, heading ? heading.textContent.trim() : "Table");
     });
   }
 
@@ -1097,7 +1103,34 @@
     };
   }
 
-  function wireAvailabilityHover(canvas, group, data) {
+  // Resolves a pointer position to the bar under it. Shared by the hover tooltip
+  // and by the click that opens the drill-down, so the row the modal lands on is
+  // always the one the tooltip was naming.
+  function availabilityHitAt(canvas, event) {
+    const hits = canvas._availabilityHits;
+    if (!hits) return null;
+    const box = canvas.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    // The canvas is laid out at 100% width, so its rendered size can drift
+    // from the size it was drawn at between a resize and the redraw.
+    const x = (event.clientX - box.left) * (hits.width / box.width);
+    const y = (event.clientY - box.top) * (hits.height / box.height);
+    // Scanned back to front, because the regions are pushed in paint order and
+    // the last bar drawn over a pixel is the one the reader sees there. The
+    // two only diverge when a group is wider than its month slot -- a bar has
+    // a 2px floor so it stays visible, which a long window on a narrow screen
+    // can push past the slot into the following months -- but when they do
+    // diverge, a front-to-back scan names a bar that is buried out of sight.
+    for (let index = hits.regions.length - 1; index >= 0; index -= 1) {
+      const region = hits.regions[index];
+      if (x >= region.x && x <= region.x + region.w && y >= region.top && y <= region.bottom) {
+        return region;
+      }
+    }
+    return null;
+  }
+
+  function wireAvailabilityChart(canvas, group, data, returnFocus) {
     // Built once per draw rather than per mousemove: the same lookup the table
     // builds, over the rows this group already carries.
     const byKey = {};
@@ -1106,32 +1139,13 @@
     });
     let hovered = null;
 
-    const hitAt = (event) => {
-      const hits = canvas._availabilityHits;
-      if (!hits) return null;
-      const box = canvas.getBoundingClientRect();
-      if (!box.width || !box.height) return null;
-      // The canvas is laid out at 100% width, so its rendered size can drift
-      // from the size it was drawn at between a resize and the redraw.
-      const x = (event.clientX - box.left) * (hits.width / box.width);
-      const y = (event.clientY - box.top) * (hits.height / box.height);
-      // Scanned back to front, because the regions are pushed in paint order and
-      // the last bar drawn over a pixel is the one the reader sees there. The
-      // two only diverge when a group is wider than its month slot -- a bar has
-      // a 2px floor so it stays visible, which a long window on a narrow screen
-      // can push past the slot into the following months -- but when they do
-      // diverge, a front-to-back scan names a bar that is buried out of sight.
-      for (let index = hits.regions.length - 1; index >= 0; index -= 1) {
-        const region = hits.regions[index];
-        if (x >= region.x && x <= region.x + region.w && y >= region.top && y <= region.bottom) {
-          return region;
-        }
-      }
-      return null;
-    };
+    const hitAt = (event) => availabilityHitAt(canvas, event);
 
     canvas.addEventListener("mousemove", (event) => {
       const hit = hitAt(event);
+      // Every bar opens something, so the pointer has to say so over a bar and
+      // stop saying so over the whitespace between them.
+      canvas.style.cursor = hit ? "pointer" : "";
       if (!hit) {
         if (hovered) {
           hovered = null;
@@ -1170,6 +1184,476 @@
       }
       hideTooltip();
     });
+
+    canvas.addEventListener("click", (event) => {
+      const hit = hitAt(event);
+      if (!hit) return;
+      const asset = (group.assets || [])[hit.assetIndex];
+      const month = (data.months || [])[hit.monthIndex];
+      if (!asset || !month) return;
+      // No stopPropagation needed: the card's own click handler already ignores
+      // anything that lands in an open card's body, and this chart only exists
+      // while the card is open. Stopping it here would instead swallow the
+      // document-level click that closes the asset dropdown.
+      openAvailabilityDetail(group.asset_group, { asset_number: asset.asset_number, month }, returnFocus);
+    });
+  }
+
+  // ---- availability drill-down ---------------------------------------------
+  // A bar is one number standing in for a month of scheduled hours, downtime and
+  // work order activity, and when one of them looks wrong the next question is
+  // always which of those inputs produced it. Clicking a bar opens the rows the
+  // chart was drawn from -- the whole group, not just the bar, because an
+  // outlier is only an outlier next to the months and machines around it.
+
+  // One list drives the header, the sort and the body, so a column can never end
+  // up sorted by a different number than the one it displays. `sort` returns the
+  // comparable behind the cell; ties fall back to the chart's own order.
+  const DETAIL_COLUMNS = [
+    {
+      key: "asset",
+      label: "Asset",
+      sort: (item) => item.row.display_name || item.row.asset_number,
+      cell: (item) =>
+        el("td", { class: "availability-detail-asset" }, [
+          el("span", { text: item.row.display_name || item.row.asset_number }),
+          item.row.display_name && item.row.display_name !== item.row.asset_number
+            ? el("span", { class: "availability-detail-sub", text: item.row.asset_number })
+            : null,
+        ]),
+    },
+    {
+      key: "month",
+      label: "Month",
+      sort: (item) => item.monthIndex,
+      cell: (item) => el("td", { text: item.monthLabel }),
+    },
+    {
+      key: "availability",
+      label: "Availability",
+      numeric: true,
+      sort: (item) => item.availability,
+      cell: (item) => {
+        const attrs = { class: "availability-cell" };
+        if (item.row.flagged) attrs.class += " is-flagged";
+        else if (item.row.no_wo_entries) attrs.class += " is-no-data";
+        attrs.text = item.availability == null ? "—" : `${(item.availability * 100).toFixed(2)}%`;
+        return el("td", attrs);
+      },
+    },
+    {
+      key: "delta",
+      label: "vs group avg",
+      numeric: true,
+      // The group average is what makes a month readable as unusual rather than
+      // merely low: a 91% in a group averaging 92% is a normal month, and the
+      // same 91% in a group averaging 99% is the thing being looked for.
+      sort: (item) => item.delta,
+      cell: (item) => {
+        if (item.delta == null) return el("td", { class: "availability-cell", text: "—" });
+        const sign = item.delta > 0 ? "+" : item.delta < 0 ? "−" : "";
+        const cls = item.delta < -0.005 ? " is-below" : item.delta > 0.005 ? " is-above" : "";
+        return el("td", {
+          class: `availability-cell availability-detail-delta${cls}`,
+          text: `${sign}${Math.abs(item.delta).toFixed(2)} pts`,
+        });
+      },
+    },
+    { key: "scheduled", label: "Scheduled (h)", numeric: true, field: "scheduled_hours", digits: 1 },
+    { key: "ot", label: "OT (h)", numeric: true, field: "manual_ot_hours", digits: 1 },
+    { key: "adj_scheduled", label: "Adj. scheduled (h)", numeric: true, field: "adjusted_scheduled_hours", digits: 1 },
+    { key: "direct", label: "Direct downtime (h)", numeric: true, field: "direct_downtime_hours", digits: 2 },
+    { key: "linked", label: "Linked downtime (h)", numeric: true, field: "linked_downtime_hours", digits: 2 },
+    { key: "downtime", label: "Total downtime (h)", numeric: true, field: "adjusted_downtime_hours", digits: 2 },
+    { key: "wo", label: "Work orders", numeric: true, field: "total_wo_count", digits: 0 },
+    { key: "zero_wo", label: "WOs w/o downtime", numeric: true, field: "zero_downtime_wo_count", digits: 0 },
+    { key: "overlap", label: "Cross-month WOs", numeric: true, field: "overlap_count", digits: 0 },
+    {
+      key: "notes",
+      label: "Notes",
+      sort: (item) => item.notes.join(" "),
+      cell: (item) =>
+        el(
+          "td",
+          { class: "availability-detail-notes" },
+          item.notes.length
+            ? item.notes.map((note) => el("span", { class: `availability-detail-flag is-${note.kind}`, text: note.text }))
+            : [el("span", { class: "availability-detail-quiet", text: "—" })]
+        ),
+    },
+  ];
+
+  // The plain numeric columns are all the same cell, so they declare a field and
+  // a precision instead of repeating a builder each.
+  DETAIL_COLUMNS.forEach((column) => {
+    if (!column.field) return;
+    column.sort = (item) => {
+      const value = Number(item.row[column.field]);
+      return isFinite(value) ? value : null;
+    };
+    column.cell = (item) =>
+      el("td", { class: "availability-cell", text: fmtNum(item.row[column.field], column.digits) });
+  });
+
+  function availabilityGroup(name) {
+    const groups = (state.availability && state.availability.groups) || [];
+    return groups.find((group) => group.asset_group === name) || null;
+  }
+
+  // The flags a bar cannot show. Each one is a case where the number alone reads
+  // as an ordinary month and is not one, which is exactly what this table exists
+  // to surface.
+  function detailNotes(row) {
+    const notes = [];
+    if (row.flagged) {
+      notes.push({
+        kind: "flagged",
+        text:
+          `Downtime ${fmtNum(row.adjusted_downtime_hours, 1)} h exceeded scheduled ` +
+          `${fmtNum(row.adjusted_scheduled_hours, 1)} h — clamped to 0%`,
+      });
+    }
+    if (row.no_wo_entries) notes.push({ kind: "no-data", text: row.note || "No WO entries this month" });
+    if (row.overlap_count > 0) {
+      notes.push({ kind: "overlap", text: `${fmtNum(row.overlap_count, 0)} WO(s) cross a month boundary` });
+    }
+    if (Number(row.linked_downtime_hours) > 0) {
+      notes.push({
+        kind: "linked",
+        text: `Includes ${fmtNum(row.linked_downtime_hours, 1)} h linked from another asset`,
+      });
+    }
+    return notes;
+  }
+
+  function availabilityDetailRows(group, data) {
+    const months = data.months || [];
+    const labels = group.month_labels || [];
+    const average = group.average || [];
+    const monthIndex = new Map(months.map((month, index) => [month, index]));
+    // Assets are ordered as the chart draws and the legend names them; a row for
+    // an asset the chart dropped (every month undefined) sorts after all of them
+    // rather than being hidden, because a column of blanks is itself a finding.
+    const assetIndex = new Map((group.assets || []).map((asset, index) => [asset.asset_number, index]));
+
+    return (group.rows || []).map((row) => {
+      const index = monthIndex.has(row.month) ? monthIndex.get(row.month) : -1;
+      const groupAverage = index >= 0 ? average[index] : null;
+      const availability = row.availability;
+      return {
+        key: `${row.asset_number}|${row.month}`,
+        row,
+        assetIndex: assetIndex.has(row.asset_number) ? assetIndex.get(row.asset_number) : assetIndex.size,
+        monthIndex: index,
+        monthLabel: labels[index] || row.month_label || row.month,
+        availability,
+        delta:
+          availability == null || groupAverage == null ? null : (availability - groupAverage) * 100,
+        notes: detailNotes(row),
+        attention: Boolean(row.flagged || row.no_wo_entries || row.overlap_count > 0),
+      };
+    });
+  }
+
+  function isMissing(value) {
+    return value === null || value === undefined || value === "";
+  }
+
+  function sortDetailRows(items, sort) {
+    // Array.prototype.sort is stable, so seeding with the chart's own order
+    // makes it the tie-break for every column without any column saying so.
+    const natural = items
+      .slice()
+      .sort((a, b) => a.assetIndex - b.assetIndex || a.monthIndex - b.monthIndex);
+    const column = sort && sort.key ? DETAIL_COLUMNS.find((c) => c.key === sort.key) : null;
+    if (!column) return natural;
+    const dir = sort.dir === "desc" ? -1 : 1;
+    return natural.sort((a, b) => {
+      const left = column.sort(a);
+      const right = column.sort(b);
+      // Blanks sort last in both directions. A month with no availability at all
+      // is not the best or the worst month, it is an absent one, and letting a
+      // descending sort stack blanks on top buries the rows being looked for.
+      if (isMissing(left) || isMissing(right)) {
+        if (isMissing(left) && isMissing(right)) return 0;
+        return isMissing(left) ? 1 : -1;
+      }
+      if (typeof left === "number" && typeof right === "number") return dir * (left - right);
+      return dir * String(left).localeCompare(String(right), undefined, { numeric: true });
+    });
+  }
+
+  function detailHeadCell(column, sort, onSort) {
+    const active = sort.key === column.key;
+    const direction = active ? (sort.dir === "desc" ? "descending" : "ascending") : "none";
+    const button = el(
+      "button",
+      {
+        type: "button",
+        class: "metrics-sort" + (active ? " is-active" : ""),
+        "data-sort-key": column.key,
+        onclick: () => onSort(column.key),
+      },
+      [
+        el("span", { text: column.label }),
+        el("span", {
+          class: "metrics-sort-mark",
+          "aria-hidden": "true",
+          text: active ? (sort.dir === "desc" ? "▼" : "▲") : "↕",
+        }),
+      ]
+    );
+    return el("th", { scope: "col", "aria-sort": direction, class: column.numeric ? "is-numeric" : null }, [
+      button,
+    ]);
+  }
+
+  let detailNode = null;
+
+  function openAvailabilityDetail(assetGroup, focus, returnFocus) {
+    state.availabilityDetail = {
+      assetGroup,
+      focus: focus || null,
+      sort: { key: null, dir: "asc" },
+      attentionOnly: false,
+      // Only on the first render: a sort or a filter should not yank the reader
+      // back to the bar they started from.
+      scrollToFocus: Boolean(focus),
+      restoreFocus: returnFocus || null,
+      focusKey: null,
+    };
+    // The tooltip is a viewport-positioned node describing a chart that is about
+    // to be covered up.
+    hideTooltip();
+    renderAvailabilityDetail();
+  }
+
+  function closeAvailabilityDetail() {
+    const detail = state.availabilityDetail;
+    state.availabilityDetail = null;
+    document.removeEventListener("keydown", onDetailKeydown, true);
+    document.body.classList.remove("metrics-modal-open");
+    if (detailNode) {
+      detailNode.remove();
+      detailNode = null;
+    }
+    const restore = detail && detail.restoreFocus;
+    if (restore && document.contains(restore)) restore.focus();
+  }
+
+  function detailFocusables() {
+    if (!detailNode) return [];
+    return Array.from(
+      detailNode.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((node) => node.offsetParent !== null || node === document.activeElement);
+  }
+
+  function onDetailKeydown(event) {
+    if (!state.availabilityDetail || !detailNode) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeAvailabilityDetail();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    // Without a trap, Tab walks straight out of the dialog and into the page
+    // behind it -- which is still there, just covered, so a keyboard reader ends
+    // up driving controls they cannot see.
+    const focusables = detailFocusables();
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !detailNode.contains(active))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || !detailNode.contains(active))) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function renderAvailabilityDetail() {
+    const detail = state.availabilityDetail;
+    if (!detail) return;
+    const data = state.availability;
+    const group = data ? availabilityGroup(detail.assetGroup) : null;
+    // A refresh can drop the group out from under an open modal -- its assets
+    // get unconfigured, or a shorter window no longer reaches its data. Close
+    // rather than leave a dialog describing a chart that is no longer there.
+    if (!group) {
+      closeAvailabilityDetail();
+      return;
+    }
+
+    const items = availabilityDetailRows(group, data);
+    const shown = sortDetailRows(detail.attentionOnly ? items.filter((i) => i.attention) : items, detail.sort);
+    const focusKey = detail.focus ? `${detail.focus.asset_number}|${detail.focus.month}` : null;
+    const focused = focusKey ? items.find((item) => item.key === focusKey) : null;
+    const attentionCount = items.filter((item) => item.attention).length;
+
+    const rerender = () => renderAvailabilityDetail();
+    const onSort = (key) => {
+      const sort = detail.sort;
+      // Re-clicking the active column flips it; a new column starts ascending,
+      // except for the ones a reader opens looking for the extreme -- the worst
+      // availability and the biggest downtime are what an investigation wants
+      // first, and they sit at opposite ends of the sort.
+      if (sort.key === key) sort.dir = sort.dir === "asc" ? "desc" : "asc";
+      else {
+        sort.key = key;
+        sort.dir = key === "asset" || key === "month" || key === "availability" || key === "delta" ? "asc" : "desc";
+      }
+      detail.focusKey = key;
+      rerender();
+    };
+
+    const title = `${group.asset_group} — the rows behind the chart`;
+    const closeButton = el("button", {
+      type: "button",
+      class: "metrics-modal-close",
+      "aria-label": "Close the data table",
+      title: "Close (Esc)",
+      text: "×",
+      onclick: closeAvailabilityDetail,
+    });
+
+    const attentionToggle = el("input", { type: "checkbox" });
+    attentionToggle.checked = detail.attentionOnly;
+    attentionToggle.disabled = !attentionCount;
+    attentionToggle.addEventListener("change", () => {
+      detail.attentionOnly = attentionToggle.checked;
+      detail.focusKey = "attention";
+      rerender();
+    });
+
+    const head = el("tr", {}, DETAIL_COLUMNS.map((column) => detailHeadCell(column, detail.sort, onSort)));
+    const body = shown.length
+      ? shown.map((item) => {
+          const row = el(
+            "tr",
+            {
+              class:
+                "availability-detail-row" +
+                (item.key === focusKey ? " is-focused" : "") +
+                (item.attention ? " is-attention" : ""),
+            },
+            DETAIL_COLUMNS.map((column) => column.cell(item))
+          );
+          if (item.key === focusKey) row.setAttribute("aria-current", "true");
+          return row;
+        })
+      : [
+          el("tr", {}, [
+            el("td", {
+              class: "metrics-empty-row",
+              colspan: String(DETAIL_COLUMNS.length),
+              text: "No rows match the current filter.",
+            }),
+          ]),
+        ];
+
+    const scroll = el("div", { class: "metrics-table-scroll" }, [
+      el("table", { class: "metrics-table availability-detail-table" }, [
+        el("thead", {}, [head]),
+        el("tbody", {}, body),
+      ]),
+    ]);
+
+    const monthSpan = (group.month_labels || []).length;
+    const dialog = el(
+      "div",
+      {
+        class: "metrics-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "availability-detail-title",
+        tabindex: "-1",
+      },
+      [
+        el("header", { class: "metrics-modal-head" }, [
+          el("div", { class: "metrics-modal-heading" }, [
+            el("p", { class: "eyebrow", text: "Availability data" }),
+            el("h2", { id: "availability-detail-title", text: title }),
+            el("p", {
+              class: "metrics-modal-sub",
+              text:
+                `${(group.assets || []).length} asset(s) · ${monthSpan} month(s) · ` +
+                `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day`,
+            }),
+            focused
+              ? el("p", { class: "metrics-modal-focus" }, [
+                  el("span", {
+                    class: "metrics-tooltip-swatch",
+                    style: `background:${SERIES_COLORS[focused.assetIndex % SERIES_COLORS.length]}`,
+                  }),
+                  `Selected bar: ${focused.row.display_name || focused.row.asset_number} · ${focused.monthLabel}` +
+                    (focused.availability == null ? "" : ` · ${(focused.availability * 100).toFixed(2)}%`),
+                ])
+              : null,
+          ]),
+          closeButton,
+        ]),
+        el("div", { class: "metrics-modal-toolbar" }, [
+          el("label", { class: "metrics-modal-check" }, [
+            attentionToggle,
+            el("span", {
+              text: attentionCount
+                ? `Only rows needing attention (${attentionCount})`
+                : "Only rows needing attention (none)",
+            }),
+          ]),
+          el("p", {
+            class: "metrics-hint",
+            text: `Showing ${shown.length} of ${items.length} row(s) · click a column heading to sort`,
+          }),
+        ]),
+        scroll,
+      ]
+    );
+
+    const backdrop = el("div", { class: "metrics-modal-backdrop" }, [dialog]);
+    backdrop.addEventListener("mousedown", (event) => {
+      // mousedown, not click: a drag that starts inside the table and releases
+      // over the backdrop is a text selection, not a dismissal.
+      if (event.target === backdrop) closeAvailabilityDetail();
+    });
+
+    const first = !detailNode;
+    if (detailNode) detailNode.replaceWith(backdrop);
+    else document.body.appendChild(backdrop);
+    detailNode = backdrop;
+
+    if (first) {
+      document.body.classList.add("metrics-modal-open");
+      document.addEventListener("keydown", onDetailKeydown, true);
+      dialog.focus();
+    } else if (detail.focusKey) {
+      // A rebuild throws away the button that was just pressed, so hand focus
+      // back to its replacement rather than dropping the reader to the top.
+      const target =
+        detail.focusKey === "attention"
+          ? attentionToggle
+          : dialog.querySelector(`[data-sort-key="${detail.focusKey}"]`);
+      if (target) target.focus();
+      detail.focusKey = null;
+    }
+
+    markScrollRegion(scroll, `${group.asset_group} availability data`);
+
+    if (detail.scrollToFocus) {
+      detail.scrollToFocus = false;
+      const row = dialog.querySelector(".availability-detail-row.is-focused");
+      if (row) {
+        // Centred by hand rather than with scrollIntoView, which also scrolls
+        // every ancestor -- including the page behind the modal.
+        const rowBox = row.getBoundingClientRect();
+        const scrollBox = scroll.getBoundingClientRect();
+        scroll.scrollTop += rowBox.top - scrollBox.top - (scrollBox.height - rowBox.height) / 2;
+      }
+    }
   }
 
   async function loadAvailability() {
@@ -1389,22 +1873,37 @@
         renderAvailabilityExpanded();
       });
 
+      // The same drill-down the bars open. A canvas cannot hold focus, so
+      // without this the whole table would be mouse-only -- and it is also the
+      // way in when the question is about the group rather than one bad month.
+      const detailButton = el("button", {
+        type: "button",
+        class: "btn-secondary availability-mode-toggle",
+        text: "View data",
+        title: `Open the ${group.asset_group} rows behind this chart`,
+      });
+      detailButton.addEventListener("click", () => {
+        openAvailabilityDetail(group.asset_group, null, detailButton);
+      });
+
       host.appendChild(
         el("div", { class: "metrics-panel availability-group" }, [
           el("div", { class: "availability-group-head" }, [
             el("h3", { text: `${group.asset_group} Availability % by Month` }),
-            toggle,
+            el("div", { class: "availability-group-actions" }, [detailButton, toggle]),
           ]),
           el("p", {
             class: "metrics-hint",
-            text: `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day`,
+            text:
+              `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day · ` +
+              "click a bar to open the rows behind it",
           }),
           el("div", { class: "metrics-chart-wrap" }, [canvas]),
           renderAvailabilityTable(group, data),
         ])
       );
       drawAvailabilityChart(canvas, group, { height: 300 });
-      wireAvailabilityHover(canvas, group, data);
+      wireAvailabilityChart(canvas, group, data, detailButton);
     });
 
     syncScrollRegions();
@@ -1417,6 +1916,10 @@
   function renderAvailability() {
     renderAvailabilityPreview();
     if (state.expanded === "availability") renderAvailabilityExpanded();
+    // The modal reads from state rather than from a snapshot, so a refresh that
+    // lands under an open drill-down redraws it with the new numbers instead of
+    // leaving stale ones on screen.
+    if (state.availabilityDetail) renderAvailabilityDetail();
     // Re-asserted on every render, not just the first load: the numbers stay
     // wrong for as long as the misconfiguration lasts.
     if (state.availabilityError) showBanner(state.availabilityError, "error");
