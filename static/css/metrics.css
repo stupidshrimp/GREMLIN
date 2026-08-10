@@ -149,6 +149,13 @@
   align-items: flex-start;
   gap: 1rem;
 }
+/* An open card's body is a workspace, so only its header still closes it. The
+   cursor has to say which half is which, or the dead click on the charts reads
+   as a broken card. */
+.metrics-card.is-expanded .metrics-card-head { cursor: pointer; }
+.metrics-card.is-expanded .metrics-card-head:hover .metrics-card-toggle {
+  background: rgba(47, 143, 91, 0.3);
+}
 .metrics-card-head h2 { margin: 0.1rem 0 0.35rem; }
 .metrics-card-desc { font-size: 0.9rem; }
 
@@ -239,6 +246,23 @@
   border: 1px solid var(--border);
   border-radius: 12px;
 }
+/* A sticky header only sticks inside a scroll container that actually scrolls.
+   `overflow-x: auto` already makes this wrapper one, but without a height cap it
+   grows to fit every row, the page scrolls instead of the wrapper, and the
+   sticky head has nothing to stick to. Capping the height is what turns the rule
+   below from decoration into a header that stays put. Scoped to the metrics
+   cards so the Settings page's short config tables keep their natural height. */
+.metrics-card .metrics-table-scroll {
+  max-height: min(60vh, 32rem);
+  overflow-y: auto;
+}
+/* Rows past the cap are reachable only by scrolling the wrapper, and a scroll
+   container is only in the tab order in some browsers. syncScrollRegions() gives
+   it a tab stop when it actually scrolls, so it needs a focus ring to match. */
+.metrics-card .metrics-table-scroll:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+}
 table.metrics-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
 table.metrics-table th,
 table.metrics-table td {
@@ -253,6 +277,13 @@ table.metrics-table thead th {
   font-weight: 600;
   position: sticky;
   top: 0;
+  /* Body cells that are themselves positioned (the availability table's sticky
+     first column) would otherwise paint over the header, being later in the
+     document with the same stacking order. */
+  z-index: 2;
+  /* border-collapse hands the shared border to the cell below, which scrolls
+     away with it, so the rule under the header is drawn as an inset shadow. */
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 table.metrics-table tbody tr:nth-child(even) { background: rgba(237, 242, 246, 0.5); }
 table.metrics-table td.metrics-empty-row { text-align: center; color: var(--muted); padding: 1rem 0.55rem; }
@@ -272,6 +303,54 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 .metrics-trend-up { color: #a5281b; font-weight: 700; }
 .metrics-trend-down { color: var(--forest-700); font-weight: 700; }
 .metrics-trend-flat { color: var(--muted); font-weight: 700; }
+
+/* ---- chart hover tooltip -------------------------------------------------- */
+/* Sits on <body> rather than inside the card so the card's border-radius and
+   overflow cannot clip it, and follows the cursor in viewport coordinates.
+   pointer-events: none keeps it from stealing the mousemove that feeds it. */
+.metrics-tooltip {
+  position: fixed;
+  z-index: 80;
+  max-width: 22rem;
+  pointer-events: none;
+  background: rgba(29, 39, 49, 0.96);
+  color: #f2f6f9;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  box-shadow: 0 16px 36px rgba(6, 43, 28, 0.34);
+}
+.metrics-tooltip-title { color: #fff; font-weight: 700; font-size: 0.82rem; }
+.metrics-tooltip-sub { color: #b6c6d2; font-size: 0.72rem; margin-bottom: 0.3rem; }
+
+.metrics-tooltip-rows {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.1rem 0.7rem;
+  margin: 0;
+}
+.metrics-tooltip-rows dt { color: #b6c6d2; }
+.metrics-tooltip-rows dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.metrics-tooltip-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 0.4rem;
+}
+.metrics-tooltip-note {
+  color: #f0c8b8;
+  font-size: 0.72rem;
+  margin-top: 0.35rem;
+  white-space: normal;
+}
 
 /* ---- loading ------------------------------------------------------------- */
 .metrics-loading {
@@ -345,8 +424,11 @@ table.availability-table th:first-child {
   left: 0;
   background: var(--surface, #fff);
   font-weight: 600;
+  z-index: 1;
 }
-table.availability-table thead th:first-child { background: var(--forest-100); }
+/* The corner cell is sticky on both axes at once, so it has to outrank the
+   header row it sits in as well as the column below it. */
+table.availability-table thead th:first-child { background: var(--forest-100); z-index: 3; }
 .availability-cell { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* A flagged month means downtime exceeded scheduled hours, so the value is
