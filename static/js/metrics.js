@@ -1674,11 +1674,16 @@
       document.addEventListener("keydown", onDetailKeydown, true);
       dialog.focus();
     } else {
-      // Falling back to the dialog rather than leaving focus where it landed:
-      // the control may be gone (the attention checkbox disables itself once
-      // nothing matches), and the dialog is the one thing every render keeps.
       const target = focusId ? dialog.querySelector(`[data-focus-id="${focusId}"]`) : null;
-      (target || dialog).focus();
+      if (target) target.focus();
+      // Checked rather than predicted, because a control can be present and
+      // still refuse focus: unchecking the attention filter when a refresh has
+      // already emptied it re-renders the checkbox disabled, and focus() on a
+      // disabled input is a no-op. The node that had focus is detached by now,
+      // so anything that fails to land leaves focus on <body> behind the
+      // backdrop. Asking where focus actually went covers that and every other
+      // way an element can decline it.
+      if (!dialog.contains(document.activeElement)) dialog.focus();
     }
 
     if (detail.scrollToFocus) {
