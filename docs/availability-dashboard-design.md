@@ -363,11 +363,60 @@ Group ids are copied, so those references survive.
 
 ```
 GET  /metrics/api/availability                  → groups, months, series, goals, flags, basis
+GET  /metrics/api/availability/work-orders      → ?asset_group&asset_number&month; the records
+                                                  behind one bar, and the totals they sum to
 GET  /metrics/api/availability/config           → schedule, membership, names, rules
 PUT  /metrics/api/availability/config/group/<g> → schedule edit
 PUT  /metrics/api/availability/goal             → {group, month, percent}
 PUT  /metrics/api/availability/ot               → {asset, month, hours}
 ```
+
+### 5.1 Drilling from a bar to the work orders behind it
+
+Clicking a bar opens the group's asset-months (§5 above). That table explains a
+bar in hours; a second view inside the same dialog explains those hours in
+records — which work order, on which machine, opened when, and how much of its
+downtime *this* bar was charged.
+
+Loaded per bar rather than shipped with the chart. The card draws several
+hundred asset-months, and each one's work orders carry a name, a description and
+completion notes; that is far more payload than the numbers it explains, on a
+request that already runs on every page view. `load_work_order_details` is
+therefore a second loader beside `load_work_orders`, selecting a wider column
+list for one asset-month at a time.
+
+Three properties make the view worth trusting, and each is a test:
+
+- **The rows sum to the bar.** `work_order_contributions` repeats the
+  calculator's arithmetic rather than approximating it: `max(0, downtime)` for
+  direct orders, times the rule's impact factor for linked ones, bucketed by
+  created month. Direct rows total `direct_downtime_hours` and linked rows
+  total `linked_downtime_hours`. The header restates the bar as that sum, so
+  the two are checkable against each other on screen.
+- **`counted_hours` is not `downtime_hours`.** A linked order contributes its
+  share and a negative one contributes nothing, so both numbers are columns and
+  the impact factor travels on the row rather than in a footnote. Without this,
+  §2.4's asymmetric, uncapped, unmerged linked downtime reads as a bug every
+  time someone traces it.
+- **Zero-downtime orders are listed.** They are the whole evidence that an
+  asset sitting at 100% was being worked on rather than merely unlogged — the
+  distinction §3 makes with `No WO Entries Flag`, now with the records attached.
+
+The descriptive text lives on `WorkOrderDetail`, a separate type composed
+*around* `WorkOrder` rather than extending it. `WorkOrder` carries no type or
+classification field so that no future change can reintroduce the §2.1 PM
+filter in the calculator; a detail record holds `type_raw` and `record_class`
+for display and cannot be passed to `compute_rows` at all, which keeps that
+guarantee structural rather than remembered. The same rule applies to the
+loader: the drill-down filters by nothing either, because a row counted into a
+total but missing from the list that explains the total is the original bug
+wearing a disguise.
+
+The month filter is applied after localization, not in SQL. Which month a work
+order belongs to is decided on the plant's clock (§2.2), and the stored created
+dates arrive in several formats, so pushing the predicate into the query would
+move boundary-crossing orders into a different month than the chart put them
+in.
 
 Editing is split by how often a value changes and how much it moves:
 

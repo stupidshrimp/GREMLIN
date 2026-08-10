@@ -21,7 +21,13 @@ from unittest import mock
 import repositories.availability_repo
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
 from repositories.raw_repo import RawRepository
-from services.availability_dashboard import build_config, build_dashboard, clamp_window_months
+from services.availability_dashboard import (
+    build_config,
+    build_dashboard,
+    build_work_order_detail,
+    clamp_window_months,
+    parse_month,
+)
 from services.life_data_service import DatabaseWriteError, LifeDataService
 
 # Availability Data, January 2026, the Salvagnini group -- full stored precision.
@@ -227,6 +233,77 @@ class WorkOrderLoadingTests(AvailabilityTestCase):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DROP TABLE mapped_cmms_record")
         self.assertEqual(self.repo.load_work_orders(), [])
+        self.assertEqual(self.repo.load_work_order_details(["3101"], date(2026, 1, 1)), [])
+
+
+class WorkOrderDetailLoadingTests(AvailabilityTestCase):
+    """The wider load behind a single bar -- same rows, plus the text."""
+
+    def test_the_descriptive_text_comes_through(self):
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 4.0,
+            name="L3 down", status="Completed", type="6",
+            description="Would not cycle.", completionNotes="Replaced valve.",
+        )
+        detail = self.repo.load_work_order_details(["3101"], date(2026, 1, 1))[0]
+        self.assertEqual(detail.order.downtime_hours, 4.0)
+        self.assertEqual(detail.task_name, "L3 down")
+        self.assertEqual(detail.status, "Completed")
+        self.assertEqual(detail.type_raw, "6")
+        self.assertEqual(detail.description, "Would not cycle.")
+        self.assertEqual(detail.completion_notes, "Replaced valve.")
+
+    def test_the_description_falls_back_to_whichever_field_was_filled_in(self):
+        """A work order raised as a request carries its text somewhere else."""
+
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 1.0, requestorDescription="Operator says it stalls"
+        )
+        detail = self.repo.load_work_order_details(["3101"], date(2026, 1, 1))[0]
+        self.assertEqual(detail.description, "Operator says it stalls")
+
+    def test_the_month_filter_uses_plant_time_not_the_stored_utc(self):
+        """The same rule the chart buckets by, or a bar and its rows disagree.
+
+        2026-02-01 03:00 UTC is 2026-01-31 21:00 in Chicago, so this work order
+        belongs to January's bar and must appear under it.
+        """
+
+        self.add_work_order("3101", "2026-02-01 03:00:00", 4.0)
+        self.assertEqual(len(self.repo.load_work_order_details(["3101"], date(2026, 1, 1))), 1)
+        self.assertEqual(self.repo.load_work_order_details(["3101"], date(2026, 2, 1)), [])
+
+    def test_an_omitted_month_loads_every_month(self):
+        self.add_work_order("3101", "2026-01-15 15:00:00", 1.0)
+        self.add_work_order("3101", "2026-04-15 15:00:00", 1.0)
+        self.assertEqual(len(self.repo.load_work_order_details(["3101"])), 2)
+
+    def test_the_drill_down_is_not_filtered_by_classification_either(self):
+        """§2.1 again: the bar counts it, so the evidence must show it.
+
+        A row counted into the total but missing from the list that explains
+        the total is the same bug as excluding it, only harder to notice.
+        """
+
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 10.0,
+            name="L3 down", completionNotes="Repair complete. RTS at 4:30 PM on 01/15/26.",
+        )
+        self.assertEqual(self.mapped_column("is_pm_candidate"), [1])
+        details = self.repo.load_work_order_details(["3101"], date(2026, 1, 1))
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0].order.downtime_hours, 10.0)
+        self.assertEqual(details[0].record_class, "PM")
+
+    def test_a_database_missing_the_descriptive_columns_still_loads(self):
+        """Same defence the hot path takes: a column-poor database degrades."""
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 4.0, name="L3 down")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("ALTER TABLE mapped_cmms_record DROP COLUMN completion_notes")
+        detail = self.repo.load_work_order_details(["3101"], date(2026, 1, 1))[0]
+        self.assertEqual(detail.order.downtime_hours, 4.0)
+        self.assertEqual(detail.completion_notes, "")
 
 
 # The schema the earlier Availability Dashboard attempt left in real databases.
@@ -897,6 +974,149 @@ class WriteFailureTests(AvailabilityTestCase):
             repo.save_goal("Salvagnini", "2026-01-01", 5.0)
 
 
+class WorkOrderDrillDownTests(AvailabilityTestCase):
+    """The payload behind one bar, checked against the bar it explains."""
+
+    def bar(self, asset, month=date(2026, 1, 1), group="Salvagnini"):
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 5))
+        rows = next(g for g in data["groups"] if g["asset_group"] == group)["rows"]
+        return next(r for r in rows if r["asset_number"] == asset and r["month"] == month.isoformat())
+
+    def drill(self, asset, month="2026-01-01", group="Salvagnini"):
+        return build_work_order_detail(
+            self.repo, asset_group=group, asset_number=asset, month=month
+        )
+
+    def test_the_totals_match_the_chart_and_the_workbook(self):
+        self.seed_salvagnini_january()
+        detail = self.drill("3102")
+        self.assertEqual(detail["direct_downtime_hours"], 12.5)
+        self.assertEqual(detail["linked_downtime_hours"], 24.43)
+        self.assertAlmostEqual(detail["availability"], JANUARY_AVAILABILITY["3102"], places=12)
+        self.assertEqual(detail["availability"], self.bar("3102")["availability"])
+        self.assertEqual(detail["scheduled_hours"], 396.0)
+
+    def test_the_listed_work_orders_add_up_to_the_bar(self):
+        self.seed_salvagnini_january()
+        detail = self.drill("3102")
+        by_source = {"direct": 0.0, "linked": 0.0}
+        for order in detail["work_orders"]:
+            by_source[order["source"]] += order["counted_hours"]
+        self.assertAlmostEqual(by_source["direct"], detail["direct_downtime_hours"], places=2)
+        self.assertAlmostEqual(by_source["linked"], detail["linked_downtime_hours"], places=2)
+
+    def test_linked_work_orders_name_the_machine_and_the_share(self):
+        self.seed_salvagnini_january()
+        detail = self.drill("3102")
+        linked = {o["asset_number"]: o for o in detail["work_orders"] if o["source"] == "linked"}
+        self.assertEqual(set(linked), {"3101", "3105", "3106", "3107"})
+        self.assertEqual(linked["3101"]["downtime_hours"], 10.0)
+        self.assertEqual(linked["3101"]["counted_hours"], 5.0)
+        self.assertEqual(linked["3101"]["impact_factor"], 0.5)
+        self.assertEqual(
+            [a["display_name"] for a in detail["linked_assets"]], ["MV", "S4", "SMD", "ACN"]
+        )
+
+    def test_an_asset_with_no_rules_reports_no_linked_assets(self):
+        self.seed_salvagnini_january()
+        detail = self.drill("3101")
+        self.assertEqual(detail["linked_assets"], [])
+        self.assertTrue(all(o["source"] == "direct" for o in detail["work_orders"]))
+
+    def test_an_asset_with_no_downtime_of_its_own_still_lists_its_linked_hours(self):
+        """3104 recorded no downtime in January and is still charged 5 h.
+
+        This is the case the view exists for: the summary shows a work order
+        that cost nothing next to a number that is plainly not 100%, and the
+        only thing that explains the gap is another machine's breakdown.
+        """
+
+        self.seed_salvagnini_january()
+        detail = self.drill("3104")
+        self.assertEqual(detail["direct_downtime_hours"], 0)
+        self.assertEqual(detail["zero_downtime_wo_count"], 1)
+        self.assertEqual(detail["linked_downtime_hours"], 5.0)
+
+        by_source = {o["source"]: o for o in detail["work_orders"]}
+        self.assertEqual(set(by_source), {"direct", "linked"})
+        self.assertEqual(by_source["direct"]["asset_number"], "3104")
+        self.assertEqual(by_source["direct"]["counted_hours"], 0.0)
+        self.assertEqual(by_source["linked"]["asset_number"], "3101")
+        self.assertEqual(by_source["linked"]["counted_hours"], 5.0)
+
+    def test_a_bar_with_nothing_behind_it_lists_nothing(self):
+        """The true 100%: no work orders, no rules, nothing to show."""
+
+        self.seed_salvagnini_january()
+        empty = self.drill("4001", group="Building 6 Finishing")
+        self.assertEqual(empty["work_orders"], [])
+        self.assertEqual(empty["linked_assets"], [])
+        self.assertEqual(empty["total_wo_count"], 0)
+        self.assertEqual(empty["availability"], 1.0)
+        self.assertEqual(empty["note"], "No WO entries this month")
+
+    def test_the_text_a_reader_needs_is_present(self):
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 6.0,
+            name="MV hydraulic fault", status="Completed", type="6",
+            description="Pressure alarm.", completionNotes="Replaced seal. RTS at 4:30 PM.",
+        )
+        order = self.drill("3101")["work_orders"][0]
+        self.assertEqual(order["task_name"], "MV hydraulic fault")
+        self.assertEqual(order["description"], "Pressure alarm.")
+        self.assertEqual(order["completion_notes"], "Replaced seal. RTS at 4:30 PM.")
+        self.assertEqual(order["status"], "Completed")
+        self.assertTrue(order["task_id"])
+        self.assertEqual(order["created"], "2026-01-15T09:00:00")
+
+    def test_month_labels_carry_the_year(self):
+        """A single month has no neighbouring columns to date it by."""
+
+        self.seed_salvagnini_january()
+        self.assertEqual(self.drill("3101")["month_label"], "Jan 2026")
+
+    def test_manual_overtime_reaches_the_header(self):
+        self.seed_salvagnini_january()
+        self.repo.save_manual_ot("3101", "2026-01-01", 40.0)
+        detail = self.drill("3101")
+        self.assertEqual(detail["manual_ot_hours"], 40.0)
+        self.assertEqual(detail["adjusted_scheduled_hours"], 436.0)
+
+    def test_a_bar_clamped_to_zero_still_itemises_its_hours(self):
+        self.add_work_order("3101", "2026-01-15 15:00:00", 500.0)
+        detail = self.drill("3101")
+        self.assertTrue(detail["flagged"])
+        self.assertEqual(detail["availability"], 0.0)
+        self.assertEqual(detail["work_orders"][0]["counted_hours"], 500.0)
+
+    def test_a_month_with_no_data_is_answerable_not_an_error(self):
+        """Months outside the chart's window are still legitimate questions."""
+
+        self.seed_salvagnini_january()
+        detail = self.drill("3101", month="2026-07-01")
+        self.assertEqual(detail["work_orders"], [])
+        self.assertEqual(detail["month_label"], "Jul 2026")
+
+    def test_an_unknown_group_asset_or_month_is_a_config_error(self):
+        self.seed_salvagnini_january()
+        with self.assertRaises(AvailabilityConfigError):
+            self.drill("3101", group="Nope")
+        with self.assertRaises(AvailabilityConfigError):
+            self.drill("9999")
+        with self.assertRaises(AvailabilityConfigError):
+            self.drill("3101", month="last winter")
+        with self.assertRaises(AvailabilityConfigError):
+            self.drill("3101", month="")
+
+    def test_an_excluded_group_is_not_drillable(self):
+        with self.assertRaises(AvailabilityConfigError):
+            self.drill("3101", group="Dilo & Enervac")
+
+    def test_month_parsing_accepts_both_shapes(self):
+        self.assertEqual(parse_month("2026-03"), date(2026, 3, 1))
+        self.assertEqual(parse_month("2026-03-17"), date(2026, 3, 1))
+
+
 class ApiTests(AvailabilityTestCase):
     def setUp(self):
         super().setUp()
@@ -979,6 +1199,45 @@ class ApiTests(AvailabilityTestCase):
     def test_group_names_with_spaces_and_ampersands_route_correctly(self):
         response = self.client.post("/metrics/api/availability/config/group/Dilo %26 Enervac/reset")
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+    def test_the_work_order_endpoint_itemises_a_bar(self):
+        self.seed_salvagnini_january()
+        response = self.client.get(
+            "/metrics/api/availability/work-orders"
+            "?asset_group=Salvagnini&asset_number=3102&month=2026-01-01"
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertAlmostEqual(data["availability"], JANUARY_AVAILABILITY["3102"], places=12)
+        self.assertEqual(len(data["work_orders"]), 5)  # its own, plus four linked
+        self.assertAlmostEqual(
+            sum(o["counted_hours"] for o in data["work_orders"]),
+            data["adjusted_downtime_hours"],
+            places=2,
+        )
+
+    def test_a_group_name_with_an_ampersand_reaches_the_work_order_endpoint(self):
+        response = self.client.get(
+            "/metrics/api/availability/work-orders"
+            "?asset_group=Dilo %26 Enervac&asset_number=3101&month=2026-01-01"
+        )
+        # Excluded group, so a 400 -- but a *routing* failure would be a 404,
+        # and the message has to name the group it actually parsed.
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Dilo & Enervac", response.get_json()["error"])
+
+    def test_a_bad_work_order_request_returns_400_with_a_readable_reason(self):
+        for query, expected in (
+            ("asset_group=Nope&asset_number=3101&month=2026-01-01", "Nope"),
+            ("asset_group=Salvagnini&asset_number=9999&month=2026-01-01", "9999"),
+            ("asset_group=Salvagnini&asset_number=3101&month=nonsense", "nonsense"),
+            ("asset_group=Salvagnini&asset_number=3101", "month"),
+            ("asset_group=Salvagnini&month=2026-01-01", "asset_number"),
+        ):
+            with self.subTest(query=query):
+                response = self.client.get(f"/metrics/api/availability/work-orders?{query}")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(expected, response.get_json()["error"])
 
     def test_the_config_endpoint_serves_the_settings_editor(self):
         response = self.client.get("/metrics/api/availability/config")
