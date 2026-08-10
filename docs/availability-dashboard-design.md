@@ -393,6 +393,15 @@ Three properties make the view worth trusting, and each is a test:
   created month. Direct rows total `direct_downtime_hours` and linked rows
   total `linked_downtime_hours`. The header restates the bar as that sum, so
   the two are checkable against each other on screen.
+
+  That has to survive rounding, which is not free. Downtime is recorded in
+  minutes, so an hours column routinely holds thirds of a hundredth — three
+  one-minute orders are 0.0167 h each and 0.05 h together, and at two decimals
+  they render as three 0.02s beneath a total of 0.05. The table therefore
+  chooses its precision from the rows it is about to draw, taking the fewest
+  decimals at which they still reach the stated total, and carries a footer
+  total that sums the values *as displayed*. Two decimals stays the common
+  case; the wire format keeps four so the client has something to choose from.
 - **`counted_hours` is not `downtime_hours`.** A linked order contributes its
   share and a negative one contributes nothing, so both numbers are columns and
   the impact factor travels on the row rather than in a footnote. Without this,

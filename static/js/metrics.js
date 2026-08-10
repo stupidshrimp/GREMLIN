@@ -1585,6 +1585,40 @@
     return time ? `${day} ${time.slice(0, 5)}` : day;
   }
 
+  function roundTo(value, digits) {
+    return Number(Number(value || 0).toFixed(digits));
+  }
+
+  // How many decimals the hours columns need before the rows, as displayed,
+  // still reach the total the header states.
+  //
+  // Downtime is recorded in minutes, so an hours column routinely holds thirds
+  // of a hundredth: three one-minute orders are 0.0167 h each, which at two
+  // decimals renders as three 0.02s beneath a total of 0.05. Two decimals is
+  // the right granularity for hours on a plant floor and stays the default, but
+  // a column that visibly refuses to add up undermines the one thing this view
+  // promises, so it gains decimals until it does.
+  function hoursPrecision(values, total) {
+    for (let digits = 2; digits < 4; digits += 1) {
+      const shown = values.reduce((sum, value) => sum + roundTo(value, digits), 0);
+      if (roundTo(shown, 2) === roundTo(total, 2)) return digits;
+    }
+    return 4;
+  }
+
+  // Limble's own task type. Not the same thing as the app's classification and
+  // frequently at odds with it -- the workbook's belief that "type 4 is a PM"
+  // is what made it drop 2,410 rows of real repairs (design doc §2.1). Both are
+  // shown, and neither filters anything, so a reader auditing a counted row can
+  // see exactly what each system called it.
+  const LIMBLE_TYPES = {
+    1: "PM",
+    2: "Request template",
+    4: "Project / misc repair",
+    6: "Work request",
+    7: "Parts alert",
+  };
+
   const WORK_ORDER_COLUMNS = [
     {
       key: "wo",
@@ -1654,7 +1688,7 @@
       numeric: true,
       sort: (item) => item.wo.downtime_hours,
       cell: (item) =>
-        el("td", { class: "availability-cell", text: fmtNum(item.wo.downtime_hours, 2) }),
+        el("td", { class: "availability-cell", text: fmtNum(item.wo.downtime_hours, item.digits) }),
     },
     {
       key: "counted",
@@ -1667,15 +1701,31 @@
       cell: (item) => {
         const attrs = { class: "availability-cell availability-wo-counted" };
         if (!item.wo.counted_hours) attrs.class += " is-quiet";
-        attrs.text = fmtNum(item.wo.counted_hours, 2);
+        attrs.text = fmtNum(item.wo.counted_hours, item.digits);
         if (item.wo.counted_hours !== item.wo.downtime_hours) {
           attrs.title =
             item.wo.source === "linked"
-              ? `${fmtNum(item.wo.downtime_hours, 2)} h on ${item.assetLabel} × ` +
+              ? `${fmtNum(item.wo.downtime_hours, item.digits)} h on ${item.assetLabel} × ` +
                 `${item.wo.impact_factor} impact factor`
               : "Negative downtime counts as zero.";
         }
         return el("td", attrs);
+      },
+    },
+    {
+      key: "type",
+      label: "Type",
+      sort: (item) => item.wo.type_raw,
+      cell: (item) => {
+        const raw = item.wo.type_raw;
+        if (!raw) return el("td", {}, [el("span", { class: "availability-detail-quiet", text: "—" })]);
+        const label = LIMBLE_TYPES[raw];
+        return el("td", {}, [
+          el("span", { text: label || `Type ${raw}` }),
+          // The bare number is what Limble itself shows, so it stays reachable
+          // for anyone comparing this row against the source system.
+          label ? el("span", { class: "availability-detail-sub", text: `Limble type ${raw}` }) : null,
+        ]);
       },
     },
     {
@@ -1972,9 +2022,17 @@
 
     children.push(workOrderSummary(payload));
 
+    // One precision for the whole table, chosen from the rows it is about to
+    // draw, so every hours cell in it is directly comparable with every other.
+    const digits = hoursPrecision(
+      (payload.work_orders || []).map((entry) => entry.counted_hours),
+      payload.adjusted_downtime_hours
+    );
+
     const rows = (payload.work_orders || []).map((entry, index) => ({
       key: `${entry.source}|${entry.asset_number}|${entry.task_id}|${index}`,
       wo: entry,
+      digits,
       assetLabel:
         entry.asset_number === payload.asset_number
           ? payload.display_name || entry.asset_number
@@ -2016,10 +2074,30 @@
       )
     );
 
+    // The sum of the values as *displayed*, not of the values underneath them,
+    // so the figure at the foot of the column is the one a reader adding the
+    // column up arrives at. It is the bar, restated by the rows that made it.
+    const countedTotal = shown.reduce(
+      (sum, item) => sum + roundTo(item.wo.counted_hours, digits),
+      0
+    );
+    const totals = el(
+      "tr",
+      { class: "availability-wo-total" },
+      WORK_ORDER_COLUMNS.map((column) => {
+        if (column.key === "wo") return el("td", { text: "Total counted" });
+        if (column.key === "counted") {
+          return el("td", { class: "availability-cell", text: fmtNum(countedTotal, digits) });
+        }
+        return el("td", {});
+      })
+    );
+
     const scroll = el("div", { class: "metrics-table-scroll", "data-focus-id": "wo-rows" }, [
       el("table", { class: "metrics-table availability-detail-table availability-wo-table" }, [
         el("thead", {}, [head]),
         el("tbody", {}, body),
+        el("tfoot", {}, [totals]),
       ]),
     ]);
 

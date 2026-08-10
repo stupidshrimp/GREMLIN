@@ -1069,6 +1069,35 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         self.assertTrue(order["task_id"])
         self.assertEqual(order["created"], "2026-01-15T09:00:00")
 
+    def test_the_source_type_travels_alongside_the_classification(self):
+        """Both, because they disagree and §2.1 is about which one lied.
+
+        The workbook dropped 2,410 rows believing type 4 meant PM. A reader
+        auditing a counted row needs to see what Limble called it *and* what
+        this app called it, so the drill-down carries both and filters on
+        neither.
+        """
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 3.0, type="4", name="Rebuild spindle")
+        order = self.drill("3101")["work_orders"][0]
+        self.assertEqual(order["type_raw"], "4")
+        self.assertIn("record_class", order)
+
+    def test_hours_are_sent_finer_than_they_are_displayed(self):
+        """Downtime is minute-granular, so two decimals cannot be the wire format.
+
+        Three one-minute orders are 0.0167 h each and 0.05 h together. Rounding
+        each to the two decimals the table shows would make the rows visibly
+        fail to reach the total, so the payload keeps enough precision for the
+        client to choose a precision that adds up.
+        """
+
+        for _ in range(3):
+            self.add_work_order("3101", "2026-01-15 15:00:00", 1 / 60)
+        detail = self.drill("3101")
+        self.assertEqual(detail["adjusted_downtime_hours"], 0.05)
+        self.assertEqual([o["counted_hours"] for o in detail["work_orders"]], [0.0167] * 3)
+
     def test_month_labels_carry_the_year(self):
         """A single month has no neighbouring columns to date it by."""
 

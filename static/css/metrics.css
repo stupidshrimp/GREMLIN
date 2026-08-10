@@ -772,6 +772,33 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 table.availability-wo-table tbody tr.is-linked,
 table.availability-wo-table tbody tr.is-linked:nth-child(even) { background: #f2f8f4; }
 
+/* Sticks to the bottom for the same reason the heading sticks to the top: the
+   total is what the rows are being read against, so it has to stay in view
+   while they scroll past it.
+
+   On the cells, not on the <tr>. A sticky row opens its own stacking context at
+   z-index auto, which the sticky first column inside every *body* row then
+   paints straight through at z-index 1 -- the total reads as blank with a data
+   row showing behind it. */
+table.availability-wo-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--forest-100);
+  font-weight: 700;
+  color: var(--forest-900);
+  /* Same reason the header's rule is a shadow: border-collapse hands the shared
+     border to the cell above, which scrolls away with it. */
+  box-shadow: inset 0 2px 0 var(--forest-500);
+}
+/* Pinned in both directions, so it outranks the sticky first column (1) and the
+   sticky heading (3) it can meet in the corner. */
+table.availability-wo-table tfoot td:first-child {
+  left: 0;
+  z-index: 4;
+  background: var(--forest-100);
+}
+
 @media (max-width: 860px) {
   .metrics-modal-backdrop { padding: 0; }
   .metrics-modal {
