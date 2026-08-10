@@ -538,6 +538,41 @@
     ctx.textBaseline = "alphabetic";
   }
 
+  // ---- scrollable table regions --------------------------------------------
+  // Capping the wrapper's height is what makes the sticky headers work, but it
+  // also puts rows behind a scrollbar — and a scroll container is only in the
+  // tab order in some browsers (Firefox and recent Chrome, not Safari or older
+  // Chrome). Without a tab stop those rows are unreachable by keyboard, so the
+  // wrapper gets one, named after the panel it belongs to.
+  //
+  // Only while it actually scrolls, though: a focusable element that scrolls
+  // nowhere is a dead stop between the reader and the next real control, and
+  // these tables are short far more often than not. Both axes count — the
+  // availability table hides months off the right the same way the KPI table
+  // hides assets off the bottom.
+  function syncScrollRegions() {
+    document.querySelectorAll(".metrics-card .metrics-table-scroll").forEach((wrap) => {
+      // A pixel of tolerance: sub-pixel row heights round the scroll size just
+      // past the client size on tables that visibly fit.
+      const scrolls =
+        wrap.scrollHeight > wrap.clientHeight + 1 || wrap.scrollWidth > wrap.clientWidth + 1;
+      if (!scrolls) {
+        wrap.removeAttribute("tabindex");
+        wrap.removeAttribute("role");
+        wrap.removeAttribute("aria-label");
+        return;
+      }
+      const panel = wrap.closest(".metrics-panel");
+      const heading = panel ? panel.querySelector("h3") : null;
+      wrap.setAttribute("tabindex", "0");
+      wrap.setAttribute("role", "region");
+      wrap.setAttribute(
+        "aria-label",
+        `${heading ? heading.textContent.trim() : "Table"} (scrollable)`
+      );
+    });
+  }
+
   // ---- empty-state helpers -------------------------------------------------
   function setEmpty(key, message) {
     const node = document.querySelector(`[data-empty="${key}"]`);
@@ -705,6 +740,7 @@
     setEmpty("kpis-downtime", dtItems.length ? null : noDataMessage());
 
     renderKpiTable(rows);
+    syncScrollRegions();
   }
 
   function trendCell(trend) {
@@ -772,6 +808,7 @@
 
     renderThresholdSummary(rows);
     renderAlertTable(rows);
+    syncScrollRegions();
   }
 
   function renderThresholdSummary(rows) {
@@ -1369,6 +1406,8 @@
       drawAvailabilityChart(canvas, group, { height: 300 });
       wireAvailabilityHover(canvas, group, data);
     });
+
+    syncScrollRegions();
   }
 
   // Draws whichever availability views are currently on screen. Both the first

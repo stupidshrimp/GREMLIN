@@ -256,6 +256,13 @@
   max-height: min(60vh, 32rem);
   overflow-y: auto;
 }
+/* Rows past the cap are reachable only by scrolling the wrapper, and a scroll
+   container is only in the tab order in some browsers. syncScrollRegions() gives
+   it a tab stop when it actually scrolls, so it needs a focus ring to match. */
+.metrics-card .metrics-table-scroll:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+}
 table.metrics-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
 table.metrics-table th,
 table.metrics-table td {
