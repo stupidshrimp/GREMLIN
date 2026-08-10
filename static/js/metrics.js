@@ -557,6 +557,74 @@
     return "No corrective work order data is available for the selected filters.";
   }
 
+  // ---- chart hover tooltip -------------------------------------------------
+  // One node reused by every chart, parked on <body>: a tooltip inside a card
+  // would be clipped by the card's rounded corners and by the table wrappers'
+  // overflow, and would have to be rebuilt every time a panel re-renders.
+  let tooltipNode = null;
+
+  function tooltipEl() {
+    if (!tooltipNode) {
+      tooltipNode = el("div", { class: "metrics-tooltip", role: "tooltip" });
+      tooltipNode.hidden = true;
+      document.body.appendChild(tooltipNode);
+    }
+    return tooltipNode;
+  }
+
+  function hideTooltip() {
+    if (tooltipNode) tooltipNode.hidden = true;
+  }
+
+  // Repositions the tooltip without rebuilding it: the cursor moving across a
+  // bar it is already describing fires a mousemove per pixel, and rebuilding the
+  // contents on each one is a dozen DOM nodes thrown away per frame.
+  function moveTooltip(clientX, clientY) {
+    if (tooltipNode && !tooltipNode.hidden) positionTooltip(clientX, clientY);
+  }
+
+  // Offsets the tooltip from the cursor, flipping to the other side once it
+  // would run past the viewport rather than letting it clip at the edge.
+  function positionTooltip(clientX, clientY) {
+    const node = tooltipEl();
+    const gap = 16;
+    const box = node.getBoundingClientRect();
+    let x = clientX + gap;
+    let y = clientY + gap;
+    if (x + box.width > window.innerWidth - 8) x = clientX - gap - box.width;
+    if (y + box.height > window.innerHeight - 8) y = clientY - gap - box.height;
+    node.style.left = Math.max(8, x) + "px";
+    node.style.top = Math.max(8, y) + "px";
+  }
+
+  // content = { title, color, subtitle, rows: [[label, value], …], notes: [] }
+  function showTooltip(clientX, clientY, content) {
+    const node = tooltipEl();
+    node.innerHTML = "";
+    node.appendChild(
+      el("p", { class: "metrics-tooltip-title" }, [
+        content.color
+          ? el("span", { class: "metrics-tooltip-swatch", style: `background:${content.color}` })
+          : null,
+        content.title,
+      ])
+    );
+    if (content.subtitle) node.appendChild(el("p", { class: "metrics-tooltip-sub", text: content.subtitle }));
+    const rows = el("dl", { class: "metrics-tooltip-rows" });
+    (content.rows || []).forEach(([label, value]) => {
+      rows.appendChild(el("dt", { text: label }));
+      rows.appendChild(el("dd", { text: value }));
+    });
+    node.appendChild(rows);
+    (content.notes || []).forEach((note) => {
+      node.appendChild(el("p", { class: "metrics-tooltip-note", text: note }));
+    });
+    node.hidden = false;
+    // Measure after the content is in place, or the flip test uses the previous
+    // tooltip's box and a tall one still runs off the bottom of the window.
+    positionTooltip(clientX, clientY);
+  }
+
   // ---- render: previews ----------------------------------------------------
   function renderKpiPreview() {
     const canvas = $("kpis-preview-chart");
@@ -762,9 +830,16 @@
     const { ctx, width: W, height: H } = setupCanvas(canvas, height);
     ctx.clearRect(0, 0, W, H);
 
+    // Hit-testing data for the hover tooltip, republished on every draw because
+    // a resize or a highlight redraw moves every bar.
+    const hits = { width: W, height: H, regions: [] };
+    canvas._availabilityHits = hits;
+
     const labels = group.month_labels || [];
     const assets = group.assets || [];
     if (!labels.length || !assets.length) return;
+
+    const highlight = options.highlight || null;
 
     const left = 52;
     const right = W - 12;
@@ -815,14 +890,31 @@
         const value = asset.values[monthIndex];
         if (value === null || value === undefined) return;
         const x = baseX + assetIndex * barW;
+        const w = Math.max(1, barW - 1);
         const barTop = y(value);
+        const isHot = highlight && highlight.monthIndex === monthIndex && highlight.assetIndex === assetIndex;
+        // The hit box is the bar's full column slice, not the drawn bar: a bad
+        // month is a couple of pixels tall and would be impossible to point at.
+        hits.regions.push({ x, w, top, bottom, monthIndex, assetIndex });
+        if (isHot) {
+          ctx.fillStyle = "rgba(47, 143, 91, 0.1)";
+          ctx.fillRect(x, top, w, bottom - top);
+        }
         ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
-        ctx.fillRect(x, barTop, Math.max(1, barW - 1), bottom - barTop);
+        ctx.fillRect(x, barTop, w, bottom - barTop);
         // A flagged month is one where downtime exceeded scheduled hours, so
         // the bar sits at zero. Mark it rather than let it read as "no data".
         if (asset.flagged && asset.flagged[monthIndex]) {
           ctx.fillStyle = WARN;
-          ctx.fillRect(x, bottom - 3, Math.max(1, barW - 1), 3);
+          ctx.fillRect(x, bottom - 3, w, 3);
+        }
+        // Outline rather than recolour the hovered bar: the series colour is how
+        // the legend names it, so it has to survive the hover.
+        if (isHot) {
+          ctx.strokeStyle = AVERAGE_LINE;
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x + 0.5, barTop + 0.5, Math.max(1, w - 1), Math.max(1, bottom - barTop - 1));
+          ctx.lineWidth = 1;
         }
       });
 
@@ -895,6 +987,129 @@
       lx += w;
     });
     ctx.textBaseline = "alphabetic";
+  }
+
+  // The chart plots one number per bar; everything that explains it — the hours
+  // it was computed from, the work orders behind it, and the caveats the table
+  // carries as cell titles — only exists in the row detail. The tooltip is what
+  // puts them together at the bar the reader is actually looking at.
+  function availabilityTooltipContent(group, data, hit, byKey) {
+    const asset = (group.assets || [])[hit.assetIndex];
+    if (!asset) return null;
+    const month = (data.months || [])[hit.monthIndex];
+    const row = byKey[`${asset.asset_number}|${month}`];
+    const value = asset.values[hit.monthIndex];
+
+    const rows = [
+      ["Availability", value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`],
+    ];
+    const notes = [];
+
+    if (row) {
+      const ot = Number(row.manual_ot_hours) || 0;
+      rows.push([
+        "Scheduled",
+        `${fmtNum(row.adjusted_scheduled_hours, 1)} h` + (ot > 0 ? ` (incl. ${fmtNum(ot, 1)} h OT)` : ""),
+      ]);
+      const linked = Number(row.linked_downtime_hours) || 0;
+      rows.push([
+        "Downtime",
+        `${fmtNum(row.adjusted_downtime_hours, 1)} h` + (linked > 0 ? ` (${fmtNum(linked, 1)} h linked)` : ""),
+      ]);
+      const zero = Number(row.zero_downtime_wo_count) || 0;
+      rows.push([
+        "Work orders",
+        `${fmtNum(row.total_wo_count, 0)}` + (zero > 0 ? ` (${fmtNum(zero, 0)} with no downtime)` : ""),
+      ]);
+    }
+
+    const average = (group.average || [])[hit.monthIndex];
+    if (average !== null && average !== undefined) {
+      rows.push(["Group average", `${(average * 100).toFixed(2)}%`]);
+    }
+    const goal = (group.goal || [])[hit.monthIndex];
+    if (goal !== null && goal !== undefined) {
+      rows.push(["Goal", `${(goal * 100).toFixed(2)}%`]);
+    }
+
+    if (row && row.flagged) {
+      notes.push(
+        `Downtime ${fmtNum(row.adjusted_downtime_hours, 1)} h exceeded scheduled ` +
+          `${fmtNum(row.adjusted_scheduled_hours, 1)} h — clamped to 0%.`
+      );
+    }
+    // 100% off no work orders at all is arithmetically the same as a genuinely
+    // perfect month, so the bar has to say which one it is.
+    if (row && row.no_wo_entries) notes.push(row.note || "No WO entries this month.");
+    if (row && row.overlap_count > 0) {
+      notes.push(`${row.overlap_count} work order(s) cross a month boundary.`);
+    }
+
+    return {
+      title: asset.display_name || asset.asset_number,
+      color: SERIES_COLORS[hit.assetIndex % SERIES_COLORS.length],
+      subtitle: `${group.asset_group} · ${(group.month_labels || [])[hit.monthIndex] || ""}`,
+      rows,
+      notes,
+    };
+  }
+
+  function wireAvailabilityHover(canvas, group, data) {
+    // Built once per draw rather than per mousemove: the same lookup the table
+    // builds, over the rows this group already carries.
+    const byKey = {};
+    (group.rows || []).forEach((row) => {
+      byKey[`${row.asset_number}|${row.month}`] = row;
+    });
+    let hovered = null;
+
+    const hitAt = (event) => {
+      const hits = canvas._availabilityHits;
+      if (!hits) return null;
+      const box = canvas.getBoundingClientRect();
+      if (!box.width || !box.height) return null;
+      // The canvas is laid out at 100% width, so its rendered size can drift
+      // from the size it was drawn at between a resize and the redraw.
+      const x = (event.clientX - box.left) * (hits.width / box.width);
+      const y = (event.clientY - box.top) * (hits.height / box.height);
+      return (
+        hits.regions.find(
+          (region) => x >= region.x && x <= region.x + region.w && y >= region.top && y <= region.bottom
+        ) || null
+      );
+    };
+
+    canvas.addEventListener("mousemove", (event) => {
+      const hit = hitAt(event);
+      if (!hit) {
+        if (hovered) {
+          hovered = null;
+          drawAvailabilityChart(canvas, group, { height: 300 });
+        }
+        hideTooltip();
+        return;
+      }
+      // Only redraw and rebuild when the hovered bar changes; doing either per
+      // mousemove would repaint the whole chart dozens of times crossing a
+      // single bar. Within one bar the tooltip just follows the cursor.
+      if (hovered && hovered.monthIndex === hit.monthIndex && hovered.assetIndex === hit.assetIndex) {
+        moveTooltip(event.clientX, event.clientY);
+        return;
+      }
+      hovered = hit;
+      drawAvailabilityChart(canvas, group, { height: 300, highlight: hit });
+      const content = availabilityTooltipContent(group, data, hit, byKey);
+      if (content) showTooltip(event.clientX, event.clientY, content);
+      else hideTooltip();
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      if (hovered) {
+        hovered = null;
+        drawAvailabilityChart(canvas, group, { height: 300 });
+      }
+      hideTooltip();
+    });
   }
 
   async function loadAvailability() {
@@ -1085,6 +1300,8 @@
     const host = $("availability-charts");
     const data = state.availability;
     if (!host) return;
+    // The canvases the tooltip is anchored to are about to be discarded.
+    hideTooltip();
     host.innerHTML = "";
 
     const basis = $("availability-basis");
@@ -1127,6 +1344,7 @@
         ])
       );
       drawAvailabilityChart(canvas, group, { height: 300 });
+      wireAvailabilityHover(canvas, group, data);
     });
   }
 
@@ -1159,10 +1377,28 @@
   }
 
   // ---- card expand / collapse ----------------------------------------------
+  // Brings a freshly opened card to the top of the reading area. scrollIntoView
+  // would do it, except the topbar is sticky and would sit on top of the card
+  // header it just scrolled to, so the offset is measured and subtracted.
+  function scrollCardIntoView(card) {
+    const topbar = document.querySelector(".topbar");
+    const offset = (topbar ? topbar.getBoundingClientRect().height : 0) + 12;
+    const reduceMotion =
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // After a frame: expanding one card collapses another, and if that one was
+    // above this one the card is still moving up as the position is read.
+    requestAnimationFrame(() => {
+      const top = card.getBoundingClientRect().top + window.pageYOffset - offset;
+      window.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? "auto" : "smooth" });
+    });
+  }
+
   function setExpanded(key) {
-    // Only one card expanded at a time; clicking the open card collapses it.
+    // Only one card expanded at a time; re-activating the open card collapses it.
     const next = state.expanded === key ? null : key;
     state.expanded = next;
+    hideTooltip();
+    let opened = null;
     document.querySelectorAll(".metrics-card").forEach((card) => {
       const cardKey = card.getAttribute("data-card");
       const isOpen = cardKey === next;
@@ -1170,11 +1406,20 @@
       card.setAttribute("aria-expanded", isOpen ? "true" : "false");
       const expanded = $(`${cardKey}-expanded`);
       if (expanded) expanded.hidden = !isOpen;
+      // The header is the only thing that closes an open card, so it is the only
+      // thing that should advertise it.
+      const head = card.querySelector(".metrics-card-head");
+      if (head) {
+        if (isOpen) head.title = "Collapse this card";
+        else head.removeAttribute("title");
+      }
+      if (isOpen) opened = card;
     });
     // Draw lazily once the panel is visible (canvases have no width while hidden).
     if (next === "kpis") renderKpiExpanded();
     if (next === "alerts") renderAlertExpanded();
     if (next === "availability") renderAvailabilityExpanded();
+    if (opened) scrollCardIntoView(opened);
   }
 
   function wireCards() {
@@ -1190,10 +1435,18 @@
       const fromControl = (event) => Boolean(event.target.closest(INTERACTIVE));
       card.addEventListener("click", (event) => {
         if (fromControl(event)) return;
+        // Clicking the body of an open card does nothing: the expanded panel is
+        // a workspace full of charts and hint text, and a click landing on any
+        // of it used to throw the whole panel away. Closing is the header's job.
+        if (state.expanded === key && !event.target.closest(".metrics-card-head")) return;
         activate();
       });
       card.addEventListener("keydown", (event) => {
         if (fromControl(event)) return;
+        // Keyboard keeps the plain toggle. The card itself is the button that
+        // holds focus, so gating Enter on the header would leave no way to close
+        // an open card without a mouse — and a keypress on a deliberately
+        // focused card is not the stray click the rule above exists to absorb.
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           activate();
@@ -1263,9 +1516,14 @@
   let resizeRaf = null;
   function wireResize() {
     window.addEventListener("resize", () => {
+      hideTooltip();
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       resizeRaf = requestAnimationFrame(renderAll);
     });
+    // The tooltip is positioned in viewport coordinates, so it does not travel
+    // with the chart it points at — and scrolling fires no mousemove to correct
+    // it, including the smooth scroll a card expansion kicks off.
+    window.addEventListener("scroll", hideTooltip, { passive: true });
   }
 
   function wireAvailability() {
