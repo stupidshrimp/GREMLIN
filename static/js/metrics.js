@@ -1463,15 +1463,20 @@
     // up driving controls they cannot see.
     const focusables = detailFocusables();
     if (!focusables.length) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || !detailNode.contains(active))) {
+    // Anything the list does not hold counts as out of range, not just focus
+    // that has already escaped the dialog. The dialog itself holds focus when it
+    // opens -- it is tabindex="-1", so it is deliberately not in the list -- and
+    // the backdrop is appended to the end of <body>. Forward Tab from there
+    // happens to land on the close button because that is the next focusable in
+    // document order, but Shift+Tab as the first keypress walks backwards into
+    // the covered page.
+    const index = focusables.indexOf(document.activeElement);
+    if (event.shiftKey && index <= 0) {
       event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (active === last || !detailNode.contains(active))) {
+      focusables[focusables.length - 1].focus();
+    } else if (!event.shiftKey && (index === -1 || index === focusables.length - 1)) {
       event.preventDefault();
-      first.focus();
+      focusables[0].focus();
     }
   }
 
