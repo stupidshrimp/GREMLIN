@@ -576,11 +576,17 @@
     if (tooltipNode) tooltipNode.hidden = true;
   }
 
+  // Anything can hide the tooltip out from under a hover — a scroll, a resize —
+  // so a chart cannot infer that it is still showing from its own hover state.
+  function tooltipVisible() {
+    return Boolean(tooltipNode) && !tooltipNode.hidden;
+  }
+
   // Repositions the tooltip without rebuilding it: the cursor moving across a
   // bar it is already describing fires a mousemove per pixel, and rebuilding the
   // contents on each one is a dozen DOM nodes thrown away per frame.
   function moveTooltip(clientX, clientY) {
-    if (tooltipNode && !tooltipNode.hidden) positionTooltip(clientX, clientY);
+    if (tooltipVisible()) positionTooltip(clientX, clientY);
   }
 
   // Offsets the tooltip from the cursor, flipping to the other side once it
@@ -1091,8 +1097,17 @@
       }
       // Only redraw and rebuild when the hovered bar changes; doing either per
       // mousemove would repaint the whole chart dozens of times crossing a
-      // single bar. Within one bar the tooltip just follows the cursor.
-      if (hovered && hovered.monthIndex === hit.monthIndex && hovered.assetIndex === hit.assetIndex) {
+      // single bar. Within one bar the tooltip just follows the cursor — but
+      // only while it is actually showing. Scrolling the page under a resting
+      // pointer hides it without changing which bar is hovered, and taking the
+      // cheap path then would leave the tooltip unrecoverable until the pointer
+      // crossed into a different bar.
+      if (
+        hovered &&
+        hovered.monthIndex === hit.monthIndex &&
+        hovered.assetIndex === hit.assetIndex &&
+        tooltipVisible()
+      ) {
         moveTooltip(event.clientX, event.clientY);
         return;
       }
