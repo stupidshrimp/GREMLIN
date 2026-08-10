@@ -1130,7 +1130,7 @@
     return null;
   }
 
-  function wireAvailabilityChart(canvas, group, data, returnFocus) {
+  function wireAvailabilityChart(canvas, group, data) {
     // Built once per draw rather than per mousemove: the same lookup the table
     // builds, over the rows this group already carries.
     const byKey = {};
@@ -1195,7 +1195,7 @@
       // anything that lands in an open card's body, and this chart only exists
       // while the card is open. Stopping it here would instead swallow the
       // document-level click that closes the asset dropdown.
-      openAvailabilityDetail(group.asset_group, { asset_number: asset.asset_number, month }, returnFocus);
+      openAvailabilityDetail(group.asset_group, { asset_number: asset.asset_number, month });
     });
   }
 
@@ -1271,7 +1271,12 @@
     {
       key: "notes",
       label: "Notes",
-      sort: (item) => item.notes.join(" "),
+      // The notes are {kind, text} objects, so they have to be reduced to their
+      // text before joining: coercing them straight to string yields a row of
+      // "[object Object]" whose only remaining signal is how many notes a row
+      // carries, which sorts a flagged month and a linked-downtime month as
+      // equal and leaves them in whatever order they arrived.
+      sort: (item) => item.notes.map((note) => note.text).join(" "),
       cell: (item) =>
         el(
           "td",
@@ -1391,7 +1396,7 @@
       {
         type: "button",
         class: "metrics-sort" + (active ? " is-active" : ""),
-        "data-sort-key": column.key,
+        "data-focus-id": `sort:${column.key}`,
         onclick: () => onSort(column.key),
       },
       [
@@ -1410,7 +1415,7 @@
 
   let detailNode = null;
 
-  function openAvailabilityDetail(assetGroup, focus, returnFocus) {
+  function openAvailabilityDetail(assetGroup, focus) {
     state.availabilityDetail = {
       assetGroup,
       focus: focus || null,
@@ -1419,13 +1424,22 @@
       // Only on the first render: a sort or a filter should not yank the reader
       // back to the bar they started from.
       scrollToFocus: Boolean(focus),
-      restoreFocus: returnFocus || null,
-      focusKey: null,
     };
     // The tooltip is a viewport-positioned node describing a chart that is about
     // to be covered up.
     hideTooltip();
     renderAvailabilityDetail();
+  }
+
+  // The button that opens a group's drill-down, looked up rather than held onto:
+  // an availability refresh rebuilds the expanded card and throws every one of
+  // these away, so a reference captured when the dialog opened can be detached
+  // by the time it closes.
+  function detailOpener(assetGroup) {
+    if (!assetGroup) return null;
+    return document.querySelector(
+      `.availability-group-actions [data-availability-group="${CSS.escape(assetGroup)}"]`
+    );
   }
 
   function closeAvailabilityDetail() {
@@ -1437,8 +1451,17 @@
       detailNode.remove();
       detailNode = null;
     }
-    const restore = detail && detail.restoreFocus;
-    if (restore && document.contains(restore)) restore.focus();
+    const restore = detail && detailOpener(detail.assetGroup);
+    if (restore) restore.focus();
+  }
+
+  // Which control inside the dialog holds focus, as an id that outlives the
+  // node. Every render replaces the whole subtree, so the focused element is
+  // about to be discarded and can only be found again by name.
+  function detailFocusId() {
+    const active = document.activeElement;
+    if (!detailNode || !active || !detailNode.contains(active)) return null;
+    return active.getAttribute ? active.getAttribute("data-focus-id") : null;
   }
 
   function detailFocusables() {
@@ -1511,7 +1534,6 @@
         sort.key = key;
         sort.dir = key === "asset" || key === "month" || key === "availability" || key === "delta" ? "asc" : "desc";
       }
-      detail.focusKey = key;
       rerender();
     };
 
@@ -1519,18 +1541,23 @@
     const closeButton = el("button", {
       type: "button",
       class: "metrics-modal-close",
+      "data-focus-id": "close",
       "aria-label": "Close the data table",
       title: "Close (Esc)",
       text: "×",
       onclick: closeAvailabilityDetail,
     });
 
-    const attentionToggle = el("input", { type: "checkbox" });
+    const attentionToggle = el("input", { type: "checkbox", "data-focus-id": "attention" });
     attentionToggle.checked = detail.attentionOnly;
-    attentionToggle.disabled = !attentionCount;
+    // Disabled only when there is nothing to filter to and the filter is off. A
+    // refresh can empty the set out from under an active filter -- an OT edit
+    // that un-clamps the group's one flagged month does it -- and disabling the
+    // checkbox then would strand the reader on "no rows match" with no way to
+    // turn the filter back off short of closing the dialog.
+    attentionToggle.disabled = !attentionCount && !detail.attentionOnly;
     attentionToggle.addEventListener("change", () => {
       detail.attentionOnly = attentionToggle.checked;
-      detail.focusKey = "attention";
       rerender();
     });
 
@@ -1560,7 +1587,7 @@
           ]),
         ];
 
-    const scroll = el("div", { class: "metrics-table-scroll" }, [
+    const scroll = el("div", { class: "metrics-table-scroll", "data-focus-id": "rows" }, [
       el("table", { class: "metrics-table availability-detail-table" }, [
         el("thead", {}, [head]),
         el("tbody", {}, body),
@@ -1626,27 +1653,33 @@
       if (event.target === backdrop) closeAvailabilityDetail();
     });
 
+    // Read before the swap: the node holding focus is part of what is about to
+    // be replaced. Every render restores focus, not just the ones a control in
+    // here started -- an availability refresh landing under an open dialog
+    // (an OT edit committed by the same click that opened it) rebuilds this
+    // subtree too, and dropping focus there puts it on <body> behind the
+    // backdrop, where the reader has nothing to close the dialog with but Esc.
+    const focusId = detailFocusId();
     const first = !detailNode;
     if (detailNode) detailNode.replaceWith(backdrop);
     else document.body.appendChild(backdrop);
     detailNode = backdrop;
 
+    // Before focus is restored: the rows region is only focusable once this has
+    // given it a tab stop.
+    markScrollRegion(scroll, `${group.asset_group} availability data`);
+
     if (first) {
       document.body.classList.add("metrics-modal-open");
       document.addEventListener("keydown", onDetailKeydown, true);
       dialog.focus();
-    } else if (detail.focusKey) {
-      // A rebuild throws away the button that was just pressed, so hand focus
-      // back to its replacement rather than dropping the reader to the top.
-      const target =
-        detail.focusKey === "attention"
-          ? attentionToggle
-          : dialog.querySelector(`[data-sort-key="${detail.focusKey}"]`);
-      if (target) target.focus();
-      detail.focusKey = null;
+    } else {
+      // Falling back to the dialog rather than leaving focus where it landed:
+      // the control may be gone (the attention checkbox disables itself once
+      // nothing matches), and the dialog is the one thing every render keeps.
+      const target = focusId ? dialog.querySelector(`[data-focus-id="${focusId}"]`) : null;
+      (target || dialog).focus();
     }
-
-    markScrollRegion(scroll, `${group.asset_group} availability data`);
 
     if (detail.scrollToFocus) {
       detail.scrollToFocus = false;
@@ -1884,11 +1917,15 @@
       const detailButton = el("button", {
         type: "button",
         class: "btn-secondary availability-mode-toggle",
+        // Named so the dialog can find it again on close. This button is
+        // rebuilt on every availability render, so it cannot be held by
+        // reference across one.
+        "data-availability-group": group.asset_group,
         text: "View data",
         title: `Open the ${group.asset_group} rows behind this chart`,
       });
       detailButton.addEventListener("click", () => {
-        openAvailabilityDetail(group.asset_group, null, detailButton);
+        openAvailabilityDetail(group.asset_group, null);
       });
 
       host.appendChild(
@@ -1908,7 +1945,7 @@
         ])
       );
       drawAvailabilityChart(canvas, group, { height: 300 });
-      wireAvailabilityChart(canvas, group, data, detailButton);
+      wireAvailabilityChart(canvas, group, data);
     });
 
     syncScrollRegions();
