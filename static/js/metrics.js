@@ -1078,11 +1078,19 @@
       // from the size it was drawn at between a resize and the redraw.
       const x = (event.clientX - box.left) * (hits.width / box.width);
       const y = (event.clientY - box.top) * (hits.height / box.height);
-      return (
-        hits.regions.find(
-          (region) => x >= region.x && x <= region.x + region.w && y >= region.top && y <= region.bottom
-        ) || null
-      );
+      // Scanned back to front, because the regions are pushed in paint order and
+      // the last bar drawn over a pixel is the one the reader sees there. The
+      // two only diverge when a group is wider than its month slot -- a bar has
+      // a 2px floor so it stays visible, which a long window on a narrow screen
+      // can push past the slot into the following months -- but when they do
+      // diverge, a front-to-back scan names a bar that is buried out of sight.
+      for (let index = hits.regions.length - 1; index >= 0; index -= 1) {
+        const region = hits.regions[index];
+        if (x >= region.x && x <= region.x + region.w && y >= region.top && y <= region.bottom) {
+          return region;
+        }
+      }
+      return null;
     };
 
     canvas.addEventListener("mousemove", (event) => {
