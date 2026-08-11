@@ -62,13 +62,19 @@ PAGES = [
         "title": "Standards and Documentation",
         "icon": ICONS["docs"],
     },
+    {
+        "route": "/reliability-links",
+        "template": "reliability_links.html",
+        "title": "Reliability Links",
+        "icon": ICONS["docs"],
+    },
     {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
     {
         "route": "/developer",
         "template": "developer_dashboard.html",
         "title": "Developer",
         "icon": ICONS["code"],
-    },
+    }
 ]
 
 
@@ -205,6 +211,24 @@ NAV_LINKS = [
     if page["route"] not in UNLISTED_ROUTES
 ]
 
+RELEVANT_LINKS = [
+    {
+        "label": "Limble CMMS",
+        "url": "https://your-limble-url"
+    },
+    {
+        "label": "Power BI Dashboards",
+        "url": "#"
+    },
+    {
+        "label": "SharePoint",
+        "url": "#"
+    },
+    {
+        "label": "Standards & Documentation",
+        "url": "/standards-and-documentation"
+    }
+]
 
 @app.route("/")
 def home():
@@ -829,7 +853,20 @@ def api_weibull_report():
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
-
+@app.route("/reliability-links")
+def reliability_links():
+    return render_template(
+        "reliability_links.html",
+        page_title="Reliability Links",
+        nav_links=NAV_LINKS,
+    )
+@app.route("/pm-calendar")
+def pm_calendar():
+    return render_template(
+        "pm_calendar.html",
+        page_title="PM Calendar",
+        nav_links=NAV_LINKS,
+    )
 # ---------------------------------------------------------------------------
 # Developer dashboard
 #

@@ -331,3 +331,52 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
     text-align: center;
   }
 }
+2
+
+.link-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+}
+
+.link-card {
+    display: flex;
+    flex-direction: column;
+
+    padding: 20px;
+
+    border-radius: 12px;
+
+    background: white;
+
+    border: 1px solid #dbe4ec;
+
+    text-decoration: none;
+
+    transition: all 0.2s ease;
+}
+
+.link-card:hover {
+    transform: translateY(-2px);
+
+    border-color: #15803d;
+
+    box-shadow: 0 4px 12px rgba(0,0,0,.08);
+}
+
+.link-title {
+    font-size: 18px;
+
+    font-weight: 600;
+
+    color: #1f2937;
+}
+
+.link-description {
+    margin-top: 8px;
+
+    color: #6b7280;
+
+    font-size: 14px;
+}
