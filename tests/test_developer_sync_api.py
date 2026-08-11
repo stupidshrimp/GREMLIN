@@ -10,6 +10,7 @@ from unittest import mock
 
 from repositories.raw_repo import RawRepository
 from services import sync_service
+from services.life_data_service import LifeDataService
 from services.sync_service import STATE_RUNNING, STATE_SUCCEEDED, LimbleSyncRunner
 
 from tests.test_sync_service import FakeLimbleClient, _fake_config, _wait_for
@@ -27,8 +28,9 @@ class DeveloperSyncApiTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-        # A runner per test, so one test's job cannot be another's surprise.
-        self.runner = LimbleSyncRunner()
+        # A runner per test, so one test's job cannot be another's surprise --
+        # wired to the same success hook the app wires in production.
+        self.runner = LimbleSyncRunner(on_success=app_module._on_sync_succeeded)
         runner_patch = mock.patch.object(app_module, "sync_runner", self.runner)
         runner_patch.start()
         self.addCleanup(runner_patch.stop)
@@ -141,6 +143,26 @@ class DeveloperSyncApiTests(unittest.TestCase):
 
         gate.set()
         self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_a_sync_drops_the_asset_list_the_app_had_cached(self):
+        # The sync maps through a LifeDataService of its own, so the app's
+        # instance never learns the mapped table grew. Cached, that means a sync
+        # reporting hundreds of mapped records leaves the Life Data page still
+        # insisting the new assets do not exist.
+        service = LifeDataService(self.db_path, refresh_on_startup=False)
+        service.asset_number_options()
+        self.assertIsNotNone(service._asset_number_options_cache)
+
+        with mock.patch.object(app_module, "_life_data_service", service):
+            self._unlock()
+            self.assertEqual(self._start().status_code, 200)
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+        self.assertIsNone(service._asset_number_options_cache)
+        # And the asset the sync imported is now reachable through the app's own
+        # service, which is the outcome that actually matters.
+        self.assertIn("7", service.asset_numbers())
 
     # -- the default PIN authorises reading, not writing --------------------
     def test_the_default_pin_cannot_start_a_sync(self):

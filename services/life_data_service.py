@@ -1186,6 +1186,21 @@ class LifeDataService:
             return "INSPECTION", is_pm, is_wo, "inspection-only text rule"
         return "UNKNOWN", is_pm, is_wo, "default unknown"
 
+    def invalidate_caches(self) -> None:
+        """Forget derived state, because the database changed behind this instance.
+
+        The asset list is cached in memory and only dropped by *this* instance's
+        own mapping refresh, which is the right rule while this instance is the
+        only writer. It stops being true when something else maps into the same
+        database -- another GREMLIN process, or an on-demand Limble sync, which
+        maps through a service of its own. Without this the app would keep
+        serving the asset list from before the import, so a sync that reported
+        hundreds of newly mapped records would leave the Life Data page insisting
+        the new assets do not exist.
+        """
+
+        self._asset_number_options_cache = None
+
     def asset_numbers(self, *, refresh: bool = False) -> list[str]:
         return [row["asset_number"] for row in self.asset_number_options(refresh=refresh)]
 

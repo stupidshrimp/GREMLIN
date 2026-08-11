@@ -110,11 +110,11 @@ class DotenvTests(unittest.TestCase):
         environ.start()
         self.addCleanup(environ.stop)
         # The module-level cache is process state; reset it around each test.
-        self.addCleanup(setattr, sync_service, "_dotenv_loaded", sync_service._dotenv_loaded)
+        self.addCleanup(sync_service._dotenv_loaded_scopes.clear)
         self.addCleanup(sync_service._dotenv_applied.clear)
-        sync_service._dotenv_loaded = False
+        sync_service._dotenv_loaded_scopes.clear()
         sync_service._dotenv_applied.clear()
-        for key in ("LIMBLE_CLIENT_ID", "LIMBLE_CLIENT_SECRET"):
+        for key in ("LIMBLE_CLIENT_ID", "LIMBLE_CLIENT_SECRET", "GREMLIN_DB_PATH"):
             os.environ.pop(key, None)
 
     def test_a_rotated_secret_is_picked_up_without_a_restart(self):
@@ -158,6 +158,38 @@ class DotenvTests(unittest.TestCase):
         sync_service.load_dotenv_files(force=True)
         self.assertEqual(os.environ["LIMBLE_CLIENT_ID"], "from-deployment")
         self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "from-checkout")
+
+    def test_the_dashboard_reads_credentials_without_re_pointing_the_app(self):
+        # A .env is whole-application configuration. The app consults
+        # GREMLIN_DB_PATH on every request but builds LifeDataService once, so a
+        # status poll that imported one could leave the sync writing to a
+        # different database than the analysis pages are reading.
+        self.env_file.write_text(
+            "GREMLIN_DB_PATH=/from/dotenv/GREMLIN.db\n"
+            "LIMBLE_CLIENT_ID=from-dotenv\n"
+            "LIMBLE_CLIENT_SECRET=from-dotenv\n",
+            encoding="utf-8",
+        )
+        described = sync_service.describe_credentials()
+        self.assertTrue(described["configured"])
+        self.assertNotIn("GREMLIN_DB_PATH", os.environ)
+
+    def test_the_scheduled_job_still_gets_the_whole_file(self):
+        # The CLI is a fresh process that has built nothing yet, and pointing it
+        # with GREMLIN_DB_PATH in .env is how the scheduled job is configured.
+        self.env_file.write_text("GREMLIN_DB_PATH=/from/dotenv/GREMLIN.db\n", encoding="utf-8")
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/from/dotenv/GREMLIN.db")
+
+    def test_a_restricted_load_does_not_satisfy_a_later_full_one(self):
+        self.env_file.write_text(
+            "GREMLIN_DB_PATH=/from/dotenv/GREMLIN.db\nLIMBLE_CLIENT_ID=from-dotenv\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files(only_prefix=sync_service.LIMBLE_ENV_PREFIX)
+        self.assertNotIn("GREMLIN_DB_PATH", os.environ)
+        # Caching is per scope, so the CLI's unrestricted load still reads.
+        sync_service.load_dotenv_files()
+        self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/from/dotenv/GREMLIN.db")
 
     def test_credentials_added_to_a_running_app_are_noticed(self):
         # The page disables the Run button when credentials are missing, and
@@ -480,6 +512,38 @@ class SyncRunnerTests(unittest.TestCase):
         summary = summarise_run_timings(self.db_path)
         self.assertEqual(summary["runs"], 1)
         self.assertEqual(summary["counts"][PHASE_TASKS], 7)
+
+    def test_nothing_is_left_to_do_once_the_status_says_succeeded(self):
+        # A watcher that sees a terminal state is entitled to act on it -- start
+        # another sync, or delete the database directory, as these tests do. Any
+        # work published after that point races whatever it triggers.
+        announced = []
+        self.runner._on_success = lambda: announced.append(True)
+
+        self._run(FakeLimbleClient(self.tasks, self.assets, delay=0.15))
+
+        # Sampled the instant the status went terminal, not afterwards.
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+        self.assertEqual(len(read_run_timings(self.db_path)), 1)
+        self.assertEqual(announced, [True])
+
+    def test_a_dry_run_does_not_announce_a_change_that_did_not_happen(self):
+        announced = []
+        self.runner._on_success = lambda: announced.append(True)
+        self._run(FakeLimbleClient(self.tasks, self.assets), options=SyncOptions(dry_run=True))
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+        self.assertEqual(announced, [])
+
+    def test_a_broken_listener_does_not_spoil_a_good_sync(self):
+        def explode():
+            raise RuntimeError("cache refresh blew up")
+
+        self.runner._on_success = explode
+        self._run(FakeLimbleClient(self.tasks, self.assets))
+        status = self.runner.status()
+        self.assertEqual(status["state"], STATE_SUCCEEDED)
+        self.assertEqual(RawRepository(self.db_path).raw_record_count(), 7)
+        self.assertTrue(any("cache refresh blew up" in message["text"] for message in status["messages"]))
 
     def test_a_failed_run_is_not_timed(self):
         self._run(FakeLimbleClient(self.tasks, self.assets, error=RuntimeError("nope")))

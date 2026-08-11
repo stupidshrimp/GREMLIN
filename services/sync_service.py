@@ -130,10 +130,25 @@ class SyncOptionError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-_dotenv_loaded = False
+# Scopes already loaded, so the cache is per-prefix: a restricted load must not
+# convince a later unrestricted one that there is nothing left to read.
+_dotenv_loaded_scopes: set[str | None] = set()
 # Values this loader put into the environment, so a forced reload can tell its
 # own earlier work apart from a variable someone set outside the process.
 _dotenv_applied: dict[str, str] = {}
+
+# What the web process is allowed to take from a .env file.
+#
+# A .env is whole-application configuration, and the app reads some of it -- most
+# importantly GREMLIN_DB_PATH -- on every request, while LifeDataService is built
+# once and cached. So a process that had already answered a life-data request
+# against one database could, the moment a status poll loaded a .env naming
+# another, start pointing SchemaService and this sync at the second one while the
+# analysis pages kept reading the first. Reading credentials must not be able to
+# re-point the app, so the dashboard applies only the variables it came for. The
+# CLI stays unrestricted: it is a fresh process that has built nothing yet, and
+# GREMLIN_DB_PATH from .env is exactly how the scheduled job is configured.
+LIMBLE_ENV_PREFIX = "LIMBLE_"
 
 
 def _dotenv_candidates() -> list[Path]:
@@ -174,13 +189,18 @@ def _read_dotenv_values() -> dict[str, str]:
     return values
 
 
-def load_dotenv_files(*, force: bool = False) -> None:
+def load_dotenv_files(*, force: bool = False, only_prefix: str | None = None) -> None:
     """Minimal ``.env`` loader (no third-party dependency).
 
     Reads ``.env`` from the current directory and the repo root, setting any
     variable that is not already present in the environment. The web app does
     not load ``.env`` at startup, so an on-demand sync has to do it for itself
     to find the same credentials the scheduled job uses.
+
+    ``only_prefix`` limits which variables are applied, and the caching is per
+    scope so a restricted load does not satisfy a later unrestricted one. The
+    dashboard passes :data:`LIMBLE_ENV_PREFIX` for the reason given there; the
+    CLI passes nothing and applies the file whole, as it always has.
 
     The result is cached because the status endpoint polls once a second while a
     sync runs and reports whether credentials are configured; ``force=True``
@@ -196,11 +216,12 @@ def load_dotenv_files(*, force: bool = False) -> None:
     means nobody has set it since.
     """
 
-    global _dotenv_loaded
-    if _dotenv_loaded and not force:
+    if only_prefix in _dotenv_loaded_scopes and not force:
         return
-    _dotenv_loaded = True
+    _dotenv_loaded_scopes.add(only_prefix)
     for key, value in _read_dotenv_values().items():
+        if only_prefix is not None and not key.startswith(only_prefix):
+            continue
         current = os.environ.get(key)
         ours = _dotenv_applied.get(key)
         if current is None or (force and ours is not None and current == ours):
@@ -516,7 +537,12 @@ def record_run_timing(
     runs = [entry] + read_run_timings(db_path)
     try:
         # Write-then-replace so a reader (or a crash) never sees half a file.
-        temporary = path.with_suffix(path.suffix + ".tmp")
+        # The scratch name carries the process id because the web app and the
+        # scheduled job can be writing beside the same database at once, and one
+        # shared scratch file would let them interleave into each other's bytes.
+        # Whoever replaces last still wins the file, which costs at most one
+        # timing sample out of five and needs no lock to be safe.
+        temporary = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
         temporary.write_text(
             json.dumps({"runs": runs[:_HISTORY_RUNS]}, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -570,7 +596,7 @@ def _limble_config_or_error() -> tuple[LimbleConfig | None, str | None]:
 def describe_credentials(*, reload_env: bool = False) -> dict[str, Any]:
     """Report whether Limble credentials are configured, without revealing them."""
 
-    load_dotenv_files(force=reload_env)
+    load_dotenv_files(force=reload_env, only_prefix=LIMBLE_ENV_PREFIX)
     config, detail = _limble_config_or_error()
     if config is None and not reload_env:
         # "Missing" may only mean the cached load ran before anyone wrote the
@@ -579,7 +605,7 @@ def describe_credentials(*, reload_env: bool = False) -> dict[str, Any]:
         # only thing that forces a re-read -- so an operator who adds .env to a
         # running app would be told to restart it for no reason. Re-reading costs
         # two stat calls, and only in the state that is already broken.
-        load_dotenv_files(force=True)
+        load_dotenv_files(force=True, only_prefix=LIMBLE_ENV_PREFIX)
         config, detail = _limble_config_or_error()
     if config is None:
         return {"configured": False, "detail": detail, "base_url": os.getenv("LIMBLE_BASE_URL") or None}
@@ -599,8 +625,12 @@ class LimbleSyncRunner:
     progress into it while request threads read snapshots out of it.
     """
 
-    def __init__(self, *, max_messages: int = 200) -> None:
+    def __init__(self, *, max_messages: int = 200, on_success: Callable[[], None] | None = None) -> None:
         self._lock = threading.Lock()
+        # Called after a sync that wrote, before the status turns terminal, so
+        # the host process can drop caches this run just invalidated. The runner
+        # cannot know what those are -- it is the app that holds them.
+        self._on_success = on_success
         self._messages: deque[dict[str, str]] = deque(maxlen=max_messages)
         self._thread: threading.Thread | None = None
         self._job: dict[str, Any] = {"state": STATE_IDLE}
@@ -747,8 +777,9 @@ class LimbleSyncRunner:
     def _run(self, db_path: Path, options: SyncOptions, log: Callable[[str], None]) -> None:
         try:
             # Re-read .env on every run so rotated credentials take effect
-            # without restarting the app.
-            load_dotenv_files(force=True)
+            # without restarting the app -- credentials only: a sync must not
+            # re-point the process at a different database on its way past.
+            load_dotenv_files(force=True, only_prefix=LIMBLE_ENV_PREFIX)
             updated_since = parse_since(options.since)
             config = LimbleConfig.from_env()
             client = LimbleClient(config, log=self._make_logger(log))
@@ -780,10 +811,27 @@ class LimbleSyncRunner:
             share = self._job.get("_share") or 1.0
             db_path = self._job.get("db_path")
             counts = dict(self._job.get("counts") or {})
+            dry_run = bool((self._job.get("options") or {}).get("dry_run"))
             # Measured from the same clock the page has been ticking against, so
-            # the final "took 2m 14s" agrees with the last elapsed it displayed.
+            # the final "took 2m 14s" agrees with the last elapsed it displayed,
+            # and excludes the bookkeeping below.
             start = self._job.get("_monotonic_start")
             duration = time.monotonic() - start if start is not None else 0.0
+
+        # Everything a successful run owes the world happens here, before the
+        # status says "succeeded" and while the lock is *not* held: writing the
+        # timing file touches a possibly-slow shared drive, and a status poll
+        # must not queue behind it. Publishing first would be a lie the callers
+        # act on -- a watcher that sees a terminal state is entitled to start
+        # another sync or tear the database directory down, and both would race
+        # this work.
+        if state == STATE_SUCCEEDED:
+            if db_path:
+                record_run_timing(db_path, seconds=duration, share=share, counts=counts)
+            if not dry_run:
+                self._announce_success()
+
+        with self._lock:
             self._job.update(
                 {
                     "state": state,
@@ -803,10 +851,15 @@ class LimbleSyncRunner:
                 if isinstance(value, int) and value > 0:
                     self._observed[key] = value
 
-        # Outside the lock: this writes a file, and a slow shared drive must not
-        # block a status poll behind it.
-        if db_path:
-            record_run_timing(db_path, seconds=duration, share=share, counts=counts)
+    def _announce_success(self) -> None:
+        """Tell the host process a sync changed the database under it."""
+
+        if self._on_success is None:
+            return
+        try:
+            self._on_success()
+        except Exception as exc:  # noqa: BLE001 - a stale cache must not fail a good sync
+            self._append_message(f"Warning: could not refresh the app's cached data ({exc}).")
 
     # -- progress ----------------------------------------------------------
     def _on_progress(self, phase: str, current: int | None, total: int | None) -> None:

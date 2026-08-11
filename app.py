@@ -132,10 +132,25 @@ SYNC_LOCKED_MESSAGE = (
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
 
+def _on_sync_succeeded() -> None:
+    """Drop cached state that a completed sync has just made wrong.
+
+    A sync maps through a LifeDataService of its own, so the one this app holds
+    never learns that the mapped table grew. Its asset list is cached in memory,
+    and stale is the worst outcome available here: the sync would report hundreds
+    of records mapped while the Life Data page kept insisting the new assets do
+    not exist. Runs before the job reports success, so a page that reacts to the
+    finish reads fresh data.
+    """
+
+    if _life_data_service is not None:
+        _life_data_service.invalidate_caches()
+
+
 # One shared runner for the whole process, so a sync started by one browser tab
 # is visible (and un-duplicatable) from every other. The nightly Task Scheduler
 # job is a separate process and is not covered by it; see services/sync_service.py.
-sync_runner = LimbleSyncRunner()
+sync_runner = LimbleSyncRunner(on_success=_on_sync_succeeded)
 
 
 def _configured_db_path() -> Path:
