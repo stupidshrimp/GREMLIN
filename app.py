@@ -106,10 +106,29 @@ _life_data_service_error: str | None = None
 # known value in a public repository -- so treat anyone who can reach this port
 # as able to read the whole database through the dashboard. That trade-off was
 # made knowingly in favour of the page working with no configuration; if it ever
-# needs to hold against the network, set GREMLIN_DEV_PIN (and consider failing
-# closed when it is unset) rather than assuming this default protects anything.
-DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
+# needs to hold against the network, set GREMLIN_DEV_PIN rather than assuming
+# this default protects anything.
+_DEV_PIN_FROM_ENV = os.environ.get("GREMLIN_DEV_PIN")
+DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or "1336"
+# Whether the PIN actually in force was chosen by someone, rather than being the
+# published fallback. Read once, from the same value the PIN itself comes from,
+# so the two can never disagree: a GREMLIN_DEV_PIN exported after startup does
+# not change the PIN being checked, and must not change this either.
+DEV_PIN_IS_CONFIGURED = bool(_DEV_PIN_FROM_ENV)
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
+
+# Reading the database through this page needs no configuration; starting a sync
+# does. The difference is what the action can do: it writes to a GREMLIN.db other
+# people are using and spends this server's Limble credentials, and the default
+# PIN is published, so that authority has to be granted deliberately rather than
+# inherited from a fallback. Inspection panels are unaffected.
+SYNC_LOCKED_MESSAGE = (
+    "Starting a sync is disabled because GREMLIN_DEV_PIN is not set, so the developer PIN is "
+    "the published default. That is acceptable for the read-only panels, but not for an action "
+    "that writes to GREMLIN.db and calls the Limble API with this server's credentials. Set "
+    "GREMLIN_DEV_PIN on the GREMLIN host and restart it to enable this. The scheduled nightly "
+    "sync is unaffected."
+)
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
 
@@ -1069,8 +1088,9 @@ def api_dev_query():
 # The one place on this page that writes. Everything else here reads GREMLIN.db
 # through SchemaService's read-only connections; this runs the same ingestion
 # the nightly Task Scheduler job runs, so it fetches from the Limble API and
-# writes what it finds. The PIN is what limits that to developers: it is the
-# only notion of "certain users" this app has.
+# writes what it finds. The PIN is what limits that to certain users -- it is the
+# only notion of one this app has -- and because it authorises a write, it has to
+# be a PIN someone chose: see DEV_PIN_IS_CONFIGURED.
 
 
 @app.route("/developer/api/sync")
@@ -1078,13 +1098,24 @@ def api_dev_query():
 def api_dev_sync_status():
     """Progress of the current (or most recent) sync, plus how to judge it."""
 
-    return jsonify(sync_runner.describe(_configured_db_path()))
+    payload = sync_runner.describe(_configured_db_path())
+    # Reported rather than enforced here: status stays readable when starting is
+    # not allowed, so the page can explain why its button is disabled instead of
+    # a click failing with no account of itself.
+    payload["start_allowed"] = DEV_PIN_IS_CONFIGURED
+    payload["start_blocked_reason"] = None if DEV_PIN_IS_CONFIGURED else SYNC_LOCKED_MESSAGE
+    return jsonify(payload)
 
 
 @app.route("/developer/api/sync", methods=["POST"])
 @dev_api
 def api_dev_sync_start():
     """Start a Limble sync in the background and return its initial status."""
+
+    # Fail closed on the default PIN. This is the check the page's disabled
+    # button reflects, but the button is not the guard -- the endpoint is.
+    if not DEV_PIN_IS_CONFIGURED:
+        return jsonify({"error": SYNC_LOCKED_MESSAGE}), 403
 
     # Require a JSON body. A cross-site <form> can POST to this URL with the
     # browser's cookies attached but cannot set this content type without a

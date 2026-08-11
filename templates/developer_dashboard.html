@@ -82,6 +82,12 @@
       tonight. The import is idempotent, so running it again is safe — unchanged tasks are
       skipped, and a sync never deletes curated data.
     </p>
+    <p class="dev-muted">
+      Unlike the rest of this page, running a sync writes to <code>GREMLIN.db</code> and spends
+      this server's Limble credentials, so it needs a developer PIN that was deliberately set:
+      with <code>GREMLIN_DEV_PIN</code> unset the button stays disabled, while every read-only
+      panel keeps working.
+    </p>
 
     <dl class="dev-facts" id="dev-sync-facts"><dd class="dev-muted">Loading…</dd></dl>
 

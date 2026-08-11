@@ -398,8 +398,11 @@
     renderSyncWarning(payload);
     renderSyncProgress();
 
+    // `start_allowed` is the server's answer, not a hint: it refuses the POST
+    // too. A payload without the field predates it, so treat it as allowed.
+    const startAllowed = payload.start_allowed !== false;
     const button = $("dev-sync-run");
-    button.disabled = running || state.sync.starting || !credentialsOk || !payload.db_exists;
+    button.disabled = running || state.sync.starting || !credentialsOk || !payload.db_exists || !startAllowed;
     button.textContent = running ? "Sync running…" : "Run sync now";
     SYNC_INPUT_IDS.forEach(function (id) {
       $(id).disabled = running;
@@ -438,6 +441,9 @@
   function renderSyncWarning(payload) {
     const box = $("dev-sync-warning");
     const warnings = [];
+    if (payload.start_allowed === false && payload.start_blocked_reason) {
+      warnings.push(payload.start_blocked_reason);
+    }
     const credentials = payload.credentials || {};
     if (!credentials.configured) {
       warnings.push(credentials.detail || "Limble credentials are not configured on this server.");

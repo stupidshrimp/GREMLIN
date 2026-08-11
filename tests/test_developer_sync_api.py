@@ -42,6 +42,12 @@ class DeveloperSyncApiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+        # Most of these tests are about a server whose PIN was configured; the
+        # unconfigured case has its own tests below.
+        pin = mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", True)
+        pin.start()
+        self.addCleanup(pin.stop)
+
         app_module.app.config["TESTING"] = True
         self.client = app_module.app.test_client()
 
@@ -135,6 +141,30 @@ class DeveloperSyncApiTests(unittest.TestCase):
 
         gate.set()
         self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    # -- the default PIN authorises reading, not writing --------------------
+    def test_the_default_pin_cannot_start_a_sync(self):
+        self._unlock()
+        with mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", False):
+            response = self._start()
+            self.assertEqual(response.status_code, 403)
+            self.assertIn("GREMLIN_DEV_PIN", response.get_json()["error"])
+            # Refused by the endpoint, not merely by a disabled button.
+            self.assertEqual(self.runner.status()["state"], "idle")
+
+    def test_status_still_reads_and_explains_why_starting_is_refused(self):
+        self._unlock()
+        with mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", False):
+            payload = self.client.get("/developer/api/sync").get_json()
+        # The panel has to be able to say why its button is disabled, so status
+        # stays readable when starting is not allowed.
+        self.assertFalse(payload["start_allowed"])
+        self.assertIn("GREMLIN_DEV_PIN", payload["start_blocked_reason"])
+        self.assertTrue(payload["db_exists"])
+
+        payload = self.client.get("/developer/api/sync").get_json()
+        self.assertTrue(payload["start_allowed"])
+        self.assertIsNone(payload["start_blocked_reason"])
 
     def test_a_missing_database_is_refused_with_a_reason(self):
         self._unlock()
