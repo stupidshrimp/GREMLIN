@@ -401,8 +401,18 @@
     // `start_allowed` is the server's answer, not a hint: it refuses the POST
     // too. A payload without the field predates it, so treat it as allowed.
     const startAllowed = payload.start_allowed !== false;
+    // Only a run that writes needs somewhere to write to. A dry run against a
+    // missing database is a legitimate thing to want -- it is how you check
+    // that credentials and the API still work when the path is wrong -- and the
+    // server allows it, so the button must not be stricter than the endpoint.
+    const needsDatabase = !$("dev-sync-dry-run").checked;
     const button = $("dev-sync-run");
-    button.disabled = running || state.sync.starting || !credentialsOk || !payload.db_exists || !startAllowed;
+    button.disabled =
+      running ||
+      state.sync.starting ||
+      !credentialsOk ||
+      (needsDatabase && !payload.db_exists) ||
+      !startAllowed;
     button.textContent = running ? "Sync running…" : "Run sync now";
     SYNC_INPUT_IDS.forEach(function (id) {
       $(id).disabled = running;
@@ -451,7 +461,8 @@
     if (!payload.db_exists) {
       warnings.push(
         `No database file at ${payload.db_path}. A sync writes into an existing GREMLIN.db; ` +
-          "set GREMLIN_DB_PATH, or create the file from the command line with --create."
+          "set GREMLIN_DB_PATH, or create the file from the command line with --create. " +
+          "A dry run needs no database and can still be run from here."
       );
     }
     const flight = payload.in_flight_batch;
@@ -917,6 +928,12 @@
     });
     $("dev-table-filter").addEventListener("input", renderTableList);
     $("dev-sync-run").addEventListener("click", startSync);
+    // Whether a database is required depends on this checkbox, and nothing else
+    // redraws the panel while the page sits idle -- polling only runs during a
+    // sync -- so the button would stay disabled until something else happened.
+    $("dev-sync-dry-run").addEventListener("change", () => {
+      if (state.sync.payload) renderSync();
+    });
     $("dev-run-sql").addEventListener("click", runQuery);
     $("dev-sql").addEventListener("keydown", (event) => {
       // Ctrl/Cmd + Enter runs, matching most SQL consoles.
