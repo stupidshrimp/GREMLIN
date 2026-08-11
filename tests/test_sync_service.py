@@ -1,0 +1,466 @@
+import sqlite3
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from repositories.raw_repo import RawRepository
+from services import sync_service
+from services.ingestion_service import PHASE_ASSETS, PHASE_MAP, PHASE_TASKS, PHASE_TRANSFORM, PHASE_WRITE
+from services.sync_service import (
+    STATE_FAILED,
+    STATE_IDLE,
+    STATE_RUNNING,
+    STATE_SUCCEEDED,
+    LimbleSyncRunner,
+    SyncAlreadyRunningError,
+    SyncOptionError,
+    SyncOptions,
+    parse_since,
+    read_import_history,
+    read_run_timings,
+    record_run_timing,
+    run_timings_path,
+    summarise_run_timings,
+)
+
+
+class FakeLimbleClient:
+    """Stands in for LimbleClient: paginates from memory, no HTTP."""
+
+    def __init__(self, tasks, assets, *, page_size=2, gate=None, error=None, delay=0.0):
+        self.tasks = tasks
+        self.assets = assets
+        self.page_size = page_size
+        self.gate = gate
+        self.error = error
+        self.delay = delay
+        self.seen_updated_since = None
+
+    def get_tasks(self, updated_since=None, *, on_page=None):
+        self.seen_updated_since = updated_since
+        if self.error is not None:
+            raise self.error
+        if self.gate is not None:
+            # Hold the sync inside its first phase so a test can inspect a
+            # genuinely in-flight job.
+            self.gate.wait(timeout=10)
+        if self.delay:
+            time.sleep(self.delay)
+        return self._paginate(self.tasks, on_page)
+
+    def get_assets(self, *, on_page=None):
+        return self._paginate(self.assets, on_page)
+
+    def _paginate(self, items, on_page):
+        fetched = 0
+        for page, start in enumerate(range(0, len(items), self.page_size), start=1):
+            fetched += len(items[start : start + self.page_size])
+            if on_page is not None:
+                on_page(fetched, page)
+        return list(items)
+
+
+def _fake_config():
+    return sync_service.LimbleConfig(client_id="id", client_secret="secret", base_url="https://example.test/v2")
+
+
+def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class ParseSinceTests(unittest.TestCase):
+    def test_accepts_dates_datetimes_and_timestamps(self):
+        self.assertIsNone(parse_since(None))
+        self.assertIsNone(parse_since("   "))
+        self.assertEqual(parse_since("1700000000"), 1700000000)
+        self.assertEqual(parse_since("2026-01-01"), parse_since("2026-01-01T00:00:00Z"))
+
+    def test_rejects_nonsense_with_a_message_the_page_can_show(self):
+        with self.assertRaises(SyncOptionError) as caught:
+            parse_since("last tuesday")
+        self.assertIn("last tuesday", str(caught.exception))
+
+
+class SyncOptionsTests(unittest.TestCase):
+    def test_payload_flags_are_inverted_into_positive_options(self):
+        options = SyncOptions.from_payload({"dry_run": True, "no_assets": True, "no_map": True, "since": " 2026-01-01 "})
+        self.assertTrue(options.dry_run)
+        self.assertFalse(options.fetch_assets)
+        self.assertFalse(options.refresh_mapping)
+        self.assertEqual(options.since, "2026-01-01")
+
+    def test_defaults_match_the_nightly_job(self):
+        options = SyncOptions.from_payload({})
+        self.assertFalse(options.dry_run)
+        self.assertTrue(options.fetch_assets)
+        self.assertTrue(options.refresh_mapping)
+        self.assertFalse(options.include_templates)
+        self.assertIsNone(options.since)
+
+    def test_a_bad_date_is_rejected_while_the_caller_is_still_listening(self):
+        with self.assertRaises(SyncOptionError):
+            SyncOptions.from_payload({"since": "not-a-date"})
+
+    def test_skipped_phases_drop_out_of_the_plan(self):
+        full = [phase.key for phase in SyncOptions().active_phases()]
+        self.assertEqual(full, [PHASE_TASKS, PHASE_ASSETS, PHASE_TRANSFORM, PHASE_WRITE, PHASE_MAP])
+
+        dry = [phase.key for phase in SyncOptions(dry_run=True).active_phases()]
+        # A dry run writes nothing, so it cannot map anything either.
+        self.assertEqual(dry, [PHASE_TASKS, PHASE_ASSETS, PHASE_TRANSFORM])
+
+        lean = [phase.key for phase in SyncOptions(fetch_assets=False, refresh_mapping=False).active_phases()]
+        self.assertEqual(lean, [PHASE_TASKS, PHASE_TRANSFORM, PHASE_WRITE])
+
+
+class ImportHistoryTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "gremlin.db"
+        RawRepository(self.db_path).ensure_schema()
+
+    def _insert(self, status, started, completed, rows=None):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch (source_system, status, import_started_at, import_completed_at, raw_row_count)"
+                " VALUES ('Limble', ?, ?, ?, ?)",
+                (status, started, completed, rows),
+            )
+
+    def test_missing_database_reports_no_history_rather_than_failing(self):
+        history = read_import_history(Path(self._tmp.name) / "nope.db")
+        self.assertFalse(history["available"])
+        self.assertIsNone(history["last_completed_at"])
+
+    def test_the_newest_completed_batch_describes_the_database(self):
+        self._insert("COMPLETED", "2026-08-01 02:00:00", "2026-08-01 02:01:00", 10)
+        self._insert("FAILED", "2026-08-04 02:00:00", "2026-08-04 02:30:00", 0)
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:30", 30)
+
+        history = read_import_history(self.db_path)
+        self.assertEqual(history["last_row_count"], 30)
+        self.assertEqual(history["last_completed_at"], "2026-08-05 02:01:30")
+        # A batch row opens only once fetching is done, so it says nothing about
+        # how long a sync takes and must not pretend to.
+        self.assertNotIn("median_seconds", history)
+
+    def test_an_open_batch_is_reported_as_in_flight(self):
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
+        self._insert("STARTED", started, None, None)
+        in_flight = read_import_history(self.db_path)["in_flight"]
+        self.assertIsNotNone(in_flight)
+        self.assertEqual(in_flight["status"], "STARTED")
+        self.assertGreater(in_flight["age_seconds"], 60)
+
+    def test_a_batch_left_open_by_a_crash_is_not_reported_forever(self):
+        self._insert("STARTED", "2019-01-01 02:00:00", None, None)
+        self.assertIsNone(read_import_history(self.db_path)["in_flight"])
+
+
+class SyncRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "gremlin.db"
+        RawRepository(self.db_path).ensure_schema()
+        self.runner = LimbleSyncRunner()
+        self.tasks = [{"taskID": index, "assetID": 7, "name": f"task {index}"} for index in range(1, 8)]
+        self.assets = [{"assetID": 7, "name": "Pump"}]
+
+        # The patches have to outlive the call that starts a sync: the worker
+        # thread builds its client a moment later, and an un-patched one would
+        # try to reach the real Limble API.
+        self._client = None
+        for target, attribute, replacement in (
+            (sync_service, "LimbleClient", lambda config, log=print: self._client),
+            (sync_service.LimbleConfig, "from_env", staticmethod(_fake_config)),
+        ):
+            patcher = mock.patch.object(target, attribute, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        # Release any gate and let the worker finish before the temporary
+        # directory it is writing into disappears.
+        self._gates = []
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self._release_gates)
+
+    def _release_gates(self):
+        for gate in self._gates:
+            gate.set()
+        _wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING)
+
+    def _run(self, client, options=None, wait=True):
+        """Start a sync against the fake client and (by default) wait for it."""
+
+        options = options if options is not None else SyncOptions(refresh_mapping=False)
+        self._client = client
+        if client.gate is not None:
+            self._gates.append(client.gate)
+        status = self.runner.start(self.db_path, options, log=lambda _message: None)
+        if wait:
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING), "sync never finished")
+        return status
+
+    def test_starts_idle(self):
+        self.assertEqual(self.runner.status()["state"], STATE_IDLE)
+
+    def test_a_successful_run_reports_a_summary_and_a_full_bar(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets))
+        status = self.runner.status()
+
+        self.assertEqual(status["state"], STATE_SUCCEEDED)
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["progress"], 1.0)
+        self.assertEqual(status["summary"]["fetched_tasks"], 7)
+        self.assertEqual(status["summary"]["inserted"], 7)
+        self.assertEqual(status["summary"]["fetched_assets"], 1)
+        self.assertIsNotNone(status["finished_at"])
+        # The rows really landed, rather than the job merely claiming so.
+        self.assertEqual(RawRepository(self.db_path).raw_record_count(), 7)
+
+    def test_status_is_json_safe(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets))
+        import json
+
+        json.dumps(self.runner.status())
+        json.dumps(self.runner.describe(self.db_path))
+
+    def test_progress_advances_through_the_phases_without_going_backwards(self):
+        seen = []
+        original = LimbleSyncRunner._on_progress
+
+        def recording(runner_self, phase, current, total):
+            original(runner_self, phase, current, total)
+            seen.append((phase, runner_self.status()["progress"]))
+
+        with mock.patch.object(LimbleSyncRunner, "_on_progress", recording):
+            self._run(FakeLimbleClient(self.tasks, self.assets))
+
+        phases = [phase for phase, _fraction in seen]
+        self.assertEqual(phases[0], PHASE_TASKS)
+        self.assertIn(PHASE_ASSETS, phases)
+        self.assertIn(PHASE_WRITE, phases)
+        fractions = [fraction for _phase, fraction in seen]
+        self.assertEqual(fractions, sorted(fractions), "the bar moved backwards")
+        self.assertTrue(all(0.0 <= fraction <= 1.0 for fraction in fractions))
+
+    def test_a_fetch_phase_is_interpolated_from_the_previous_run(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets))
+        # The second run knows what the first one saw, so its fetch phase can
+        # report "3 of ~7" instead of an unbounded count.
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            status = self.runner.status()
+            self.assertEqual(status["state"], STATE_RUNNING)
+            self.assertEqual(status["expected"][PHASE_TASKS], 7)
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_only_one_sync_runs_at_a_time(self):
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] == STATE_RUNNING))
+            with self.assertRaises(SyncAlreadyRunningError):
+                self._run(FakeLimbleClient(self.tasks, self.assets), wait=False)
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+
+    def test_a_failed_fetch_is_reported_instead_of_disappearing(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets, error=RuntimeError("Limble said no")))
+        status = self.runner.status()
+        self.assertEqual(status["state"], STATE_FAILED)
+        self.assertIn("Limble said no", status["error"])
+        self.assertTrue(any("Limble said no" in message["text"] for message in status["messages"]))
+        # A failed sync must not leave the panel claiming the data arrived.
+        self.assertIsNone(status["summary"])
+        self.assertLess(status["progress"], 1.0)
+
+    def test_a_dry_run_writes_nothing(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets), options=SyncOptions(dry_run=True))
+        status = self.runner.status()
+        self.assertEqual(status["state"], STATE_SUCCEEDED)
+        self.assertTrue(status["summary"]["dry_run"])
+        self.assertEqual(RawRepository(self.db_path).raw_record_count(), 0)
+
+    def test_a_real_sync_refuses_a_missing_database_but_a_dry_run_does_not(self):
+        missing = Path(self._tmp.name) / "not-there.db"
+        with self.assertRaises(SyncOptionError) as caught:
+            self.runner.start(missing, SyncOptions())
+        # Refused before the fetch, not after minutes of downloading.
+        self.assertIn(str(missing), str(caught.exception))
+        self.assertEqual(self.runner.status()["state"], STATE_IDLE)
+
+        self._client = FakeLimbleClient(self.tasks, self.assets)
+        self.runner.start(missing, SyncOptions(dry_run=True), log=lambda _message: None)
+        self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+        self.assertFalse(missing.exists())
+
+    def test_the_since_filter_reaches_the_client(self):
+        client = FakeLimbleClient(self.tasks, self.assets)
+        self._run(client, options=SyncOptions(refresh_mapping=False, since="2026-01-01"))
+        self.assertEqual(client.seen_updated_since, parse_since("2026-01-01"))
+
+    def test_the_estimate_is_scaled_to_the_phases_this_run_will_actually_do(self):
+        record_run_timing(self.db_path, seconds=100.0, share=1.0, counts={PHASE_TASKS: 500})
+
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), options=SyncOptions(dry_run=True), wait=False)
+        try:
+            status = self.runner.status()
+            # A dry run skips the write and mapping phases, so it should be
+            # expected to take only the fetch/transform share of a full sync.
+            self.assertLess(status["estimated_total_seconds"], 100)
+            self.assertGreater(status["estimated_total_seconds"], 50)
+            self.assertIn("timed sync", status["estimate_basis"])
+            self.assertIsNotNone(status["estimated_remaining_seconds"])
+            # And the count to interpolate against survives a restart, because
+            # it was read back from the file rather than from memory.
+            self.assertEqual(status["expected"][PHASE_TASKS], 500)
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_no_estimate_is_offered_before_any_sync_has_been_timed(self):
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            status = self.runner.status()
+            self.assertIsNone(status["estimated_total_seconds"])
+            self.assertIsNone(status["estimated_remaining_seconds"])
+            self.assertIsNone(status["estimate_basis"])
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_a_completed_run_is_timed_for_the_next_one_to_learn_from(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets, delay=0.15))
+        timings = read_run_timings(self.db_path)
+        self.assertEqual(len(timings), 1)
+        self.assertGreater(timings[0]["full_seconds"], 0)
+        self.assertEqual(timings[0][PHASE_TASKS], 7)
+        # Recorded beside the database it describes, not beside the code.
+        self.assertEqual(run_timings_path(self.db_path).parent, self.db_path.parent)
+
+        summary = summarise_run_timings(self.db_path)
+        self.assertEqual(summary["runs"], 1)
+        self.assertEqual(summary["counts"][PHASE_TASKS], 7)
+
+    def test_a_failed_run_is_not_timed(self):
+        self._run(FakeLimbleClient(self.tasks, self.assets, error=RuntimeError("nope")))
+        self.assertEqual(read_run_timings(self.db_path), [])
+
+    def test_an_unwritable_timings_file_costs_an_estimate_and_nothing_else(self):
+        run_timings_path(self.db_path).write_text("{ this is not json", encoding="utf-8")
+        self.assertEqual(read_run_timings(self.db_path), [])
+        self.assertIsNone(summarise_run_timings(self.db_path)["median_full_seconds"])
+
+        with mock.patch.object(Path, "write_text", side_effect=OSError("read-only volume")):
+            self._run(FakeLimbleClient(self.tasks, self.assets, delay=0.15))
+        # The sync still succeeded; only the timing was lost.
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+        self.assertEqual(RawRepository(self.db_path).raw_record_count(), 7)
+
+    def test_a_partial_run_is_stored_as_what_a_full_one_would_have_cost(self):
+        # Two runs of different shapes must be comparable, so a dry run is
+        # recorded normalised to a full sync rather than as its own short time.
+        record_run_timing(self.db_path, seconds=63.0, share=0.63)
+        record_run_timing(self.db_path, seconds=100.0, share=1.0)
+        durations = [run["full_seconds"] for run in read_run_timings(self.db_path)]
+        self.assertEqual(durations, [100.0, 100.0])
+        self.assertEqual(summarise_run_timings(self.db_path)["median_full_seconds"], 100.0)
+
+    def test_only_the_newest_timings_are_kept(self):
+        for seconds in range(1, 9):
+            record_run_timing(self.db_path, seconds=float(seconds), share=1.0)
+        timings = read_run_timings(self.db_path)
+        self.assertEqual(len(timings), 5)
+        self.assertEqual([run["seconds"] for run in timings], [8.0, 7.0, 6.0, 5.0, 4.0])
+
+    def test_describe_reports_credentials_without_leaking_them(self):
+        with mock.patch.object(
+            sync_service.LimbleConfig, "from_env", staticmethod(mock.Mock(side_effect=ValueError("credentials missing")))
+        ):
+            described = self.runner.describe(self.db_path)
+        self.assertFalse(described["credentials"]["configured"])
+        self.assertEqual(described["credentials"]["detail"], "credentials missing")
+        self.assertTrue(described["db_exists"])
+
+        with mock.patch.object(sync_service.LimbleConfig, "from_env", staticmethod(_fake_config)):
+            described = self.runner.describe(self.db_path)
+        self.assertTrue(described["credentials"]["configured"])
+        self.assertEqual(described["credentials"]["base_url"], "https://example.test/v2")
+        self.assertNotIn("secret", str(described))
+
+    def test_an_open_batch_is_only_somebody_elses_when_nothing_runs_here(self):
+        # An import batch left open by another process -- the nightly scheduled
+        # job is the realistic case -- is worth warning about, because a second
+        # sync would repeat its work.
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 60))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch (source_system, status, import_started_at) VALUES ('Limble', 'STARTED', ?)",
+                (started,),
+            )
+        self.assertIsNotNone(self.runner.describe(self.db_path)["in_flight_batch"])
+
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] == STATE_RUNNING))
+            described = self.runner.describe(self.db_path)
+            self.assertEqual(described["job"]["state"], STATE_RUNNING)
+            # While this process is the one importing, the open batch is ours:
+            # warning about it would be warning about ourselves.
+            self.assertIsNone(described["in_flight_batch"])
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+
+class ScheduledJobTimingTests(unittest.TestCase):
+    """The nightly CLI job is where most syncs happen, so it must contribute the
+    timings the dashboard's estimate is built from."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "gremlin.db"
+        RawRepository(self.db_path).ensure_schema()
+
+    def test_a_scheduled_run_records_a_timing_the_dashboard_can_use(self):
+        from jobs import sync_limble
+
+        client = FakeLimbleClient([{"taskID": 1, "assetID": 7}], [{"assetID": 7, "name": "Pump"}], delay=0.15)
+        with mock.patch.object(sync_limble, "LimbleClient", lambda config: client), mock.patch.object(
+            sync_limble.LimbleConfig, "from_env", staticmethod(lambda **kwargs: _fake_config())
+        ):
+            args = sync_limble.build_arg_parser().parse_args(["--db", str(self.db_path), "--no-map"])
+            summary = sync_limble.run(args)
+
+        self.assertEqual(summary["inserted"], 1)
+        timings = read_run_timings(self.db_path)
+        self.assertEqual(len(timings), 1)
+        self.assertEqual(timings[0][PHASE_TASKS], 1)
+        # Recorded as what a full sync would cost, even though this one skipped
+        # the mapping refresh, so it is comparable with a run from the page.
+        self.assertLess(timings[0]["share"], 1.0)
+        self.assertEqual(timings[0]["full_seconds"], round(timings[0]["seconds"] / timings[0]["share"], 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

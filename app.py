@@ -30,6 +30,12 @@ from services.life_data_service import (
     LifeDataService,
 )
 from services.schema_service import SchemaService, SchemaServiceError
+from services.sync_service import (
+    LimbleSyncRunner,
+    SyncAlreadyRunningError,
+    SyncOptionError,
+    SyncOptions,
+)
 
 app = Flask(__name__)
 
@@ -106,6 +112,11 @@ DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
+
+# One shared runner for the whole process, so a sync started by one browser tab
+# is visible (and un-duplicatable) from every other. The nightly Task Scheduler
+# job is a separate process and is not covered by it; see services/sync_service.py.
+sync_runner = LimbleSyncRunner()
 
 
 def _configured_db_path() -> Path:
@@ -870,6 +881,11 @@ def api_weibull_report():
 # `mode=ro` connections. That is deliberate: GREMLIN.db is expected to sit on a
 # shared drive and serialises writers through BEGIN IMMEDIATE, so a dev query
 # holding the writer slot would stall every other GREMLIN user.
+#
+# The one deliberate exception is the Limble sync panel, which runs the nightly
+# ingestion job on demand and therefore does write. It is a background job with
+# its own progress endpoint rather than an inline request; see
+# services/sync_service.py.
 # ---------------------------------------------------------------------------
 
 
@@ -1046,6 +1062,43 @@ def api_dev_table_rows(table):
 def api_dev_query():
     payload = request.get_json(silent=True) or {}
     return jsonify(get_schema_service().run_query(payload.get("sql") or ""))
+
+
+# --- Limble sync -----------------------------------------------------------
+#
+# The one place on this page that writes. Everything else here reads GREMLIN.db
+# through SchemaService's read-only connections; this runs the same ingestion
+# the nightly Task Scheduler job runs, so it fetches from the Limble API and
+# writes what it finds. The PIN is what limits that to developers: it is the
+# only notion of "certain users" this app has.
+
+
+@app.route("/developer/api/sync")
+@dev_api
+def api_dev_sync_status():
+    """Progress of the current (or most recent) sync, plus how to judge it."""
+
+    return jsonify(sync_runner.describe(_configured_db_path()))
+
+
+@app.route("/developer/api/sync", methods=["POST"])
+@dev_api
+def api_dev_sync_start():
+    """Start a Limble sync in the background and return its initial status."""
+
+    # Require a JSON body. A cross-site <form> can POST to this URL with the
+    # browser's cookies attached but cannot set this content type without a
+    # preflight the browser will refuse, so insisting on it keeps a drive-by
+    # page from triggering a database write in an unlocked dev session.
+    if not request.is_json:
+        return jsonify({"error": "Sync requests must be sent as JSON."}), 415
+    try:
+        options = SyncOptions.from_payload(request.get_json(silent=True) or {})
+        return jsonify(sync_runner.start(_configured_db_path(), options))
+    except SyncAlreadyRunningError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except SyncOptionError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.errorhandler(404)
