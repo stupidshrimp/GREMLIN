@@ -1083,20 +1083,40 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         self.assertEqual(order["type_raw"], "4")
         self.assertIn("record_class", order)
 
-    def test_hours_are_sent_finer_than_they_are_displayed(self):
-        """Downtime is minute-granular, so two decimals cannot be the wire format.
+    def test_hours_are_sent_unrounded(self):
+        """The client sums these, so rounding them here is not ours to do.
 
-        Three one-minute orders are 0.0167 h each and 0.05 h together. Rounding
-        each to the two decimals the table shows would make the rows visibly
-        fail to reach the total, so the payload keeps enough precision for the
-        client to choose a precision that adds up.
+        Downtime is minute-granular: three one-minute orders are 0.0166… h each
+        and 0.05 h together. The table picks a display precision at which its
+        rows still reach the total, and any rounding on the wire puts a floor
+        under how well that can work -- see the 200-order case below.
         """
 
         for _ in range(3):
             self.add_work_order("3101", "2026-01-15 15:00:00", 1 / 60)
         detail = self.drill("3101")
         self.assertEqual(detail["adjusted_downtime_hours"], 0.05)
-        self.assertEqual([o["counted_hours"] for o in detail["work_orders"]], [0.0167] * 3)
+        self.assertEqual([o["counted_hours"] for o in detail["work_orders"]], [1 / 60] * 3)
+
+    def test_a_busy_month_can_still_be_added_back_up_to_its_total(self):
+        """The floor a four-decimal wire format used to put under the drill-down.
+
+        At 0.0167 per row, 200 one-minute orders can only be summed to 3.34 h
+        against a header of 3.33 h, and no display precision recovers it because
+        the precision is already gone. Unrounded, five decimals reconciles -- so
+        the guarantee holds at row counts far beyond anything this plant logs.
+        """
+
+        for _ in range(200):
+            self.add_work_order("3101", "2026-01-15 15:00:00", 1 / 60)
+        detail = self.drill("3101")
+        self.assertEqual(detail["adjusted_downtime_hours"], 3.33)
+
+        counted = [o["counted_hours"] for o in detail["work_orders"]]
+        self.assertEqual(len(counted), 200)
+        # The old wire format could not get here from 0.0167 a row.
+        self.assertEqual(round(sum(round(v, 4) for v in counted), 2), 3.34)
+        self.assertEqual(round(sum(round(v, 5) for v in counted), 2), 3.33)
 
     def test_month_labels_carry_the_year(self):
         """A single month has no neighbouring columns to date it by."""

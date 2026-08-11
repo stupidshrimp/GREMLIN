@@ -1598,12 +1598,18 @@
   // the right granularity for hours on a plant floor and stays the default, but
   // a column that visibly refuses to add up undermines the one thing this view
   // promises, so it gains decimals until it does.
+  //
+  // How many it can need scales with how many rows there are, because each row
+  // contributes up to half a unit of rounding error: reconciling N rows to the
+  // header's own two decimals needs roughly 2 + log10(N) of them. Six covers
+  // ten thousand work orders in a single asset-month, which is more than the
+  // whole database holds across every asset and every year.
   function hoursPrecision(values, total) {
-    for (let digits = 2; digits < 4; digits += 1) {
+    for (let digits = 2; digits < 6; digits += 1) {
       const shown = values.reduce((sum, value) => sum + roundTo(value, digits), 0);
       if (roundTo(shown, 2) === roundTo(total, 2)) return digits;
     }
-    return 4;
+    return 6;
   }
 
   // Limble's own task type. Not the same thing as the app's classification and

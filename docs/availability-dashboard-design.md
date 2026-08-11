@@ -396,12 +396,22 @@ Three properties make the view worth trusting, and each is a test:
 
   That has to survive rounding, which is not free. Downtime is recorded in
   minutes, so an hours column routinely holds thirds of a hundredth — three
-  one-minute orders are 0.0167 h each and 0.05 h together, and at two decimals
+  one-minute orders are 0.0166… h each and 0.05 h together, and at two decimals
   they render as three 0.02s beneath a total of 0.05. The table therefore
   chooses its precision from the rows it is about to draw, taking the fewest
   decimals at which they still reach the stated total, and carries a footer
-  total that sums the values *as displayed*. Two decimals stays the common
-  case; the wire format keeps four so the client has something to choose from.
+  total that sums the values *as displayed*. Two decimals stays the common case.
+
+  How many decimals that can need scales with the row count, since each row
+  contributes up to half a unit of rounding error: reconciling N rows to the
+  header's own two decimals takes roughly `2 + log10(N)`. The search therefore
+  runs to six, which covers ten thousand work orders in one asset-month — more
+  than the whole database holds across every asset and every year. And the
+  work-order hours are serialized **unrounded**, unlike the asset-month figures
+  beside them: rounding on the wire puts a floor under the whole scheme, since
+  at four decimals 200 one-minute orders can only be added back up to 3.34 h
+  against a true 3.33 h and no display precision recovers it. Rounding is the
+  reader's business, so it happens where the reader is.
 - **`counted_hours` is not `downtime_hours`.** A linked order contributes its
   share and a negative one contributes nothing, so both numbers are columns and
   the impact factor travels on the row rather than in a footnote. Without this,

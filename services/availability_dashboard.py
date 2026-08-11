@@ -208,7 +208,16 @@ def parse_month(value: Any) -> date:
 
 
 def _wo_json(contribution) -> dict:
-    """One work order row, as the drill-down table reads it."""
+    """One work order row, as the drill-down table reads it.
+
+    The hours are serialized unrounded, unlike the asset-month figures above.
+    They are summed by the client -- the table picks a display precision at
+    which its rows still reach the total -- and rounding here would put a floor
+    under how well that can ever work: at four decimals, 200 one-minute orders
+    can only be added back up to 3.34 h against a true 3.33 h, and no choice of
+    display precision recovers it. Rounding is the reader's business, so it
+    happens where the reader is.
+    """
 
     order = contribution.order
     detail = contribution.detail
@@ -224,8 +233,8 @@ def _wo_json(contribution) -> dict:
         "completion_notes": detail.completion_notes,
         "created": order.created_local.isoformat(),
         "completed": order.completed_local.isoformat() if order.completed_local else None,
-        "downtime_hours": round(order.downtime_hours, 4),
-        "counted_hours": round(contribution.counted_hours, 4),
+        "downtime_hours": order.downtime_hours,
+        "counted_hours": contribution.counted_hours,
         "source": contribution.source,
         "impact_factor": contribution.impact_factor,
         "crosses_month": contribution.crosses_month,
