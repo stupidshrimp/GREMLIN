@@ -173,6 +173,15 @@ class DeveloperSyncApiTests(unittest.TestCase):
         self.assertIn("7", service.asset_numbers())
 
     # -- the default PIN authorises reading, not writing --------------------
+    def test_exporting_the_published_pin_is_not_configuring_one(self):
+        # The fallback value is in this repository, so a deployment that exports
+        # it is protected by nothing -- and must not be handed write authority
+        # on the strength of the variable merely existing.
+        self.assertFalse(app_module._pin_is_configured(None))
+        self.assertFalse(app_module._pin_is_configured(""))
+        self.assertFalse(app_module._pin_is_configured(app_module.DEFAULT_DEV_PIN))
+        self.assertTrue(app_module._pin_is_configured("a-pin-of-our-own"))
+
     def test_the_default_pin_cannot_start_a_sync(self):
         self._unlock()
         with mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", False):

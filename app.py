@@ -108,13 +108,28 @@ _life_data_service_error: str | None = None
 # made knowingly in favour of the page working with no configuration; if it ever
 # needs to hold against the network, set GREMLIN_DEV_PIN rather than assuming
 # this default protects anything.
+DEFAULT_DEV_PIN = "1336"
 _DEV_PIN_FROM_ENV = os.environ.get("GREMLIN_DEV_PIN")
-DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or "1336"
-# Whether the PIN actually in force was chosen by someone, rather than being the
-# published fallback. Read once, from the same value the PIN itself comes from,
-# so the two can never disagree: a GREMLIN_DEV_PIN exported after startup does
-# not change the PIN being checked, and must not change this either.
-DEV_PIN_IS_CONFIGURED = bool(_DEV_PIN_FROM_ENV)
+DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or DEFAULT_DEV_PIN
+
+
+def _pin_is_configured(pin_from_env: str | None) -> bool:
+    """Whether the PIN in force is a secret, rather than the published fallback.
+
+    Exporting GREMLIN_DEV_PIN=1336 is not configuring a PIN. The value is in this
+    repository, so a deployment that sets it is protected by nothing at all --
+    and a check that only asked whether the variable *existed* would hand it
+    authority to write to the database on that basis. What matters is that the
+    PIN is not the one everybody can read.
+    """
+
+    return bool(pin_from_env) and pin_from_env != DEFAULT_DEV_PIN
+
+
+# Read once, from the same value the PIN itself comes from, so the two can never
+# disagree: a GREMLIN_DEV_PIN exported after startup does not change the PIN
+# being checked, and must not change this either.
+DEV_PIN_IS_CONFIGURED = _pin_is_configured(_DEV_PIN_FROM_ENV)
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
 
 # Reading the database through this page needs no configuration; starting a sync
@@ -123,11 +138,11 @@ DEV_SESSION_KEY = "dev_dashboard_unlocked"
 # PIN is published, so that authority has to be granted deliberately rather than
 # inherited from a fallback. Inspection panels are unaffected.
 SYNC_LOCKED_MESSAGE = (
-    "Starting a sync is disabled because GREMLIN_DEV_PIN is not set, so the developer PIN is "
-    "the published default. That is acceptable for the read-only panels, but not for an action "
-    "that writes to GREMLIN.db and calls the Limble API with this server's credentials. Set "
-    "GREMLIN_DEV_PIN on the GREMLIN host and restart it to enable this. The scheduled nightly "
-    "sync is unaffected."
+    "Starting a sync is disabled because the developer PIN is still the published default. "
+    "That is acceptable for the read-only panels, but not for an action that writes to "
+    "GREMLIN.db and calls the Limble API with this server's credentials. Set GREMLIN_DEV_PIN "
+    "to a value of your own on the GREMLIN host and restart it to enable this. The scheduled "
+    "nightly sync is unaffected."
 )
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
