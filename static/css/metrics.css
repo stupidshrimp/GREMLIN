@@ -759,6 +759,9 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   line-height: 1.45;
   color: var(--muted);
 }
+/* The one caveat that is about the numbers being unreconcilable rather than
+   about how they were derived, so it reads as a caution and not as a footnote. */
+.availability-wo-caveat.is-warn { color: #8a6d00; font-weight: 600; }
 
 .availability-wo-id { font-variant-numeric: tabular-nums; color: var(--muted); }
 .availability-wo-name { white-space: normal; min-width: 16rem; max-width: 28rem; font-weight: 600; }

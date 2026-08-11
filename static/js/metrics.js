@@ -1611,16 +1611,27 @@
   // reconciled and *both* of the breakdowns the header leads with wrong. Each
   // group is checked against its own stat, so a precision is only accepted when
   // all of them add up.
+  //
+  // And sometimes none of them do, at any width. Two linked orders of 734 and
+  // 397 minutes at 50% sum to exactly 9.425 h, but in binary that addition
+  // lands on 9.424999999999999, so the total rounds down to 9.42 while the rows
+  // -- rounded first, then added -- reach 9.425 and round up to 9.43. More
+  // decimals cannot cross that: the two sides sit on opposite sides of a tie.
+  // So the search reports whether it succeeded rather than returning a width
+  // that was never checked, and the caller says so plainly instead of drawing a
+  // footer that contradicts the header above it.
   function hoursPrecision(groups) {
     const reconciles = (digits) =>
       groups.every((group) => {
         const shown = group.values.reduce((sum, value) => sum + roundTo(value, digits), 0);
         return roundTo(shown, 2) === roundTo(group.total, 2);
       });
-    for (let digits = 2; digits < 6; digits += 1) {
-      if (reconciles(digits)) return digits;
+    for (let digits = 2; digits <= 6; digits += 1) {
+      if (reconciles(digits)) return { digits, reconciled: true };
     }
-    return 6;
+    // Back to the readable default: extra decimals earn their clutter only by
+    // making the column add up, and here nothing does.
+    return { digits: 2, reconciled: false };
   }
 
   // Limble's own task type. Not the same thing as the app's classification and
@@ -1889,7 +1900,7 @@
   // The bar restated as the sum it is, so the rows underneath can be checked
   // against it: direct plus linked is the downtime, measured against the
   // scheduled hours, giving the percentage the chart drew.
-  function workOrderSummary(payload) {
+  function workOrderSummary(payload, precision) {
     const stats = [
       workOrderStat("Direct", `${fmtNum(payload.direct_downtime_hours, 2)} h`),
       workOrderStat("Linked", `${fmtNum(payload.linked_downtime_hours, 2)} h`),
@@ -1936,6 +1947,21 @@
           text:
             `Scheduled hours include ${fmtNum(payload.manual_ot_hours, 1)} h of manual ` +
             `overtime on top of ${fmtNum(payload.scheduled_hours, 1)} h of weekday shifts.`,
+        })
+      );
+    }
+    // Said out loud rather than papered over. This month's hours fall either
+    // side of a rounding boundary, so no column width makes the rows add to the
+    // figures above them; the totals stay authoritative and the reader is told
+    // why their own addition may land a hundredth away.
+    if (precision && !precision.reconciled) {
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat is-warn",
+          text:
+            "These hours sit on a rounding boundary, so adding the rows below by hand " +
+            "can come out a hundredth away from the totals above. The totals are the " +
+            "computed figures and are what the chart drew.",
         })
       );
     }
@@ -2037,8 +2063,6 @@
       return { children, scroll: null };
     }
 
-    children.push(workOrderSummary(payload));
-
     // One precision for the whole table, chosen from the rows it is about to
     // draw, so every hours cell in it is directly comparable with every other --
     // and checked against each of the three figures the header leads with, not
@@ -2046,11 +2070,14 @@
     const entries = payload.work_orders || [];
     const countedFrom = (source) =>
       entries.filter((entry) => entry.source === source).map((entry) => entry.counted_hours);
-    const digits = hoursPrecision([
+    const precision = hoursPrecision([
       { values: countedFrom("direct"), total: payload.direct_downtime_hours },
       { values: countedFrom("linked"), total: payload.linked_downtime_hours },
       { values: entries.map((entry) => entry.counted_hours), total: payload.adjusted_downtime_hours },
     ]);
+    const digits = precision.digits;
+
+    children.push(workOrderSummary(payload, precision));
 
     const rows = (payload.work_orders || []).map((entry, index) => ({
       key: `${entry.source}|${entry.asset_number}|${entry.task_id}|${index}`,
@@ -2097,13 +2124,18 @@
       )
     );
 
-    // The sum of the values as *displayed*, not of the values underneath them,
-    // so the figure at the foot of the column is the one a reader adding the
-    // column up arrives at. It is the bar, restated by the rows that made it.
-    const countedTotal = shown.reduce(
-      (sum, item) => sum + roundTo(item.wo.counted_hours, digits),
-      0
-    );
+    // Normally the sum of the values as *displayed*, not of the values
+    // underneath them, so the figure at the foot of the column is the one a
+    // reader adding the column up arrives at. It is the bar, restated by the
+    // rows that made it.
+    //
+    // When no precision could reconcile the two, the header's own figure wins
+    // instead. A footer disagreeing with the stat directly above it is a dialog
+    // contradicting itself, which is worse than a hand-sum landing a hundredth
+    // out -- and the summary says which is happening.
+    const countedTotal = precision.reconciled
+      ? shown.reduce((sum, item) => sum + roundTo(item.wo.counted_hours, digits), 0)
+      : payload.adjusted_downtime_hours;
     const totals = el(
       "tr",
       { class: "availability-wo-total" },

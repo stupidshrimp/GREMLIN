@@ -416,6 +416,18 @@ Three properties make the view worth trusting, and each is a test:
   the explanation this view exists to give, so a precision is accepted only
   when all three add up.
 
+  Sometimes none does, at any width, and the view says so rather than pretending
+  otherwise. Two linked orders of 734 and 397 minutes at 50% sum to exactly
+  9.425 h, but that addition lands on 9.424999999999999 in binary — so the total
+  rounds down to 9.42 while the rows, rounded first and added second, reach
+  9.425 and round up to 9.43. The two sit on opposite sides of a tie and no
+  number of decimals crosses it. When the search fails, the table returns to two
+  decimals, the footer shows the header's own figure rather than the sum of what
+  is displayed, and a caution explains that hand-adding the rows can land a
+  hundredth away. **The invariant is that the footer never contradicts the stat
+  above it** — a dialog disagreeing with itself is worse than an arithmetic
+  residual, and a fallback that is never checked is worse than both.
+
   All of that requires **one** rounding rule, which means the client's. Python
   rounds ties to even and JavaScript rounds them away from zero, so a linked
   contribution of `9.25 × 0.5 = 4.625 h` serializes as `4.62` from Python and
