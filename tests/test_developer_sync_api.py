@@ -76,6 +76,28 @@ class DeveloperSyncApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 415)
         self.assertEqual(self.runner.status()["state"], "idle")
 
+    def test_a_body_that_does_not_parse_is_refused_rather_than_defaulted(self):
+        self._unlock()
+        for body in ('{"dry_run": tr', "", "[1, 2]", '"just a string"'):
+            with self.subTest(body=body):
+                response = self.client.post(
+                    "/developer/api/sync",
+                    data=body,
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("JSON object", response.get_json()["error"])
+                # The dangerous reading of a truncated body is "no options
+                # given", which would run a full writing sync.
+                self.assertEqual(self.runner.status()["state"], "idle")
+
+    def test_an_empty_object_is_a_valid_request_for_the_defaults(self):
+        self._unlock()
+        response = self.client.post("/developer/api/sync", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+
     # -- starting ----------------------------------------------------------
     def test_a_start_returns_the_job_and_the_status_endpoint_follows_it(self):
         self._unlock()

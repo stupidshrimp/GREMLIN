@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import threading
@@ -87,6 +88,59 @@ class ParseSinceTests(unittest.TestCase):
         with self.assertRaises(SyncOptionError) as caught:
             parse_since("last tuesday")
         self.assertIn("last tuesday", str(caught.exception))
+
+
+class DotenvTests(unittest.TestCase):
+    """The loader promises that rotating .env takes effect without a restart, so
+    a forced reload has to replace what an earlier pass put in the environment."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.env_file = Path(self._tmp.name) / ".env"
+
+        cwd = mock.patch.object(Path, "cwd", staticmethod(lambda: Path(self._tmp.name)))
+        cwd.start()
+        self.addCleanup(cwd.stop)
+        environ = mock.patch.dict(os.environ, {}, clear=False)
+        environ.start()
+        self.addCleanup(environ.stop)
+        # The module-level cache is process state; reset it around each test.
+        self.addCleanup(setattr, sync_service, "_dotenv_loaded", sync_service._dotenv_loaded)
+        self.addCleanup(sync_service._dotenv_applied.clear)
+        sync_service._dotenv_loaded = False
+        sync_service._dotenv_applied.clear()
+        for key in ("LIMBLE_CLIENT_ID", "LIMBLE_CLIENT_SECRET"):
+            os.environ.pop(key, None)
+
+    def test_a_rotated_secret_is_picked_up_without_a_restart(self):
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=old-secret\n", encoding="utf-8")
+        sync_service.load_dotenv_files()
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "old-secret")
+
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=new-secret\n", encoding="utf-8")
+        # An unforced reload is the polling path: cached, so it changes nothing.
+        sync_service.load_dotenv_files()
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "old-secret")
+
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "new-secret")
+
+    def test_a_real_environment_variable_still_beats_the_file(self):
+        os.environ["LIMBLE_CLIENT_SECRET"] = "set-by-the-operator"
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=from-file\n", encoding="utf-8")
+        sync_service.load_dotenv_files()
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "set-by-the-operator")
+
+    def test_a_value_changed_outside_the_loader_is_left_alone(self):
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=from-file\n", encoding="utf-8")
+        sync_service.load_dotenv_files()
+        # Something else in the process now owns this variable.
+        os.environ["LIMBLE_CLIENT_SECRET"] = "set-at-runtime"
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=rotated\n", encoding="utf-8")
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "set-at-runtime")
 
 
 class SyncOptionsTests(unittest.TestCase):
@@ -277,6 +331,34 @@ class SyncRunnerTests(unittest.TestCase):
         finally:
             gate.set()
             self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+        self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+
+    def test_a_recorded_worker_is_always_a_started_one(self):
+        # The takeover path below is only safe because start() launches the
+        # worker before releasing the lock: a recorded-but-unstarted thread is
+        # not alive, so a request arriving in that window would read a healthy
+        # job as abandoned and run a second sync alongside it.
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            self.assertTrue(self.runner._thread.is_alive())
+            with self.assertRaises(SyncAlreadyRunningError):
+                self.runner.start(self.db_path, SyncOptions(), log=lambda _message: None)
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_a_job_whose_worker_died_does_not_block_the_next_sync(self):
+        # Only an interpreter-level failure gets past the worker's own except
+        # clause, but if one does, the runner must not refuse every later sync
+        # until somebody restarts the app.
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        self.runner._job = {"state": STATE_RUNNING}
+        self.runner._thread = dead
+
+        self._run(FakeLimbleClient(self.tasks, self.assets))
         self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
 
     def test_a_failed_fetch_is_reported_instead_of_disappearing(self):

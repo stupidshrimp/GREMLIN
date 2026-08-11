@@ -1092,8 +1092,16 @@ def api_dev_sync_start():
     # page from triggering a database write in an unlocked dev session.
     if not request.is_json:
         return jsonify({"error": "Sync requests must be sent as JSON."}), 415
+    # A body that does not parse is a failed request, not an empty one. Treating
+    # it as "no options given" would answer a truncated or malformed request by
+    # running a full, writing sync -- the most consequential thing this endpoint
+    # can do -- so require an object and say so otherwise. An explicit `{}` is
+    # still a valid way to ask for the defaults.
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Sync options must be a JSON object."}), 400
     try:
-        options = SyncOptions.from_payload(request.get_json(silent=True) or {})
+        options = SyncOptions.from_payload(payload)
         return jsonify(sync_runner.start(_configured_db_path(), options))
     except SyncAlreadyRunningError as exc:
         return jsonify({"error": str(exc)}), 409

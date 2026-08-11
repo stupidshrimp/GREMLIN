@@ -131,6 +131,9 @@ class SyncOptionError(ValueError):
 
 
 _dotenv_loaded = False
+# Values this loader put into the environment, so a forced reload can tell its
+# own earlier work apart from a variable someone set outside the process.
+_dotenv_applied: dict[str, str] = {}
 
 
 def load_dotenv_files(*, force: bool = False) -> None:
@@ -145,6 +148,14 @@ def load_dotenv_files(*, force: bool = False) -> None:
     sync runs and reports whether credentials are configured; ``force=True``
     re-reads the files, which is what starting a sync does so that credentials
     edited since the app started are picked up without a restart.
+
+    A forced reload also *replaces* values it set on an earlier pass, which a
+    plain "never overwrite the environment" loader would not: in a long-lived web
+    process the first status poll already copied the old credentials into
+    ``os.environ``, so without this, rotating ``.env`` would change nothing until
+    someone restarted the app. A real environment variable still wins -- it is
+    only overwritten when the current value is the one this loader wrote, which
+    means nobody has set it since.
     """
 
     global _dotenv_loaded
@@ -164,8 +175,13 @@ def load_dotenv_files(*, force: bool = False) -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if not key:
+                continue
+            current = os.environ.get(key)
+            ours = _dotenv_applied.get(key)
+            if current is None or (force and ours is not None and current == ours):
                 os.environ[key] = value
+                _dotenv_applied[key] = value
 
 
 def parse_since(value: str | None) -> int | None:
@@ -585,10 +601,16 @@ class LimbleSyncRunner:
                 # The worker is gone without having reported an outcome (only an
                 # interpreter-level failure gets past its own except clause).
                 # Close the job out rather than let a dead thread block every
-                # future sync until someone restarts the app.
+                # future sync until someone restarts the app. This is sound only
+                # because a recorded worker has always been started before the
+                # lock was released -- see thread.start() below.
                 self._job["state"] = STATE_FAILED
                 self._job["error"] = "The sync stopped without reporting a result."
             self._messages.clear()
+            # Appended directly: _append_message takes the same (non-reentrant)
+            # lock this block holds, and the line has to land before the worker's
+            # own first message.
+            self._messages.append({"at": _utc_now_iso(), "text": "Sync requested from the developer dashboard."})
             self._job = {
                 "state": STATE_RUNNING,
                 "options": options.to_dict(),
@@ -623,9 +645,15 @@ class LimbleSyncRunner:
                 daemon=True,
             )
             self._thread = thread
+            # Started while still holding the lock. A thread that is recorded but
+            # not yet running is not alive, so a second request arriving in that
+            # window would read the job as abandoned, take it over, and leave two
+            # syncs fetching and writing at once. Holding the lock across the
+            # start makes "recorded" and "running" the same state. The worker
+            # blocks on its first status write until this block ends, which is
+            # microseconds; it cannot deadlock, because nothing here waits on it.
+            thread.start()
 
-        self._append_message("Sync requested from the developer dashboard.")
-        thread.start()
         return self.status()
 
     def status(self) -> dict[str, Any]:
