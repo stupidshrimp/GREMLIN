@@ -415,8 +415,19 @@ class SyncRunnerTests(unittest.TestCase):
         # thread builds its client a moment later, and an un-patched one would
         # try to reach the real Limble API.
         self._client = None
+        # The worker builds its client a moment after start() returns, so the
+        # field is read on the worker's clock, not the test's. Signalling when
+        # it has been read lets _run wait for that hand-off before a later start
+        # is allowed to replace it.
+        self._client_taken = threading.Event()
+
+        def _take_client(config, log=print):
+            client = self._client
+            self._client_taken.set()
+            return client
+
         for target, attribute, replacement in (
-            (sync_service, "LimbleClient", lambda config, log=print: self._client),
+            (sync_service, "LimbleClient", _take_client),
             (sync_service.LimbleConfig, "from_env", staticmethod(_fake_config)),
         ):
             patcher = mock.patch.object(target, attribute, replacement)
@@ -438,10 +449,16 @@ class SyncRunnerTests(unittest.TestCase):
         """Start a sync against the fake client and (by default) wait for it."""
 
         options = options if options is not None else SyncOptions(refresh_mapping=False)
+        self._client_taken.clear()
         self._client = client
         if client.gate is not None:
             self._gates.append(client.gate)
         status = self.runner.start(self.db_path, options, log=lambda _message: None)
+        # Do not return while this client is still unclaimed. A second start that
+        # overwrote the field first would hand its own client to the worker
+        # already running -- an ungated one finishes immediately, and a test
+        # about refusing concurrent syncs would then watch the first one end.
+        self.assertTrue(self._client_taken.wait(timeout=10), "the worker never took its client")
         if wait:
             self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING), "sync never finished")
         return status

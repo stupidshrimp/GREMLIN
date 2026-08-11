@@ -104,7 +104,12 @@
         <label class="dev-check"><input type="checkbox" id="dev-sync-no-assets"> Skip asset enrichment</label>
       </div>
       <div class="dev-field dev-field-actions">
-        <button type="button" class="btn-primary" id="dev-sync-run">Run sync now</button>
+        <!-- Disabled until the first status response says otherwise. Whether a
+             sync may start depends on the PIN, the credentials and the database,
+             none of which this page knows yet at first paint; a click inside that
+             window would be answered with a 403 the client reads as an expired
+             session, reloading the page instead of explaining itself. -->
+        <button type="button" class="btn-primary" id="dev-sync-run" disabled>Run sync now</button>
       </div>
     </div>
     <p class="dev-muted">
