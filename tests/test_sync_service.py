@@ -98,10 +98,14 @@ class DotenvTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.env_file = Path(self._tmp.name) / ".env"
+        self.fallback_file = Path(self._tmp.name) / "fallback.env"
 
-        cwd = mock.patch.object(Path, "cwd", staticmethod(lambda: Path(self._tmp.name)))
-        cwd.start()
-        self.addCleanup(cwd.stop)
+        # Point the loader at temporary files instead of the real working
+        # directory and repo checkout.
+        self.candidates = [self.env_file, self.fallback_file]
+        files = mock.patch.object(sync_service, "_dotenv_candidates", lambda: list(self.candidates))
+        files.start()
+        self.addCleanup(files.stop)
         environ = mock.patch.dict(os.environ, {}, clear=False)
         environ.start()
         self.addCleanup(environ.stop)
@@ -132,6 +136,41 @@ class DotenvTests(unittest.TestCase):
         sync_service.load_dotenv_files()
         sync_service.load_dotenv_files(force=True)
         self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "set-by-the-operator")
+
+    def test_the_first_file_wins_even_on_a_forced_reload(self):
+        # The working directory's .env is the deployment's own configuration; a
+        # repo checkout's copy is only a fallback. Letting the fallback win on
+        # the forced path -- which the nightly job uses -- would point a sync at
+        # a different database or Limble account.
+        self.env_file.write_text("GREMLIN_DB_PATH=/deployment/GREMLIN.db\n", encoding="utf-8")
+        self.fallback_file.write_text("GREMLIN_DB_PATH=/checkout/GREMLIN.db\n", encoding="utf-8")
+
+        sync_service.load_dotenv_files()
+        self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/deployment/GREMLIN.db")
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/deployment/GREMLIN.db")
+
+    def test_the_fallback_file_still_supplies_keys_the_first_omits(self):
+        self.env_file.write_text("LIMBLE_CLIENT_ID=from-deployment\n", encoding="utf-8")
+        self.fallback_file.write_text(
+            "LIMBLE_CLIENT_ID=from-checkout\nLIMBLE_CLIENT_SECRET=from-checkout\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_ID"], "from-deployment")
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "from-checkout")
+
+    def test_credentials_added_to_a_running_app_are_noticed(self):
+        # The page disables the Run button when credentials are missing, and
+        # starting a sync is what forces a reload -- so a cache that outlived a
+        # newly written .env would leave no way to recover but a restart.
+        self.assertFalse(sync_service.describe_credentials()["configured"])
+
+        self.env_file.write_text(
+            "LIMBLE_CLIENT_ID=added-later\nLIMBLE_CLIENT_SECRET=added-later\n", encoding="utf-8"
+        )
+        described = sync_service.describe_credentials()
+        self.assertTrue(described["configured"])
+        self.assertIsNone(described["detail"])
 
     def test_a_value_changed_outside_the_loader_is_left_alone(self):
         self.env_file.write_text("LIMBLE_CLIENT_SECRET=from-file\n", encoding="utf-8")

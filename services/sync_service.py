@@ -136,6 +136,44 @@ _dotenv_loaded = False
 _dotenv_applied: dict[str, str] = {}
 
 
+def _dotenv_candidates() -> list[Path]:
+    """The ``.env`` files consulted, in precedence order.
+
+    The working directory comes first because it is the deployment's own choice
+    of configuration; the repo copy is the fallback for running out of a checkout.
+    """
+
+    return [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
+
+
+def _read_dotenv_values() -> dict[str, str]:
+    """Merge the candidate files into one mapping, first occurrence winning.
+
+    Precedence is resolved here rather than while assigning to ``os.environ``,
+    because the two are not the same once a forced reload is allowed to replace
+    its own earlier values: assigning file by file would let the repo fallback
+    overwrite what the working directory just supplied, and a deployment whose
+    two files disagree would sync the wrong database or account.
+    """
+
+    values: dict[str, str] = {}
+    seen: set[Path] = set()
+    for path in _dotenv_candidates():
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key or key in values:
+                continue
+            values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
 def load_dotenv_files(*, force: bool = False) -> None:
     """Minimal ``.env`` loader (no third-party dependency).
 
@@ -162,26 +200,12 @@ def load_dotenv_files(*, force: bool = False) -> None:
     if _dotenv_loaded and not force:
         return
     _dotenv_loaded = True
-    candidates = [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
-    seen: set[Path] = set()
-    for path in candidates:
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if not key:
-                continue
-            current = os.environ.get(key)
-            ours = _dotenv_applied.get(key)
-            if current is None or (force and ours is not None and current == ours):
-                os.environ[key] = value
-                _dotenv_applied[key] = value
+    for key, value in _read_dotenv_values().items():
+        current = os.environ.get(key)
+        ours = _dotenv_applied.get(key)
+        if current is None or (force and ours is not None and current == ours):
+            os.environ[key] = value
+            _dotenv_applied[key] = value
 
 
 def parse_since(value: str | None) -> int | None:
@@ -536,14 +560,29 @@ def _raw_record_count(db_path: Path) -> int | None:
         return None
 
 
+def _limble_config_or_error() -> tuple[LimbleConfig | None, str | None]:
+    try:
+        return LimbleConfig.from_env(), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def describe_credentials(*, reload_env: bool = False) -> dict[str, Any]:
     """Report whether Limble credentials are configured, without revealing them."""
 
     load_dotenv_files(force=reload_env)
-    try:
-        config = LimbleConfig.from_env()
-    except ValueError as exc:
-        return {"configured": False, "detail": str(exc), "base_url": os.getenv("LIMBLE_BASE_URL") or None}
+    config, detail = _limble_config_or_error()
+    if config is None and not reload_env:
+        # "Missing" may only mean the cached load ran before anyone wrote the
+        # file. That would otherwise be a trap with no way out: the page disables
+        # the Run button when credentials are missing, and starting a sync is the
+        # only thing that forces a re-read -- so an operator who adds .env to a
+        # running app would be told to restart it for no reason. Re-reading costs
+        # two stat calls, and only in the state that is already broken.
+        load_dotenv_files(force=True)
+        config, detail = _limble_config_or_error()
+    if config is None:
+        return {"configured": False, "detail": detail, "base_url": os.getenv("LIMBLE_BASE_URL") or None}
     return {"configured": True, "detail": None, "base_url": config.base_url}
 
 
