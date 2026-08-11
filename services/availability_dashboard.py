@@ -34,6 +34,25 @@ from services.availability_service import (
 MIN_WINDOW_MONTHS = 1
 MAX_WINDOW_MONTHS = 36
 
+# ---------------------------------------------------------------------------
+# Rounding rule: downtime hours go out unrounded, scheduled hours do not.
+#
+# The drill-down sums work orders and checks them against these figures, so the
+# rows and the total they explain have to be rounded by the *same* rule -- and
+# Python and JavaScript do not agree on one. Python rounds ties to even and
+# JavaScript rounds them away from zero, so a linked contribution of
+# 9.25 h x 0.5 = 4.625 h serializes as 4.62 here and renders as 4.63 there.
+# That is a common shape in this data rather than a corner case: a quarter-hour
+# halved by an impact factor lands on a half-cent every time.
+#
+# Rounding here would leave the client comparing its own arithmetic against a
+# number produced by a different rule, which no choice of display precision can
+# reconcile. Downtime is therefore serialized as computed and rounded once, in
+# the browser, where it is read. Scheduled hours keep their rounding: nothing is
+# summed against them, and one of them feeds an editable input where a float
+# artefact would show.
+# ---------------------------------------------------------------------------
+
 
 def clamp_window_months(value: Any, default: int = DEFAULT_WINDOW_MONTHS) -> int:
     """Coerce a requested window length into the supported range."""
@@ -149,9 +168,10 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
                 "scheduled_hours": round(row.scheduled_hours, 2),
                 "manual_ot_hours": round(row.manual_ot_hours, 2),
                 "adjusted_scheduled_hours": round(row.adjusted_scheduled_hours, 2),
-                "direct_downtime_hours": round(row.direct_downtime_hours, 2),
-                "linked_downtime_hours": round(row.linked_downtime_hours, 2),
-                "adjusted_downtime_hours": round(row.adjusted_downtime_hours, 2),
+                # Unrounded -- see the rounding rule at the top of this module.
+                "direct_downtime_hours": row.direct_downtime_hours,
+                "linked_downtime_hours": row.linked_downtime_hours,
+                "adjusted_downtime_hours": row.adjusted_downtime_hours,
                 "availability": row.availability,
                 "flagged": row.flagged,
                 "overlap_count": row.overlap_count,
@@ -309,9 +329,11 @@ def build_work_order_detail(
         "scheduled_hours": round(row.scheduled_hours, 2),
         "manual_ot_hours": round(row.manual_ot_hours, 2),
         "adjusted_scheduled_hours": round(row.adjusted_scheduled_hours, 2),
-        "direct_downtime_hours": round(row.direct_downtime_hours, 2),
-        "linked_downtime_hours": round(row.linked_downtime_hours, 2),
-        "adjusted_downtime_hours": round(row.adjusted_downtime_hours, 2),
+        # Unrounded: the client sums work orders against these and rounds both
+        # sides itself -- see the rounding rule at the top of this module.
+        "direct_downtime_hours": row.direct_downtime_hours,
+        "linked_downtime_hours": row.linked_downtime_hours,
+        "adjusted_downtime_hours": row.adjusted_downtime_hours,
         "availability": row.availability,
         "flagged": row.flagged,
         "goal": repository.load_goals().get((group.asset_group, month), DEFAULT_GOAL_PERCENT),

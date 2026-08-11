@@ -991,7 +991,7 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         self.seed_salvagnini_january()
         detail = self.drill("3102")
         self.assertEqual(detail["direct_downtime_hours"], 12.5)
-        self.assertEqual(detail["linked_downtime_hours"], 24.43)
+        self.assertAlmostEqual(detail["linked_downtime_hours"], 24.433333333333334, places=12)
         self.assertAlmostEqual(detail["availability"], JANUARY_AVAILABILITY["3102"], places=12)
         self.assertEqual(detail["availability"], self.bar("3102")["availability"])
         self.assertEqual(detail["scheduled_hours"], 396.0)
@@ -1110,13 +1110,33 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         for _ in range(200):
             self.add_work_order("3101", "2026-01-15 15:00:00", 1 / 60)
         detail = self.drill("3101")
-        self.assertEqual(detail["adjusted_downtime_hours"], 3.33)
+        self.assertAlmostEqual(detail["adjusted_downtime_hours"], 200 / 60, places=12)
 
         counted = [o["counted_hours"] for o in detail["work_orders"]]
         self.assertEqual(len(counted), 200)
         # The old wire format could not get here from 0.0167 a row.
         self.assertEqual(round(sum(round(v, 4) for v in counted), 2), 3.34)
         self.assertEqual(round(sum(round(v, 5) for v in counted), 2), 3.33)
+
+    def test_a_half_cent_subtotal_is_not_rounded_by_python(self):
+        """Python and JavaScript break ties in opposite directions.
+
+        A quarter-hour halved by an impact factor lands on a half-cent every
+        time, and 9.25 x 0.5 = 4.625 is exactly representable, so the tie is
+        real rather than a float artefact. ``round`` here gives 4.62 (ties to
+        even) where ``toFixed`` in the browser gives 4.63 (ties away from zero).
+        Rounding on this side would leave the client checking its own arithmetic
+        against a number produced by the other rule, which no display precision
+        can reconcile -- so the figure goes out as computed.
+        """
+
+        self.assertEqual(round(4.625, 2), 4.62)  # the premise, stated
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 9.25)
+        detail = self.drill("3106")  # 3106's only rule points at 3101, at 0.5
+        self.assertEqual(detail["linked_downtime_hours"], 4.625)
+        self.assertEqual(detail["adjusted_downtime_hours"], 4.625)
+        self.assertEqual(detail["work_orders"][0]["counted_hours"], 4.625)
 
     def test_month_labels_carry_the_year(self):
         """A single month has no neighbouring columns to date it by."""

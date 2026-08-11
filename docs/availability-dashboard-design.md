@@ -414,7 +414,21 @@ Three properties make the view worth trusting, and each is a test:
   hundredth high while four linked ones run a hundredth low, which leaves the
   combined figure reconciled and both breakdowns wrong; those breakdowns are
   the explanation this view exists to give, so a precision is accepted only
-  when all three add up. And the
+  when all three add up.
+
+  All of that requires **one** rounding rule, which means the client's. Python
+  rounds ties to even and JavaScript rounds them away from zero, so a linked
+  contribution of `9.25 × 0.5 = 4.625 h` serializes as `4.62` from Python and
+  renders as `4.63` in the browser — a common shape here, since a quarter-hour
+  halved by an impact factor lands on a half-cent every time. Pre-rounding on
+  the server leaves the client checking its own arithmetic against a number
+  produced by the other rule, which no display precision can reconcile: the
+  search exhausts itself and falls through to its fallback still mismatched.
+  Downtime figures are therefore serialized unrounded from *both* builders, so
+  the summary table and the drill-down cannot disagree about the same number
+  either. Scheduled hours keep their rounding — nothing is summed against them,
+  and one of them feeds an editable input where a float artefact would show. And
+  the
   work-order hours are serialized **unrounded**, unlike the asset-month figures
   beside them: rounding on the wire puts a floor under the whole scheme, since
   at four decimals 200 one-minute orders can only be added back up to 3.34 h
