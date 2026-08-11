@@ -406,7 +406,15 @@ Three properties make the view worth trusting, and each is a test:
   contributes up to half a unit of rounding error: reconciling N rows to the
   header's own two decimals takes roughly `2 + log10(N)`. The search therefore
   runs to six, which covers ten thousand work orders in one asset-month — more
-  than the whole database holds across every asset and every year. And the
+  than the whole database holds across every asset and every year.
+
+  The precision is checked against **each** of the three figures the header
+  leads with — Direct, Linked and their total — not only the combined one,
+  because the errors cancel. Eight minute-granular direct orders can run a
+  hundredth high while four linked ones run a hundredth low, which leaves the
+  combined figure reconciled and both breakdowns wrong; those breakdowns are
+  the explanation this view exists to give, so a precision is accepted only
+  when all three add up. And the
   work-order hours are serialized **unrounded**, unlike the asset-month figures
   beside them: rounding on the wire puts a floor under the whole scheme, since
   at four decimals 200 one-minute orders can only be added back up to 3.34 h

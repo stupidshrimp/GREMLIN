@@ -1590,7 +1590,7 @@
   }
 
   // How many decimals the hours columns need before the rows, as displayed,
-  // still reach the total the header states.
+  // still reach the totals the header states.
   //
   // Downtime is recorded in minutes, so an hours column routinely holds thirds
   // of a hundredth: three one-minute orders are 0.0167 h each, which at two
@@ -1604,10 +1604,21 @@
   // header's own two decimals needs roughly 2 + log10(N) of them. Six covers
   // ten thousand work orders in a single asset-month, which is more than the
   // whole database holds across every asset and every year.
-  function hoursPrecision(values, total) {
+  //
+  // Every subtotal has to hold, not just the combined one, because their errors
+  // can cancel: eight minute-granular direct orders can run a hundredth high
+  // while four linked ones run a hundredth low, leaving the combined figure
+  // reconciled and *both* of the breakdowns the header leads with wrong. Each
+  // group is checked against its own stat, so a precision is only accepted when
+  // all of them add up.
+  function hoursPrecision(groups) {
+    const reconciles = (digits) =>
+      groups.every((group) => {
+        const shown = group.values.reduce((sum, value) => sum + roundTo(value, digits), 0);
+        return roundTo(shown, 2) === roundTo(group.total, 2);
+      });
     for (let digits = 2; digits < 6; digits += 1) {
-      const shown = values.reduce((sum, value) => sum + roundTo(value, digits), 0);
-      if (roundTo(shown, 2) === roundTo(total, 2)) return digits;
+      if (reconciles(digits)) return digits;
     }
     return 6;
   }
@@ -2029,11 +2040,17 @@
     children.push(workOrderSummary(payload));
 
     // One precision for the whole table, chosen from the rows it is about to
-    // draw, so every hours cell in it is directly comparable with every other.
-    const digits = hoursPrecision(
-      (payload.work_orders || []).map((entry) => entry.counted_hours),
-      payload.adjusted_downtime_hours
-    );
+    // draw, so every hours cell in it is directly comparable with every other --
+    // and checked against each of the three figures the header leads with, not
+    // only their sum.
+    const entries = payload.work_orders || [];
+    const countedFrom = (source) =>
+      entries.filter((entry) => entry.source === source).map((entry) => entry.counted_hours);
+    const digits = hoursPrecision([
+      { values: countedFrom("direct"), total: payload.direct_downtime_hours },
+      { values: countedFrom("linked"), total: payload.linked_downtime_hours },
+      { values: entries.map((entry) => entry.counted_hours), total: payload.adjusted_downtime_hours },
+    ]);
 
     const rows = (payload.work_orders || []).map((entry, index) => ({
       key: `${entry.source}|${entry.asset_number}|${entry.task_id}|${index}`,
