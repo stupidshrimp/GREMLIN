@@ -13,7 +13,12 @@ from repositories.analysis_repo import AnalysisRepository
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
 from repositories.failure_repo import FailureRepository
 from repositories.metrics_repo import MetricsRepository
-from services.availability_dashboard import build_config, build_dashboard, clamp_window_months
+from services.availability_dashboard import (
+    build_config,
+    build_dashboard,
+    build_work_order_detail,
+    clamp_window_months,
+)
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
     DEFAULT_DB_PATH,
@@ -390,6 +395,28 @@ def api_availability():
     _bootstrap_mapped_records()
     months = clamp_window_months(request.values.get("months"))
     return jsonify(build_dashboard(repository, months=months))
+
+
+@app.route("/metrics/api/availability/work-orders")
+@availability_api
+def api_availability_work_orders():
+    """The individual work orders behind one bar of one availability chart.
+
+    Fetched only when a reader opens a bar, not shipped with the chart payload:
+    the card draws several hundred asset-months and each one's work orders carry
+    names, descriptions and completion notes.
+    """
+
+    repository = get_availability_repository()
+    _bootstrap_mapped_records()
+    return jsonify(
+        build_work_order_detail(
+            repository,
+            asset_group=str(request.values.get("asset_group") or "").strip(),
+            asset_number=str(request.values.get("asset_number") or "").strip(),
+            month=request.values.get("month"),
+        )
+    )
 
 
 @app.route("/metrics/api/availability/config")

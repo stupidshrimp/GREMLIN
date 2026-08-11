@@ -490,19 +490,31 @@ body.metrics-modal-open { overflow: hidden; }
 }
 
 .metrics-modal {
-  width: min(1180px, 100%);
+  /* Wide enough that the work-order table's completion notes -- where the
+     return-to-service times live -- are on screen rather than behind a
+     horizontal scroll on a typical office display. */
+  width: min(1340px, 100%);
   max-height: min(88vh, 60rem);
   background: var(--surface, #fff);
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 28px 70px rgba(6, 43, 28, 0.34);
-  display: grid;
-  /* minmax(0, 1fr): without the zero minimum the table row refuses to shrink
-     below its content height and the dialog grows past its own max-height. */
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Flex rather than a fixed grid template: the dialog holds a different number
+     of bands depending on which view is showing -- the work-order view adds a
+     picker row and a summary strip -- so the flexible band has to be named by
+     what it is, not by which row it lands in. */
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   animation: metricsModalIn 200ms ease-out both;
 }
+/* Every band keeps its natural height; only the scrolling one absorbs the
+   slack. min-height: 0 is what lets it shrink below its content instead of
+   pushing the dialog past its own max-height. A view with no table -- loading,
+   empty, failed -- simply leaves the dialog as short as its content. */
+.metrics-modal > * { flex: 0 0 auto; }
+.metrics-modal > .metrics-table-scroll { flex: 1 1 auto; min-height: 0; }
+.metrics-modal > .metrics-empty { margin: 1.1rem 1.2rem; }
 .metrics-modal:focus { outline: none; }
 
 @keyframes metricsModalFade { from { opacity: 0; } to { opacity: 1; } }
@@ -663,6 +675,132 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 .availability-detail-flag.is-overlap { background: rgba(214, 167, 0, 0.22); color: #8a6d00; }
 .availability-detail-flag.is-linked { background: rgba(47, 143, 91, 0.14); color: var(--forest-900); }
 .availability-detail-quiet { color: var(--muted); }
+
+/* The work-order count doubles as the link into the records behind a row, so it
+   still has to read as the number it is -- underlined rather than boxed, and
+   right-aligned with the numeric column it sits in. */
+.availability-wo-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--forest-800);
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.availability-wo-link:hover { color: var(--forest-900); text-decoration-style: solid; }
+.availability-wo-link:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+
+/* ---- drill-down view switch ---------------------------------------------- */
+.metrics-modal-views {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.55rem 1.2rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.metrics-modal-view {
+  padding: 0.42rem 0.9rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -1px;
+  background: none;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.metrics-modal-view:hover { color: var(--forest-900); background: var(--forest-100); }
+.metrics-modal-view:focus-visible { outline: 2px solid var(--forest-700); outline-offset: -2px; }
+.metrics-modal-view.is-active {
+  background: var(--surface, #fff);
+  border-color: var(--border);
+  color: var(--forest-900);
+}
+
+/* ---- work orders behind one bar ------------------------------------------ */
+.availability-wo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.1rem;
+  padding: 0.75rem 1.2rem;
+  background: var(--forest-100);
+  border-bottom: 1px solid var(--border);
+}
+.availability-wo-picker { display: flex; flex-direction: column; gap: 0.2rem; }
+.availability-wo-select {
+  min-width: 12rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.availability-wo-select:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+
+.availability-wo-summary { padding: 0.85rem 1.2rem 0.7rem; }
+.availability-wo-stats { display: flex; flex-wrap: wrap; gap: 0.5rem 1.6rem; }
+.availability-wo-stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.availability-wo-stat-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--forest-900);
+  font-variant-numeric: tabular-nums;
+}
+.availability-wo-stat.is-total .availability-wo-stat-value { color: var(--forest-700); }
+.availability-wo-stat.is-flagged .availability-wo-stat-value { color: #a5281b; }
+.availability-wo-caveat {
+  margin: 0.55rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+/* The one caveat that is about the numbers being unreconcilable rather than
+   about how they were derived, so it reads as a caution and not as a footnote. */
+.availability-wo-caveat.is-warn { color: #8a6d00; font-weight: 600; }
+
+.availability-wo-id { font-variant-numeric: tabular-nums; color: var(--muted); }
+.availability-wo-name { white-space: normal; min-width: 16rem; max-width: 28rem; font-weight: 600; }
+.availability-wo-asset { font-weight: 600; }
+.availability-wo-when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.availability-wo-counted { font-weight: 700; }
+.availability-wo-counted.is-quiet { font-weight: 500; color: var(--muted); }
+/* Linked rows are another machine's work orders, charged here at a fraction.
+   Tinting them keeps that visible while scrolling, once the badge in the asset
+   column has scrolled out of the reader's attention. */
+table.availability-wo-table tbody tr.is-linked,
+table.availability-wo-table tbody tr.is-linked:nth-child(even) { background: #f2f8f4; }
+
+/* Sticks to the bottom for the same reason the heading sticks to the top: the
+   total is what the rows are being read against, so it has to stay in view
+   while they scroll past it.
+
+   On the cells, not on the <tr>. A sticky row opens its own stacking context at
+   z-index auto, which the sticky first column inside every *body* row then
+   paints straight through at z-index 1 -- the total reads as blank with a data
+   row showing behind it. */
+table.availability-wo-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--forest-100);
+  font-weight: 700;
+  color: var(--forest-900);
+  /* Same reason the header's rule is a shadow: border-collapse hands the shared
+     border to the cell above, which scrolls away with it. */
+  box-shadow: inset 0 2px 0 var(--forest-500);
+}
+/* Pinned in both directions, so it outranks the sticky first column (1) and the
+   sticky heading (3) it can meet in the corner. */
+table.availability-wo-table tfoot td:first-child {
+  left: 0;
+  z-index: 4;
+  background: var(--forest-100);
+}
 
 @media (max-width: 860px) {
   .metrics-modal-backdrop { padding: 0; }

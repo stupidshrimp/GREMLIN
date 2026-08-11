@@ -1265,7 +1265,30 @@
     { key: "direct", label: "Direct downtime (h)", numeric: true, field: "direct_downtime_hours", digits: 2 },
     { key: "linked", label: "Linked downtime (h)", numeric: true, field: "linked_downtime_hours", digits: 2 },
     { key: "downtime", label: "Total downtime (h)", numeric: true, field: "adjusted_downtime_hours", digits: 2 },
-    { key: "wo", label: "Work orders", numeric: true, field: "total_wo_count", digits: 0 },
+    {
+      key: "wo",
+      label: "Work orders",
+      numeric: true,
+      field: "total_wo_count",
+      digits: 0,
+      // The count doubles as the way in. Someone asking which work orders made a
+      // month look like this is already pointing at how many of them there were,
+      // and a row with none is worth opening too: it is the difference between a
+      // machine that ran and a machine nobody logged.
+      cell: (item) =>
+        el("td", { class: "availability-cell" }, [
+          el("button", {
+            type: "button",
+            class: "availability-wo-link",
+            "data-focus-id": `wo:${item.key}`,
+            text: fmtNum(item.row.total_wo_count, 0),
+            title:
+              `List the work orders behind ${item.row.display_name || item.row.asset_number}` +
+              ` · ${item.monthLabel}`,
+            onclick: () => showWorkOrders(item.row.asset_number, item.row.month),
+          }),
+        ]),
+    },
     { key: "zero_wo", label: "WOs w/o downtime", numeric: true, field: "zero_downtime_wo_count", digits: 0 },
     { key: "overlap", label: "Cross-month WOs", numeric: true, field: "overlap_count", digits: 0 },
     {
@@ -1289,13 +1312,16 @@
   ];
 
   // The plain numeric columns are all the same cell, so they declare a field and
-  // a precision instead of repeating a builder each.
+  // a precision instead of repeating a builder each. A column that brings its
+  // own cell keeps it and still gets the field's sort, so the two can never
+  // disagree about which number the column is.
   DETAIL_COLUMNS.forEach((column) => {
     if (!column.field) return;
     column.sort = (item) => {
       const value = Number(item.row[column.field]);
       return isFinite(value) ? value : null;
     };
+    if (column.cell) return;
     column.cell = (item) =>
       el("td", { class: "availability-cell", text: fmtNum(item.row[column.field], column.digits) });
   });
@@ -1364,16 +1390,14 @@
     return value === null || value === undefined || value === "";
   }
 
-  function sortDetailRows(items, sort) {
-    // Array.prototype.sort is stable, so seeding with the chart's own order
-    // makes it the tie-break for every column without any column saying so.
-    const natural = items
-      .slice()
-      .sort((a, b) => a.assetIndex - b.assetIndex || a.monthIndex - b.monthIndex);
-    const column = sort && sort.key ? DETAIL_COLUMNS.find((c) => c.key === sort.key) : null;
-    if (!column) return natural;
+  // Sorts a list that is already in its natural order. Array.prototype.sort is
+  // stable, so that order becomes the tie-break for every column without any
+  // column having to say so.
+  function sortRows(items, sort, columns) {
+    const column = sort && sort.key ? columns.find((c) => c.key === sort.key) : null;
+    if (!column) return items.slice();
     const dir = sort.dir === "desc" ? -1 : 1;
-    return natural.sort((a, b) => {
+    return items.slice().sort((a, b) => {
       const left = column.sort(a);
       const right = column.sort(b);
       // Blanks sort last in both directions. A month with no availability at all
@@ -1386,6 +1410,15 @@
       if (typeof left === "number" && typeof right === "number") return dir * (left - right);
       return dir * String(left).localeCompare(String(right), undefined, { numeric: true });
     });
+  }
+
+  function sortDetailRows(items, sort) {
+    // The chart's own order -- assets as the legend names them, months left to
+    // right -- is what an unsorted table shows and what every sort falls back to.
+    const natural = items
+      .slice()
+      .sort((a, b) => a.assetIndex - b.assetIndex || a.monthIndex - b.monthIndex);
+    return sortRows(natural, sort, DETAIL_COLUMNS);
   }
 
   function detailHeadCell(column, sort, onSort) {
@@ -1424,6 +1457,14 @@
       // Only on the first render: a sort or a filter should not yank the reader
       // back to the bar they started from.
       scrollToFocus: Boolean(focus),
+      // Which of the two tables is showing. The summary opens first even when a
+      // bar was clicked: a month is only unusual next to its neighbours, so the
+      // shape of the group is what to read before the records behind one cell.
+      view: "summary",
+      wo: emptyWorkOrderState(),
+      // Set only by a view switch, which moves focus somewhere the control that
+      // asked for it no longer exists. Null every other render.
+      focusAfterRender: null,
     };
     // The tooltip is a viewport-positioned node describing a chart that is about
     // to be covered up.
@@ -1503,26 +1544,638 @@
     }
   }
 
-  function renderAvailabilityDetail() {
+  // ---- availability drill-down: the work orders behind one bar -------------
+  // The summary table explains a bar in terms of hours. This explains those
+  // hours in terms of the records they were added up from -- which work order,
+  // on which machine, opened when, and how much of its downtime this particular
+  // bar was charged.
+  //
+  // Fetched a bar at a time rather than shipped with the chart: the card draws
+  // several hundred asset-months and each one's work orders carry a name, a
+  // description and completion notes, which is far more payload than the
+  // numbers they explain.
+
+  const WORK_ORDER_API = `${AVAILABILITY_API}/work-orders`;
+
+  function emptyWorkOrderState() {
+    return {
+      assetNumber: null,
+      month: null,
+      // The (asset, month, generated_at) the loaded rows belong to. Holding the
+      // dashboard's timestamp too means a recompute underneath the dialog --
+      // an OT edit on the card behind it, a changed month window -- re-pulls
+      // rather than leaving figures that no longer match the chart.
+      key: "",
+      data: null,
+      error: "",
+      loading: false,
+      sort: { key: null, dir: "asc" },
+      token: 0,
+    };
+  }
+
+  // Stamps arrive as plant-local wall-clock times that the server has already
+  // converted, so they are formatted by slicing the string. Handing them to
+  // Date would re-interpret them in the browser's timezone, which moves a work
+  // order created near midnight onto the wrong day -- and the created day is
+  // what decides which month's bar it lands in.
+  function fmtStamp(iso) {
+    if (!iso) return "—";
+    const [day, time] = String(iso).split("T");
+    return time ? `${day} ${time.slice(0, 5)}` : day;
+  }
+
+  function roundTo(value, digits) {
+    return Number(Number(value || 0).toFixed(digits));
+  }
+
+  // How many decimals the hours columns need before the rows, as displayed,
+  // still reach the totals the header states.
+  //
+  // Downtime is recorded in minutes, so an hours column routinely holds thirds
+  // of a hundredth: three one-minute orders are 0.0167 h each, which at two
+  // decimals renders as three 0.02s beneath a total of 0.05. Two decimals is
+  // the right granularity for hours on a plant floor and stays the default, but
+  // a column that visibly refuses to add up undermines the one thing this view
+  // promises, so it gains decimals until it does.
+  //
+  // How many it can need scales with how many rows there are, because each row
+  // contributes up to half a unit of rounding error: reconciling N rows to the
+  // header's own two decimals needs roughly 2 + log10(N) of them. Six covers
+  // ten thousand work orders in a single asset-month, which is more than the
+  // whole database holds across every asset and every year.
+  //
+  // Every subtotal has to hold, not just the combined one, because their errors
+  // can cancel: eight minute-granular direct orders can run a hundredth high
+  // while four linked ones run a hundredth low, leaving the combined figure
+  // reconciled and *both* of the breakdowns the header leads with wrong. Each
+  // group is checked against its own stat, so a precision is only accepted when
+  // all of them add up.
+  //
+  // And sometimes none of them do, at any width. Two linked orders of 734 and
+  // 397 minutes at 50% sum to exactly 9.425 h, but in binary that addition
+  // lands on 9.424999999999999, so the total rounds down to 9.42 while the rows
+  // -- rounded first, then added -- reach 9.425 and round up to 9.43. More
+  // decimals cannot cross that: the two sides sit on opposite sides of a tie.
+  // So the search reports whether it succeeded rather than returning a width
+  // that was never checked, and the caller says so plainly instead of drawing a
+  // footer that contradicts the header above it.
+  function hoursPrecision(groups) {
+    const reconciles = (digits) =>
+      groups.every((group) => {
+        const shown = group.values.reduce((sum, value) => sum + roundTo(value, digits), 0);
+        return roundTo(shown, 2) === roundTo(group.total, 2);
+      });
+    for (let digits = 2; digits <= 6; digits += 1) {
+      if (reconciles(digits)) return { digits, reconciled: true };
+    }
+    // Back to the readable default: extra decimals earn their clutter only by
+    // making the column add up, and here nothing does.
+    return { digits: 2, reconciled: false };
+  }
+
+  // Limble's own task type. Not the same thing as the app's classification and
+  // frequently at odds with it -- the workbook's belief that "type 4 is a PM"
+  // is what made it drop 2,410 rows of real repairs (design doc §2.1). Both are
+  // shown, and neither filters anything, so a reader auditing a counted row can
+  // see exactly what each system called it.
+  const LIMBLE_TYPES = {
+    1: "PM",
+    2: "Request template",
+    4: "Project / misc repair",
+    6: "Work request",
+    7: "Parts alert",
+  };
+
+  const WORK_ORDER_COLUMNS = [
+    {
+      key: "wo",
+      label: "WO",
+      // The number to paste into Limble, so it leads.
+      sort: (item) => item.wo.task_id,
+      cell: (item) =>
+        el("td", { class: "availability-wo-id", text: item.wo.task_id || "—" }),
+    },
+    {
+      key: "name",
+      label: "Work order",
+      sort: (item) => item.wo.task_name || item.wo.description,
+      cell: (item) =>
+        el("td", { class: "availability-wo-name" }, [
+          el("span", { text: item.wo.task_name || "(unnamed)" }),
+          item.wo.description
+            ? el("span", { class: "availability-detail-sub", text: item.wo.description })
+            : null,
+        ]),
+    },
+    {
+      key: "asset",
+      label: "Asset",
+      sort: (item) => `${item.wo.source === "direct" ? 0 : 1}${item.assetLabel}`,
+      // A linked row is a work order on a *different* machine that this bar was
+      // charged a share of, which reads as a mistake unless the row says so
+      // itself. See the design doc §2.4.
+      cell: (item) =>
+        el("td", { class: "availability-wo-asset" }, [
+          el("span", { text: item.assetLabel }),
+          item.wo.source === "linked"
+            ? el("span", {
+                class: "availability-detail-flag is-linked",
+                text: `linked · ${(item.wo.impact_factor * 100).toFixed(0)}%`,
+              })
+            : null,
+        ]),
+    },
+    {
+      key: "created",
+      label: "Created",
+      sort: (item) => item.wo.created,
+      cell: (item) =>
+        el("td", { class: "availability-wo-when" }, [
+          el("span", { text: fmtStamp(item.wo.created) }),
+          item.wo.crosses_month
+            ? el("span", {
+                class: "availability-detail-flag is-overlap",
+                text: "crosses month end",
+                title:
+                  "Downtime is charged to the month the work order was created, " +
+                  "so all of this one's hours land here.",
+              })
+            : null,
+        ]),
+    },
+    {
+      key: "completed",
+      label: "Completed",
+      sort: (item) => item.wo.completed,
+      cell: (item) => el("td", { class: "availability-wo-when", text: fmtStamp(item.wo.completed) }),
+    },
+    {
+      key: "downtime",
+      label: "Downtime (h)",
+      numeric: true,
+      sort: (item) => item.wo.downtime_hours,
+      cell: (item) =>
+        el("td", { class: "availability-cell", text: fmtNum(item.wo.downtime_hours, item.digits) }),
+    },
+    {
+      key: "counted",
+      label: "Counted here (h)",
+      numeric: true,
+      // Not the same number as the column before it whenever the row is linked
+      // or its downtime was recorded negative, which is exactly the arithmetic
+      // this view exists to make visible.
+      sort: (item) => item.wo.counted_hours,
+      cell: (item) => {
+        const attrs = { class: "availability-cell availability-wo-counted" };
+        if (!item.wo.counted_hours) attrs.class += " is-quiet";
+        attrs.text = fmtNum(item.wo.counted_hours, item.digits);
+        if (item.wo.counted_hours !== item.wo.downtime_hours) {
+          attrs.title =
+            item.wo.source === "linked"
+              ? `${fmtNum(item.wo.downtime_hours, item.digits)} h on ${item.assetLabel} × ` +
+                `${item.wo.impact_factor} impact factor`
+              : "Negative downtime counts as zero.";
+        }
+        return el("td", attrs);
+      },
+    },
+    {
+      key: "type",
+      label: "Type",
+      sort: (item) => item.wo.type_raw,
+      cell: (item) => {
+        const raw = item.wo.type_raw;
+        if (!raw) return el("td", {}, [el("span", { class: "availability-detail-quiet", text: "—" })]);
+        const label = LIMBLE_TYPES[raw];
+        return el("td", {}, [
+          el("span", { text: label || `Type ${raw}` }),
+          // The bare number is what Limble itself shows, so it stays reachable
+          // for anyone comparing this row against the source system.
+          label ? el("span", { class: "availability-detail-sub", text: `Limble type ${raw}` }) : null,
+        ]);
+      },
+    },
+    {
+      key: "status",
+      label: "Status",
+      sort: (item) => item.wo.status,
+      cell: (item) => {
+        // Shown because a reader will ask what kind of work order this was;
+        // nothing here filters on it, which is the whole point of §2.1.
+        // UNKNOWN is what the classifier says when it has nothing to say, so
+        // printing it only adds a column of noise to scan past.
+        const cls = item.wo.record_class === "UNKNOWN" ? "" : item.wo.record_class;
+        return el("td", {}, [
+          el("span", { text: item.wo.status || "—" }),
+          cls ? el("span", { class: "availability-detail-sub", text: cls }) : null,
+        ]);
+      },
+    },
+    {
+      key: "notes",
+      label: "Completion notes",
+      sort: (item) => item.wo.completion_notes,
+      cell: (item) =>
+        el("td", { class: "availability-detail-notes" }, [
+          item.wo.completion_notes
+            ? el("span", { text: item.wo.completion_notes })
+            : el("span", { class: "availability-detail-quiet", text: "—" }),
+        ]),
+    },
+  ];
+
+  // Which bar the work-order view is showing, falling back through the reasons
+  // a reader would have opened it. A stored target is re-checked every render
+  // because a refresh can drop the asset out of the group or the month out of
+  // the window underneath an open dialog.
+  function workOrderTarget(group, data, detail) {
+    const months = data.months || [];
+    const assets = group.assets || [];
+    const valid = (asset, month) =>
+      Boolean(asset) &&
+      Boolean(month) &&
+      assets.some((a) => a.asset_number === asset) &&
+      months.indexOf(month) >= 0;
+
+    const wo = detail.wo;
+    if (valid(wo.assetNumber, wo.month)) return { assetNumber: wo.assetNumber, month: wo.month };
+    const focus = detail.focus;
+    if (focus && valid(focus.asset_number, focus.month)) {
+      return { assetNumber: focus.asset_number, month: focus.month };
+    }
+    // Opened from "View data" rather than from a bar, so nothing has been
+    // pointed at yet. Start on the group's weakest asset-month: it is the row
+    // the summary's own sort defaults treat as the one worth reading first.
+    let worst = null;
+    (group.rows || []).forEach((row) => {
+      if (!valid(row.asset_number, row.month)) return;
+      if (row.availability === null || row.availability === undefined) return;
+      if (
+        !worst ||
+        row.availability < worst.availability ||
+        (row.availability === worst.availability &&
+          row.adjusted_downtime_hours > worst.adjusted_downtime_hours)
+      ) {
+        worst = row;
+      }
+    });
+    if (worst) return { assetNumber: worst.asset_number, month: worst.month };
+    return {
+      assetNumber: assets.length ? assets[0].asset_number : null,
+      month: months.length ? months[months.length - 1] : null,
+    };
+  }
+
+  async function loadWorkOrders(assetGroup, target, key) {
     const detail = state.availabilityDetail;
     if (!detail) return;
-    const data = state.availability;
-    const group = data ? availabilityGroup(detail.assetGroup) : null;
-    // A refresh can drop the group out from under an open modal -- its assets
-    // get unconfigured, or a shorter window no longer reaches its data. Close
-    // rather than leave a dialog describing a chart that is no longer there.
-    if (!group) {
-      closeAvailabilityDetail();
-      return;
+    const wo = detail.wo;
+    const token = (wo.token += 1);
+    // Claimed before the request goes out, so the render this returns to does
+    // not read the state as still needing a fetch and start another one.
+    wo.key = key;
+    wo.loading = true;
+    wo.error = "";
+    try {
+      const params = new URLSearchParams({
+        asset_group: assetGroup,
+        asset_number: target.assetNumber,
+        month: target.month,
+      });
+      const payload = await getJson(`${WORK_ORDER_API}?${params.toString()}`);
+      if (token !== wo.token) return;
+      wo.data = payload;
+    } catch (err) {
+      if (token !== wo.token) return;
+      wo.data = null;
+      wo.error = err.message || "Could not load the work orders behind this bar.";
+    } finally {
+      // A newer request has taken over, or the dialog closed while this one was
+      // in flight; either way this response is no longer what is on screen.
+      if (token === wo.token && state.availabilityDetail === detail) {
+        wo.loading = false;
+        if (detail.view === "work-orders") renderAvailabilityDetail();
+      }
+    }
+  }
+
+  // Switch the open dialog to the work orders behind one asset-month.
+  function showWorkOrders(assetNumber, month) {
+    const detail = state.availabilityDetail;
+    if (!detail) return;
+    const switching = detail.view !== "work-orders";
+    detail.view = "work-orders";
+    detail.wo.assetNumber = assetNumber;
+    detail.wo.month = month;
+    // Arriving from a count in the summary table, whose button is about to stop
+    // existing. Land on the view switch rather than falling back to the dialog
+    // itself, so a keyboard reader is told which view they are now in and can
+    // step straight back.
+    if (switching) detail.focusAfterRender = "view:work-orders";
+    renderAvailabilityDetail();
+  }
+
+  function workOrderPicker(label, focusId, options, value, onPick) {
+    const select = el("select", { class: "availability-wo-select", "data-focus-id": focusId });
+    options.forEach((option) => {
+      const node = el("option", { value: option.value, text: option.label });
+      if (option.value === value) node.selected = true;
+      select.appendChild(node);
+    });
+    select.addEventListener("change", () => onPick(select.value));
+    return el("label", { class: "availability-wo-picker" }, [
+      el("span", { class: "eyebrow", text: label }),
+      select,
+    ]);
+  }
+
+  function workOrderStat(label, value, extra) {
+    return el("div", { class: `availability-wo-stat${extra ? " " + extra : ""}` }, [
+      el("span", { class: "eyebrow", text: label }),
+      el("span", { class: "availability-wo-stat-value", text: value }),
+    ]);
+  }
+
+  // The bar restated as the sum it is, so the rows underneath can be checked
+  // against it: direct plus linked is the downtime, measured against the
+  // scheduled hours, giving the percentage the chart drew.
+  function workOrderSummary(payload, precision) {
+    const stats = [
+      workOrderStat("Direct", `${fmtNum(payload.direct_downtime_hours, 2)} h`),
+      workOrderStat("Linked", `${fmtNum(payload.linked_downtime_hours, 2)} h`),
+      workOrderStat("Total downtime", `${fmtNum(payload.adjusted_downtime_hours, 2)} h`, "is-total"),
+      workOrderStat("Scheduled", `${fmtNum(payload.adjusted_scheduled_hours, 1)} h`),
+      workOrderStat(
+        "Availability",
+        payload.availability === null || payload.availability === undefined
+          ? "—"
+          : `${(payload.availability * 100).toFixed(2)}%`,
+        payload.flagged ? "is-flagged" : ""
+      ),
+      workOrderStat("Goal", `${((payload.goal ?? 0.95) * 100).toFixed(2)}%`),
+    ];
+    const children = [el("div", { class: "availability-wo-stats" }, stats)];
+
+    if (payload.flagged) {
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat",
+          text:
+            `Downtime exceeded the scheduled hours, so the bar was clamped to 0%. ` +
+            `The rows below still add up to ${fmtNum(payload.adjusted_downtime_hours, 2)} h.`,
+        })
+      );
+    }
+    if ((payload.linked_assets || []).length) {
+      const named = payload.linked_assets
+        .map((a) => `${a.display_name} (${(a.impact_factor * 100).toFixed(0)}%)`)
+        .join(", ");
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat",
+          text:
+            `Linked hours are a share of another machine's downtime, charged here ` +
+            `by the coupling rules: ${named}. Those rows are marked "linked".`,
+        })
+      );
+    }
+    if (payload.manual_ot_hours > 0) {
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat",
+          text:
+            `Scheduled hours include ${fmtNum(payload.manual_ot_hours, 1)} h of manual ` +
+            `overtime on top of ${fmtNum(payload.scheduled_hours, 1)} h of weekday shifts.`,
+        })
+      );
+    }
+    // Said out loud rather than papered over. This month's hours fall either
+    // side of a rounding boundary, so no column width makes the rows add to the
+    // figures above them; the totals stay authoritative and the reader is told
+    // why their own addition may land a hundredth away.
+    if (precision && !precision.reconciled) {
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat is-warn",
+          text:
+            "These hours sit on a rounding boundary, so adding the rows below by hand " +
+            "can come out a hundredth away from the totals above. The totals are the " +
+            "computed figures and are what the chart drew.",
+        })
+      );
+    }
+    return el("div", { class: "availability-wo-summary" }, children);
+  }
+
+  function workOrderEmptyText(payload) {
+    // Distinguishing these two matters: one is a machine with a clean month and
+    // the other is a machine nobody wrote anything down about, and both draw the
+    // same 100% bar.
+    if ((payload.linked_assets || []).length) {
+      return (
+        `No work orders were created for ${payload.display_name} in ${payload.month_label}, ` +
+        `and none of its linked assets carried any either. An availability of 100% here ` +
+        `means nothing was recorded, not that nothing broke.`
+      );
+    }
+    return (
+      `No work orders were created for ${payload.display_name} in ${payload.month_label}. ` +
+      `An availability of 100% here means nothing was recorded, not that nothing broke.`
+    );
+  }
+
+  function renderWorkOrderBody(group, data, detail) {
+    const wo = detail.wo;
+    const target = workOrderTarget(group, data, detail);
+    wo.assetNumber = target.assetNumber;
+    wo.month = target.month;
+
+    const months = data.months || [];
+    const labels = group.month_labels || [];
+    const children = [];
+
+    if (target.assetNumber && target.month) {
+      children.push(
+        el("div", { class: "availability-wo-controls" }, [
+          workOrderPicker(
+            "Asset",
+            "wo-asset",
+            (group.assets || []).map((asset) => ({
+              value: asset.asset_number,
+              label:
+                asset.display_name && asset.display_name !== asset.asset_number
+                  ? `${asset.display_name} · ${asset.asset_number}`
+                  : asset.asset_number,
+            })),
+            target.assetNumber,
+            (value) => showWorkOrders(value, wo.month)
+          ),
+          workOrderPicker(
+            "Month",
+            "wo-month",
+            months.map((month, index) => ({ value: month, label: labels[index] || month })),
+            target.month,
+            (value) => showWorkOrders(wo.assetNumber, value)
+          ),
+        ])
+      );
+
+      // Kicked off from the render rather than from the click, so the same path
+      // covers opening the view, changing the picker, and a recompute landing
+      // underneath the dialog.
+      const key = `${target.assetNumber}|${target.month}|${data.generated_at || ""}`;
+      if (wo.key !== key) loadWorkOrders(detail.assetGroup, target, key);
     }
 
-    const items = availabilityDetailRows(group, data);
+    if (wo.error) {
+      children.push(
+        el("div", { class: "metrics-empty" }, [
+          el("p", { text: wo.error }),
+          el("button", {
+            type: "button",
+            class: "btn-secondary",
+            "data-focus-id": "wo-retry",
+            text: "Try again",
+            onclick: () => {
+              wo.key = "";
+              wo.error = "";
+              renderAvailabilityDetail();
+            },
+          }),
+        ])
+      );
+      return { children, scroll: null };
+    }
+
+    const payload = wo.data;
+    // Rows from the previously selected bar are worse than none: they would sit
+    // under the new bar's heading and read as its evidence.
+    const stale = payload && (payload.asset_number !== target.assetNumber || payload.month !== target.month);
+    if (!payload || stale) {
+      children.push(
+        el("p", {
+          class: "metrics-empty",
+          role: "status",
+          text: wo.loading ? "Loading the work orders behind this bar…" : "Select an asset and month.",
+        })
+      );
+      return { children, scroll: null };
+    }
+
+    // One precision for the whole table, chosen from the rows it is about to
+    // draw, so every hours cell in it is directly comparable with every other --
+    // and checked against each of the three figures the header leads with, not
+    // only their sum.
+    const entries = payload.work_orders || [];
+    const countedFrom = (source) =>
+      entries.filter((entry) => entry.source === source).map((entry) => entry.counted_hours);
+    const precision = hoursPrecision([
+      { values: countedFrom("direct"), total: payload.direct_downtime_hours },
+      { values: countedFrom("linked"), total: payload.linked_downtime_hours },
+      { values: entries.map((entry) => entry.counted_hours), total: payload.adjusted_downtime_hours },
+    ]);
+    const digits = precision.digits;
+
+    children.push(workOrderSummary(payload, precision));
+
+    const rows = (payload.work_orders || []).map((entry, index) => ({
+      key: `${entry.source}|${entry.asset_number}|${entry.task_id}|${index}`,
+      wo: entry,
+      digits,
+      assetLabel:
+        entry.asset_number === payload.asset_number
+          ? payload.display_name || entry.asset_number
+          : (payload.linked_assets || []).reduce(
+              (name, linked) => (linked.asset_number === entry.asset_number ? linked.display_name : name),
+              entry.asset_number
+            ),
+    }));
+
+    if (!rows.length) {
+      children.push(el("p", { class: "metrics-empty", text: workOrderEmptyText(payload) }));
+      return { children, scroll: null };
+    }
+
+    const onSort = (key) => {
+      const sort = wo.sort;
+      if (sort.key === key) sort.dir = sort.dir === "asc" ? "desc" : "asc";
+      else {
+        sort.key = key;
+        // The hours columns open on their largest value -- the biggest
+        // contributor is the reason this list was opened -- and everything else
+        // reads naturally from the top.
+        sort.dir = key === "downtime" || key === "counted" ? "desc" : "asc";
+      }
+      renderAvailabilityDetail();
+    };
+
+    const shown = sortRows(rows, wo.sort, WORK_ORDER_COLUMNS);
+    const head = el(
+      "tr",
+      {},
+      WORK_ORDER_COLUMNS.map((column) => detailHeadCell(column, wo.sort, onSort))
+    );
+    const body = shown.map((item) =>
+      el(
+        "tr",
+        { class: `availability-wo-row is-${item.wo.source}` },
+        WORK_ORDER_COLUMNS.map((column) => column.cell(item))
+      )
+    );
+
+    // Normally the sum of the values as *displayed*, not of the values
+    // underneath them, so the figure at the foot of the column is the one a
+    // reader adding the column up arrives at. It is the bar, restated by the
+    // rows that made it.
+    //
+    // When no precision could reconcile the two, the header's own figure wins
+    // instead. A footer disagreeing with the stat directly above it is a dialog
+    // contradicting itself, which is worse than a hand-sum landing a hundredth
+    // out -- and the summary says which is happening.
+    const countedTotal = precision.reconciled
+      ? shown.reduce((sum, item) => sum + roundTo(item.wo.counted_hours, digits), 0)
+      : payload.adjusted_downtime_hours;
+    const totals = el(
+      "tr",
+      { class: "availability-wo-total" },
+      WORK_ORDER_COLUMNS.map((column) => {
+        if (column.key === "wo") return el("td", { text: "Total counted" });
+        if (column.key === "counted") {
+          return el("td", { class: "availability-cell", text: fmtNum(countedTotal, digits) });
+        }
+        return el("td", {});
+      })
+    );
+
+    const scroll = el("div", { class: "metrics-table-scroll", "data-focus-id": "wo-rows" }, [
+      el("table", { class: "metrics-table availability-detail-table availability-wo-table" }, [
+        el("thead", {}, [head]),
+        el("tbody", {}, body),
+        el("tfoot", {}, [totals]),
+      ]),
+    ]);
+
+    const counted = payload.work_orders.filter((entry) => entry.counted_hours > 0).length;
+    children.push(
+      el("div", { class: "metrics-modal-toolbar" }, [
+        el("p", {
+          class: "metrics-hint",
+          text:
+            `${rows.length} work order(s) · ${counted} carrying downtime · ` +
+            "click a column heading to sort",
+        }),
+      ]),
+      scroll
+    );
+    return { children, scroll };
+  }
+
+  // The group's asset-months, one row each -- the view the dialog opens on.
+  function renderSummaryBody(group, detail, items, focusKey, rerender) {
     const shown = sortDetailRows(detail.attentionOnly ? items.filter((i) => i.attention) : items, detail.sort);
-    const focusKey = detail.focus ? `${detail.focus.asset_number}|${detail.focus.month}` : null;
-    const focused = focusKey ? items.find((item) => item.key === focusKey) : null;
     const attentionCount = items.filter((item) => item.attention).length;
 
-    const rerender = () => renderAvailabilityDetail();
     const onSort = (key) => {
       const sort = detail.sort;
       // Re-clicking the active column flips it; a new column starts ascending,
@@ -1536,17 +2189,6 @@
       }
       rerender();
     };
-
-    const title = `${group.asset_group} — the rows behind the chart`;
-    const closeButton = el("button", {
-      type: "button",
-      class: "metrics-modal-close",
-      "data-focus-id": "close",
-      "aria-label": "Close the data table",
-      title: "Close (Esc)",
-      text: "×",
-      onclick: closeAvailabilityDetail,
-    });
 
     const attentionToggle = el("input", { type: "checkbox", "data-focus-id": "attention" });
     attentionToggle.checked = detail.attentionOnly;
@@ -1594,6 +2236,89 @@
       ]),
     ]);
 
+    const toolbar = el("div", { class: "metrics-modal-toolbar" }, [
+      el("label", { class: "metrics-modal-check" }, [
+        attentionToggle,
+        el("span", {
+          text: attentionCount
+            ? `Only rows needing attention (${attentionCount})`
+            : "Only rows needing attention (none)",
+        }),
+      ]),
+      el("p", {
+        class: "metrics-hint",
+        text:
+          `Showing ${shown.length} of ${items.length} row(s) · click a column heading to sort · ` +
+          "click a work-order count to list them",
+      }),
+    ]);
+
+    return { children: [toolbar, scroll], scroll };
+  }
+
+  function renderAvailabilityDetail() {
+    const detail = state.availabilityDetail;
+    if (!detail) return;
+    const data = state.availability;
+    const group = data ? availabilityGroup(detail.assetGroup) : null;
+    // A refresh can drop the group out from under an open modal -- its assets
+    // get unconfigured, or a shorter window no longer reaches its data. Close
+    // rather than leave a dialog describing a chart that is no longer there.
+    if (!group) {
+      closeAvailabilityDetail();
+      return;
+    }
+
+    const items = availabilityDetailRows(group, data);
+    const focusKey = detail.focus ? `${detail.focus.asset_number}|${detail.focus.month}` : null;
+    const focused = focusKey ? items.find((item) => item.key === focusKey) : null;
+
+    const rerender = () => renderAvailabilityDetail();
+    const workOrders = detail.view === "work-orders";
+    const view = workOrders
+      ? renderWorkOrderBody(group, data, detail)
+      : renderSummaryBody(group, detail, items, focusKey, rerender);
+
+    const title = `${group.asset_group} — the rows behind the chart`;
+    const closeButton = el("button", {
+      type: "button",
+      class: "metrics-modal-close",
+      "data-focus-id": "close",
+      "aria-label": "Close the data table",
+      title: "Close (Esc)",
+      text: "×",
+      onclick: closeAvailabilityDetail,
+    });
+
+    // Two readings of the same chart, one level of detail apart: the months and
+    // machines a bar sits among, and the individual records its hours were added
+    // up from. Plain buttons rather than ARIA tabs -- aria-pressed describes what
+    // these actually are, and a tablist would owe the reader arrow-key
+    // navigation and a roving tabindex that nothing else on the page has.
+    const viewSwitch = el(
+      "div",
+      { class: "metrics-modal-views", role: "group", "aria-label": "Choose a view" },
+      [
+        ["summary", "Monthly summary", "Availability by asset and month, for the whole group"],
+        ["work-orders", "Work orders", "The individual work orders behind one asset-month"],
+      ].map(([key, label, hint]) => {
+        const active = detail.view === key;
+        return el("button", {
+          type: "button",
+          class: "metrics-modal-view" + (active ? " is-active" : ""),
+          "data-focus-id": `view:${key}`,
+          "aria-pressed": active ? "true" : "false",
+          title: hint,
+          text: label,
+          onclick: () => {
+            if (detail.view === key) return;
+            detail.view = key;
+            rerender();
+          },
+        });
+      })
+    );
+
     const monthSpan = (group.month_labels || []).length;
     const dialog = el(
       "div",
@@ -1628,23 +2353,10 @@
           ]),
           closeButton,
         ]),
-        el("div", { class: "metrics-modal-toolbar" }, [
-          el("label", { class: "metrics-modal-check" }, [
-            attentionToggle,
-            el("span", {
-              text: attentionCount
-                ? `Only rows needing attention (${attentionCount})`
-                : "Only rows needing attention (none)",
-            }),
-          ]),
-          el("p", {
-            class: "metrics-hint",
-            text: `Showing ${shown.length} of ${items.length} row(s) · click a column heading to sort`,
-          }),
-        ]),
-        scroll,
-      ]
+        viewSwitch,
+      ].concat(view.children)
     );
+    const scroll = view.scroll;
 
     const backdrop = el("div", { class: "metrics-modal-backdrop" }, [dialog]);
     backdrop.addEventListener("mousedown", (event) => {
@@ -1666,15 +2378,28 @@
     detailNode = backdrop;
 
     // Before focus is restored: the rows region is only focusable once this has
-    // given it a tab stop.
-    markScrollRegion(scroll, `${group.asset_group} availability data`);
+    // given it a tab stop. A view showing a message rather than a table has no
+    // region to mark.
+    if (scroll) {
+      markScrollRegion(
+        scroll,
+        workOrders
+          ? `${group.asset_group} work orders`
+          : `${group.asset_group} availability data`
+      );
+    }
 
     if (first) {
       document.body.classList.add("metrics-modal-open");
       document.addEventListener("keydown", onDetailKeydown, true);
       dialog.focus();
     } else {
-      const target = focusId ? dialog.querySelector(`[data-focus-id="${focusId}"]`) : null;
+      // A view switch names where focus should land, because the control that
+      // asked for it is not in the new view; every other render just puts it
+      // back where it was.
+      const wanted = detail.focusAfterRender || focusId;
+      detail.focusAfterRender = null;
+      const target = wanted ? dialog.querySelector(`[data-focus-id="${wanted}"]`) : null;
       if (target) target.focus();
       // Checked rather than predicted, because a control can be present and
       // still refuse focus: unchecking the attention filter when a refresh has
@@ -1686,7 +2411,7 @@
       if (!dialog.contains(document.activeElement)) dialog.focus();
     }
 
-    if (detail.scrollToFocus) {
+    if (detail.scrollToFocus && scroll) {
       detail.scrollToFocus = false;
       const row = dialog.querySelector(".availability-detail-row.is-focused");
       if (row) {
@@ -1943,7 +2668,7 @@
             class: "metrics-hint",
             text:
               `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day · ` +
-              "click a bar to open the rows behind it",
+              "click a bar to open the rows behind it, and the work orders behind those",
           }),
           el("div", { class: "metrics-chart-wrap" }, [canvas]),
           renderAvailabilityTable(group, data),

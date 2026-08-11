@@ -363,11 +363,113 @@ Group ids are copied, so those references survive.
 
 ```
 GET  /metrics/api/availability                  → groups, months, series, goals, flags, basis
+GET  /metrics/api/availability/work-orders      → ?asset_group&asset_number&month; the records
+                                                  behind one bar, and the totals they sum to
 GET  /metrics/api/availability/config           → schedule, membership, names, rules
 PUT  /metrics/api/availability/config/group/<g> → schedule edit
 PUT  /metrics/api/availability/goal             → {group, month, percent}
 PUT  /metrics/api/availability/ot               → {asset, month, hours}
 ```
+
+### 5.1 Drilling from a bar to the work orders behind it
+
+Clicking a bar opens the group's asset-months (§5 above). That table explains a
+bar in hours; a second view inside the same dialog explains those hours in
+records — which work order, on which machine, opened when, and how much of its
+downtime *this* bar was charged.
+
+Loaded per bar rather than shipped with the chart. The card draws several
+hundred asset-months, and each one's work orders carry a name, a description and
+completion notes; that is far more payload than the numbers it explains, on a
+request that already runs on every page view. `load_work_order_details` is
+therefore a second loader beside `load_work_orders`, selecting a wider column
+list for one asset-month at a time.
+
+Three properties make the view worth trusting, and each is a test:
+
+- **The rows sum to the bar.** `work_order_contributions` repeats the
+  calculator's arithmetic rather than approximating it: `max(0, downtime)` for
+  direct orders, times the rule's impact factor for linked ones, bucketed by
+  created month. Direct rows total `direct_downtime_hours` and linked rows
+  total `linked_downtime_hours`. The header restates the bar as that sum, so
+  the two are checkable against each other on screen.
+
+  That has to survive rounding, which is not free. Downtime is recorded in
+  minutes, so an hours column routinely holds thirds of a hundredth — three
+  one-minute orders are 0.0166… h each and 0.05 h together, and at two decimals
+  they render as three 0.02s beneath a total of 0.05. The table therefore
+  chooses its precision from the rows it is about to draw, taking the fewest
+  decimals at which they still reach the stated total, and carries a footer
+  total that sums the values *as displayed*. Two decimals stays the common case.
+
+  How many decimals that can need scales with the row count, since each row
+  contributes up to half a unit of rounding error: reconciling N rows to the
+  header's own two decimals takes roughly `2 + log10(N)`. The search therefore
+  runs to six, which covers ten thousand work orders in one asset-month — more
+  than the whole database holds across every asset and every year.
+
+  The precision is checked against **each** of the three figures the header
+  leads with — Direct, Linked and their total — not only the combined one,
+  because the errors cancel. Eight minute-granular direct orders can run a
+  hundredth high while four linked ones run a hundredth low, which leaves the
+  combined figure reconciled and both breakdowns wrong; those breakdowns are
+  the explanation this view exists to give, so a precision is accepted only
+  when all three add up.
+
+  Sometimes none does, at any width, and the view says so rather than pretending
+  otherwise. Two linked orders of 734 and 397 minutes at 50% sum to exactly
+  9.425 h, but that addition lands on 9.424999999999999 in binary — so the total
+  rounds down to 9.42 while the rows, rounded first and added second, reach
+  9.425 and round up to 9.43. The two sit on opposite sides of a tie and no
+  number of decimals crosses it. When the search fails, the table returns to two
+  decimals, the footer shows the header's own figure rather than the sum of what
+  is displayed, and a caution explains that hand-adding the rows can land a
+  hundredth away. **The invariant is that the footer never contradicts the stat
+  above it** — a dialog disagreeing with itself is worse than an arithmetic
+  residual, and a fallback that is never checked is worse than both.
+
+  All of that requires **one** rounding rule, which means the client's. Python
+  rounds ties to even and JavaScript rounds them away from zero, so a linked
+  contribution of `9.25 × 0.5 = 4.625 h` serializes as `4.62` from Python and
+  renders as `4.63` in the browser — a common shape here, since a quarter-hour
+  halved by an impact factor lands on a half-cent every time. Pre-rounding on
+  the server leaves the client checking its own arithmetic against a number
+  produced by the other rule, which no display precision can reconcile: the
+  search exhausts itself and falls through to its fallback still mismatched.
+  Downtime figures are therefore serialized unrounded from *both* builders, so
+  the summary table and the drill-down cannot disagree about the same number
+  either. Scheduled hours keep their rounding — nothing is summed against them,
+  and one of them feeds an editable input where a float artefact would show. And
+  the
+  work-order hours are serialized **unrounded**, unlike the asset-month figures
+  beside them: rounding on the wire puts a floor under the whole scheme, since
+  at four decimals 200 one-minute orders can only be added back up to 3.34 h
+  against a true 3.33 h and no display precision recovers it. Rounding is the
+  reader's business, so it happens where the reader is.
+- **`counted_hours` is not `downtime_hours`.** A linked order contributes its
+  share and a negative one contributes nothing, so both numbers are columns and
+  the impact factor travels on the row rather than in a footnote. Without this,
+  §2.4's asymmetric, uncapped, unmerged linked downtime reads as a bug every
+  time someone traces it.
+- **Zero-downtime orders are listed.** They are the whole evidence that an
+  asset sitting at 100% was being worked on rather than merely unlogged — the
+  distinction §3 makes with `No WO Entries Flag`, now with the records attached.
+
+The descriptive text lives on `WorkOrderDetail`, a separate type composed
+*around* `WorkOrder` rather than extending it. `WorkOrder` carries no type or
+classification field so that no future change can reintroduce the §2.1 PM
+filter in the calculator; a detail record holds `type_raw` and `record_class`
+for display and cannot be passed to `compute_rows` at all, which keeps that
+guarantee structural rather than remembered. The same rule applies to the
+loader: the drill-down filters by nothing either, because a row counted into a
+total but missing from the list that explains the total is the original bug
+wearing a disguise.
+
+The month filter is applied after localization, not in SQL. Which month a work
+order belongs to is decided on the plant's clock (§2.2), and the stored created
+dates arrive in several formats, so pushing the predicate into the query would
+move boundary-crossing orders into a different month than the chart put them
+in.
 
 Editing is split by how often a value changes and how much it moves:
 
