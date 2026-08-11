@@ -279,6 +279,29 @@ class SyncOptionsTests(unittest.TestCase):
                     SyncOptions.from_payload(payload)
                 self.assertIn(next(iter(payload)), str(caught.exception))
 
+    def test_an_option_name_that_is_not_understood_is_a_bad_request(self):
+        # Dropping it decides the request the dangerous way: {"dryrun": true} is
+        # somebody trying to avoid a writing sync, not asking for one.
+        with self.assertRaises(SyncOptionError) as caught:
+            SyncOptions.from_payload({"dryrun": True})
+        self.assertIn("dryrun", str(caught.exception))
+
+        with self.assertRaises(SyncOptionError) as caught:
+            SyncOptions.from_payload({"dry_run": True, "no_asset": True})
+        self.assertIn("no_asset", str(caught.exception))
+        # The message names what would have been accepted.
+        self.assertIn("no_assets", str(caught.exception))
+
+    def test_every_documented_option_is_accepted(self):
+        options = SyncOptions.from_payload(
+            {"dry_run": True, "no_assets": True, "no_map": True, "include_templates": True, "since": "2026-01-01"}
+        )
+        self.assertTrue(options.dry_run)
+        self.assertFalse(options.fetch_assets)
+        self.assertFalse(options.refresh_mapping)
+        self.assertTrue(options.include_templates)
+        self.assertEqual(options.since, "2026-01-01")
+
     def test_the_spellings_a_person_would_type_are_understood(self):
         self.assertTrue(SyncOptions.from_payload({"dry_run": True}).dry_run)
         self.assertTrue(SyncOptions.from_payload({"dry_run": "true"}).dry_run)
@@ -338,6 +361,41 @@ class ImportHistoryTests(unittest.TestCase):
         self.assertIsNotNone(in_flight)
         self.assertEqual(in_flight["status"], "STARTED")
         self.assertGreater(in_flight["age_seconds"], 60)
+
+    def _legacy_database(self, rows):
+        """A legacy import_batch with no status column, which the writer still supports."""
+
+        path = Path(self._tmp.name) / "legacy.db"
+        path.unlink(missing_ok=True)
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE import_batch (import_batch_id INTEGER PRIMARY KEY, "
+                "import_started_at TEXT, import_completed_at TEXT, raw_row_count INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO import_batch (import_started_at, import_completed_at, raw_row_count)"
+                " VALUES (?, ?, ?)",
+                rows,
+            )
+        return path
+
+    def test_a_completed_legacy_batch_is_not_mistaken_for_one_in_progress(self):
+        # Without a status column there is nothing to read but the timestamps.
+        # Treating a missing status as "unfinished" would warn about a sync in
+        # progress after every import, and report no last import at all.
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 300))
+        completed = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 240))
+        history = read_import_history(self._legacy_database([(started, completed, 42)]))
+
+        self.assertIsNone(history["in_flight"])
+        self.assertEqual(history["last_completed_at"], completed)
+        self.assertEqual(history["last_row_count"], 42)
+
+    def test_an_open_legacy_batch_is_still_reported_in_flight(self):
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
+        history = read_import_history(self._legacy_database([(started, None, None)]))
+        self.assertIsNotNone(history["in_flight"])
+        self.assertIsNone(history["in_flight"]["status"])
 
     def test_a_batch_left_open_by_a_crash_is_not_reported_forever(self):
         self._insert("STARTED", "2019-01-01 02:00:00", None, None)

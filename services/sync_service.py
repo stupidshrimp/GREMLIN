@@ -272,6 +272,11 @@ def parse_since(value: str | None) -> int | None:
     return int(dt.timestamp())
 
 
+# Every option this endpoint understands. Anything else in a request body is a
+# mistake worth reporting rather than dropping.
+KNOWN_OPTION_KEYS = frozenset({"dry_run", "no_assets", "no_map", "include_templates", "since"})
+
+
 @dataclass(frozen=True)
 class SyncOptions:
     """The knobs the dashboard exposes, mirroring the CLI's flags."""
@@ -289,6 +294,16 @@ class SyncOptions:
         data = payload or {}
         if not isinstance(data, dict):
             raise SyncOptionError("Sync options must be a JSON object.")
+        # An option this endpoint does not know is a misspelling of one it does,
+        # and ignoring it decides the request the dangerous way: {"dryrun": true}
+        # would run the full writing sync its author was trying to avoid. Say
+        # which name was not understood rather than acting on a guess.
+        unknown = sorted(set(data) - KNOWN_OPTION_KEYS)
+        if unknown:
+            raise SyncOptionError(
+                f"Unknown sync option(s): {', '.join(unknown)}. "
+                f"Valid options are: {', '.join(sorted(KNOWN_OPTION_KEYS))}."
+            )
         since = data.get("since")
         if since is not None and not isinstance(since, str):
             raise SyncOptionError("'Only tasks touched since' must be text.")
@@ -471,7 +486,15 @@ def read_import_history(db_path: str | Path, *, scan_limit: int = 25) -> dict[st
         started = _parse_db_timestamp(row["import_started_at"])
         completed = _parse_db_timestamp(row["import_completed_at"]) if "import_completed_at" in keys else None
 
-        if status not in _FINISHED_BATCH_STATUSES and started is not None and in_flight is None:
+        # A batch that recorded a completion time is over, whatever its status
+        # says -- and on a legacy import_batch with no status column at all (a
+        # shape RawRepository.complete_batch deliberately still writes to), that
+        # timestamp is the only signal there is. Reading a missing status as
+        # "not finished" would make every completed import on such a database
+        # look like a sync in progress for the next six hours.
+        finished = status in _FINISHED_BATCH_STATUSES or completed is not None
+
+        if not finished and started is not None and in_flight is None:
             age = (now - started).total_seconds()
             # Ignore rows a crashed run left open: reporting a months-old
             # "still running" batch would just train people to ignore the
@@ -484,7 +507,14 @@ def read_import_history(db_path: str | Path, *, scan_limit: int = 25) -> dict[st
                     "status": status or None,
                 }
 
-        if status != "COMPLETED" or started is None or completed is None or last_completed_at is not None:
+        if started is None or completed is None or last_completed_at is not None:
+            continue
+        # Prefer what the row says; fall back to its timestamps where the schema
+        # cannot say. On a table without a status column a failed import is
+        # indistinguishable from a successful one, so this can name a failure as
+        # the last completed import -- its raw_row_count of 0 tells that story,
+        # and the alternative is reporting nothing at all.
+        if status and status != "COMPLETED":
             continue
         last_completed_at = row["import_completed_at"]
         raw_count = row["raw_row_count"] if "raw_row_count" in keys else None
