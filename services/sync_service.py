@@ -219,8 +219,25 @@ def load_dotenv_files(*, force: bool = False, only_prefix: str | None = None) ->
     if only_prefix in _dotenv_loaded_scopes and not force:
         return
     _dotenv_loaded_scopes.add(only_prefix)
-    for key, value in _read_dotenv_values().items():
-        if only_prefix is not None and not key.startswith(only_prefix):
+    values = _read_dotenv_values()
+
+    def _in_scope(name: str) -> bool:
+        return only_prefix is None or name.startswith(only_prefix)
+
+    if force:
+        # Deleting a credential from .env is how an operator withdraws it, so a
+        # reload that only ever adds and replaces would keep a revoked secret in
+        # use until the process restarted -- while reporting it as configured.
+        # Owning a value means giving it up too.
+        for key in [name for name in _dotenv_applied if _in_scope(name) and name not in values]:
+            if os.environ.get(key) == _dotenv_applied[key]:
+                os.environ.pop(key, None)
+            # Either way this loader no longer owns the name: if the value has
+            # been changed since, it belongs to whoever changed it.
+            _dotenv_applied.pop(key, None)
+
+    for key, value in values.items():
+        if not _in_scope(key):
             continue
         current = os.environ.get(key)
         ours = _dotenv_applied.get(key)
@@ -276,10 +293,10 @@ class SyncOptions:
         if since is not None and not isinstance(since, str):
             raise SyncOptionError("'Only tasks touched since' must be text.")
         options = cls(
-            dry_run=_as_bool(data.get("dry_run")),
-            fetch_assets=not _as_bool(data.get("no_assets")),
-            refresh_mapping=not _as_bool(data.get("no_map")),
-            include_templates=_as_bool(data.get("include_templates")),
+            dry_run=_as_bool("dry_run", data.get("dry_run")),
+            fetch_assets=not _as_bool("no_assets", data.get("no_assets")),
+            refresh_mapping=not _as_bool("no_map", data.get("no_map")),
+            include_templates=_as_bool("include_templates", data.get("include_templates")),
             since=(since or "").strip() or None,
         )
         # Validate here, where the caller is still holding the request, so a bad
@@ -321,12 +338,35 @@ def phase_share(options: SyncOptions) -> float:
     return sum(phase.weight for phase in options.active_phases()) / _TOTAL_WEIGHT
 
 
-def _as_bool(value: Any) -> bool:
+# Spellings accepted from a hand-written request. The page sends real JSON
+# booleans; these exist so `curl -d '{"dry_run":"true"}'` behaves as its author
+# expects rather than as Python truthiness would have it.
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def _as_bool(field: str, value: Any) -> bool:
+    """Read one flag strictly, because guessing at it decides whether we write.
+
+    Truthiness is the wrong rule here. ``{"dry_run": "treu"}`` is not a request
+    for a real sync -- it is a typo by somebody who wanted a preview, and the
+    quiet reading of it writes to the database they were being careful about.
+    Anything that is not recognisably a boolean is a bad request, the same way a
+    body that does not parse is.
+    """
+
+    # Absent, or an explicit JSON null: the option was not given.
+    if value is None:
+        return False
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+        text = value.strip().lower()
+        if text in _TRUE_WORDS:
+            return True
+        if text in _FALSE_WORDS:
+            return False
+    raise SyncOptionError(f"'{field}' must be true or false; got {value!r}.")
 
 
 # ---------------------------------------------------------------------------

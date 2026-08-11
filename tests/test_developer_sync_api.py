@@ -99,6 +99,14 @@ class DeveloperSyncApiTests(unittest.TestCase):
                 # given", which would run a full writing sync.
                 self.assertEqual(self.runner.status()["state"], "idle")
 
+    def test_a_typo_in_dry_run_does_not_quietly_become_a_writing_sync(self):
+        self._unlock()
+        response = self._start(dry_run="treu")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("dry_run", response.get_json()["error"])
+        self.assertEqual(self.runner.status()["state"], "idle")
+        self.assertEqual(RawRepository(self.db_path).raw_record_count(), 0)
+
     def test_an_empty_object_is_a_valid_request_for_the_defaults(self):
         self._unlock()
         response = self.client.post("/developer/api/sync", json={})

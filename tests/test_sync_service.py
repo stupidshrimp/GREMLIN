@@ -204,6 +204,42 @@ class DotenvTests(unittest.TestCase):
         self.assertTrue(described["configured"])
         self.assertIsNone(described["detail"])
 
+    def test_a_credential_deleted_from_the_file_stops_being_used(self):
+        # Removing a secret from .env is how it is withdrawn. A loader that only
+        # adds and replaces would keep a revoked credential in use, and keep
+        # reporting it as configured, until someone restarted the process.
+        self.env_file.write_text(
+            "LIMBLE_CLIENT_ID=doomed\nLIMBLE_CLIENT_SECRET=doomed\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files()
+        self.assertTrue(sync_service.describe_credentials()["configured"])
+
+        self.env_file.write_text("LIMBLE_CLIENT_ID=doomed\n", encoding="utf-8")
+        sync_service.load_dotenv_files(force=True)
+        self.assertNotIn("LIMBLE_CLIENT_SECRET", os.environ)
+        self.assertFalse(sync_service.describe_credentials()["configured"])
+
+    def test_a_deletion_does_not_take_a_value_somebody_else_owns(self):
+        self.env_file.write_text("LIMBLE_CLIENT_SECRET=from-file\n", encoding="utf-8")
+        sync_service.load_dotenv_files()
+        # Something else in the process took ownership of the variable.
+        os.environ["LIMBLE_CLIENT_SECRET"] = "set-at-runtime"
+        self.env_file.write_text("", encoding="utf-8")
+        sync_service.load_dotenv_files(force=True)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_SECRET"], "set-at-runtime")
+
+    def test_a_deletion_stays_inside_the_scope_that_was_asked_for(self):
+        self.env_file.write_text(
+            "GREMLIN_DB_PATH=/from/dotenv/GREMLIN.db\nLIMBLE_CLIENT_ID=from-dotenv\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files()
+        self.env_file.write_text("", encoding="utf-8")
+        # The dashboard's credential-scoped reload must not evict the database
+        # path the CLI's unrestricted load applied.
+        sync_service.load_dotenv_files(force=True, only_prefix=sync_service.LIMBLE_ENV_PREFIX)
+        self.assertNotIn("LIMBLE_CLIENT_ID", os.environ)
+        self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/from/dotenv/GREMLIN.db")
+
     def test_a_value_changed_outside_the_loader_is_left_alone(self):
         self.env_file.write_text("LIMBLE_CLIENT_SECRET=from-file\n", encoding="utf-8")
         sync_service.load_dotenv_files()
@@ -233,6 +269,23 @@ class SyncOptionsTests(unittest.TestCase):
     def test_a_bad_date_is_rejected_while_the_caller_is_still_listening(self):
         with self.assertRaises(SyncOptionError):
             SyncOptions.from_payload({"since": "not-a-date"})
+
+    def test_a_flag_that_is_not_a_boolean_is_a_bad_request(self):
+        # The dangerous reading of a typo is the quiet one: "treu" is not a
+        # request for a writing sync, it is somebody asking for a preview.
+        for payload in ({"dry_run": "treu"}, {"dry_run": 1}, {"no_assets": []}, {"no_map": "maybe"}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(SyncOptionError) as caught:
+                    SyncOptions.from_payload(payload)
+                self.assertIn(next(iter(payload)), str(caught.exception))
+
+    def test_the_spellings_a_person_would_type_are_understood(self):
+        self.assertTrue(SyncOptions.from_payload({"dry_run": True}).dry_run)
+        self.assertTrue(SyncOptions.from_payload({"dry_run": "true"}).dry_run)
+        self.assertTrue(SyncOptions.from_payload({"dry_run": " Yes "}).dry_run)
+        self.assertFalse(SyncOptions.from_payload({"dry_run": "false"}).dry_run)
+        self.assertFalse(SyncOptions.from_payload({"dry_run": None}).dry_run)
+        self.assertFalse(SyncOptions.from_payload({}).dry_run)
 
     def test_skipped_phases_drop_out_of_the_plan(self):
         full = [phase.key for phase in SyncOptions().active_phases()]
