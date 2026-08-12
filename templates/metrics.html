@@ -264,7 +264,7 @@
       <div class="availability-info-note">
         <strong>Assumptions and flags</strong>
         <p>Downtime is counted in the month of the work order’s created date in the current dashboard logic. Because of this, a work order’s downtime hours can fall in a different month than the month in which the work was completed.</p>
-        <p>A work order is flagged in the data view when its completion date is in a different calendar month from its created date, or when its created date plus its downtime duration crosses a month boundary. A month is flagged when its total counted downtime, including linked downtime, exceeds its adjusted scheduled hours. When adjusted scheduled hours are positive, its availability is shown as 0%; when adjusted scheduled hours are zero, availability is undefined and shown as “—”.</p>
+        <p>A work order with positive downtime is flagged in the data view when its completion date is in a different calendar month from its created date, or when its created date plus its downtime duration crosses a month boundary. Work orders with zero or negative downtime are not flagged for crossing a month boundary. A month is flagged when its total counted downtime, including linked downtime, exceeds its adjusted scheduled hours. When adjusted scheduled hours are positive, its availability is shown as 0%; when adjusted scheduled hours are zero, availability is undefined and shown as “—”.</p>
       </div>
 
       <div class="availability-info-note">
