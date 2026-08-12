@@ -306,6 +306,38 @@ class WorkOrderDetailLoadingTests(AvailabilityTestCase):
         self.assertEqual(detail.completion_notes, "")
 
 
+class WorkOrderClassificationLoadingTests(AvailabilityTestCase):
+    """The chart breakdown stays lightweight; prose belongs to drill-down."""
+
+    def test_classification_loader_excludes_large_detail_columns(self):
+        self.add_work_order(
+            "3101", "2026-01-15 15:00:00", 4.0,
+            name="L3 down", description="large description", completionNotes="large notes",
+        )
+        with mock.patch.object(
+            self.repo, "_fetch_work_order_rows", wraps=self.repo._fetch_work_order_rows
+        ) as fetch:
+            rows = self.repo.load_work_order_classifications(["3101"], {date(2026, 1, 1)})
+
+        selected = fetch.call_args.args[1]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].record_class)
+        self.assertEqual(rows[0].task_name, "")
+        self.assertNotIn("task_name", selected)
+        self.assertNotIn("description_raw", selected)
+        self.assertNotIn("completion_notes", selected)
+        self.assertIn("record_class_final", selected)
+        self.assertIn("record_class_auto", selected)
+
+    def test_classification_loader_filters_to_chart_months_in_plant_time(self):
+        self.add_work_order("3101", "2026-02-01 03:00:00", 4.0)
+        self.add_work_order("3101", "2026-02-15 15:00:00", 2.0)
+
+        january = self.repo.load_work_order_classifications(["3101"], {date(2026, 1, 1)})
+        self.assertEqual(len(january), 1)
+        self.assertEqual(january[0].order.downtime_hours, 4.0)
+
+
 # The schema the earlier Availability Dashboard attempt left in real databases.
 # Kept verbatim rather than derived, so it stays a fixed description of what is
 # actually out there even as the current schema moves on.

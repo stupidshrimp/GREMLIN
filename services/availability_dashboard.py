@@ -182,7 +182,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
 
     # Classification never affects availability arithmetic; it only explains
     # the already-counted downtime when the reader enables stacked bars.
-    details = repository.load_work_order_details(scope)
+    details = repository.load_work_order_classifications(scope, set(window))
     details_by_month: dict[date, list] = {}
     for item in details:
         created = item.order.created_local
