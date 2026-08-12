@@ -39,6 +39,7 @@
   ];
   const AVERAGE_LINE = "#1f4d33";
   const GOAL_LINE = "#c0392b";
+  const TYPE_COLORS = ["#c0392b", "#c9a227", "#a1668f", "#7fa6c0", "#8a6d00", "#5b7f8c", "#7b8794"];
 
   const state = {
     assets: [], // [{asset_number, asset_name}]
@@ -51,6 +52,7 @@
     // the card always shows every configured group over whole months.
     availability: null,
     availabilityWindow: 5,
+    availabilityStacked: false,
     availabilityError: "",
     // A misconfiguration the page can compute around but must not hide -- kept
     // separate from availabilityError so a warning never reads as a failure,
@@ -891,10 +893,43 @@
     if (!labels.length || !assets.length) return;
 
     const highlight = options.highlight || null;
+    const stacked = Boolean(options.stacked);
+    const rowsByKey = options.rowsByKey || {};
+    const typeNames = options.typeNames || [];
 
     const left = 52;
     const right = W - 12;
-    const top = 26;
+    // Stacked bars still sit side-by-side in asset order. Asset colours are
+    // therefore retained as bar outlines and as outlined legend keys, while
+    // filled keys explain the work-order segments inside those outlines.
+    const entries = (stacked
+      ? assets
+          .map((asset, index) => ({
+            color: SERIES_COLORS[index % SERIES_COLORS.length],
+            text: asset.display_name,
+            outline: true,
+          }))
+          .concat([{ color: "#dceee4", text: "Available" }])
+          .concat(typeNames.map((name, index) => ({
+            color: TYPE_COLORS[index % TYPE_COLORS.length], text: name,
+          })))
+      : assets.map((asset, index) => ({
+        color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name,
+      })))
+      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+
+    ctx.font = "10px Inter, sans-serif";
+    let legendRows = 1;
+    let legendWidth = 0;
+    entries.forEach((entry) => {
+      const width = 14 + ctx.measureText(entry.text).width + 12;
+      if (legendWidth && legendWidth + width > right - left) {
+        legendRows += 1;
+        legendWidth = 0;
+      }
+      legendWidth += width;
+    });
+    const top = Math.max(26, 8 + legendRows * 12);
     const bottom = H - 46;
     const plotH = Math.max(1, bottom - top);
     const slot = (right - left) / labels.length;
@@ -951,8 +986,36 @@
           ctx.fillStyle = "rgba(47, 143, 91, 0.1)";
           ctx.fillRect(x, top, w, bottom - top);
         }
-        ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
-        ctx.fillRect(x, barTop, w, bottom - barTop);
+        if (stacked) {
+          // Availability occupies the lower portion and each WO class occupies
+          // its share of scheduled time above it, making the complete column
+          // read as 100%. Overrun is clamped just like the availability value.
+          ctx.fillStyle = "#dceee4";
+          ctx.fillRect(x, barTop, w, bottom - barTop);
+          const month = (options.months || [])[monthIndex];
+          const row = rowsByKey[`${asset.asset_number}|${month}`];
+          const scheduled = Number(row && row.adjusted_scheduled_hours) || 0;
+          let cursor = value;
+          typeNames.forEach((name, typeIndex) => {
+            const hours = Number(row && row.work_order_type_hours && row.work_order_type_hours[name]) || 0;
+            const fraction = scheduled > 0 ? Math.min(hours / scheduled, Math.max(0, 1 - cursor)) : 0;
+            if (fraction <= 0) return;
+            const next = cursor + fraction;
+            ctx.fillStyle = TYPE_COLORS[typeIndex % TYPE_COLORS.length];
+            ctx.fillRect(x, y(next), w, Math.max(1, y(cursor) - y(next)));
+            cursor = next;
+          });
+          // The outline identifies the asset without stealing fill colour from
+          // the WO-type percentages. This remains usable on touch devices,
+          // where the hover tooltip is not available.
+          ctx.strokeStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x + 0.5, top + 0.5, Math.max(1, w - 1), Math.max(1, bottom - top - 1));
+          ctx.lineWidth = 1;
+        } else {
+          ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+          ctx.fillRect(x, barTop, w, bottom - barTop);
+        }
         // A flagged month is one where downtime exceeded scheduled hours, so
         // the bar sits at zero. Mark it rather than let it read as "no data".
         if (asset.flagged && asset.flagged[monthIndex]) {
@@ -1016,10 +1079,8 @@
     drawLine(group.average || [], AVERAGE_LINE, false);
     drawLine(group.goal || [], GOAL_LINE, true);
 
-    // Legend across the top.
-    const entries = assets
-      .map((asset, index) => ({ color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name }))
-      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+    // Legend across the top. Outlined keys identify the side-by-side assets in
+    // stacked mode; filled keys identify the segments within each asset bar.
     ctx.font = "10px Inter, sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -1027,12 +1088,19 @@
     let ly = 10;
     entries.forEach((entry) => {
       const w = 14 + ctx.measureText(entry.text).width + 12;
-      if (lx + w > right && ly === 10) {
+      if (lx > left && lx + w > right) {
         lx = left;
-        ly = 20;
+        ly += 12;
       }
-      ctx.fillStyle = entry.color;
-      ctx.fillRect(lx, ly - 4, 9, 9);
+      if (entry.outline) {
+        ctx.strokeStyle = entry.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(lx + 0.5, ly - 3.5, 8, 8);
+        ctx.lineWidth = 1;
+      } else {
+        ctx.fillStyle = entry.color;
+        ctx.fillRect(lx, ly - 4, 9, 9);
+      }
       ctx.fillStyle = "#5e7082";
       ctx.fillText(entry.text, lx + 13, ly);
       lx += w;
@@ -1072,6 +1140,16 @@
         "Work orders",
         `${fmtNum(row.total_wo_count, 0)}` + (zero > 0 ? ` (${fmtNum(zero, 0)} with no downtime)` : ""),
       ]);
+      if (state.availabilityStacked) {
+        const scheduled = Number(row.adjusted_scheduled_hours) || 0;
+        Object.entries(row.work_order_type_hours || {})
+          .filter(([, hours]) => Number(hours) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .forEach(([name, hours]) => rows.push([
+            name,
+            `${fmtNum(hours, 1)} h${scheduled > 0 ? ` · ${(Number(hours) / scheduled * 100).toFixed(2)}%` : ""}`,
+          ]));
+      }
     }
 
     const average = (group.average || [])[hit.monthIndex];
@@ -1142,6 +1220,11 @@
     let hovered = null;
 
     const hitAt = (event) => availabilityHitAt(canvas, event);
+    const typeNames = availabilityTypeNames(data);
+    const draw = (highlight) => drawAvailabilityChart(canvas, group, {
+      height: 300, highlight, stacked: state.availabilityStacked,
+      rowsByKey: byKey, typeNames, months: data.months || [],
+    });
 
     canvas.addEventListener("mousemove", (event) => {
       const hit = hitAt(event);
@@ -1151,7 +1234,7 @@
       if (!hit) {
         if (hovered) {
           hovered = null;
-          drawAvailabilityChart(canvas, group, { height: 300 });
+          draw();
         }
         hideTooltip();
         return;
@@ -1173,7 +1256,7 @@
         return;
       }
       hovered = hit;
-      drawAvailabilityChart(canvas, group, { height: 300, highlight: hit });
+      draw(hit);
       const content = availabilityTooltipContent(group, data, hit, byKey);
       if (content) showTooltip(event.clientX, event.clientY, content);
       else hideTooltip();
@@ -1182,7 +1265,7 @@
     canvas.addEventListener("mouseleave", () => {
       if (hovered) {
         hovered = null;
-        drawAvailabilityChart(canvas, group, { height: 300 });
+        draw();
       }
       hideTooltip();
     });
@@ -2610,6 +2693,16 @@
     ]);
   }
 
+  function availabilityTypeNames(data) {
+    const totals = {};
+    (data.groups || []).forEach((group) => (group.rows || []).forEach((row) => {
+      Object.entries(row.work_order_type_hours || {}).forEach(([name, hours]) => {
+        totals[name] = (totals[name] || 0) + (Number(hours) || 0);
+      });
+    }));
+    return Object.keys(totals).sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
+  }
+
   function renderAvailabilityExpanded() {
     const host = $("availability-charts");
     const data = state.availability;
@@ -2620,6 +2713,8 @@
 
     const basis = $("availability-basis");
     if (basis) basis.textContent = availabilityBasisText();
+    const stackedControl = $("availability-stacked");
+    if (stackedControl) stackedControl.checked = state.availabilityStacked;
 
     if (!data || !(data.groups || []).length) {
       setEmpty(
@@ -2632,6 +2727,9 @@
 
     data.groups.forEach((group) => {
       const canvas = el("canvas", { height: "300" });
+      const byKey = {};
+      (group.rows || []).forEach((row) => { byKey[`${row.asset_number}|${row.month}`] = row; });
+      const typeNames = availabilityTypeNames(data);
       const mode = state.availabilityTableMode[group.asset_group] || "availability";
       const toggle = el("button", {
         type: "button",
@@ -2676,7 +2774,13 @@
           renderAvailabilityTable(group, data),
         ])
       );
-      drawAvailabilityChart(canvas, group, { height: 300 });
+      drawAvailabilityChart(canvas, group, {
+        height: 300,
+        stacked: state.availabilityStacked,
+        rowsByKey: byKey,
+        typeNames,
+        months: data.months || [],
+      });
       wireAvailabilityChart(canvas, group, data);
     });
 
@@ -2862,6 +2966,11 @@
     windowSelect.addEventListener("change", () => {
       state.availabilityWindow = Number(windowSelect.value) || 5;
       refreshAvailability();
+    });
+    const stacked = $("availability-stacked");
+    if (stacked) stacked.addEventListener("change", () => {
+      state.availabilityStacked = stacked.checked;
+      renderAvailabilityExpanded();
     });
   }
 

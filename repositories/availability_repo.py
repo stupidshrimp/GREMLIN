@@ -573,6 +573,39 @@ class AvailabilityRepository:
             )
         return details
 
+    def load_work_order_classifications(
+        self, asset_numbers: list[str] | None, months: set[date] | None = None
+    ) -> list[WorkOrderDetail]:
+        """Load only the fields required to split chart downtime by WO class.
+
+        Unlike :meth:`load_work_order_details`, this hot-path query deliberately
+        excludes task names, descriptions, completion notes, status, and asset
+        names. Those potentially large fields remain on-demand behind the
+        per-bar drill-down endpoint. Month filtering happens after plant-time
+        localization for the same boundary correctness as the detail loader.
+        """
+
+        zone = self._zone()
+        columns = self._OPTIONAL_MAPPED_COLUMNS + (
+            "record_class_final", "record_class_auto",
+        )
+        rows = self._fetch_work_order_rows(asset_numbers, columns)
+        wanted = {(month.year, month.month) for month in (months or set())}
+        classifications: list[WorkOrderDetail] = []
+        for row in rows:
+            order = self._build_order(row, zone)
+            if order is None:
+                continue
+            if wanted and (order.created_local.year, order.created_local.month) not in wanted:
+                continue
+            classifications.append(
+                WorkOrderDetail(
+                    order=order,
+                    record_class=self._text(row, "record_class_final", "record_class_auto"),
+                )
+            )
+        return classifications
+
     def _fetch_work_order_rows(
         self, asset_numbers: list[str] | None, columns: tuple[str, ...]
     ) -> list[sqlite3.Row]:
