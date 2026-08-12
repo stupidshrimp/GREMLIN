@@ -964,7 +964,7 @@
     }
   }
 
-  function init() {
+  async function init() {
     document.querySelectorAll(".dev-tab").forEach((tab) => {
       tab.addEventListener("click", () => activate(tab.dataset.tab));
     });
@@ -1009,10 +1009,16 @@
       loadRows();
     });
 
+    // Ask about syncs *before* reading any of the database. A sync outlives the
+    // tab it was started from, so this first answer says which one the data is
+    // about to reflect -- and it is taken as the baseline, meaning it does not
+    // invalidate anything. Loading a panel first would let it read the database
+    // a moment before another tab's sync committed, while that same baseline
+    // reported the sync as already finished: nothing would then invalidate the
+    // panel that had just read the older numbers. Establishing the baseline
+    // first costs one round trip on a page that is about to make several.
+    await pollSync();
     activate("overview");
-    // A sync outlives the tab it was started from, so ask once at load: if one
-    // is already running, the panel is live before anybody clicks into it.
-    pollSync();
   }
 
   // This script tag sits at the end of <body>, so every element it touches is
