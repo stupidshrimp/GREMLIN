@@ -46,7 +46,9 @@
     data: { table: null, offset: 0, limit: 50, total: null, nextOffset: null, history: [] },
     // `payload` is the last /developer/api/sync response; `polledAt` is when it
     // arrived, so the clock can advance past it between polls.
-    sync: { payload: null, polledAt: 0, pollTimer: null, tickTimer: null, starting: false, lastState: null },
+    // `lastWritingRun` identifies the last completed sync whose changes this
+    // page has already accounted for; undefined until the first status answer.
+    sync: { payload: null, polledAt: 0, pollTimer: null, tickTimer: null, starting: false, lastWritingRun: undefined },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -383,16 +385,35 @@
     if (active && active.dataset.tab !== "sync") activate(active.dataset.tab);
   }
 
+  // Identifies a finished run that changed the database, so the panels can be
+  // invalidated by *which* sync completed rather than by this browser having
+  // watched it happen. A tab that was elsewhere while another one ran a sync
+  // never sees the running state at all -- it goes straight from idle to
+  // succeeded -- and would otherwise keep serving pre-sync counts. Dry runs
+  // change nothing and deliberately produce no id.
+  function writingRunId(job) {
+    if (!job || job.state !== "succeeded") return null;
+    if (job.options && job.options.dry_run) return null;
+    const summary = job.summary || {};
+    const batch = summary.import_batch_id === undefined || summary.import_batch_id === null ? "" : summary.import_batch_id;
+    return `${job.started_at || ""}#${batch}`;
+  }
+
   function renderSync() {
     const payload = state.sync.payload;
     if (!payload) return;
     const running = isSyncRunning();
     const credentialsOk = Boolean(payload.credentials && payload.credentials.configured);
 
-    const job = syncJob();
-    const previousState = state.sync.lastState;
-    state.sync.lastState = job ? job.state : null;
-    if (previousState === "running" && state.sync.lastState === "succeeded") refreshDatabasePanels();
+    const runId = writingRunId(syncJob());
+    if (state.sync.lastWritingRun === undefined) {
+      // First answer of this page load is the baseline: every panel read after
+      // it is already reading post-sync data, so there is nothing to drop.
+      state.sync.lastWritingRun = runId;
+    } else if (runId && runId !== state.sync.lastWritingRun) {
+      state.sync.lastWritingRun = runId;
+      refreshDatabasePanels();
+    }
 
     renderSyncFacts(payload);
     renderSyncWarning(payload);
