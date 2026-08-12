@@ -450,6 +450,17 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 }
 .availability-control-row .metrics-field { min-width: 12rem; }
 .availability-control-row .metrics-hint { flex: 1 1 18rem; margin: 0; }
+.availability-stack-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+  color: var(--forest-900);
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.availability-stack-control input { width: 1.15rem; height: 1.15rem; accent-color: var(--forest-700); }
 
 .availability-charts { display: grid; gap: 1.1rem; }
 

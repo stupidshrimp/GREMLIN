@@ -34,6 +34,24 @@ from services.availability_service import (
 MIN_WINDOW_MONTHS = 1
 MAX_WINDOW_MONTHS = 36
 
+WORK_ORDER_TYPE_LABELS = {
+    "CORRECTIVE_WO": "Work Request",
+    "PM": "PM",
+    "PM_RESET_CANDIDATE": "PM",
+    "PROJECT_WORK": "Project/Misc Repair",
+    "INSPECTION": "Inspection",
+    "PARTS_ORDER": "Parts Order",
+    "ADMINISTRATIVE": "Administrative",
+    "UNKNOWN": "Other/Unknown",
+}
+
+
+def _work_order_type(record_class: str) -> str:
+    """Turn the classifier's stable codes into chart-facing labels."""
+
+    code = str(record_class or "").strip().upper()
+    return WORK_ORDER_TYPE_LABELS.get(code, code.replace("_", " ").title() if code else "Other/Unknown")
+
 # ---------------------------------------------------------------------------
 # Rounding rule: downtime hours go out unrounded, scheduled hours do not.
 #
@@ -97,6 +115,11 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
     # server charts July as complete while the plant is still working July 31.
     today = today or repository.plant_today()
     months = clamp_window_months(months)
+    # Resolve this before loading rows. On systems without tzdata, loading rows
+    # necessarily falls back to UTC; retaining the diagnosis here ensures the
+    # response still explains that fallback.
+    timezone_name = repository.load_timezone()
+    timezone_warning = repository.timezone_warning()
 
     groups = repository.load_groups()
     included = [group for group in groups if group.include]
@@ -139,8 +162,8 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
             "window_months": months,
             "groups": [],
             "all_asset_numbers": charted,
-            "timezone": repository.load_timezone(),
-            "timezone_warning": repository.timezone_warning(),
+            "timezone": timezone_name,
+            "timezone_warning": timezone_warning,
             "generated_at": datetime.now().replace(microsecond=0).isoformat(),
             "data_earliest": _iso(earliest),
             "data_latest": _iso(latest),
@@ -157,8 +180,26 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
     )
     series = build_series(rows, included, window, goals=repository.load_goals())
 
+    # Classification never affects availability arithmetic; it only explains
+    # the already-counted downtime when the reader enables stacked bars.
+    details = repository.load_work_order_details(scope)
+    details_by_month: dict[date, list] = {}
+    for item in details:
+        created = item.order.created_local
+        details_by_month.setdefault(date(created.year, created.month, 1), []).append(item)
+
     detail: dict[str, list[dict]] = {}
     for row in rows:
+        contributions = work_order_contributions(
+            row.asset_number,
+            row.month,
+            details_by_month.get(row.month, []),
+            linked_rules=linked_rules,
+        )
+        type_hours: dict[str, float] = {}
+        for contribution in contributions:
+            label = _work_order_type(contribution.detail.record_class)
+            type_hours[label] = type_hours.get(label, 0.0) + contribution.counted_hours
         detail.setdefault(row.asset_group, []).append(
             {
                 "asset_number": row.asset_number,
@@ -180,6 +221,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
                 "no_wo_entries": row.no_wo_entries,
                 "note": row.note,
                 "downtime_logic": row.downtime_logic,
+                "work_order_type_hours": type_hours,
             }
         )
 
@@ -187,8 +229,8 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
         "months": [m.isoformat() for m in window],
         "month_labels": [s.month_labels for s in series][0] if series else [],
         "window_months": months,
-        "timezone": repository.load_timezone(),
-        "timezone_warning": repository.timezone_warning(),
+        "timezone": timezone_name,
+        "timezone_warning": timezone_warning,
         "generated_at": datetime.now().replace(microsecond=0).isoformat(),
         "data_earliest": _iso(earliest),
         "data_latest": _iso(latest),
