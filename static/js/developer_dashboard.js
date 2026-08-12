@@ -38,6 +38,11 @@
 
   const state = {
     loaded: new Set(), // panel keys already fetched
+    // `panelGeneration` counts invalidations; `panelLoads` holds the load in
+    // flight for each panel, so a second load queues behind the first instead
+    // of racing it.
+    panelGeneration: 0,
+    panelLoads: new Map(),
     tables: [], // [{name, type, origin, note, row_count, column_count}]
     selectedTable: null,
     // `history` records the offset each page started at. Pages can be shorter
@@ -380,6 +385,7 @@
   // database underneath them -- so when one finishes, that cache is stale by
   // definition and the row counts, batches and schema have to be read again.
   function refreshDatabasePanels() {
+    state.panelGeneration += 1;
     ["overview", "pipeline", "schema", "drift", "data"].forEach((key) => state.loaded.delete(key));
     const active = document.querySelector(".dev-tab.is-active");
     if (active && active.dataset.tab !== "sync") activate(active.dataset.tab);
@@ -935,9 +941,24 @@
       return;
     }
     showStatus("");
+    // A panel can be loading when a sync finishes, and the invalidation that
+    // follows starts a second load of the same panel. Two things then have to
+    // be true: the older response must not land on top of the newer one, and it
+    // must not mark the panel as loaded -- either would leave pre-sync numbers
+    // on screen and cached, which is what this whole mechanism exists to stop.
+    // So loads of one panel are run in order, and each carries the era it began
+    // in.
+    const previous = state.panelLoads.get(key) || Promise.resolve();
+    const attempt = previous
+      .catch(() => {})
+      .then(() => {
+        const generation = state.panelGeneration;
+        return Promise.resolve(LOADERS[key]()).then(() => generation);
+      });
+    state.panelLoads.set(key, attempt);
     try {
-      await LOADERS[key]();
-      state.loaded.add(key);
+      const generation = await attempt;
+      if (generation === state.panelGeneration) state.loaded.add(key);
     } catch (err) {
       showStatus(err.message, true);
     }
