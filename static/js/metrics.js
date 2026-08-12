@@ -2873,11 +2873,35 @@
     });
   }
 
+  function wireAvailabilityInfo() {
+    const dialog = $("availability-info-dialog");
+    const openButton = $("availability-info-open");
+    const closeButton = $("availability-info-close");
+    if (!dialog || !openButton || !closeButton) return;
+
+    openButton.addEventListener("click", () => {
+      dialog.showModal();
+      document.body.classList.add("metrics-modal-open");
+      closeButton.focus();
+    });
+    closeButton.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", (event) => {
+      // Native dialogs include the backdrop in their click target. Only close
+      // when that backdrop itself was clicked, never from content inside it.
+      if (event.target === dialog) dialog.close();
+    });
+    dialog.addEventListener("close", () => {
+      document.body.classList.remove("metrics-modal-open");
+      openButton.focus();
+    });
+  }
+
   // ---- init ----------------------------------------------------------------
   async function init() {
     wireCards();
     wireFilters();
     wireAvailability();
+    wireAvailabilityInfo();
     wireResize();
 
     // Availability loads first because it also supplies the curated equipment
