@@ -208,13 +208,13 @@
 .availability-info-button {
   position: relative;
   flex: 0 0 auto;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 1.45rem;
+  height: 1.45rem;
   border: 1px solid var(--forest-500);
   border-radius: 50%;
   background: var(--forest-100);
   color: var(--forest-800);
-  font: 700 1rem/1 Georgia, serif;
+  font: 700 0.82rem/1 Georgia, serif;
   cursor: pointer;
   animation: availabilityInfoFloat 2.4s ease-in-out infinite;
 }
@@ -663,6 +663,7 @@ body.metrics-modal-open { overflow: hidden; }
   background: rgba(47, 143, 91, 0.09);
 }
 .availability-info-note p { margin: 0.3rem 0 0; font-size: 0.88rem; line-height: 1.55; }
+.availability-info-warning { color: #b42318; }
 
 /* Keep this override after every dialog animation declaration. In particular,
    the explainer's [open] selector is more specific than its base class, so an

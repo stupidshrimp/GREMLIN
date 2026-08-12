@@ -207,14 +207,13 @@
         <div class="availability-title-row">
           <h2 id="availability-card-title">Asset availability by month</h2>
           <button type="button" class="availability-info-button" id="availability-info-open"
-                  aria-label="Learn how asset availability is calculated"
+                  aria-label="Click here to find out how asset availability is calculated"
+                  title="Click here to find out how asset availability is calculated"
                   aria-haspopup="dialog" aria-controls="availability-info-dialog">
             <span aria-hidden="true">i</span>
           </button>
         </div>
-        <p class="metrics-card-desc">Availability = (Scheduled Hours − Downtime) ÷ Scheduled Hours, per asset
-           group. Counts all downtime, whatever the work order was called. Open the card and click any
-           bar to see the rows it was computed from.</p>
+        <p class="metrics-card-desc">Open the card and click any bar to see the rows it was computed from.</p>
         <p class="metrics-card-scope">All asset groups · all downtime · monthly — not affected by the filters above.</p>
       </div>
       <button type="button" class="metrics-card-toggle" aria-expanded="false"
@@ -275,10 +274,16 @@
       </div>
 
       <ol class="availability-info-steps">
-        <li><strong>Set the scheduled time.</strong> Weekdays in the month are multiplied by the asset group’s daily production hours. Breaks, lunch, and setup time are removed, then any recorded overtime is added.</li>
-        <li><strong>Count the downtime.</strong> Positive downtime from every work order created in that month is included, regardless of the work order’s name, type, or classification. If configured, a share of downtime from a linked asset is also included.</li>
+        <li><strong>Scheduled time.</strong> Weekdays in the month are multiplied by the asset group’s daily production hours. Breaks, lunch, and setup time are removed, then any recorded overtime is added. Overtime hours can be added by clicking the top right of an asset group graph.</li>
+        <li><strong>Count the downtime.</strong> Positive downtime from every work order created in that month is included, regardless of the work order’s name, type, or classification. If configured, a share of downtime from a linked asset is also included. The configuration can be edited on the Settings page. <strong class="availability-info-warning">Please refrain from editing values unless you are authorized to do so.</strong></li>
         <li><strong>Calculate the percentage.</strong> Counted downtime is subtracted from scheduled hours, then divided by scheduled hours. For example, 160 scheduled hours and 8 downtime hours produces 95% availability.</li>
       </ol>
+
+      <div class="availability-info-note">
+        <strong>Assumptions and flags</strong>
+        <p>Downtime is counted in the month of the work order’s created date in the current dashboard logic. Because of this, a work order’s downtime hours can fall in a different month than the month in which the work was completed.</p>
+        <p>A work order with positive downtime is flagged in the data view when its completion date is in a different calendar month from its created date, or when its created date plus its downtime duration crosses a month boundary. Work orders with zero or negative downtime are not flagged for crossing a month boundary. A month is flagged when its total counted downtime, including linked downtime, exceeds its adjusted scheduled hours. When adjusted scheduled hours are positive, its availability is shown as 0%; when adjusted scheduled hours are zero, availability is undefined and shown as “—”.</p>
+      </div>
 
       <div class="availability-info-note">
         <strong>How to read the card</strong>
