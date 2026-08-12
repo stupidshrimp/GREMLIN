@@ -897,7 +897,37 @@
 
     const left = 52;
     const right = W - 12;
-    const top = 26;
+    // Stacked bars still sit side-by-side in asset order. Asset colours are
+    // therefore retained as bar outlines and as outlined legend keys, while
+    // filled keys explain the work-order segments inside those outlines.
+    const entries = (stacked
+      ? assets
+          .map((asset, index) => ({
+            color: SERIES_COLORS[index % SERIES_COLORS.length],
+            text: asset.display_name,
+            outline: true,
+          }))
+          .concat([{ color: "#dceee4", text: "Available" }])
+          .concat(typeNames.map((name, index) => ({
+            color: TYPE_COLORS[index % TYPE_COLORS.length], text: name,
+          })))
+      : assets.map((asset, index) => ({
+        color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name,
+      })))
+      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+
+    ctx.font = "10px Inter, sans-serif";
+    let legendRows = 1;
+    let legendWidth = 0;
+    entries.forEach((entry) => {
+      const width = 14 + ctx.measureText(entry.text).width + 12;
+      if (legendWidth && legendWidth + width > right - left) {
+        legendRows += 1;
+        legendWidth = 0;
+      }
+      legendWidth += width;
+    });
+    const top = Math.max(26, 8 + legendRows * 12);
     const bottom = H - 46;
     const plotH = Math.max(1, bottom - top);
     const slot = (right - left) / labels.length;
@@ -973,6 +1003,13 @@
             ctx.fillRect(x, y(next), w, Math.max(1, y(cursor) - y(next)));
             cursor = next;
           });
+          // The outline identifies the asset without stealing fill colour from
+          // the WO-type percentages. This remains usable on touch devices,
+          // where the hover tooltip is not available.
+          ctx.strokeStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x + 0.5, top + 0.5, Math.max(1, w - 1), Math.max(1, bottom - top - 1));
+          ctx.lineWidth = 1;
         } else {
           ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
           ctx.fillRect(x, barTop, w, bottom - barTop);
@@ -1040,11 +1077,8 @@
     drawLine(group.average || [], AVERAGE_LINE, false);
     drawLine(group.goal || [], GOAL_LINE, true);
 
-    // Legend across the top.
-    const entries = (stacked
-      ? [{ color: "#dceee4", text: "Available" }].concat(typeNames.map((name, index) => ({ color: TYPE_COLORS[index % TYPE_COLORS.length], text: name })))
-      : assets.map((asset, index) => ({ color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name })))
-      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+    // Legend across the top. Outlined keys identify the side-by-side assets in
+    // stacked mode; filled keys identify the segments within each asset bar.
     ctx.font = "10px Inter, sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -1052,12 +1086,19 @@
     let ly = 10;
     entries.forEach((entry) => {
       const w = 14 + ctx.measureText(entry.text).width + 12;
-      if (lx + w > right && ly === 10) {
+      if (lx > left && lx + w > right) {
         lx = left;
-        ly = 20;
+        ly += 12;
       }
-      ctx.fillStyle = entry.color;
-      ctx.fillRect(lx, ly - 4, 9, 9);
+      if (entry.outline) {
+        ctx.strokeStyle = entry.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(lx + 0.5, ly - 3.5, 8, 8);
+        ctx.lineWidth = 1;
+      } else {
+        ctx.fillStyle = entry.color;
+        ctx.fillRect(lx, ly - 4, 9, 9);
+      }
       ctx.fillStyle = "#5e7082";
       ctx.fillText(entry.text, lx + 13, ly);
       lx += w;
