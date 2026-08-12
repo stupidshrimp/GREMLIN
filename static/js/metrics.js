@@ -20,6 +20,8 @@
   const ASSET_API = "/life-data-analysis/api/assets";
   const METRICS_API = "/metrics/api/reliability";
   const AVAILABILITY_API = "/metrics/api/availability";
+  const AVAILABILITY_BREAKDOWN_TOOLTIP =
+    "toggle here if you would like to see the work order breakdown that is causing downtime";
   const ALERT_THRESHOLD = 70;
 
   // Forest palette (matches theme.css) used for the comparison bars.
@@ -2652,7 +2654,7 @@
         // reference across one.
         "data-availability-group": group.asset_group,
         text: "View data",
-        title: `Open the ${group.asset_group} rows behind this chart`,
+        title: AVAILABILITY_BREAKDOWN_TOOLTIP,
       });
       detailButton.addEventListener("click", () => {
         openAvailabilityDetail(group.asset_group, null);
