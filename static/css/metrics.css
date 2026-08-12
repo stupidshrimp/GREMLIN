@@ -197,14 +197,21 @@
 }
 
 .metrics-card-toggle {
+  padding: 0;
   flex: 0 0 auto;
   width: 26px;
   height: 26px;
   border-radius: 50%;
   border: 1px solid var(--forest-500);
+  background: transparent;
+  cursor: pointer;
   position: relative;
   margin-top: 0.2rem;
   transition: background 180ms ease;
+}
+.metrics-card-toggle:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
 }
 .metrics-card-toggle::before,
 .metrics-card-toggle::after {

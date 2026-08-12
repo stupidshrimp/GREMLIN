@@ -2740,16 +2740,13 @@
       const cardKey = card.getAttribute("data-card");
       const isOpen = cardKey === next;
       card.classList.toggle("is-expanded", isOpen);
-      card.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      const toggle = card.querySelector(".metrics-card-toggle");
+      if (toggle) {
+        toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        toggle.title = isOpen ? "Collapse this card" : "Expand this card";
+      }
       const expanded = $(`${cardKey}-expanded`);
       if (expanded) expanded.hidden = !isOpen;
-      // The header is the only thing that closes an open card, so it is the only
-      // thing that should advertise it.
-      const head = card.querySelector(".metrics-card-head");
-      if (head) {
-        if (isOpen) head.title = "Collapse this card";
-        else head.removeAttribute("title");
-      }
       if (isOpen) opened = card;
     });
     // Draw lazily once the panel is visible (canvases have no width while hidden).
@@ -2760,16 +2757,20 @@
   }
 
   function wireCards() {
-    // The whole card is the toggle, so both handlers have to let events from the
-    // controls inside its expanded body through. Keyboard matters more than
-    // click here: Space is how you open a <select> and Enter is how you commit a
-    // number input, so swallowing them does not merely collapse the panel, it
-    // makes the month window and the Goal/OT editors unusable without a mouse.
+    // The dedicated toggle is the card's only expand/collapse control for
+    // assistive technology. The card remains a generous mouse target, but is
+    // not itself a button: that avoids nesting the Availability info button (or
+    // any expanded-panel control) inside another interactive role.
     const INTERACTIVE = "a, button, input, select, textarea, .metrics-table-scroll";
     document.querySelectorAll(".metrics-card").forEach((card) => {
       const key = card.getAttribute("data-card");
       const activate = () => setExpanded(key);
       const fromControl = (event) => Boolean(event.target.closest(INTERACTIVE));
+      const toggle = card.querySelector(".metrics-card-toggle");
+      if (toggle) {
+        toggle.title = "Expand this card";
+        toggle.addEventListener("click", activate);
+      }
       card.addEventListener("click", (event) => {
         if (fromControl(event)) return;
         // Clicking the body of an open card does nothing: the expanded panel is
@@ -2777,17 +2778,6 @@
         // of it used to throw the whole panel away. Closing is the header's job.
         if (state.expanded === key && !event.target.closest(".metrics-card-head")) return;
         activate();
-      });
-      card.addEventListener("keydown", (event) => {
-        if (fromControl(event)) return;
-        // Keyboard keeps the plain toggle. The card itself is the button that
-        // holds focus, so gating Enter on the header would leave no way to close
-        // an open card without a mouse — and a keypress on a deliberately
-        // focused card is not the stray click the rule above exists to absorb.
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          activate();
-        }
       });
     });
   }

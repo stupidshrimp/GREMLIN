@@ -50,15 +50,15 @@
 
 <section class="metrics-card-stack">
   <!-- ============================ Operational KPIs ============================ -->
-  <article class="glass-card metrics-card" id="card-kpis" data-card="kpis" tabindex="0"
-           role="button" aria-expanded="false" aria-controls="kpis-expanded">
+  <article class="glass-card metrics-card" id="card-kpis" data-card="kpis">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Operational KPIs</p>
-        <h2>Reliability performance by asset</h2>
+        <h2 id="kpis-card-title">Reliability performance by asset</h2>
         <p class="metrics-card-desc">MTBF, MTTR, corrective work order volume and total downtime — compared across the selected assets.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="kpis-expanded" aria-labelledby="kpis-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="kpis">
@@ -117,15 +117,15 @@
   </article>
 
   <!-- ============================ Alerting Readiness ============================ -->
-  <article class="glass-card metrics-card" id="card-alerts" data-card="alerts" tabindex="0"
-           role="button" aria-expanded="false" aria-controls="alerts-expanded">
+  <article class="glass-card metrics-card" id="card-alerts" data-card="alerts">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Alerting Readiness</p>
-        <h2>Reliability risk by asset</h2>
+        <h2 id="alerts-card-title">Reliability risk by asset</h2>
         <p class="metrics-card-desc">Surface assets that may need attention based on a first-pass reliability risk score.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="alerts-expanded" aria-labelledby="alerts-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="alerts">
@@ -182,14 +182,12 @@
        shows every configured asset group over whole calendar months. The Average
        line is a group-level statistic, and linked downtime makes an asset's
        number depend on assets an filter could hide. -->
-  <article class="glass-card metrics-card" id="card-availability"
-           data-card="availability" tabindex="0" role="button" aria-expanded="false"
-           aria-controls="availability-expanded">
+  <article class="glass-card metrics-card" id="card-availability" data-card="availability">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Availability</p>
         <div class="availability-title-row">
-          <h2>Asset availability by month</h2>
+          <h2 id="availability-card-title">Asset availability by month</h2>
           <button type="button" class="availability-info-button" id="availability-info-open"
                   aria-label="Learn how asset availability is calculated"
                   aria-haspopup="dialog" aria-controls="availability-info-dialog">
@@ -201,7 +199,8 @@
            bar to see the rows it was computed from.</p>
         <p class="metrics-card-scope">All asset groups · all downtime · monthly — not affected by the filters above.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="availability-expanded" aria-labelledby="availability-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="availability">
