@@ -566,11 +566,6 @@ body.metrics-modal-open { overflow: hidden; }
   from { opacity: 0; transform: translateY(10px) scale(0.99); }
   to { opacity: 1; transform: none; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .metrics-modal-backdrop, .metrics-modal, .availability-info-button,
-  .availability-info-button::after { animation: none; }
-}
-
 /* ---- availability calculation explainer --------------------------------- */
 .availability-info-dialog {
   width: min(680px, calc(100% - 2rem));
@@ -627,6 +622,20 @@ body.metrics-modal-open { overflow: hidden; }
   background: rgba(47, 143, 91, 0.09);
 }
 .availability-info-note p { margin: 0.3rem 0 0; font-size: 0.88rem; line-height: 1.55; }
+
+/* Keep this override after every dialog animation declaration. In particular,
+   the explainer's [open] selector is more specific than its base class, so an
+   earlier reduced-motion rule would not actually stop the entrance motion. */
+@media (prefers-reduced-motion: reduce) {
+  .metrics-modal-backdrop,
+  .metrics-modal,
+  .availability-info-button,
+  .availability-info-button::after,
+  .availability-info-dialog[open],
+  .availability-info-dialog::backdrop {
+    animation: none;
+  }
+}
 
 .metrics-modal-head {
   display: flex;
