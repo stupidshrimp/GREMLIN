@@ -159,15 +159,59 @@
 .metrics-card-head h2 { margin: 0.1rem 0 0.35rem; }
 .metrics-card-desc { font-size: 0.9rem; }
 
+.availability-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.availability-info-button {
+  position: relative;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--forest-500);
+  border-radius: 50%;
+  background: var(--forest-100);
+  color: var(--forest-800);
+  font: 700 1rem/1 Georgia, serif;
+  cursor: pointer;
+  animation: availabilityInfoFloat 2.4s ease-in-out infinite;
+}
+.availability-info-button::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--forest-500);
+  border-radius: inherit;
+  animation: availabilityInfoPulse 2.4s ease-out infinite;
+}
+.availability-info-button:hover { background: rgba(47, 143, 91, 0.2); }
+.availability-info-button:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 3px; }
+@keyframes availabilityInfoFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes availabilityInfoPulse {
+  0%, 45% { opacity: 0.55; transform: scale(1); }
+  80%, 100% { opacity: 0; transform: scale(1.55); }
+}
+
 .metrics-card-toggle {
+  padding: 0;
   flex: 0 0 auto;
   width: 26px;
   height: 26px;
   border-radius: 50%;
   border: 1px solid var(--forest-500);
+  background: transparent;
+  cursor: pointer;
   position: relative;
   margin-top: 0.2rem;
   transition: background 180ms ease;
+}
+.metrics-card-toggle:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
 }
 .metrics-card-toggle::before,
 .metrics-card-toggle::after {
@@ -522,8 +566,75 @@ body.metrics-modal-open { overflow: hidden; }
   from { opacity: 0; transform: translateY(10px) scale(0.99); }
   to { opacity: 1; transform: none; }
 }
+/* ---- availability calculation explainer --------------------------------- */
+.availability-info-dialog {
+  width: min(680px, calc(100% - 2rem));
+  max-height: min(88vh, 760px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface, #fff);
+  color: var(--text);
+  box-shadow: 0 28px 70px rgba(6, 43, 28, 0.34);
+}
+.availability-info-dialog[open] { animation: metricsModalIn 200ms ease-out both; }
+.availability-info-dialog::backdrop {
+  background: rgba(29, 39, 49, 0.48);
+  backdrop-filter: blur(2px);
+  animation: metricsModalFade 160ms ease-out both;
+}
+.availability-info-content { overflow-y: auto; max-height: min(88vh, 760px); }
+.availability-info-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem 1.3rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--forest-100), #fff);
+}
+.availability-info-head h2 { margin: 0.1rem 0 0; color: var(--forest-900); font-size: 1.25rem; }
+.availability-info-body { display: grid; gap: 1.1rem; padding: 1.2rem 1.3rem 1.35rem; }
+.availability-info-body > p { margin: 0; line-height: 1.6; }
+.availability-formula {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  justify-content: center;
+  align-items: center;
+  column-gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 12px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  text-align: center;
+  font-weight: 600;
+}
+.availability-formula-rule { height: 1px; background: var(--forest-700); }
+.availability-formula strong { grid-column: 2; grid-row: 1 / span 3; font-size: 1.05rem; }
+.availability-info-steps { display: grid; gap: 0.85rem; margin: 0; padding-left: 1.4rem; }
+.availability-info-steps li { padding-left: 0.25rem; line-height: 1.55; }
+.availability-info-steps li::marker { color: var(--forest-700); font-weight: 700; }
+.availability-info-note {
+  padding: 0.9rem 1rem;
+  border-left: 4px solid var(--forest-500);
+  border-radius: 0 10px 10px 0;
+  background: rgba(47, 143, 91, 0.09);
+}
+.availability-info-note p { margin: 0.3rem 0 0; font-size: 0.88rem; line-height: 1.55; }
+
+/* Keep this override after every dialog animation declaration. In particular,
+   the explainer's [open] selector is more specific than its base class, so an
+   earlier reduced-motion rule would not actually stop the entrance motion. */
 @media (prefers-reduced-motion: reduce) {
-  .metrics-modal-backdrop, .metrics-modal { animation: none; }
+  .metrics-modal-backdrop,
+  .metrics-modal,
+  .availability-info-button,
+  .availability-info-button::after,
+  .availability-info-dialog[open],
+  .availability-info-dialog::backdrop {
+    animation: none;
+  }
 }
 
 .metrics-modal-head {
