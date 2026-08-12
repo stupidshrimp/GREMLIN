@@ -101,6 +101,46 @@ class AssetCacheInvalidationTests(unittest.TestCase):
         self._add_asset("ASSET-B")
         self.assertEqual(self.service.asset_numbers(), ["ASSET-A", "ASSET-B"])
 
+    def test_reads_and_invalidations_can_run_together(self):
+        """Reading the list while syncs invalidate it neither deadlocks nor raises.
+
+        Deliberately modest about what it proves. The specific hazard behind the
+        locked read -- testing the cache field and then iterating it separately,
+        with an invalidation in between -- could not be provoked here: against
+        the unlocked version, 1.6 million invalidations across three reader
+        threads at a 1 microsecond switch interval produced no failure, because
+        CPython has no thread-switch point between those two loads. The lock is
+        kept regardless, since that guarantee is an implementation detail of one
+        interpreter and not something this code should rely on. What this test
+        does cover is that the locking added around the cache cannot deadlock
+        two threads against each other, which is a hazard of the fix itself.
+        """
+
+        self.service.asset_numbers()
+        failures = []
+        stop = threading.Event()
+
+        def read_repeatedly():
+            try:
+                while not stop.is_set():
+                    self.assertIsInstance(self.service.asset_number_options(), list)
+            except Exception as exc:  # noqa: BLE001 - the point of the test
+                failures.append(repr(exc))
+
+        readers = [threading.Thread(target=read_repeatedly) for _ in range(3)]
+        for reader in readers:
+            reader.start()
+        try:
+            for _ in range(500):
+                self.service.invalidate_caches()
+        finally:
+            stop.set()
+            for reader in readers:
+                reader.join(timeout=10)
+
+        self.assertEqual([reader.is_alive() for reader in readers], [False, False, False])
+        self.assertEqual(failures, [])
+
     def test_a_build_that_was_not_overtaken_still_caches(self):
         generation = self.service._asset_cache_generation
         self.service._store_asset_options(generation, [{"asset_number": "ASSET-A", "asset_name": ""}])

@@ -1224,13 +1224,20 @@ class LifeDataService:
         if refresh:
             mapped_count = self.refresh_mapped_cmms_records()
             if mapped_count:
-                self._asset_number_options_cache = None
-        elif self._asset_number_options_cache is not None:
-            return [dict(option) for option in self._asset_number_options_cache]
+                self.invalidate_caches()
         else:
+            # Take the cache once, under the lock. Testing the field and then
+            # iterating it are two separate reads of something another thread is
+            # now allowed to clear between them, and the reader that lost that
+            # race would iterate None -- turning a sync finishing at an unlucky
+            # moment into a 500 on the asset list.
+            with self._asset_cache_lock:
+                cached = self._asset_number_options_cache
+            if cached is not None:
+                return [dict(option) for option in cached]
             mapped_count = self.ensure_mapped_records_available()
             if mapped_count:
-                self._asset_number_options_cache = None
+                self.invalidate_caches()
         # Read the era *after* any mapping work above (which invalidates in its
         # own right) and before the query, so that anything invalidating from
         # here on is understood to have happened after these rows were taken.
