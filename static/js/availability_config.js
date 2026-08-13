@@ -148,7 +148,11 @@
       if (!window.confirm(`Restore the seeded schedule and asset list for ${group.asset_group}?`)) return;
       try {
         config = await request(
-          `${CONFIG_API}/group/${encodeURIComponent(group.asset_group)}/reset`, { method: "POST" }
+          `${CONFIG_API}/group/${encodeURIComponent(group.asset_group)}/reset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          }
         );
         show("settings-availability-status", `${group.asset_group} restored to defaults.`, "success");
         renderGroups();

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
 ROLES = ("viewer", "editor", "admin")
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_WINDOW_SECONDS = 5 * 60
+LOGIN_LOCK_SECONDS = 15 * 60
 
 
 class AccessControl:
@@ -41,6 +45,14 @@ class AccessControl:
                     changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS login_attempts (
+                    scope_key TEXT PRIMARY KEY,
+                    failure_count INTEGER NOT NULL,
+                    window_started REAL NOT NULL,
+                    locked_until REAL NOT NULL DEFAULT 0
+                )
+            """)
             if bool(initial_username) != bool(initial_pin):
                 raise RuntimeError("GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN must be configured together.")
             if initial_username and initial_pin and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -64,6 +76,41 @@ class AccessControl:
         if row and check_password_hash(row["password_hash"], pin):
             return {"id": row["id"], "username": row["username"], "role": row["role"]}
         return None
+
+    def authenticate_limited(self, username: str, pin: str, client_key: str) -> tuple[dict | None, int]:
+        """Authenticate with persistent per-account and per-client lockouts."""
+        now = time.time()
+        scopes = (f"account:{username.strip().casefold()}", f"client:{client_key}")
+        with self._connect() as conn:
+            attempts = {row["scope_key"]: row for row in conn.execute(
+                "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
+            )}
+            locked_until = max((float(row["locked_until"]) for row in attempts.values()), default=0)
+            if locked_until > now:
+                return None, max(1, int(locked_until - now + 0.999))
+            row = conn.execute(
+                "SELECT id,username,password_hash,role FROM users WHERE username=?", (username,)
+            ).fetchone()
+            if row and check_password_hash(row["password_hash"], pin):
+                conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
+                return {"id": row["id"], "username": row["username"], "role": row["role"]}, 0
+            retry_after = 0
+            for scope in scopes:
+                previous = attempts.get(scope)
+                in_window = previous and now - float(previous["window_started"]) < LOGIN_WINDOW_SECONDS
+                count = int(previous["failure_count"]) if in_window else 0
+                started = float(previous["window_started"]) if in_window else now
+                count += 1
+                lock_until = now + LOGIN_LOCK_SECONDS if count >= LOGIN_FAILURE_LIMIT else 0
+                retry_after = max(retry_after, int(lock_until - now))
+                conn.execute(
+                    """INSERT INTO login_attempts(scope_key,failure_count,window_started,locked_until)
+                       VALUES (?,?,?,?) ON CONFLICT(scope_key) DO UPDATE SET
+                       failure_count=excluded.failure_count, window_started=excluded.window_started,
+                       locked_until=excluded.locked_until""",
+                    (scope, count, started, lock_until),
+                )
+            return None, retry_after
 
     def list_users(self) -> list[dict]:
         with self._connect() as conn:

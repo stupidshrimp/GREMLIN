@@ -23,7 +23,7 @@ def test_write_routes_require_login(monkeypatch, tmp_path):
     ]
     for route in routes:
         assert client.post(route, json={}).status_code == 401, route
-    assert client.get("/life-data-analysis/api/assets?refresh=1").status_code == 401
+    assert client.get("/life-data-analysis/api/assets?refresh=1").status_code == 405
 
 
 def test_fresh_database_has_no_published_login(monkeypatch, tmp_path):
@@ -56,6 +56,26 @@ def test_login_rejects_cross_origin_form_posts(monkeypatch, tmp_path):
     )
     assert response.status_code == 415
     assert response.is_json
+
+
+def test_login_failures_are_throttled_by_account_and_client(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    for _ in range(4):
+        assert client.post("/auth/login", json={"username": "root", "pin": "wrong"}).status_code == 401
+    response = client.post("/auth/login", json={"username": "root", "pin": "wrong"})
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
+    # Even the correct PIN is held until the temporary lock expires.
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 429
+
+
+def test_bodyless_write_routes_require_json(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+    assert client.post("/life-data-analysis/api/refresh-mapping").status_code == 415
+    assert client.post("/metrics/api/availability/config/group/test/reset").status_code == 415
 
 
 def test_audit_failure_does_not_turn_committed_write_into_failure(monkeypatch, tmp_path):

@@ -380,8 +380,14 @@ def login():
             "error": "No accounts are configured. Set GREMLIN_ADMIN_USERNAME and "
                      "GREMLIN_ADMIN_PIN in the deployment environment or .env, then restart GREMLIN."
         }), 503
-    user = access_control.authenticate(str((payload or {}).get("username", "")).strip(), str((payload or {}).get("pin", "")))
+    username = str(payload.get("username", "")).strip()
+    pin = str(payload.get("pin", ""))
+    user, retry_after = access_control.authenticate_limited(username, pin, request.remote_addr or "unknown")
     if not user:
+        if retry_after:
+            response = jsonify({"error": "Too many login attempts. Try again later."})
+            response.headers["Retry-After"] = str(retry_after)
+            return response, 429
         return jsonify({"error": "Incorrect username or PIN."}), 401
     session.clear()
     session["user"] = user
@@ -636,6 +642,8 @@ def api_availability_save_group(asset_group: str):
 @availability_api
 @requires_role("editor")
 def api_availability_reset_group(asset_group: str):
+    if not request.is_json:
+        return jsonify({"error": "Reset requests must be sent as JSON."}), 415
     repository = get_availability_repository()
     repository.reset_group_to_defaults(asset_group)
     return jsonify(build_config(repository))
@@ -728,14 +736,8 @@ def api_assets():
     # request an explicit re-map (mirroring the desktop "Refresh CMMS mapping"
     # action) before reading the asset list.
     if request.values.get("refresh") in ("1", "true", "yes"):
-        user, error = _authorised_user("editor")
-        if error:
-            return error
-        service = _service_or_api_error()
-        service.refresh_mapped_cmms_records()
-        access_control.record_change(user, f"{request.method} {request.path}?refresh=1")
-    else:
-        service = _service_or_api_error()
+        return jsonify({"error": "Refreshing via GET is not allowed. Use the refresh action."}), 405
+    service = _service_or_api_error()
     return jsonify({"assets": service.asset_number_options()})
 
 
@@ -743,6 +745,8 @@ def api_assets():
 @life_data_api
 @requires_role("editor")
 def api_refresh_mapping():
+    if not request.is_json:
+        return jsonify({"error": "Refresh requests must be sent as JSON."}), 415
     service = _service_or_api_error()
     mapped = service.refresh_mapped_cmms_records()
     return jsonify({"mapped": int(mapped or 0), "assets": service.asset_number_options()})
