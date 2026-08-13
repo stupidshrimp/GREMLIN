@@ -10,6 +10,7 @@ from unittest import mock
 
 from repositories.raw_repo import RawRepository
 from services import sync_service
+from services.access_control import AccessControl
 from services.life_data_service import LifeDataService
 from services.sync_service import STATE_RUNNING, STATE_SUCCEEDED, LimbleSyncRunner
 
@@ -21,8 +22,22 @@ import app as app_module
 class DeveloperSyncApiTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        # Register this first so it runs last: all patches and background work
+        # must release the temporary files before TemporaryDirectory removes
+        # them.
+        self.addCleanup(self._tmp.cleanup)
         self.db_path = Path(self._tmp.name) / "gremlin.db"
         RawRepository(self.db_path).ensure_schema()
+
+        # Never create test credentials in the application's configured access
+        # database. app_module is imported at collection time, so changing an
+        # environment variable here would be too late; replace its controller
+        # explicitly with one owned by this test's temporary directory.
+        self.access_control = AccessControl(Path(self._tmp.name) / "accesscontrol.db")
+        self.access_control.ensure_schema(initial_username="sync-test-admin", initial_pin="test-pin")
+        access_patch = mock.patch.object(app_module, "access_control", self.access_control)
+        access_patch.start()
+        self.addCleanup(access_patch.stop)
 
         env = mock.patch.dict(os.environ, {"GREMLIN_DB_PATH": str(self.db_path)})
         env.start()
@@ -44,17 +59,10 @@ class DeveloperSyncApiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        existing = next((u for u in app_module.access_control.list_users() if u["username"] == "sync-test-admin"), None)
-        if existing:
-            app_module.access_control.save_user(existing["id"], "sync-test-admin", "test-pin", "admin")
-        else:
-            app_module.access_control.save_user(None, "sync-test-admin", "test-pin", "admin")
-
         app_module.app.config["TESTING"] = True
         self.client = app_module.app.test_client()
 
         self._gates = []
-        self.addCleanup(self._tmp.cleanup)
         self.addCleanup(self._release)
 
     def _release(self):
