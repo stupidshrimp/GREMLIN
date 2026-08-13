@@ -12,6 +12,7 @@ ROLES = ("viewer", "editor", "admin")
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
 LOGIN_LOCK_SECONDS = 15 * 60
+DB_BUSY_TIMEOUT_SECONDS = 30
 
 
 class AccessControl:
@@ -19,8 +20,9 @@ class AccessControl:
         self.path = Path(path)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=DB_BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_SECONDS * 1000}")
         return conn
 
     def ensure_schema(self, *, initial_username: str | None = None, initial_pin: str | None = None) -> None:
@@ -82,6 +84,13 @@ class AccessControl:
         now = time.time()
         scopes = (f"account:{username.strip().casefold()}", f"client:{client_key}")
         with self._connect() as conn:
+            # Serialize the complete read/check/increment sequence. A deferred
+            # transaction would let parallel requests all read the same count
+            # and then overwrite one another with the same next value, making
+            # a batch of guesses count as one. BEGIN IMMEDIATE takes SQLite's
+            # writer slot before the count is read, so every request observes
+            # the preceding request's committed increment.
+            conn.execute("BEGIN IMMEDIATE")
             attempts = {row["scope_key"]: row for row in conn.execute(
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
             )}

@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 from services.access_control import AccessControl
 
 
@@ -53,3 +56,25 @@ def test_get_user_reflects_role_changes_and_deletion(tmp_path):
     assert control.get_user(operator["id"])["role"] == "viewer"
     control.delete_user(operator["id"], current_user_id=999)
     assert control.get_user(operator["id"]) is None
+
+
+def test_parallel_login_failures_are_counted_atomically(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    barrier = Barrier(5)
+
+    def fail(index):
+        barrier.wait()
+        return control.authenticate_limited("root", "wrong", f"client-{index}")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        outcomes = list(executor.map(fail, range(5)))
+
+    assert all(user is None for user, _retry_after in outcomes)
+    assert any(retry_after > 0 for _user, retry_after in outcomes)
+    with control._connect() as conn:
+        account = conn.execute(
+            "SELECT failure_count, locked_until FROM login_attempts WHERE scope_key='account:root'"
+        ).fetchone()
+    assert account["failure_count"] == 5
+    assert account["locked_until"] > 0
