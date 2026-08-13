@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -16,6 +17,21 @@ LOGIN_LOCK_SECONDS = 15 * 60
 DB_BUSY_TIMEOUT_SECONDS = 30
 MAX_USERNAME_CHARS = 128
 MAX_PIN_CHARS = 256
+
+
+def _check_credential_bounds(username: str, pin: str) -> None:
+    """Refuse credentials the login path would decline to look up.
+
+    ``authenticate_limited`` bounds what it will search for, so that an
+    attacker cannot make the limiter table grow by inventing enormous
+    usernames. Anything stored beyond those bounds is therefore an account that
+    cannot sign in, whichever door created it -- so every door checks here.
+    """
+
+    if len(username) > MAX_USERNAME_CHARS:
+        raise ValueError(f"Username must be {MAX_USERNAME_CHARS} characters or fewer.")
+    if len(pin) > MAX_PIN_CHARS:
+        raise ValueError(f"PIN must be {MAX_PIN_CHARS} characters or fewer.")
 
 
 class AccessControl:
@@ -68,13 +84,56 @@ class AccessControl:
                     locked_until REAL NOT NULL DEFAULT 0
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS deployment_secret (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    secret TEXT NOT NULL
+                )
+            """)
             if bool(initial_username) != bool(initial_pin):
                 raise RuntimeError("GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN must be configured together.")
+            if initial_username and initial_pin:
+                # Bootstrap has to obey the bounds the login path enforces.
+                # authenticate_limited skips the users lookup entirely for
+                # credentials longer than these, so an over-long bootstrap
+                # account is one that can never sign in -- and because
+                # has_users() then reports the table as populated, no later
+                # start would replace it. Refusing here costs a restart;
+                # accepting it costs the deployment every protected write.
+                _check_credential_bounds(initial_username.strip(), initial_pin)
             if initial_username and initial_pin and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
                 conn.execute(
                     "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
                     (initial_username.strip(), generate_password_hash(initial_pin)),
                 )
+
+    def shared_secret_key(self) -> str:
+        """The session signing key every worker of this deployment agrees on.
+
+        A key generated per process is fine while GREMLIN is one process, and
+        wrong the moment it is more than one: each worker would reject the
+        cookies the others signed, so a signed-in user's writes would fail
+        whenever the next request landed on a different worker. Keeping the key
+        beside the accounts it protects gives the deployment a single key with
+        no configuration, and it survives a restart instead of signing everyone
+        out. GREMLIN_SECRET_KEY still overrides it where the operator would
+        rather hold the key themselves.
+
+        The secret is stored in the clear, in the same file as the password
+        hashes -- the file permissions on accesscontrol.db are what protect
+        both.
+        """
+
+        with self._connect() as conn:
+            # Two workers starting together must not each generate a key and
+            # then disagree about which one was stored.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT secret FROM deployment_secret WHERE id = 1").fetchone()
+            if row:
+                return row["secret"]
+            secret = secrets.token_hex(32)
+            conn.execute("INSERT INTO deployment_secret(id, secret) VALUES (1, ?)", (secret,))
+        return secret
 
     def get_user(self, user_id: int) -> dict | None:
         with self._connect() as conn:
@@ -158,10 +217,7 @@ class AccessControl:
         username = username.strip()
         if not username or role not in ROLES or (user_id is None and not pin):
             raise ValueError("Username, a valid role, and a PIN for new users are required.")
-        if len(username) > MAX_USERNAME_CHARS:
-            raise ValueError(f"Username must be {MAX_USERNAME_CHARS} characters or fewer.")
-        if len(pin) > MAX_PIN_CHARS:
-            raise ValueError(f"PIN must be {MAX_PIN_CHARS} characters or fewer.")
+        _check_credential_bounds(username, pin)
         with self._connect() as conn:
             # The last-admin count and the mutation are one serialized decision.
             # Without taking the writer slot first, two concurrent demotions can

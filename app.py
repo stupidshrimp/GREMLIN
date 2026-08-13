@@ -50,22 +50,6 @@ load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
-# Signs the cookie that says who is logged in, so this is now what stands
-# between a session and a forged one. A generated key is a working default for
-# the single process GREMLIN normally runs as -- the only cost is that everyone
-# signs in again after a restart. It is NOT sufficient for a multi-process
-# deployment: each worker would generate its own key and reject the cookies the
-# others issued, so set GREMLIN_SECRET_KEY before running more than one.
-app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
-
-# Lax is the browsers' own default for a cookie that does not say; setting it
-# means the session is not sent with a cross-site form POST regardless of which
-# browser is asking. Secure is deliberately left off: GREMLIN is served over
-# plain HTTP on the plant network, and a Secure cookie would simply never be
-# sent. Set SESSION_COOKIE_SECURE where the deployment is behind TLS.
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-
 _gremlin_db_for_access = Path(os.environ.get("GREMLIN_DB_PATH") or DEFAULT_DB_PATH)
 ACCESS_DB_PATH = Path(
     os.environ.get("GREMLIN_ACCESS_DB_PATH") or _gremlin_db_for_access.with_name("accesscontrol.db")
@@ -75,6 +59,24 @@ access_control.ensure_schema(
     initial_username=os.environ.get("GREMLIN_ADMIN_USERNAME"),
     initial_pin=os.environ.get("GREMLIN_ADMIN_PIN"),
 )
+
+# Signs the cookie that says who is logged in, so this is what stands between a
+# session and a forged one. Falling back to a key generated per process would
+# have been wrong the moment GREMLIN runs as more than one: each worker would
+# reject the cookies the others signed. The access database holds one key for
+# the whole deployment instead, generated on first start and kept across
+# restarts, so no configuration is needed and nobody is signed out by a
+# restart. An exported GREMLIN_SECRET_KEY still wins.
+app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or access_control.shared_secret_key()
+
+# Lax is the browsers' own default for a cookie that does not say; setting it
+# means the session is not sent with a cross-site form POST regardless of which
+# browser is asking. Secure is deliberately left off: GREMLIN is served over
+# plain HTTP on the plant network, and a Secure cookie would simply never be
+# sent. Set SESSION_COOKIE_SECURE where the deployment is behind TLS.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
 ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
 
 

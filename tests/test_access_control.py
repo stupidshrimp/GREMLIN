@@ -2,6 +2,8 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from threading import Barrier
 
+import pytest
+
 from services.access_control import AccessControl
 
 
@@ -209,3 +211,56 @@ def test_parallel_admin_deletions_preserve_an_administrator(tmp_path):
 
     assert sorted(results) == [False, True]
     assert sum(user["role"] == "admin" for user in control.list_users()) == 1
+
+
+def test_bootstrap_refuses_credentials_the_login_path_cannot_check(tmp_path):
+    """An unloggable-into administrator is worse than no administrator.
+
+    authenticate_limited skips the users lookup entirely past these bounds, and
+    has_users() would then report the table as populated, so a later start
+    would not replace the account. Refuse it while a restart can still fix it.
+    """
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    with pytest.raises(ValueError, match="Username must be"):
+        control.ensure_schema(initial_username="a" * 129, initial_pin="secret")
+    with pytest.raises(ValueError, match="PIN must be"):
+        control.ensure_schema(initial_username="admin", initial_pin="p" * 257)
+
+    # Refused loudly and completely: startup stops, and no account was left
+    # behind that has_users() would count as a bootstrap already done.
+    control.ensure_schema()
+    assert control.list_users() == []
+
+    # The bootstrap that stays inside the bounds still works, and can log in.
+    control.ensure_schema(initial_username="a" * 128, initial_pin="p" * 256)
+    assert control.authenticate_limited("a" * 128, "p" * 256, "client")[0]["role"] == "admin"
+
+
+def test_the_signing_key_is_generated_once_and_kept(tmp_path):
+    path = tmp_path / "accesscontrol.db"
+    control = AccessControl(path)
+    control.ensure_schema()
+    secret = control.shared_secret_key()
+
+    assert len(secret) >= 32
+    # Stable across calls, across instances, and therefore across the workers
+    # and restarts that would otherwise each invent a key of their own.
+    assert control.shared_secret_key() == secret
+    reopened = AccessControl(path)
+    reopened.ensure_schema()
+    assert reopened.shared_secret_key() == secret
+
+
+def test_workers_starting_together_agree_on_one_signing_key(tmp_path):
+    path = tmp_path / "accesscontrol.db"
+    AccessControl(path).ensure_schema()
+    barrier = Barrier(4)
+
+    def start():
+        barrier.wait()
+        return AccessControl(path).shared_secret_key()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        keys = list(executor.map(lambda _: start(), range(4)))
+
+    assert len(set(keys)) == 1

@@ -256,3 +256,24 @@ def test_access_database_defaults_next_to_configured_gremlin_database(monkeypatc
     module = importlib.reload(app)
     assert module.ACCESS_DB_PATH == gremlin_path.with_name("accesscontrol.db")
     assert module.ACCESS_DB_PATH.exists()
+
+
+def test_workers_sharing_an_access_database_sign_cookies_alike(monkeypatch, tmp_path):
+    """Two processes must accept each other's sessions with no configuration.
+
+    A key generated per process would make an authenticated write fail
+    whenever the next request happened to land on a different worker, and
+    would sign everyone out on restart. Reloading the module is the closest
+    this suite gets to a second worker starting against the same database.
+    """
+    monkeypatch.delenv("GREMLIN_SECRET_KEY", raising=False)
+    first = _app(monkeypatch, tmp_path).app.secret_key
+    second = _app(monkeypatch, tmp_path).app.secret_key
+
+    assert first == second
+    assert len(first) >= 32
+
+
+def test_an_exported_secret_key_still_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("GREMLIN_SECRET_KEY", "operator-chosen-key")
+    assert _app(monkeypatch, tmp_path).app.secret_key == "operator-chosen-key"
