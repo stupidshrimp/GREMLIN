@@ -277,3 +277,29 @@ def test_workers_sharing_an_access_database_sign_cookies_alike(monkeypatch, tmp_
 def test_an_exported_secret_key_still_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("GREMLIN_SECRET_KEY", "operator-chosen-key")
     assert _app(monkeypatch, tmp_path).app.secret_key == "operator-chosen-key"
+
+
+def test_logout_requires_the_session_csrf_token(monkeypatch, tmp_path):
+    """Signing out is a session write, and /developer/lock already guards it.
+
+    SameSite keeps the cookie off a cross-site form post, but a hostile page on
+    another origin of the same site is still same-site, and being signed out
+    mid-edit is a nuisance somebody would have to diagnose.
+    """
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+
+    assert client.post("/auth/logout").status_code == 403
+    assert client.post("/auth/logout", data={"csrf_token": "forged"}).status_code == 403
+    # Still signed in: the refused requests changed nothing.
+    with client.session_transaction() as browser_session:
+        assert browser_session["user"]["username"] == "root"
+
+    # The token the page carries is issued by rendering a page in this session.
+    assert b'name="gremlin-csrf-token"' in client.get("/").data
+    with client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    assert client.post("/auth/logout", data={"csrf_token": token}).status_code == 200
+    with client.session_transaction() as browser_session:
+        assert "user" not in browser_session

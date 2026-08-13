@@ -376,7 +376,13 @@ def login():
 
 
 @app.post("/auth/logout")
+@requires_csrf
 def logout():
+    # Same protection as /developer/lock, which does the same thing. SameSite
+    # keeps the session off a cross-*site* form post, but a hostile page on
+    # another origin of the same site is still same-site, and being signed out
+    # mid-edit by one is a nuisance somebody would have to diagnose. The token
+    # is what that page cannot obtain.
     session.clear()
     return jsonify({"ok": True})
 

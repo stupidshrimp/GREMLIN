@@ -80,7 +80,13 @@
   open.addEventListener("click", () => dialog.showModal());
   document.getElementById("accountClose")?.addEventListener("click", () => dialog.close());
   document.getElementById("logoutButton")?.addEventListener("click", async () => {
-    await fetch("/auth/logout", { method: "POST" });
+    // Carry the session's token: signing out is a session write like any
+    // other, and the server refuses one that did not come from a page it
+    // rendered. The token is in the page whenever somebody is signed in,
+    // which is the only time this button exists.
+    const body = new FormData();
+    body.append("csrf_token", document.querySelector('meta[name="gremlin-csrf-token"]')?.content || "");
+    await fetch("/auth/logout", { method: "POST", body });
     window.location.reload();
   });
   document.getElementById("loginForm")?.addEventListener("submit", async (event) => {
