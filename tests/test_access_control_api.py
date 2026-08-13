@@ -49,6 +49,33 @@ def test_login_rejects_non_object_json(monkeypatch, tmp_path):
         assert "JSON object" in response.get_json()["error"]
 
 
+def test_login_rejects_cross_origin_form_posts(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    response = module.app.test_client().post(
+        "/auth/login", data={"username": "root", "pin": "secret"}
+    )
+    assert response.status_code == 415
+    assert response.is_json
+
+
+def test_audit_failure_does_not_turn_committed_write_into_failure(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    user = module.access_control.authenticate("root", "secret")
+
+    def audit_failure(_user, _action):
+        raise module.sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(module.access_control, "record_change", audit_failure)
+    protected = module.requires_role("editor")(lambda: module.jsonify({"saved": True}))
+    with module.app.test_request_context("/test-write", method="POST"):
+        module.session["user"] = user
+        response = module.make_response(protected())
+
+    assert response.status_code == 200
+    assert response.get_json() == {"saved": True}
+    assert response.headers["X-GREMLIN-Audit-Warning"] == "audit-entry-not-stored"
+
+
 def test_role_is_revalidated_on_protected_request(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     module.access_control.save_user(None, "editor", "2468", "editor")

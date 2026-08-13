@@ -8,7 +8,7 @@ import tempfile
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, jsonify, make_response, redirect, render_template, request, send_file, session, url_for
 
 from repositories.analysis_repo import AnalysisRepository
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
@@ -92,7 +92,16 @@ def requires_role(role: str):
             response = view(*args, **kwargs)
             status = response[1] if isinstance(response, tuple) and len(response) > 1 else getattr(response, "status_code", 200)
             if int(status) < 400:
-                access_control.record_change(user, f"{request.method} {request.path}")
+                try:
+                    access_control.record_change(user, f"{request.method} {request.path}")
+                except (sqlite3.Error, OSError):
+                    # The protected view may already have committed its write.
+                    # Never turn that success into a 500 that invites a retry;
+                    # surface the audit failure separately and log its traceback
+                    # for the operator to repair.
+                    app.logger.exception("Protected write succeeded, but its audit entry could not be stored")
+                    response = make_response(response)
+                    response.headers["X-GREMLIN-Audit-Warning"] = "audit-entry-not-stored"
             return response
         return wrapped
     return decorator
@@ -358,8 +367,13 @@ def home():
 
 @app.post("/auth/login")
 def login():
-    payload = request.get_json(silent=True) if request.is_json else request.form
-    if request.is_json and not isinstance(payload, dict):
+    # JSON is deliberately required. Cross-origin HTML forms cannot send this
+    # content type, and a scripted cross-origin request must pass a CORS
+    # preflight that GREMLIN does not allow, preventing login CSRF/session swaps.
+    if not request.is_json:
+        return jsonify({"error": "Login credentials must be sent as JSON."}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
         return jsonify({"error": "Login credentials must be a JSON object."}), 400
     if not access_control.has_users():
         return jsonify({
