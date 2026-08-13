@@ -298,7 +298,7 @@ def test_a_half_configured_bootstrap_is_still_refused_on_a_fresh_database(tmp_pa
         control.ensure_schema(initial_username="root", initial_pin=None)
 
 
-def test_the_access_database_is_not_created_world_readable(tmp_path):
+def test_the_access_database_is_never_left_readable_by_others(tmp_path):
     """It holds the password hashes and the signing key; reading it is enough."""
     if os.name != "posix":
         pytest.skip("POSIX mode bits do not govern access on this platform")
@@ -306,7 +306,31 @@ def test_the_access_database_is_not_created_world_readable(tmp_path):
     AccessControl(path).ensure_schema(initial_username="root", initial_pin="secret")
     assert path.stat().st_mode & 0o077 == 0
 
-    # An operator who widens it deliberately is not overruled on restart.
-    os.chmod(path, 0o640)
+    # Narrowed on every start, not only on the one that creates the file. A
+    # file widened after the fact -- or left behind by the refused bootstrap
+    # below -- is otherwise never narrowed again.
+    os.chmod(path, 0o644)
     AccessControl(path).ensure_schema()
-    assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_mode & 0o077 == 0
+
+
+def test_a_refused_bootstrap_does_not_leave_a_readable_file_behind(tmp_path):
+    """sqlite creates the file on connect, before validation can refuse.
+
+    The first start therefore leaves the file on disk however it ends, and a
+    corrected restart finds it already existing -- so narrowing only on
+    creation would have left it world-readable permanently, holding the
+    administrator hash and the signing key.
+    """
+    if os.name != "posix":
+        pytest.skip("POSIX mode bits do not govern access on this platform")
+    path = tmp_path / "accesscontrol.db"
+    with pytest.raises(ValueError):
+        AccessControl(path).ensure_schema(initial_username="   ", initial_pin="secret")
+    assert path.exists()
+    assert path.stat().st_mode & 0o077 == 0
+
+    control = AccessControl(path)
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.shared_secret_key()
+    assert path.stat().st_mode & 0o077 == 0

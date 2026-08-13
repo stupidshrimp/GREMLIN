@@ -47,10 +47,11 @@ class AccessControl:
 
     def ensure_schema(self, *, initial_username: str | None = None, initial_pin: str | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Whether this call is what brings the file into existence, decided
-        # before connecting -- sqlite creates it on connect.
-        creating = not self.path.exists()
         with self._connect() as conn:
+            # Connecting is what creates the file, so narrow it here -- before
+            # anything below can raise. A refused bootstrap still leaves the
+            # file on disk, and every later start would find it already there.
+            self._restrict_permissions()
             # Startup can occur concurrently in a multi-worker deployment.
             # Claim the writer slot before schema migration and the empty-table
             # bootstrap decision so only one worker can create the first admin;
@@ -121,9 +122,6 @@ class AccessControl:
                         "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
                         (bootstrap_username, generate_password_hash(initial_pin)),
                     )
-        if creating:
-            self._restrict_permissions()
-
     def _restrict_permissions(self) -> None:
         """Keep the file readable only by the account GREMLIN runs as.
 
@@ -133,16 +131,24 @@ class AccessControl:
         is a directory other people can list -- and a default umask would have
         created this file world-readable there.
 
-        Only applied when this call creates the file, so an operator who
-        deliberately widens it later is not overruled on the next restart. Best
-        effort by nature: on Windows, where GREMLIN actually runs, POSIX mode
-        bits are not what governs access -- the directory's ACL is, and a
-        deployment sharing that directory should point
-        GREMLIN_ACCESS_DB_PATH at somewhere only the service account can read.
+        Applied on every start rather than only when this call creates the
+        file. An earlier version did the latter, to avoid overruling an
+        operator who had widened it deliberately, and that was the wrong trade:
+        sqlite creates the file on connect, so a bootstrap that was refused
+        left a world-readable file behind that no later start would ever narrow
+        again. Widening this file is not a thing to protect anyway -- nothing
+        legitimate needs to read another account's session-forging material.
+
+        Best effort by nature: on Windows, where GREMLIN actually runs, POSIX
+        mode bits are not what governs access -- the directory's ACL is, and a
+        deployment sharing that directory should point GREMLIN_ACCESS_DB_PATH
+        at somewhere only the service account can read.
         """
 
         try:
-            os.chmod(self.path, 0o600)
+            mode = self.path.stat().st_mode & 0o777
+            if mode & 0o077:
+                os.chmod(self.path, mode & 0o700)
         except OSError:
             pass
 
