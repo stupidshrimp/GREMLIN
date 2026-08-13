@@ -107,6 +107,22 @@ def test_role_is_revalidated_on_protected_request(monkeypatch, tmp_path):
     assert response.status_code == 403
 
 
+def test_pin_change_revokes_existing_session(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "editor", "old-pin", "editor")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "editor", "pin": "old-pin"}).status_code == 200
+    user = module.access_control.authenticate("editor", "old-pin")
+    module.access_control.save_user(user["id"], "editor", "new-pin", "editor")
+
+    response = client.post("/life-data-analysis/api/refresh-mapping", json={})
+    assert response.status_code == 401
+    with client.session_transaction() as browser_session:
+        assert "user" not in browser_session
+    assert module.access_control.authenticate("editor", "old-pin") is None
+    assert module.access_control.authenticate("editor", "new-pin") is not None
+
+
 def test_account_management_requires_session_csrf_token(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     client = module.app.test_client()

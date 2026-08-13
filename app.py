@@ -72,7 +72,7 @@ def _authorised_user(role: str) -> tuple[dict | None, tuple | None]:
     """Reload the account so deletion and demotion revoke access immediately."""
     snapshot = current_user()
     user = access_control.get_user(snapshot.get("id")) if snapshot and snapshot.get("id") else None
-    if not user:
+    if not user or snapshot.get("credential_version") != user.get("credential_version"):
         session.pop("user", None)
         return None, (jsonify({"error": "Log in to make changes; guest access is read-only."}), 401)
     session["user"] = user

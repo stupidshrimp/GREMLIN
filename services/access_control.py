@@ -34,10 +34,14 @@ class AccessControl:
                     username TEXT NOT NULL COLLATE NOCASE UNIQUE,
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('viewer','editor','admin')),
+                    credential_version INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+            if "credential_version" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +69,7 @@ class AccessControl:
 
     def get_user(self, user_id: int) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT id,username,role FROM users WHERE id=?", (user_id,)).fetchone()
+            row = conn.execute("SELECT id,username,role,credential_version FROM users WHERE id=?", (user_id,)).fetchone()
         return dict(row) if row else None
 
     def has_users(self) -> bool:
@@ -74,9 +78,9 @@ class AccessControl:
 
     def authenticate(self, username: str, pin: str) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT id,username,password_hash,role FROM users WHERE username=?", (username,)).fetchone()
+            row = conn.execute("SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)).fetchone()
         if row and check_password_hash(row["password_hash"], pin):
-            return {"id": row["id"], "username": row["username"], "role": row["role"]}
+            return {key: row[key] for key in ("id", "username", "role", "credential_version")}
         return None
 
     def authenticate_limited(self, username: str, pin: str, client_key: str) -> tuple[dict | None, int]:
@@ -98,11 +102,11 @@ class AccessControl:
             if locked_until > now:
                 return None, max(1, int(locked_until - now + 0.999))
             row = conn.execute(
-                "SELECT id,username,password_hash,role FROM users WHERE username=?", (username,)
+                "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
             ).fetchone()
             if row and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
-                return {"id": row["id"], "username": row["username"], "role": row["role"]}, 0
+                return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
             retry_after = 0
             for scope in scopes:
                 previous = attempts.get(scope)
@@ -143,7 +147,9 @@ class AccessControl:
             if user_id is None:
                 conn.execute("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)", (username, generate_password_hash(pin), role))
             elif pin:
-                conn.execute("UPDATE users SET username=?,password_hash=?,role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (username, generate_password_hash(pin), role, user_id))
+                conn.execute("""UPDATE users SET username=?,password_hash=?,role=?,
+                             credential_version=credential_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                             (username, generate_password_hash(pin), role, user_id))
             else:
                 conn.execute("UPDATE users SET username=?,role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (username, role, user_id))
 

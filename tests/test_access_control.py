@@ -16,6 +16,21 @@ def test_users_are_hashed_and_authenticate(tmp_path):
     assert stored != "2468"
 
 
+def test_existing_user_schema_gains_credential_version(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, role TEXT,
+            created_at TEXT, updated_at TEXT)""")
+    control = AccessControl(path)
+    control.ensure_schema()
+    with control._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    assert "credential_version" in columns
+
+
 def test_cannot_delete_current_or_last_admin(tmp_path):
     control = AccessControl(tmp_path / "accesscontrol.db")
     control.ensure_schema(initial_username="admin", initial_pin="1336")
