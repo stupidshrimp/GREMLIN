@@ -31,11 +31,20 @@ from services.life_data_service import (
 )
 from services.schema_service import SchemaService, SchemaServiceError
 from services.sync_service import (
+    APP_ENV_KEYS,
     LimbleSyncRunner,
     SyncAlreadyRunningError,
     SyncOptionError,
     SyncOptions,
+    load_dotenv_files,
 )
+
+# Read the app's own settings out of .env before anything below looks at them.
+# This is the one safe moment to do it: nothing has been built yet, so there is
+# no service holding a value that this could contradict. Only the names in
+# APP_ENV_KEYS are applied, and a real environment variable still wins over the
+# file -- so a host that exports GREMLIN_DEV_PIN keeps deciding.
+load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
@@ -140,9 +149,10 @@ DEV_SESSION_KEY = "dev_dashboard_unlocked"
 SYNC_LOCKED_MESSAGE = (
     "Starting a sync is disabled because the developer PIN is still the published default. "
     "That is acceptable for the read-only panels, but not for an action that writes to "
-    "GREMLIN.db and calls the Limble API with this server's credentials. Set GREMLIN_DEV_PIN "
-    "to a value of your own on the GREMLIN host and restart it to enable this. The scheduled "
-    "nightly sync is unaffected."
+    "GREMLIN.db and calls the Limble API with this server's credentials. To enable it, put a "
+    "PIN of your own in the .env file beside app.py as GREMLIN_DEV_PIN=your-pin (or set it as "
+    "an environment variable on the GREMLIN host), then restart GREMLIN. That value becomes "
+    "the PIN this page asks for. The scheduled nightly sync is unaffected either way."
 )
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None

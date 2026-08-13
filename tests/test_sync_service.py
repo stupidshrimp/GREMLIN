@@ -114,7 +114,7 @@ class DotenvTests(unittest.TestCase):
         self.addCleanup(sync_service._dotenv_applied.clear)
         sync_service._dotenv_loaded_scopes.clear()
         sync_service._dotenv_applied.clear()
-        for key in ("LIMBLE_CLIENT_ID", "LIMBLE_CLIENT_SECRET", "GREMLIN_DB_PATH"):
+        for key in ("LIMBLE_CLIENT_ID", "LIMBLE_CLIENT_SECRET", "GREMLIN_DB_PATH", "GREMLIN_DEV_PIN", "GREMLIN_SECRET_KEY"):
             os.environ.pop(key, None)
 
     def test_a_rotated_secret_is_picked_up_without_a_restart(self):
@@ -190,6 +190,48 @@ class DotenvTests(unittest.TestCase):
         # Caching is per scope, so the CLI's unrestricted load still reads.
         sync_service.load_dotenv_files()
         self.assertEqual(os.environ["GREMLIN_DB_PATH"], "/from/dotenv/GREMLIN.db")
+
+    def test_the_app_takes_its_own_settings_from_the_file(self):
+        # The developer PIN lives in .env so an operator can set it without
+        # touching Windows environment variables. It is read once at startup,
+        # before anything could be holding a contradicting value.
+        self.env_file.write_text(
+            "GREMLIN_DEV_PIN=my-own-pin\nGREMLIN_SECRET_KEY=stable-key\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files(only_keys=sync_service.APP_ENV_KEYS)
+        self.assertEqual(os.environ["GREMLIN_DEV_PIN"], "my-own-pin")
+        self.assertEqual(os.environ["GREMLIN_SECRET_KEY"], "stable-key")
+
+    def test_the_app_scope_leaves_everything_else_in_the_file_alone(self):
+        self.env_file.write_text(
+            "GREMLIN_DEV_PIN=my-own-pin\nGREMLIN_DB_PATH=/from/dotenv/GREMLIN.db\n"
+            "LIMBLE_CLIENT_ID=from-dotenv\n",
+            encoding="utf-8",
+        )
+        sync_service.load_dotenv_files(only_keys=sync_service.APP_ENV_KEYS)
+        self.assertEqual(os.environ["GREMLIN_DEV_PIN"], "my-own-pin")
+        # The database path is the one setting a running app must not pick up
+        # this way, and credentials have their own scope.
+        self.assertNotIn("GREMLIN_DB_PATH", os.environ)
+        self.assertNotIn("LIMBLE_CLIENT_ID", os.environ)
+
+    def test_a_pin_exported_by_the_host_beats_the_file(self):
+        os.environ["GREMLIN_DEV_PIN"] = "set-by-the-host"
+        self.env_file.write_text("GREMLIN_DEV_PIN=from-file\n", encoding="utf-8")
+        sync_service.load_dotenv_files(only_keys=sync_service.APP_ENV_KEYS)
+        self.assertEqual(os.environ["GREMLIN_DEV_PIN"], "set-by-the-host")
+
+    def test_each_scope_reads_the_file_for_itself(self):
+        self.env_file.write_text(
+            "GREMLIN_DEV_PIN=my-own-pin\nLIMBLE_CLIENT_ID=from-dotenv\n", encoding="utf-8"
+        )
+        sync_service.load_dotenv_files(only_keys=sync_service.APP_ENV_KEYS)
+        self.assertNotIn("LIMBLE_CLIENT_ID", os.environ)
+        # The app-scoped load must not persuade the credential-scoped one that
+        # the file has already been dealt with.
+        sync_service.load_dotenv_files(only_prefix=sync_service.LIMBLE_ENV_PREFIX)
+        self.assertEqual(os.environ["LIMBLE_CLIENT_ID"], "from-dotenv")
+        self.assertEqual(os.environ["GREMLIN_DEV_PIN"], "my-own-pin")
 
     def test_credentials_added_to_a_running_app_are_noticed(self):
         # The page disables the Run button when credentials are missing, and

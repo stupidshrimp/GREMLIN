@@ -130,9 +130,9 @@ class SyncOptionError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-# Scopes already loaded, so the cache is per-prefix: a restricted load must not
+# Scopes already loaded, so the cache is per-scope: a restricted load must not
 # convince a later unrestricted one that there is nothing left to read.
-_dotenv_loaded_scopes: set[str | None] = set()
+_dotenv_loaded_scopes: set[tuple[str | None, tuple[str, ...] | None]] = set()
 # Values this loader put into the environment, so a forced reload can tell its
 # own earlier work apart from a variable someone set outside the process.
 _dotenv_applied: dict[str, str] = {}
@@ -149,6 +149,16 @@ _dotenv_applied: dict[str, str] = {}
 # CLI stays unrestricted: it is a fresh process that has built nothing yet, and
 # GREMLIN_DB_PATH from .env is exactly how the scheduled job is configured.
 LIMBLE_ENV_PREFIX = "LIMBLE_"
+
+# Application settings the web process may take from a .env file. Unlike the
+# credentials above these are read once, at import, before anything is built --
+# which is the only safe moment for them. Loading GREMLIN_DB_PATH mid-process
+# would be the hazard described above; loading it before the first service
+# exists is simply configuration. GREMLIN_DB_PATH is deliberately not in this
+# list all the same: a deployment with one in .env for the scheduled job would
+# otherwise find the web app moving to that database on its next restart, which
+# is a decision for whoever runs it rather than a side effect of this change.
+APP_ENV_KEYS = frozenset({"GREMLIN_DEV_PIN", "GREMLIN_SECRET_KEY"})
 
 
 def _dotenv_candidates() -> list[Path]:
@@ -189,7 +199,12 @@ def _read_dotenv_values() -> dict[str, str]:
     return values
 
 
-def load_dotenv_files(*, force: bool = False, only_prefix: str | None = None) -> None:
+def load_dotenv_files(
+    *,
+    force: bool = False,
+    only_prefix: str | None = None,
+    only_keys: frozenset[str] | None = None,
+) -> None:
     """Minimal ``.env`` loader (no third-party dependency).
 
     Reads ``.env`` from the current directory and the repo root, setting any
@@ -216,12 +231,15 @@ def load_dotenv_files(*, force: bool = False, only_prefix: str | None = None) ->
     means nobody has set it since.
     """
 
-    if only_prefix in _dotenv_loaded_scopes and not force:
+    scope = (only_prefix, tuple(sorted(only_keys)) if only_keys is not None else None)
+    if scope in _dotenv_loaded_scopes and not force:
         return
-    _dotenv_loaded_scopes.add(only_prefix)
+    _dotenv_loaded_scopes.add(scope)
     values = _read_dotenv_values()
 
     def _in_scope(name: str) -> bool:
+        if only_keys is not None and name not in only_keys:
+            return False
         return only_prefix is None or name.startswith(only_prefix)
 
     if force:

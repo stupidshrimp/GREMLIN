@@ -84,9 +84,11 @@
     </p>
     <p class="dev-muted">
       Unlike the rest of this page, running a sync writes to <code>GREMLIN.db</code> and spends
-      this server's Limble credentials, so it needs a developer PIN that is actually a secret:
-      while the PIN is the published default — <code>GREMLIN_DEV_PIN</code> unset, or set to that
-      same value — the button stays disabled, and every read-only panel keeps working.
+      this server's Limble credentials, so it needs a developer PIN that is actually a secret.
+      While the PIN is the published default the button stays disabled and every read-only panel
+      keeps working; to enable it, put <code>GREMLIN_DEV_PIN=your-pin</code> in the
+      <code>.env</code> file beside <code>app.py</code> and restart GREMLIN. That value is then
+      the PIN this page asks for.
     </p>
 
     <dl class="dev-facts" id="dev-sync-facts"><dd class="dev-muted">Loading…</dd></dl>
