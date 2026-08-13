@@ -28,6 +28,12 @@ class AccessControl:
     def ensure_schema(self, *, initial_username: str | None = None, initial_pin: str | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            # Startup can occur concurrently in a multi-worker deployment.
+            # Claim the writer slot before schema migration and the empty-table
+            # bootstrap decision so only one worker can create the first admin;
+            # later workers observe its committed row rather than racing into a
+            # uniqueness error during module import.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

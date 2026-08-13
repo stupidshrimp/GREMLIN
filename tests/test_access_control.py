@@ -31,6 +31,24 @@ def test_existing_user_schema_gains_credential_version(tmp_path):
     assert "credential_version" in columns
 
 
+def test_parallel_schema_bootstrap_creates_one_admin_without_errors(tmp_path):
+    path = tmp_path / "accesscontrol.db"
+    barrier = Barrier(5)
+
+    def bootstrap(_index):
+        barrier.wait()
+        control = AccessControl(path)
+        control.ensure_schema(initial_username="root", initial_pin="secret")
+        return control.list_users()
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(bootstrap, range(5)))
+
+    assert all(len(users) == 1 for users in results)
+    users = AccessControl(path).list_users()
+    assert [(user["username"], user["role"]) for user in users] == [("root", "admin")]
+
+
 def test_cannot_delete_current_or_last_admin(tmp_path):
     control = AccessControl(tmp_path / "accesscontrol.db")
     control.ensure_schema(initial_username="admin", initial_pin="1336")
