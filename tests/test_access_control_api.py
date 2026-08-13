@@ -144,3 +144,25 @@ def test_account_management_requires_session_csrf_token(monkeypatch, tmp_path):
     )
     assert response.status_code == 302
     assert module.access_control.authenticate("attacker", "known-pin")["role"] == "admin"
+
+
+def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "editor", "2468", "editor")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "editor", "pin": "2468"}).status_code == 200
+
+    url = "/life-data-analysis/api/dispositions/excel?asset=A1&kind=wo"
+    response = client.post(url, data={"file": (b"not-a-workbook", "attack.xlsx")})
+    assert response.status_code == 403
+    assert "form expired" in response.get_json()["error"].lower()
+
+    # A token issued into the same signed session passes the CSRF gate; the
+    # intentionally invalid workbook then reaches normal upload validation.
+    with client.session_transaction() as browser_session:
+        browser_session["csrf_token"] = "trusted-token"
+    response = client.post(
+        url,
+        data={"csrf_token": "trusted-token", "file": (b"not-a-workbook", "attack.xlsx")},
+    )
+    assert response.status_code != 403

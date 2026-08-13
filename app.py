@@ -130,7 +130,8 @@ def requires_csrf(view):
 
 @app.context_processor
 def auth_context():
-    return {"auth_user": current_user()}
+    user = current_user()
+    return {"auth_user": user, "auth_csrf_token": csrf_token() if user else None}
 
 ICONS = {
     "home": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 3.7 10A1 1 0 0 0 3.3 11.1a1 1 0 0 0 1 .7h1v7.3c0 .5.4.9.9.9h4.8v-5.3c0-.5.4-.9.9-.9h1.8c.5 0 .9.4.9.9V20h4.8c.5 0 .9-.4.9-.9v-7.3h1a1 1 0 0 0 .6-1.8L12 3.2Z"/></svg>',
@@ -869,6 +870,7 @@ def api_download_disposition_excel():
 @app.route("/life-data-analysis/api/dispositions/excel", methods=["POST"])
 @life_data_api
 @requires_role("editor")
+@requires_csrf
 def api_upload_disposition_excel():
     service = _service_or_api_error()
     asset_number = _required_asset()

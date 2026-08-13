@@ -2540,6 +2540,8 @@
       if (!file) return;
       const form = new FormData();
       form.append("file", file);
+      const csrf = document.querySelector('meta[name="gremlin-csrf-token"]');
+      if (csrf) form.append("csrf_token", csrf.content);
       beginLoading("Importing disposition Excel…");
       try {
         const url = `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}`;
