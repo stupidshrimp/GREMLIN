@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 import sqlite3
@@ -18,6 +19,16 @@ LOGIN_LOCK_SECONDS = 15 * 60
 DB_BUSY_TIMEOUT_SECONDS = 30
 MAX_USERNAME_CHARS = 128
 MAX_PIN_CHARS = 256
+# How many *unlocked* limiter rows to keep. Hashing bounds each key's size but
+# not how many arrive: a distributed caller submitting a fresh username per
+# request adds an account scope every time, and rows survive until their window
+# expires. Since sqlite does not return freed pages to the filesystem, an
+# unbounded burst would permanently enlarge accesscontrol.db. Rows that are
+# currently locked out are never evicted -- those are the ones doing the work,
+# and dropping them would let a flood clear somebody's lockout.
+LOGIN_ATTEMPT_ROW_CAP = 10_000
+
+logger = logging.getLogger(__name__)
 
 
 def _check_credential_bounds(username: str, pin: str) -> None:
@@ -139,16 +150,37 @@ class AccessControl:
         again. Widening this file is not a thing to protect anyway -- nothing
         legitimate needs to read another account's session-forging material.
 
-        Best effort by nature: on Windows, where GREMLIN actually runs, POSIX
-        mode bits are not what governs access -- the directory's ACL is, and a
-        deployment sharing that directory should point GREMLIN_ACCESS_DB_PATH
-        at somewhere only the service account can read.
+        Checked afterwards rather than assumed, and a failure is reported at
+        WARNING with the remedy in it. It is not fatal: refusing to start on
+        mode bits would take down every Windows deployment, which is the
+        platform GREMLIN actually runs on -- there os.chmod only toggles the
+        read-only attribute, never raises for an ACL it cannot express, and
+        st_mode is synthesised back from that attribute, so an ordinary
+        writable file reports 0o666 and would look world-readable to any such
+        check. The verification is therefore limited to POSIX, where the bits
+        mean what they say. On Windows the directory ACL governs, and a
+        deployment sharing that directory wants GREMLIN_ACCESS_DB_PATH pointed
+        somewhere only the service account can read.
         """
 
         try:
             mode = self.path.stat().st_mode & 0o777
             if mode & 0o077:
                 os.chmod(self.path, mode & 0o700)
+        except OSError as exc:
+            logger.warning("Could not restrict permissions on %s: %s", self.path, exc)
+        if os.name != "posix":
+            return
+        try:
+            if self.path.stat().st_mode & 0o077:
+                logger.warning(
+                    "%s is readable by other accounts on this machine. It holds the "
+                    "password hashes and the session signing key, so any of them can "
+                    "forge an administrator. Restrict it to the account GREMLIN runs "
+                    "as, or set GREMLIN_ACCESS_DB_PATH to a directory only that "
+                    "account can read.",
+                    self.path,
+                )
         except OSError:
             pass
 
@@ -222,6 +254,21 @@ class AccessControl:
             conn.execute(
                 "DELETE FROM login_attempts WHERE window_started < ? AND locked_until <= ?",
                 (now - LOGIN_WINDOW_SECONDS, now),
+            )
+            # The sweep above only reaches rows whose window has already run
+            # out, so a fast enough burst outruns it inside the window. Keep
+            # the newest LOGIN_ATTEMPT_ROW_CAP unlocked rows and drop the rest:
+            # discarding the oldest costs at most a partial failure count on a
+            # scope nobody has touched recently, which is cheaper than letting
+            # the file grow without limit.
+            conn.execute(
+                """DELETE FROM login_attempts WHERE scope_key IN (
+                       SELECT scope_key FROM login_attempts
+                        WHERE locked_until <= ?
+                        ORDER BY window_started DESC
+                        LIMIT -1 OFFSET ?
+                   )""",
+                (now, LOGIN_ATTEMPT_ROW_CAP),
             )
             attempts = {row["scope_key"]: row for row in conn.execute(
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes

@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import os
+import time
 from threading import Barrier
 
 import pytest
 
-from services.access_control import AccessControl
+from services.access_control import LOGIN_FAILURE_LIMIT, AccessControl
 
 
 def test_users_are_hashed_and_authenticate(tmp_path):
@@ -334,3 +335,48 @@ def test_a_refused_bootstrap_does_not_leave_a_readable_file_behind(tmp_path):
     control.ensure_schema(initial_username="root", initial_pin="secret")
     control.shared_secret_key()
     assert path.stat().st_mode & 0o077 == 0
+
+
+def test_login_attempt_rows_are_capped(tmp_path, monkeypatch):
+    """Hashing bounds each key's size; this bounds how many arrive.
+
+    sqlite does not hand freed pages back to the filesystem, so an unbounded
+    burst inside the failure window would permanently enlarge the file.
+    """
+    monkeypatch.setattr("services.access_control.LOGIN_ATTEMPT_ROW_CAP", 20)
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+
+    # A fresh username every time, which is what a distributed caller submits:
+    # each one is an account scope nothing will ever look up again.
+    for index in range(200):
+        control.authenticate_limited(f"nobody-{index}", "wrong", f"client-{index}")
+
+    with control._connect() as conn:
+        unlocked = conn.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE locked_until <= ?", (time.time(),)
+        ).fetchone()[0]
+    # The cap is enforced before the current request's own two scopes are
+    # written, so the standing bound is the cap plus those two -- bounded,
+    # which is the whole point, rather than growing with the burst.
+    assert unlocked <= 20 + 2
+
+
+def test_capping_never_evicts_an_active_lockout(tmp_path, monkeypatch):
+    """Otherwise a flood would be a way to clear your own lockout."""
+    monkeypatch.setattr("services.access_control.LOGIN_ATTEMPT_ROW_CAP", 5)
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+
+    for _ in range(LOGIN_FAILURE_LIMIT):
+        control.authenticate_limited("root", "wrong", "attacker")
+    _user, retry_after = control.authenticate_limited("root", "secret", "attacker")
+    assert retry_after > 0
+
+    # Flood well past the cap from unrelated scopes.
+    for index in range(100):
+        control.authenticate_limited(f"nobody-{index}", "wrong", f"client-{index}")
+
+    # The lockout survived, and the correct PIN is still held.
+    _user, retry_after = control.authenticate_limited("root", "secret", "attacker")
+    assert retry_after > 0
