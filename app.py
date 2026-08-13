@@ -30,6 +30,21 @@ from services.life_data_service import (
     LifeDataService,
 )
 from services.schema_service import SchemaService, SchemaServiceError
+from services.sync_service import (
+    APP_ENV_KEYS,
+    LimbleSyncRunner,
+    SyncAlreadyRunningError,
+    SyncOptionError,
+    SyncOptions,
+    load_dotenv_files,
+)
+
+# Read the app's own settings out of .env before anything below looks at them.
+# This is the one safe moment to do it: nothing has been built yet, so there is
+# no service holding a value that this could contradict. Only the names in
+# APP_ENV_KEYS are applied, and a real environment variable still wins over the
+# file -- so a host that exports GREMLIN_DEV_PIN keeps deciding.
+load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
@@ -100,12 +115,67 @@ _life_data_service_error: str | None = None
 # known value in a public repository -- so treat anyone who can reach this port
 # as able to read the whole database through the dashboard. That trade-off was
 # made knowingly in favour of the page working with no configuration; if it ever
-# needs to hold against the network, set GREMLIN_DEV_PIN (and consider failing
-# closed when it is unset) rather than assuming this default protects anything.
-DEV_DASHBOARD_PIN = os.environ.get("GREMLIN_DEV_PIN") or "1336"
+# needs to hold against the network, set GREMLIN_DEV_PIN rather than assuming
+# this default protects anything.
+DEFAULT_DEV_PIN = "1336"
+_DEV_PIN_FROM_ENV = os.environ.get("GREMLIN_DEV_PIN")
+DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or DEFAULT_DEV_PIN
+
+
+def _pin_is_configured(pin_from_env: str | None) -> bool:
+    """Whether the PIN in force is a secret, rather than the published fallback.
+
+    Exporting GREMLIN_DEV_PIN=1336 is not configuring a PIN. The value is in this
+    repository, so a deployment that sets it is protected by nothing at all --
+    and a check that only asked whether the variable *existed* would hand it
+    authority to write to the database on that basis. What matters is that the
+    PIN is not the one everybody can read.
+    """
+
+    return bool(pin_from_env) and pin_from_env != DEFAULT_DEV_PIN
+
+
+# Read once, from the same value the PIN itself comes from, so the two can never
+# disagree: a GREMLIN_DEV_PIN exported after startup does not change the PIN
+# being checked, and must not change this either.
+DEV_PIN_IS_CONFIGURED = _pin_is_configured(_DEV_PIN_FROM_ENV)
 DEV_SESSION_KEY = "dev_dashboard_unlocked"
+
+# Reading the database through this page needs no configuration; starting a sync
+# does. The difference is what the action can do: it writes to a GREMLIN.db other
+# people are using and spends this server's Limble credentials, and the default
+# PIN is published, so that authority has to be granted deliberately rather than
+# inherited from a fallback. Inspection panels are unaffected.
+SYNC_LOCKED_MESSAGE = (
+    "Starting a sync is disabled because the developer PIN is still the published default. "
+    "That is acceptable for the read-only panels, but not for an action that writes to "
+    "GREMLIN.db and calls the Limble API with this server's credentials. To enable it, put a "
+    "PIN of your own in the .env file beside app.py as GREMLIN_DEV_PIN=your-pin (or set it as "
+    "an environment variable on the GREMLIN host), then restart GREMLIN. That value becomes "
+    "the PIN this page asks for. The scheduled nightly sync is unaffected either way."
+)
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
+
+def _on_sync_succeeded() -> None:
+    """Drop cached state that a completed sync has just made wrong.
+
+    A sync maps through a LifeDataService of its own, so the one this app holds
+    never learns that the mapped table grew. Its asset list is cached in memory,
+    and stale is the worst outcome available here: the sync would report hundreds
+    of records mapped while the Life Data page kept insisting the new assets do
+    not exist. Runs before the job reports success, so a page that reacts to the
+    finish reads fresh data.
+    """
+
+    if _life_data_service is not None:
+        _life_data_service.invalidate_caches()
+
+
+# One shared runner for the whole process, so a sync started by one browser tab
+# is visible (and un-duplicatable) from every other. The nightly Task Scheduler
+# job is a separate process and is not covered by it; see services/sync_service.py.
+sync_runner = LimbleSyncRunner(on_success=_on_sync_succeeded)
 
 
 def _configured_db_path() -> Path:
@@ -870,6 +940,11 @@ def api_weibull_report():
 # `mode=ro` connections. That is deliberate: GREMLIN.db is expected to sit on a
 # shared drive and serialises writers through BEGIN IMMEDIATE, so a dev query
 # holding the writer slot would stall every other GREMLIN user.
+#
+# The one deliberate exception is the Limble sync panel, which runs the nightly
+# ingestion job on demand and therefore does write. It is a background job with
+# its own progress endpoint rather than an inline request; see
+# services/sync_service.py.
 # ---------------------------------------------------------------------------
 
 
@@ -1046,6 +1121,63 @@ def api_dev_table_rows(table):
 def api_dev_query():
     payload = request.get_json(silent=True) or {}
     return jsonify(get_schema_service().run_query(payload.get("sql") or ""))
+
+
+# --- Limble sync -----------------------------------------------------------
+#
+# The one place on this page that writes. Everything else here reads GREMLIN.db
+# through SchemaService's read-only connections; this runs the same ingestion
+# the nightly Task Scheduler job runs, so it fetches from the Limble API and
+# writes what it finds. The PIN is what limits that to certain users -- it is the
+# only notion of one this app has -- and because it authorises a write, it has to
+# be a PIN someone chose: see DEV_PIN_IS_CONFIGURED.
+
+
+@app.route("/developer/api/sync")
+@dev_api
+def api_dev_sync_status():
+    """Progress of the current (or most recent) sync, plus how to judge it."""
+
+    payload = sync_runner.describe(_configured_db_path())
+    # Reported rather than enforced here: status stays readable when starting is
+    # not allowed, so the page can explain why its button is disabled instead of
+    # a click failing with no account of itself.
+    payload["start_allowed"] = DEV_PIN_IS_CONFIGURED
+    payload["start_blocked_reason"] = None if DEV_PIN_IS_CONFIGURED else SYNC_LOCKED_MESSAGE
+    return jsonify(payload)
+
+
+@app.route("/developer/api/sync", methods=["POST"])
+@dev_api
+def api_dev_sync_start():
+    """Start a Limble sync in the background and return its initial status."""
+
+    # Fail closed on the default PIN. This is the check the page's disabled
+    # button reflects, but the button is not the guard -- the endpoint is.
+    if not DEV_PIN_IS_CONFIGURED:
+        return jsonify({"error": SYNC_LOCKED_MESSAGE}), 403
+
+    # Require a JSON body. A cross-site <form> can POST to this URL with the
+    # browser's cookies attached but cannot set this content type without a
+    # preflight the browser will refuse, so insisting on it keeps a drive-by
+    # page from triggering a database write in an unlocked dev session.
+    if not request.is_json:
+        return jsonify({"error": "Sync requests must be sent as JSON."}), 415
+    # A body that does not parse is a failed request, not an empty one. Treating
+    # it as "no options given" would answer a truncated or malformed request by
+    # running a full, writing sync -- the most consequential thing this endpoint
+    # can do -- so require an object and say so otherwise. An explicit `{}` is
+    # still a valid way to ask for the defaults.
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Sync options must be a JSON object."}), 400
+    try:
+        options = SyncOptions.from_payload(payload)
+        return jsonify(sync_runner.start(_configured_db_path(), options))
+    except SyncAlreadyRunningError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except SyncOptionError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.errorhandler(404)

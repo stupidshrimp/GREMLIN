@@ -33,6 +33,20 @@ from integrations.limble import LimbleClient
 from repositories.raw_repo import RawRepository
 
 
+# The phases a sync moves through, in order. The names are part of the contract
+# with anything reporting progress (see services.sync_service): a caller weights
+# them to turn "phase + count" into an overall fraction, so renaming one here
+# means renaming it there.
+PHASE_TASKS = "tasks"
+PHASE_ASSETS = "assets"
+PHASE_TRANSFORM = "transform"
+PHASE_WRITE = "write"
+PHASE_MAP = "map"
+
+# How often the transform loop reports progress, in records.
+_TRANSFORM_PROGRESS_EVERY = 250
+
+
 class IngestionService:
     """Coordinates the Limble -> GREMLIN.db synchronization workflow."""
 
@@ -45,6 +59,8 @@ class IngestionService:
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
         log: Callable[[str], None] = print,
+        progress: Callable[[str, int | None, int | None], None] | None = None,
+        on_batch_started: Callable[[int], None] | None = None,
     ) -> None:
         self.limble_client = limble_client
         self.raw_repo = raw_repo
@@ -52,15 +68,44 @@ class IngestionService:
         self.refresh_mapping = refresh_mapping
         self.exclude_templates = exclude_templates
         self._log = log
+        # ``progress(phase, current, total)`` is optional structured reporting
+        # for a UI; ``log`` stays the human-readable narration the CLI prints.
+        # ``total`` is None where the size is genuinely unknown until the phase
+        # ends (the Limble list endpoints do not report a total), so callers
+        # must treat it as "unknown" rather than "zero".
+        self._progress = progress
+        # Called with the import_batch id as soon as the row exists. A caller
+        # watching the database for other people's imports needs to know which
+        # open batch is this one's, and cannot infer it: the row does not appear
+        # until the fetching is over, so for most of a run there isn't one.
+        self._on_batch_started = on_batch_started
 
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
+    def _emit(self, phase: str, current: int | None = None, total: int | None = None) -> None:
+        """Report progress, if anyone is listening.
+
+        Progress reporting is decoration on a data import: a listener that
+        raises must not lose an otherwise good sync, so failures are swallowed.
+        """
+
+        if self._progress is None:
+            return
+        try:
+            self._progress(phase, current, total)
+        except Exception:  # noqa: BLE001 - never fail a sync over its progress bar
+            pass
+
     def sync_all(self, updated_since: int | None = None, *, dry_run: bool = False) -> dict[str, Any]:
         """Run one sync cycle and return a summary dict."""
 
         self._log("Fetching tasks from Limble ...")
-        tasks = self.limble_client.get_tasks(updated_since=updated_since)
+        self._emit(PHASE_TASKS, 0, None)
+        tasks = self.limble_client.get_tasks(
+            updated_since=updated_since,
+            on_page=lambda fetched, _page: self._emit(PHASE_TASKS, fetched, None),
+        )
         fetched_tasks = len(tasks)
         self._log(f"Fetched {fetched_tasks} task(s).")
 
@@ -79,11 +124,19 @@ class IngestionService:
         asset_index = AssetIndex.empty()
         if self.fetch_assets:
             self._log("Fetching assets for enrichment ...")
-            assets = self.limble_client.get_assets()
+            self._emit(PHASE_ASSETS, 0, None)
+            assets = self.limble_client.get_assets(
+                on_page=lambda fetched, _page: self._emit(PHASE_ASSETS, fetched, None),
+            )
             asset_index = AssetIndex.from_assets(assets)
             self._log(f"Fetched {len(assets)} asset(s).")
 
-        records = [self.transform(task, asset_index) for task in tasks]
+        self._emit(PHASE_TRANSFORM, 0, len(tasks))
+        records = []
+        for position, task in enumerate(tasks, start=1):
+            records.append(self.transform(task, asset_index))
+            if position % _TRANSFORM_PROGRESS_EVERY == 0 or position == len(tasks):
+                self._emit(PHASE_TRANSFORM, position, len(tasks))
 
         if dry_run:
             self._log("Dry run: no database changes were made.")
@@ -99,10 +152,21 @@ class IngestionService:
                 "dry_run": True,
             }
 
+        self._log(f"Writing {len(records)} record(s) to the database ...")
+        self._emit(PHASE_WRITE, 0, len(records))
         self.raw_repo.ensure_schema()
         batch_id = self.raw_repo.start_batch(notes=f"Limble sync of {len(records)} task(s)")
+        if self._on_batch_started is not None:
+            try:
+                self._on_batch_started(batch_id)
+            except Exception:  # noqa: BLE001 - bookkeeping must not fail an import
+                pass
         try:
-            counts = self.raw_repo.upsert_records(batch_id, records)
+            counts = self.raw_repo.upsert_records(
+                batch_id,
+                records,
+                progress=lambda done, total: self._emit(PHASE_WRITE, done, total),
+            )
         except Exception:
             self.raw_repo.complete_batch(batch_id, status="FAILED", raw_row_count=0)
             raise
@@ -114,6 +178,10 @@ class IngestionService:
 
         mapping = {"mapped": 0, "mapping_ok": True, "mapping_note": "skipped (--no-map)"}
         if self.refresh_mapping:
+            # The mapping refresh is one SQL statement inside LifeDataService, so
+            # there is no count to report while it runs -- only that it started.
+            self._emit(PHASE_MAP, None, None)
+            self._log("Refreshing the mapped layer ...")
             mapping = self._refresh_mapped_records()
 
         return {
