@@ -103,9 +103,9 @@
        same place for every analysis type (in Weibull the Pareto is the last
        panel; the other analyses render their extra panels below this bar). -->
   <div id="lda-actions" class="lda-action-bar" hidden>
-    <button type="button" class="btn-primary" id="lda-perform">Perform Analysis</button>
-    <button type="button" class="btn-secondary" id="lda-disposition-wo">Disposition Work Orders</button>
-    <button type="button" class="btn-secondary" id="lda-disposition-pm">Disposition PMs</button>
+    <button type="button" class="btn-primary" id="lda-perform" {% if not auth_can_edit %}hidden{% endif %}>Perform Analysis</button>
+    <button type="button" class="btn-secondary" id="lda-disposition-wo" {% if not auth_can_edit %}hidden{% endif %}>Disposition Work Orders</button>
+    <button type="button" class="btn-secondary" id="lda-disposition-pm" {% if not auth_can_edit %}hidden{% endif %}>Disposition PMs</button>
   </div>
 
   <!-- Failure Mode Trend chart (Failure Mode Trend Analysis only). -->

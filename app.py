@@ -55,7 +55,10 @@ app = Flask(__name__)
 # key simply means developers re-enter the PIN after a restart.
 app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
 
-ACCESS_DB_PATH = Path(os.environ.get("GREMLIN_ACCESS_DB_PATH", Path(__file__).with_name("accesscontrol.db")))
+_gremlin_db_for_access = Path(os.environ.get("GREMLIN_DB_PATH") or DEFAULT_DB_PATH)
+ACCESS_DB_PATH = Path(
+    os.environ.get("GREMLIN_ACCESS_DB_PATH") or _gremlin_db_for_access.with_name("accesscontrol.db")
+)
 access_control = AccessControl(ACCESS_DB_PATH)
 access_control.ensure_schema(
     initial_username=os.environ.get("GREMLIN_ADMIN_USERNAME"),
@@ -130,8 +133,16 @@ def requires_csrf(view):
 
 @app.context_processor
 def auth_context():
-    user = current_user()
-    return {"auth_user": user, "auth_csrf_token": csrf_token() if user else None}
+    snapshot = current_user()
+    user = access_control.get_user(snapshot["id"]) if snapshot and snapshot.get("id") else None
+    valid = bool(user and snapshot.get("credential_version") == user.get("credential_version"))
+    user = user if valid else None
+    can_edit = bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL["editor"])
+    return {
+        "auth_user": user,
+        "auth_can_edit": can_edit,
+        "auth_csrf_token": csrf_token() if user else None,
+    }
 
 ICONS = {
     "home": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 3.7 10A1 1 0 0 0 3.3 11.1a1 1 0 0 0 1 .7h1v7.3c0 .5.4.9.9.9h4.8v-5.3c0-.5.4-.9.9-.9h1.8c.5 0 .9.4.9.9V20h4.8c.5 0 .9-.4.9-.9v-7.3h1a1 1 0 0 0 .6-1.8L12 3.2Z"/></svg>',
@@ -379,6 +390,9 @@ def perform_analysis():
 
 @app.route("/life-data-analysis/disposition")
 def disposition():
+    _user, error = _authorised_user("editor")
+    if error:
+        return render_template("home.html", page_title="Not Authorized", nav_links=NAV_LINKS), 403
     return render_template(
         "disposition.html",
         page_title="Disposition",

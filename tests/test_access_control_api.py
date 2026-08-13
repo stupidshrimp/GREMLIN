@@ -166,3 +166,41 @@ def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
         data={"csrf_token": "trusted-token", "file": (b"not-a-workbook", "attack.xlsx")},
     )
     assert response.status_code != 403
+
+
+def test_guest_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    settings = client.get("/settings").data
+    assert b"Asset group schedules" not in settings
+    assert b"Refresh CMMS mapping" not in settings
+    analysis = client.get("/life-data-analysis/perform-analysis").data
+    assert b'id="lda-perform" hidden' in analysis
+    assert b'id="lda-disposition-wo" hidden' in analysis
+    assert client.get("/life-data-analysis/disposition").status_code == 403
+    landing = client.get("/life-data-analysis").data
+    assert b'href="/life-data-analysis/disposition"' not in landing
+
+
+def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "editor", "2468", "editor")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "editor", "pin": "2468"}).status_code == 200
+    settings = client.get("/settings").data
+    assert b"Asset group schedules" in settings
+    assert b"Refresh CMMS mapping" in settings
+    assert client.get("/life-data-analysis/disposition").status_code == 200
+
+
+def test_access_database_defaults_next_to_configured_gremlin_database(monkeypatch, tmp_path):
+    gremlin_path = tmp_path / "data" / "GREMLIN.db"
+    gremlin_path.parent.mkdir()
+    monkeypatch.setenv("GREMLIN_DB_PATH", str(gremlin_path))
+    monkeypatch.delenv("GREMLIN_ACCESS_DB_PATH", raising=False)
+    monkeypatch.setenv("GREMLIN_ADMIN_USERNAME", "root")
+    monkeypatch.setenv("GREMLIN_ADMIN_PIN", "secret")
+    import app
+    module = importlib.reload(app)
+    assert module.ACCESS_DB_PATH == gremlin_path.with_name("accesscontrol.db")
+    assert module.ACCESS_DB_PATH.exists()

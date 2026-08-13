@@ -181,6 +181,12 @@
     }
     if (!response.ok) {
       const message = (data && data.error) || `Request failed (${response.status}).`;
+      if ((response.status === 401 || response.status === 403) && window.gremlinToast) {
+        window.gremlinToast(message);
+        const error = new Error(message);
+        error.toastShown = true;
+        throw error;
+      }
       throw new Error(message);
     }
     return data;
@@ -238,6 +244,10 @@
   }
 
   function showBanner(message, kind) {
+    if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+      window.gremlinToast(message);
+      return;
+    }
     const banner = $("lda-status");
     banner.textContent = message;
     banner.className = "lda-banner " + (kind ? "is-" + kind : "is-info");

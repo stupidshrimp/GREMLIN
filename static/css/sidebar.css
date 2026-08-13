@@ -27,6 +27,9 @@
 .account-dialog input { font:inherit; padding:10px 12px; border:1px solid #b8c9bf; border-radius:8px; }
 .account-close { float:right; border:0; background:none; font-size:1.6rem; cursor:pointer; }
 .account-error { color:#96261a; margin:0; }
+.gremlin-toast-host { position:fixed; top:1rem; right:1rem; z-index:2000; display:grid; gap:.6rem; max-width:min(380px,calc(100vw - 2rem)); pointer-events:none; }
+.gremlin-toast { padding:.85rem 1.1rem; border-radius:12px; border:1px solid #d98a8a; background:#fbecec; color:#7d2b2b; box-shadow:0 8px 24px rgba(0,0,0,.18); font-weight:600; pointer-events:auto; opacity:0; transform:translateX(12px); transition:opacity .2s,transform .2s; }
+.gremlin-toast.is-visible { opacity:1; transform:none; }
 
 .sidebar-heading {
   margin: 0 0 0.8rem;

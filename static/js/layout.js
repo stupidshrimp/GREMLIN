@@ -58,6 +58,23 @@
 })();
 
 (function () {
+  window.gremlinToast = function (message) {
+    let host = document.getElementById("gremlinToastHost");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "gremlinToastHost";
+      host.className = "gremlin-toast-host";
+      document.body.appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = "gremlin-toast";
+    toast.setAttribute("role", "status");
+    toast.textContent = message;
+    host.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("is-visible"));
+    setTimeout(() => { toast.classList.remove("is-visible"); setTimeout(() => toast.remove(), 250); }, 5000);
+  };
+
   const dialog = document.getElementById("accountDialog");
   const open = document.getElementById("accountButton");
   if (!dialog || !open) return;
