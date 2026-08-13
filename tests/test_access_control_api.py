@@ -1,5 +1,7 @@
 import importlib
 
+import pytest
+
 
 def _app(monkeypatch, tmp_path):
     monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
@@ -303,3 +305,46 @@ def test_logout_requires_the_session_csrf_token(monkeypatch, tmp_path):
     assert client.post("/auth/logout", data={"csrf_token": token}).status_code == 200
     with client.session_transaction() as browser_session:
         assert "user" not in browser_session
+
+
+def test_the_login_limiter_sees_the_real_client_behind_a_trusted_proxy(monkeypatch, tmp_path):
+    """Otherwise the proxy's address is one shared client for the whole plant.
+
+    Five wrong PINs from anybody would lock that shared scope and hand every
+    other user a 429 for fifteen minutes, correct credentials included.
+    """
+    monkeypatch.setenv("GREMLIN_TRUSTED_PROXY_HOPS", "1")
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+
+    # Four failures from one forwarded client, then a fifth that locks it.
+    for _ in range(5):
+        client.post(
+            "/auth/login",
+            json={"username": "root", "pin": "wrong"},
+            headers={"X-Forwarded-For": "10.0.0.9"},
+        )
+    locked = client.post(
+        "/auth/login", json={"username": "nobody", "pin": "x"},
+        headers={"X-Forwarded-For": "10.0.0.9"},
+    )
+    assert locked.status_code == 429
+
+    # A different browser behind the same proxy is unaffected by that lockout.
+    other = client.post(
+        "/auth/login", json={"username": "nobody", "pin": "x"},
+        headers={"X-Forwarded-For": "10.0.0.10"},
+    )
+    assert other.status_code == 401
+
+
+def test_a_nonsense_proxy_hop_count_is_refused_rather_than_ignored(monkeypatch, tmp_path):
+    """Silently ignoring it would leave the deployment believing it is throttled."""
+    module = _app(monkeypatch, tmp_path)
+    for value in ("yes", "0", "-1", "1.5", "one"):
+        with pytest.raises(RuntimeError, match="GREMLIN_TRUSTED_PROXY_HOPS"):
+            module._parse_trusted_proxy_hops(value)
+    # Absent means "served directly", which is the ordinary case and not an error.
+    assert module._parse_trusted_proxy_hops(None) == 0
+    assert module._parse_trusted_proxy_hops("   ") == 0
+    assert module._parse_trusted_proxy_hops(" 2 ") == 2

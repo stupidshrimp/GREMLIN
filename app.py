@@ -50,6 +50,43 @@ load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
+# Who the login limiter thinks it is talking to. Served directly, that is
+# request.remote_addr and nothing needs saying. Behind a reverse proxy or a TLS
+# terminator it is the *proxy* -- one address for the whole plant -- so five
+# wrong PINs from anybody would lock the shared per-client scope and hand every
+# other user a 429 for fifteen minutes, correct credentials included.
+#
+# Opt-in, because trusting X-Forwarded-For without a proxy in front is worse
+# than not reading it: any client could then claim whatever address it liked and
+# step around the limiter entirely. Set this to the number of proxies GREMLIN
+# actually sits behind (usually 1) and only that many hops are believed.
+def _parse_trusted_proxy_hops(raw: str | None) -> int:
+    """How many forwarding hops to believe; 0 when the setting is absent."""
+
+    value = (raw or "").strip()
+    if not value:
+        return 0
+    try:
+        hops = int(value)
+    except ValueError:
+        hops = 0
+    if hops < 1:
+        # Refuse rather than fall back. A deployment that set this believes its
+        # per-client throttling works, and silently ignoring the value would
+        # leave that belief wrong -- which is the direction that hurts.
+        raise RuntimeError(
+            "GREMLIN_TRUSTED_PROXY_HOPS must be a positive whole number of proxies "
+            f"(got {value!r})."
+        )
+    return hops
+
+
+_trusted_proxy_hops = _parse_trusted_proxy_hops(os.environ.get("GREMLIN_TRUSTED_PROXY_HOPS"))
+if _trusted_proxy_hops:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_trusted_proxy_hops)
+
 _gremlin_db_for_access = Path(os.environ.get("GREMLIN_DB_PATH") or DEFAULT_DB_PATH)
 ACCESS_DB_PATH = Path(
     os.environ.get("GREMLIN_ACCESS_DB_PATH") or _gremlin_db_for_access.with_name("accesscontrol.db")
