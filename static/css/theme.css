@@ -46,6 +46,13 @@ body {
   --sidebar-width: 290px;
 }
 
+/* Collapsed sidebar: narrow enough for just the icon rail. Driving it from the
+   custom property means the grid column and the sidebar itself stay in sync and
+   animate together via the transitions declared above. */
+body.sidebar-collapsed {
+  --sidebar-width: 72px;
+}
+
 
 .content {
   grid-area: content;

@@ -21,7 +21,7 @@ import base64
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import requests
 
@@ -79,8 +79,14 @@ def _first_env(*names: str) -> str | None:
 class LimbleClient:
     """Thin, paginating HTTP client for the Limble CMMS v2 API."""
 
-    def __init__(self, config: LimbleConfig) -> None:
+    def __init__(self, config: LimbleConfig, *, log: Callable[[str], None] = print) -> None:
         self.config = config
+        # Rate limiting and retries are the two things that make a sync take
+        # minutes instead of seconds, so the client reports them through an
+        # injectable log rather than straight to stdout: a caller watching the
+        # run (the developer dashboard) can then show *why* it is waiting
+        # instead of a bar that appears to have stalled.
+        self._log = log
         self._session = requests.Session()
         credentials = f"{config.client_id}:{config.client_secret}"
         encoded = base64.b64encode(credentials.encode()).decode()
@@ -95,7 +101,12 @@ class LimbleClient:
     # ------------------------------------------------------------------
     # Public endpoint helpers
     # ------------------------------------------------------------------
-    def get_tasks(self, updated_since: int | None = None) -> list[dict[str, Any]]:
+    def get_tasks(
+        self,
+        updated_since: int | None = None,
+        *,
+        on_page: Callable[[int, int], None] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return all tasks (work orders, PMs, requests) from ``/tasks``.
 
         ``updated_since`` is an optional Unix timestamp (seconds). Limble does
@@ -103,26 +114,36 @@ class LimbleClient:
         filter is applied client-side against the most recent of each task's
         ``lastEdited`` / ``createdDate`` / ``dateCompleted`` values. Omit it for
         a full pull (the import is idempotent, so full pulls are safe).
+
+        ``on_page`` is called after each page with ``(items_so_far, pages_read)``
+        so a caller can report progress while the pull is still running.
         """
 
         params: dict[str, Any] = dict(self.config.extra_task_params)
-        tasks = list(self._paginate("/tasks/", params))
+        tasks = list(self._paginate("/tasks/", params, on_page=on_page))
         if updated_since is None:
             return tasks
         return [task for task in tasks if _task_touched_at(task) >= updated_since]
 
-    def get_assets(self) -> list[dict[str, Any]]:
+    def get_assets(self, *, on_page: Callable[[int, int], None] | None = None) -> list[dict[str, Any]]:
         """Return all assets from ``/assets`` (used to enrich task asset info)."""
 
-        return list(self._paginate("/assets/", {}))
+        return list(self._paginate("/assets/", {}, on_page=on_page))
 
     # ------------------------------------------------------------------
     # Pagination + transport
     # ------------------------------------------------------------------
-    def _paginate(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def _paginate(
+        self,
+        path: str,
+        params: dict[str, Any],
+        *,
+        on_page: Callable[[int, int], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Yield every item from a paginated Limble list endpoint."""
 
         page = 1
+        fetched = 0
         while True:
             page_params = {**params, "limit": self.config.page_limit, "page": page}
             payload = self._request("GET", path, params=page_params)
@@ -133,6 +154,9 @@ class LimbleClient:
             for item in payload:
                 if isinstance(item, dict):
                     yield item
+                    fetched += 1
+            if on_page is not None:
+                on_page(fetched, page)
             if len(payload) < self.config.page_limit:
                 break
             page += 1
@@ -158,7 +182,7 @@ class LimbleClient:
                 # Respect Retry-After when present; otherwise back off a full
                 # minute as the working scripts do.
                 retry_after = _retry_after_seconds(resp) or 60.0
-                print(f"[limble] rate limited; sleeping {retry_after:.0f}s before retrying {path} ...")
+                self._log(f"[limble] rate limited; sleeping {retry_after:.0f}s before retrying {path} ...")
                 time.sleep(retry_after)
                 continue
 
@@ -177,7 +201,7 @@ class LimbleClient:
     def _sleep_backoff(self, attempt: int, *, reason: str) -> None:
         # 2s, 4s, 8s, 16s ...
         delay = 2.0 ** attempt
-        print(f"[limble] {reason}; retry {attempt}/{self.config.max_retries} in {delay:.0f}s ...")
+        self._log(f"[limble] {reason}; retry {attempt}/{self.config.max_retries} in {delay:.0f}s ...")
         time.sleep(delay)
 
 

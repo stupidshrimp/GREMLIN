@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,52 +47,30 @@ if __package__ in (None, ""):
 
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
-from services.ingestion_service import IngestionService
-
-
-def _load_dotenv() -> None:
-    """Minimal ``.env`` loader (no third-party dependency).
-
-    Reads ``.env`` from the current directory and the repo root, setting any
-    variable that is not already present in the environment.
-    """
-
-    candidates = [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
-    seen: set[Path] = set()
-    for path in candidates:
-        if path in seen or not path.is_file():
-            continue
-        seen.add(path)
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+from services.ingestion_service import PHASE_ASSETS, PHASE_TASKS, IngestionService
+from services.sync_service import (
+    SyncOptions,
+    load_dotenv_files,
+    parse_since,
+    phase_share,
+    record_run_timing,
+)
 
 
 def _parse_since(value: str | None) -> int | None:
-    """Parse ``--since`` (ISO date/datetime or a Unix timestamp) into Unix seconds."""
+    """Parse ``--since`` (ISO date/datetime or a Unix timestamp) into Unix seconds.
 
-    if not value:
-        return None
-    value = value.strip()
-    if value.isdigit():
-        return int(value)
-    text = value.replace("Z", "+00:00")
+    The parsing itself is shared with the dashboard's on-demand sync
+    (:mod:`services.sync_service`); this wrapper only restates a bad value as a
+    CLI error, in the CLI's own vocabulary.
+    """
+
     try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        try:
-            dt = datetime.strptime(value, "%Y-%m-%d")
-        except ValueError as exc:
-            raise SystemExit(f"--since must be a date (YYYY-MM-DD), ISO datetime, or Unix timestamp; got {value!r}") from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+        return parse_since(value)
+    except ValueError as exc:
+        raise SystemExit(
+            f"--since must be a date (YYYY-MM-DD), ISO datetime, or Unix timestamp; got {value!r}"
+        ) from exc
 
 
 def _resolve_db_path(explicit: str | None, *, must_exist: bool, create: bool) -> Path:
@@ -144,7 +123,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict:
-    _load_dotenv()
+    load_dotenv_files(force=True)
     updated_since = _parse_since(args.since)
     # Dry-run never writes, so it doesn't require an existing database.
     if args.dry_run:
@@ -172,7 +151,31 @@ def run(args: argparse.Namespace) -> dict:
     print(f"Limble base URL: {config.base_url}")
     if updated_since is not None:
         print(f"Filtering to tasks touched since: {datetime.fromtimestamp(updated_since, tz=timezone.utc).isoformat()}")
-    return service.sync_all(updated_since=updated_since, dry_run=args.dry_run)
+
+    started = time.monotonic()
+    summary = service.sync_all(updated_since=updated_since, dry_run=args.dry_run)
+    # Time the scheduled run too, so the dashboard's "how long will this take"
+    # is answered from the runs that actually happen -- most of which happen
+    # here, at night, and never touch the web app. Best effort: a directory that
+    # cannot be written to costs an estimate, not this import.
+    record_run_timing(
+        db_path,
+        seconds=time.monotonic() - started,
+        share=phase_share(_options_for(args)),
+        counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
+    )
+    return summary
+
+
+def _options_for(args: argparse.Namespace) -> SyncOptions:
+    """Restate the CLI flags as SyncOptions, so both entry points weigh a run alike."""
+
+    return SyncOptions(
+        dry_run=args.dry_run,
+        fetch_assets=not args.no_assets,
+        refresh_mapping=not args.no_map,
+        include_templates=args.include_templates,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

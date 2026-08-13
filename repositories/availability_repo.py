@@ -32,7 +32,7 @@ from services.availability_config import (
     DEFAULT_LINKED_RULES,
     DEFAULT_TIMEZONE,
 )
-from services.availability_service import AssetGroup, LinkedRule, WorkOrder
+from services.availability_service import AssetGroup, LinkedRule, WorkOrder, WorkOrderDetail
 from services.life_data_service import database_write_error
 
 DB_WRITE_TIMEOUT_SECONDS = 30
@@ -516,6 +516,101 @@ class AvailabilityRepository:
         anything".
         """
 
+        zone = self._zone()
+        rows = self._fetch_work_order_rows(asset_numbers, self._OPTIONAL_MAPPED_COLUMNS)
+        orders = (self._build_order(row, zone) for row in rows)
+        return [order for order in orders if order is not None]
+
+    def load_work_order_details(
+        self, asset_numbers: list[str] | None, month: date | None = None
+    ) -> list[WorkOrderDetail]:
+        """The same work orders, carrying the text the drill-down displays.
+
+        Split from :meth:`load_work_orders` rather than folded into it because
+        the hot path runs on every page view and wants none of this: the card
+        loads ~2,000 rows to draw nine charts, and their names, descriptions and
+        completion notes are read only when someone opens one bar.
+
+        ``month`` filters *after* localization, matching how the chart buckets.
+        The month a work order belongs to is decided in plant local time, and
+        the stored created dates arrive in several formats, so the same
+        predicate cannot be pushed into SQL without changing which month a
+        boundary-crossing order lands in.
+        """
+
+        zone = self._zone()
+        rows = self._fetch_work_order_rows(
+            asset_numbers, self._OPTIONAL_MAPPED_COLUMNS + self._DETAIL_MAPPED_COLUMNS
+        )
+        details: list[WorkOrderDetail] = []
+        for row in rows:
+            order = self._build_order(row, zone)
+            if order is None:
+                continue
+            if month is not None and (order.created_local.year, order.created_local.month) != (
+                month.year,
+                month.month,
+            ):
+                continue
+            details.append(
+                WorkOrderDetail(
+                    order=order,
+                    task_name=self._text(row, "task_name"),
+                    status=self._text(row, "status_raw"),
+                    type_raw=self._text(row, "type_raw"),
+                    # The disposition screen's final call wins over the
+                    # classifier's guess, the same precedence every other page
+                    # applies -- and neither is allowed to affect the arithmetic
+                    # above it (§2.1); it is shown so a reader can see what a row
+                    # was called, not so anything can filter on it.
+                    record_class=self._text(row, "record_class_final", "record_class_auto"),
+                    asset_name=self._text(row, "asset_name"),
+                    description=self._text(
+                        row, "description_raw", "requestor_description", "request_title"
+                    ),
+                    completion_notes=self._text(row, "completion_notes"),
+                )
+            )
+        return details
+
+    def load_work_order_classifications(
+        self, asset_numbers: list[str] | None, months: set[date] | None = None
+    ) -> list[WorkOrderDetail]:
+        """Load only the fields required to split chart downtime by WO class.
+
+        Unlike :meth:`load_work_order_details`, this hot-path query deliberately
+        excludes task names, descriptions, completion notes, status, and asset
+        names. Those potentially large fields remain on-demand behind the
+        per-bar drill-down endpoint. Month filtering happens after plant-time
+        localization for the same boundary correctness as the detail loader.
+        """
+
+        zone = self._zone()
+        columns = self._OPTIONAL_MAPPED_COLUMNS + (
+            "record_class_final", "record_class_auto",
+        )
+        rows = self._fetch_work_order_rows(asset_numbers, columns)
+        wanted = {(month.year, month.month) for month in (months or set())}
+        classifications: list[WorkOrderDetail] = []
+        for row in rows:
+            order = self._build_order(row, zone)
+            if order is None:
+                continue
+            if wanted and (order.created_local.year, order.created_local.month) not in wanted:
+                continue
+            classifications.append(
+                WorkOrderDetail(
+                    order=order,
+                    record_class=self._text(row, "record_class_final", "record_class_auto"),
+                )
+            )
+        return classifications
+
+    def _fetch_work_order_rows(
+        self, asset_numbers: list[str] | None, columns: tuple[str, ...]
+    ) -> list[sqlite3.Row]:
+        """Raw mapped rows for the given assets, selecting only ``columns``."""
+
         if not self._table_exists("mapped_cmms_record"):
             return []
 
@@ -523,9 +618,11 @@ class AvailabilityRepository:
             present = self._mapped_columns(conn)
             if "asset_number" not in present:
                 return []
-            columns = ", ".join(["TRIM(asset_number) AS asset_number"] + self._select_expressions(present))
+            select = ", ".join(
+                ["TRIM(asset_number) AS asset_number"] + self._select_expressions(present, columns)
+            )
             sql = [
-                f"SELECT {columns}",
+                f"SELECT {select}",
                 "FROM mapped_cmms_record",
                 "WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''",
             ]
@@ -534,29 +631,44 @@ class AvailabilityRepository:
             if wanted:
                 sql.append(f"AND TRIM(asset_number) IN ({','.join('?' for _ in wanted)})")
                 params.extend(wanted)
-            rows = conn.execute("\n".join(sql), params).fetchall()
+            return conn.execute("\n".join(sql), params).fetchall()
 
-        zone = self._zone()
-        orders: list[WorkOrder] = []
-        for row in rows:
-            created = self._parse_utc(
-                row["created_date_final"] or row["created_datetime_raw"] or row["created_date_raw"]
-            )
-            if created is None:
+    def _build_order(self, row: sqlite3.Row, zone: ZoneInfo | timezone) -> WorkOrder | None:
+        """One mapped row as a localized ``WorkOrder``, or ``None`` if undated."""
+
+        created = self._parse_utc(
+            row["created_date_final"] or row["created_datetime_raw"] or row["created_date_raw"]
+        )
+        if created is None:
+            return None
+        completed = self._parse_utc(
+            row["completed_date_final"] or row["completed_datetime_raw"] or row["completed_date_raw"]
+        )
+        return WorkOrder(
+            asset_number=str(row["asset_number"]).strip(),
+            created_local=created.astimezone(zone).replace(tzinfo=None),
+            downtime_hours=self._downtime_hours(row),
+            completed_local=(completed.astimezone(zone).replace(tzinfo=None) if completed else None),
+            task_id=str(row["task_id"] or ""),
+        )
+
+    @staticmethod
+    def _text(row: sqlite3.Row, *columns: str) -> str:
+        """The first of ``columns`` this row actually filled in.
+
+        Limble populates a different description field depending on whether a
+        work order began life as a request, so the useful text is wherever it
+        landed rather than in one fixed column.
+        """
+
+        for column in columns:
+            value = row[column]
+            if value is None:
                 continue
-            completed = self._parse_utc(
-                row["completed_date_final"] or row["completed_datetime_raw"] or row["completed_date_raw"]
-            )
-            orders.append(
-                WorkOrder(
-                    asset_number=str(row["asset_number"]).strip(),
-                    created_local=created.astimezone(zone).replace(tzinfo=None),
-                    downtime_hours=self._downtime_hours(row),
-                    completed_local=(completed.astimezone(zone).replace(tzinfo=None) if completed else None),
-                    task_id=str(row["task_id"] or ""),
-                )
-            )
-        return orders
+            text = str(value).strip()
+            if text:
+                return text
+        return ""
 
     @staticmethod
     def _downtime_hours(row: sqlite3.Row) -> float:
@@ -591,15 +703,21 @@ class AvailabilityRepository:
         "downtime_minutes", "downtime_hours", "task_id",
     )
 
+    # Read only by the per-bar drill-down, which loads one asset-month at a
+    # time. Kept out of the list above so the nine-chart request kept on the
+    # hot path never carries this much text.
+    _DETAIL_MAPPED_COLUMNS = (
+        "task_name", "status_raw", "type_raw", "asset_name",
+        "description_raw", "requestor_description", "request_title",
+        "completion_notes", "record_class_final", "record_class_auto",
+    )
+
     def _mapped_columns(self, conn: sqlite3.Connection) -> set[str]:
         return {row[1] for row in conn.execute("PRAGMA table_info(mapped_cmms_record)")}
 
-    @classmethod
-    def _select_expressions(cls, present: set[str]) -> list[str]:
-        return [
-            column if column in present else f"NULL AS {column}"
-            for column in cls._OPTIONAL_MAPPED_COLUMNS
-        ]
+    @staticmethod
+    def _select_expressions(present: set[str], columns: tuple[str, ...]) -> list[str]:
+        return [column if column in present else f"NULL AS {column}" for column in columns]
 
     @staticmethod
     def _created_expression(present: set[str]) -> str | None:

@@ -50,15 +50,24 @@
 
 <section class="metrics-card-stack">
   <!-- ============================ Operational KPIs ============================ -->
-  <article class="glass-card metrics-card" id="card-kpis" data-card="kpis" tabindex="0"
-           role="button" aria-expanded="false" aria-controls="kpis-expanded">
+  <article class="glass-card metrics-card" id="card-kpis" data-card="kpis">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Operational KPIs</p>
-        <h2>Reliability performance by asset</h2>
+        <div class="metrics-title-row">
+          <h2 id="kpis-card-title">Reliability performance by asset</h2>
+          <span class="metrics-construction-badge" aria-label="Under construction">
+            <svg class="metrics-construction-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 14a8 8 0 0 1 16 0"></path>
+              <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
+            </svg>
+            <span>Under construction</span>
+          </span>
+        </div>
         <p class="metrics-card-desc">MTBF, MTTR, corrective work order volume and total downtime — compared across the selected assets.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="kpis-expanded" aria-labelledby="kpis-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="kpis">
@@ -117,15 +126,24 @@
   </article>
 
   <!-- ============================ Alerting Readiness ============================ -->
-  <article class="glass-card metrics-card" id="card-alerts" data-card="alerts" tabindex="0"
-           role="button" aria-expanded="false" aria-controls="alerts-expanded">
+  <article class="glass-card metrics-card" id="card-alerts" data-card="alerts">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Alerting Readiness</p>
-        <h2>Reliability risk by asset</h2>
+        <div class="metrics-title-row">
+          <h2 id="alerts-card-title">Reliability risk by asset</h2>
+          <span class="metrics-construction-badge" aria-label="Under construction">
+            <svg class="metrics-construction-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 14a8 8 0 0 1 16 0"></path>
+              <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
+            </svg>
+            <span>Under construction</span>
+          </span>
+        </div>
         <p class="metrics-card-desc">Surface assets that may need attention based on a first-pass reliability risk score.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="alerts-expanded" aria-labelledby="alerts-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="alerts">
@@ -182,18 +200,24 @@
        shows every configured asset group over whole calendar months. The Average
        line is a group-level statistic, and linked downtime makes an asset's
        number depend on assets an filter could hide. -->
-  <article class="glass-card metrics-card" id="card-availability"
-           data-card="availability" tabindex="0" role="button" aria-expanded="false"
-           aria-controls="availability-expanded">
+  <article class="glass-card metrics-card" id="card-availability" data-card="availability">
     <header class="metrics-card-head">
       <div>
         <p class="eyebrow">Availability</p>
-        <h2>Asset availability by month</h2>
-        <p class="metrics-card-desc">Availability = (Scheduled Hours − Downtime) ÷ Scheduled Hours, per asset
-           group. Counts all downtime, whatever the work order was called.</p>
+        <div class="availability-title-row">
+          <h2 id="availability-card-title">Asset availability by month</h2>
+          <button type="button" class="availability-info-button" id="availability-info-open"
+                  aria-label="Click here to find out how asset availability is calculated"
+                  title="Click here to find out how asset availability is calculated"
+                  aria-haspopup="dialog" aria-controls="availability-info-dialog">
+            <span aria-hidden="true">i</span>
+          </button>
+        </div>
+        <p class="metrics-card-desc">Open the card and click any bar to see the rows it was computed from.</p>
         <p class="metrics-card-scope">All asset groups · all downtime · monthly — not affected by the filters above.</p>
       </div>
-      <span class="metrics-card-toggle" aria-hidden="true"></span>
+      <button type="button" class="metrics-card-toggle" aria-expanded="false"
+              aria-controls="availability-expanded" aria-labelledby="availability-card-title"></button>
     </header>
 
     <div class="metrics-preview" data-preview="availability">
@@ -217,6 +241,10 @@
               <option value="24">Last 24 months</option>
             </select>
           </div>
+          <label class="availability-stack-control" for="availability-stacked">
+            <input id="availability-stacked" type="checkbox" role="switch">
+            <span>Stack by work order type</span>
+          </label>
           <p class="metrics-hint" id="availability-basis"></p>
         </div>
       </div>
@@ -226,6 +254,48 @@
     </div>
   </article>
 </section>
+
+<dialog class="availability-info-dialog" id="availability-info-dialog"
+        aria-labelledby="availability-info-title" aria-describedby="availability-info-summary">
+  <div class="availability-info-content">
+    <header class="availability-info-head">
+      <div>
+        <p class="eyebrow">Availability explained</p>
+        <h2 id="availability-info-title">How asset availability is calculated</h2>
+      </div>
+      <button type="button" class="metrics-modal-close" id="availability-info-close"
+              aria-label="Close availability explanation">×</button>
+    </header>
+
+    <div class="availability-info-body">
+      <p id="availability-info-summary">Availability shows the share of scheduled production time that an asset was able to run during a completed calendar month.</p>
+
+      <div class="availability-formula" aria-label="Availability formula">
+        <span>Scheduled hours − counted downtime</span>
+        <span class="availability-formula-rule" aria-hidden="true"></span>
+        <span>Scheduled hours</span>
+        <strong>× 100</strong>
+      </div>
+
+      <ol class="availability-info-steps">
+        <li><strong>Scheduled time.</strong> Weekdays in the month are multiplied by the asset group’s daily production hours. Breaks, lunch, and setup time are removed, then any recorded overtime is added. Overtime hours can be added by clicking the top right of an asset group graph.</li>
+        <li><strong>Count the downtime.</strong> Positive downtime from every work order created in that month is included, regardless of the work order’s name, type, or classification. If configured, a share of downtime from a linked asset is also included. The configuration can be edited on the Settings page. <strong class="availability-info-warning">Please refrain from editing values unless you are authorized to do so.</strong></li>
+        <li><strong>Calculate the percentage.</strong> Counted downtime is subtracted from scheduled hours, then divided by scheduled hours. For example, 160 scheduled hours and 8 downtime hours produces 95% availability.</li>
+      </ol>
+
+      <div class="availability-info-note">
+        <strong>Assumptions and flags</strong>
+        <p>Downtime is counted in the month of the work order’s created date in the current dashboard logic. Because of this, a work order’s downtime hours can fall in a different month than the month in which the work was completed.</p>
+        <p>A work order with positive downtime is flagged in the data view when its completion date is in a different calendar month from its created date, or when its created date plus its downtime duration crosses a month boundary. Work orders with zero or negative downtime are not flagged for crossing a month boundary. A month is flagged when its total counted downtime, including linked downtime, exceeds its adjusted scheduled hours. When adjusted scheduled hours are positive, its availability is shown as 0%; when adjusted scheduled hours are zero, availability is undefined and shown as “—”.</p>
+      </div>
+
+      <div class="availability-info-note">
+        <strong>How to read the card</strong>
+        <p>Each bar is one asset’s monthly result. The Average line gives each asset in the group equal weight, while the Goal line shows the configured target. Only completed months are displayed, and the metric is not affected by the asset or date filters above.</p>
+      </div>
+    </div>
+  </div>
+</dialog>
 
 <div id="metrics-loading" class="metrics-loading" hidden>
   <div class="metrics-spinner" aria-hidden="true"></div>

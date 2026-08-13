@@ -25,9 +25,14 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 DB_WRITE_TIMEOUT_SECONDS = 30
+
+# How often ``upsert_records`` reports progress, in records. Small enough that a
+# caller's progress bar moves steadily, large enough that a big import is not
+# dominated by callback overhead.
+_PROGRESS_EVERY = 100
 
 # Canonical, API-first definitions used only when the tables do not already
 # exist (fresh or test databases). Existing databases keep their own definition.
@@ -167,15 +172,26 @@ class RawRepository:
     # ------------------------------------------------------------------
     # Raw record upsert
     # ------------------------------------------------------------------
-    def upsert_records(self, batch_id: int, records: list[dict[str, Any]]) -> dict[str, int]:
+    def upsert_records(
+        self,
+        batch_id: int,
+        records: list[dict[str, Any]],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> dict[str, int]:
         """Insert new tasks, update changed tasks, skip unchanged ones.
 
         ``records`` is a list of raw_json dictionaries; each must contain a
         ``taskID`` used as the natural key. Returns counts of
         ``{"inserted", "updated", "skipped"}``.
+
+        ``progress`` is called periodically with ``(records_done, records_total)``
+        so a long import can be reported while it runs. It fires inside the write
+        transaction, so it must not touch the database itself.
         """
 
         inserted = updated = skipped = 0
+        total = len(records)
         with self.write_connection() as conn:
             columns = self._column_names(conn, "raw_cmms_record")
             if not columns:
@@ -186,8 +202,14 @@ class RawRepository:
             # the bare numeric id is filed under the same asset as its history.
             asset_number_bridge = _build_asset_number_bridge(existing, records)
             next_row_number = self._next_source_row_number(conn, columns)
+            # Indexing the existing rows above is a measurable share of a large
+            # import, so report once before the loop: a caller polling for
+            # progress then shows the write phase as started rather than as a
+            # gap between fetching and the first hundred records.
+            if progress is not None:
+                progress(0, total)
 
-            for record in records:
+            for position, record in enumerate(records, start=1):
                 task_id = _task_key(record)
                 match = existing.get(task_id) if task_id else None
                 # Only merge legacy asset identity into a true one-to-one update.
@@ -234,6 +256,9 @@ class RawRepository:
                     updated += 1
                 else:
                     skipped += 1
+
+                if progress is not None and (position % _PROGRESS_EVERY == 0 or position == total):
+                    progress(position, total)
 
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 

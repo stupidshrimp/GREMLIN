@@ -94,6 +94,53 @@ class WorkOrder:
 
 
 @dataclass(frozen=True)
+class WorkOrderDetail:
+    """One work order plus the descriptive text the drill-down displays.
+
+    Composition rather than extension, and deliberately so. ``WorkOrder``
+    carries no type or classification field precisely so that no future change
+    can reintroduce the PM filter §2.1 exists to prevent; hanging that text off
+    a separate record keeps the guarantee structural. A ``WorkOrderDetail``
+    cannot be handed to :func:`compute_rows` even by accident, because it has no
+    ``asset_number`` of its own.
+
+    ``description`` is whichever of the description / requestor description /
+    request title fields the source system actually filled in -- Limble
+    populates a different one depending on whether a work order began as a
+    request.
+    """
+
+    order: WorkOrder
+    task_name: str = ""
+    status: str = ""
+    type_raw: str = ""
+    record_class: str = ""
+    asset_name: str = ""
+    description: str = ""
+    completion_notes: str = ""
+
+
+@dataclass(frozen=True)
+class WorkOrderContribution:
+    """One work order as it lands in one asset-month bar.
+
+    ``counted_hours`` is what this order actually added to *that* bar, which is
+    not always its own downtime: a linked order contributes only its share, and
+    a negative one contributes nothing.
+    """
+
+    detail: WorkOrderDetail
+    source: str  # "direct" or "linked"
+    impact_factor: float
+    counted_hours: float
+    crosses_month: bool
+
+    @property
+    def order(self) -> WorkOrder:
+        return self.detail.order
+
+
+@dataclass(frozen=True)
 class AvailabilityRow:
     """One asset in one month -- the equivalent of an Availability Data row."""
 
@@ -370,6 +417,81 @@ def compute_rows(
                     )
                 )
     return rows
+
+
+def work_order_contributions(
+    asset_number: str,
+    month: date,
+    details: list[WorkOrderDetail],
+    *,
+    linked_rules: list[LinkedRule] | None = None,
+) -> list[WorkOrderContribution]:
+    """Every work order behind one asset-month, and what each one contributed.
+
+    This is the evidence under a single bar. The arithmetic repeats
+    :func:`compute_rows` rather than approximating it, because the two must
+    agree exactly: summing ``counted_hours`` over the direct rows reproduces
+    that month's ``direct_downtime_hours`` and over the linked rows its
+    ``linked_downtime_hours``. A drill-down whose rows do not add up to the
+    number they explain is worse than no drill-down at all.
+
+    Three behaviours carry over from the calculator and are the reason a reader
+    opens this list in the first place:
+
+    * **Negative downtime counts as zero**, so an order can appear with hours
+      recorded and nothing contributed.
+    * **A linked order contributes its share**, not its downtime -- which is why
+      ``impact_factor`` travels with every row rather than only in a footnote.
+    * **Zero-downtime orders are listed.** They contribute nothing and are the
+      entire evidence that an asset sitting at 100% was being worked on rather
+      than merely unlogged.
+
+    ``details`` may hold work orders for any month; only the ones bucketed into
+    ``month`` are returned, using the same created-date rule as the chart.
+    """
+
+    asset = str(asset_number).strip()
+
+    # A list of claims rather than a lookup keyed by asset: a rule may name the
+    # parent as its own linked asset, and the calculator would then charge that
+    # asset's downtime twice. Collapsing the two into one entry here would show
+    # a bar of 1.5x downtime explained by rows summing to 1x.
+    claims: list[tuple[str, str, float]] = [(asset, "direct", 1.0)]
+    for rule in linked_rules or []:
+        if str(rule.parent_asset_number).strip() != asset or rule.impact_factor <= 0:
+            continue
+        linked = str(rule.linked_asset_number).strip()
+        if linked:
+            claims.append((linked, "linked", float(rule.impact_factor)))
+
+    by_asset: dict[str, list[WorkOrderDetail]] = {}
+    for detail in details:
+        order = detail.order
+        if _month_key(order.created_local) != month:
+            continue
+        by_asset.setdefault(str(order.asset_number).strip(), []).append(detail)
+
+    contributions: list[WorkOrderContribution] = []
+    for source_asset, source, factor in claims:
+        for detail in by_asset.get(source_asset, []):
+            order = detail.order
+            contributions.append(
+                WorkOrderContribution(
+                    detail=detail,
+                    source=source,
+                    impact_factor=factor,
+                    counted_hours=max(0.0, order.downtime_hours) * factor,
+                    # Gated on downtime the same way ``overlap_count`` is, so the
+                    # rows marked here are countable against the figure the
+                    # summary table shows.
+                    crosses_month=order.downtime_hours > 0 and _crosses_month(order),
+                )
+            )
+
+    # Biggest contributor first: the question that opens this list is almost
+    # always "what took the machine down", and the answer is the top row.
+    contributions.sort(key=lambda c: (-c.counted_hours, c.order.created_local, c.order.task_id))
+    return contributions
 
 
 def build_series(

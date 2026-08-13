@@ -1,10 +1,24 @@
 <aside id="primarySidebar" class="sidebar" aria-label="Primary">
   <nav>
-    <p class="sidebar-heading">Navigation</p>
+    <div class="sidebar-header">
+      <p class="sidebar-heading">Navigation</p>
+      <button
+        type="button"
+        id="sidebarToggle"
+        class="sidebar-toggle"
+        aria-controls="primarySidebar"
+        aria-expanded="true"
+        aria-label="Collapse sidebar"
+        title="Collapse sidebar"
+      >
+        <span class="sidebar-toggle-icon" aria-hidden="true">⇤</span>
+      </button>
+    </div>
     <ul>
     {% for link in nav_links %}
       <li>
-        <a href="{{ link.url }}" class="{% if request.path == link.url %}active{% endif %}">
+        {# title= gives the icon a tooltip once the label is hidden in the collapsed state. #}
+        <a href="{{ link.url }}" title="{{ link.label }}" class="{% if request.path == link.url %}active{% endif %}">
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
         </a>

@@ -11,9 +11,10 @@
     <h1>Inspect GREMLIN's runtime and database.</h1>
     <p>
       Runtime configuration, database health, pipeline throughput, schema drift and a
-      read-only SQL console. Every database connection opened by this page is
-      <code>mode=ro</code>, so nothing here can write to <code>GREMLIN.db</code> or take
-      the writer lock other users depend on.
+      read-only SQL console. Every panel that reads <code>GREMLIN.db</code> opens it
+      <code>mode=ro</code>, so inspecting the database can neither change it nor take the
+      writer lock other users depend on. The Limble sync tab is the one exception: it runs
+      the nightly import on demand, and that writes.
     </p>
     <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
   </div>
@@ -27,6 +28,7 @@
 <nav class="dev-tabs" aria-label="Developer sections">
   <button type="button" class="dev-tab is-active" data-tab="overview" aria-selected="true">Overview</button>
   <button type="button" class="dev-tab" data-tab="pipeline" aria-selected="false">Pipeline</button>
+  <button type="button" class="dev-tab" data-tab="sync" aria-selected="false">Limble sync</button>
   <button type="button" class="dev-tab" data-tab="schema" aria-selected="false">Schema</button>
   <button type="button" class="dev-tab" data-tab="drift" aria-selected="false">Drift</button>
   <button type="button" class="dev-tab" data-tab="data" aria-selected="false">Data browser</button>
@@ -65,6 +67,72 @@
   <div class="glass-card slide-in">
     <h2>Recent import batches</h2>
     <div class="dev-table-scroll" id="dev-batches"></div>
+  </div>
+</section>
+
+<!-- Limble sync: run the nightly ingestion job now, and watch it work. -->
+<section class="dev-panel" data-panel="sync" aria-label="Limble sync">
+  <div class="glass-card slide-in">
+    <h2>Run a Limble sync</h2>
+    <p class="dev-muted">
+      This is the same import the scheduled task runs every night
+      (<code>python -m jobs.sync_limble</code>): it pulls tasks and assets from the Limble
+      API, upserts them into the raw import tables and refreshes the mapped layer the
+      dashboards read. Run it here when a change in Limble needs to reach GREMLIN before
+      tonight. The import is idempotent, so running it again is safe — unchanged tasks are
+      skipped, and a sync never deletes curated data.
+    </p>
+    <p class="dev-muted">
+      Unlike the rest of this page, running a sync writes to <code>GREMLIN.db</code> and spends
+      this server's Limble credentials, so it needs a developer PIN that is actually a secret.
+      While the PIN is the published default the button stays disabled and every read-only panel
+      keeps working; to enable it, put <code>GREMLIN_DEV_PIN=your-pin</code> in the
+      <code>.env</code> file beside <code>app.py</code> and restart GREMLIN. That value is then
+      the PIN this page asks for.
+    </p>
+
+    <dl class="dev-facts" id="dev-sync-facts"><dd class="dev-muted">Loading…</dd></dl>
+
+    <div id="dev-sync-warning" class="dev-callout" hidden></div>
+
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-sync-since">Only tasks touched since (optional)</label>
+        <input type="date" id="dev-sync-since" autocomplete="off">
+      </div>
+      <div class="dev-field">
+        <span class="dev-field-legend">Options</span>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-dry-run"> Dry run — fetch and transform, write nothing</label>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-no-assets"> Skip asset enrichment</label>
+      </div>
+      <div class="dev-field dev-field-actions">
+        <!-- Disabled until the first status response says otherwise. Whether a
+             sync may start depends on the PIN, the credentials and the database,
+             none of which this page knows yet at first paint; a click inside that
+             window would be answered with a 403 the client reads as an expired
+             session, reloading the page instead of explaining itself. -->
+        <button type="button" class="btn-primary" id="dev-sync-run" disabled>Run sync now</button>
+      </div>
+    </div>
+    <p class="dev-muted">
+      Limble has no “updated since” filter on its task endpoint, so a date narrows what is
+      written, not what is downloaded — the fetch takes just as long either way.
+    </p>
+  </div>
+
+  <div class="glass-card slide-in" id="dev-sync-progress-card" hidden>
+    <h2 id="dev-sync-state">Sync</h2>
+    <div class="dev-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+         aria-labelledby="dev-sync-state" id="dev-sync-bar">
+      <div class="dev-progress-fill" id="dev-sync-fill"></div>
+    </div>
+    <div class="dev-progress-meta">
+      <span id="dev-sync-phase" class="dev-progress-phase">—</span>
+      <span id="dev-sync-timing" class="dev-muted"></span>
+    </div>
+    <dl class="dev-facts" id="dev-sync-summary" hidden></dl>
+    <h3>Activity</h3>
+    <div class="dev-log" id="dev-sync-log" role="log" aria-live="polite" aria-atomic="false"></div>
   </div>
 </section>
 

@@ -456,7 +456,8 @@ body:has(.dev-tabs) .content,
   color: var(--muted);
 }
 
-.dev-field select {
+.dev-field select,
+.dev-field input[type="date"] {
   font: inherit;
   padding: 8px 12px;
   border: 1px solid var(--border);
@@ -464,6 +465,32 @@ body:has(.dev-tabs) .content,
   background: var(--surface);
   color: var(--text);
   min-width: 180px;
+}
+
+.dev-field-legend {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dev-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.dev-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--forest-700);
+}
+
+.dev-controls input[disabled] + span,
+.dev-check input[disabled] {
+  opacity: 0.5;
 }
 
 .dev-field-actions {
@@ -474,6 +501,124 @@ body:has(.dev-tabs) .content,
 .dev-controls button[disabled] {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* --- Limble sync --------------------------------------------------------- */
+
+.dev-progress {
+  position: relative;
+  overflow: hidden;
+  height: 12px;
+  margin-top: 16px;
+  border-radius: 999px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+}
+
+.dev-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--forest-700), var(--forest-500));
+  /* Progress only ever moves forward, so ease-out reads as settling into the
+     new value rather than animating between two guesses. */
+  transition: width 400ms ease-out;
+}
+
+/* A sync that fails in its first phase has nothing to fill, so tint the track
+   itself: an empty bar next to "Sync failed" otherwise looks like a bar that is
+   still waiting to start. */
+.dev-progress.is-error {
+  background: rgba(192, 57, 43, 0.12);
+  border-color: rgba(192, 57, 43, 0.3);
+}
+
+.dev-progress.is-error .dev-progress-fill {
+  background: linear-gradient(90deg, #96261a, #c0392b);
+}
+
+.dev-progress-phase.is-error {
+  color: #96261a;
+}
+
+/* No fraction to show yet (a phase whose size the API does not report): sweep a
+   band across the track instead of parking the bar at zero, which reads as
+   stalled. */
+.dev-progress.is-indeterminate .dev-progress-fill {
+  transition: none;
+  background: linear-gradient(
+    90deg,
+    var(--forest-100) 0%,
+    var(--forest-500) 35%,
+    var(--forest-700) 50%,
+    var(--forest-500) 65%,
+    var(--forest-100) 100%
+  );
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: dev-progress-sweep 1.4s linear infinite;
+}
+
+@keyframes dev-progress-sweep {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dev-progress-fill {
+    transition: none;
+  }
+  .dev-progress.is-indeterminate .dev-progress-fill {
+    animation: none;
+    background: var(--forest-500);
+    background-size: auto;
+  }
+}
+
+.dev-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 18px;
+  margin-top: 10px;
+  font-size: 0.88rem;
+}
+
+.dev-progress-phase {
+  font-weight: 600;
+  color: var(--text);
+}
+
+#dev-sync-summary {
+  margin-top: 16px;
+}
+
+.dev-log {
+  margin-top: 10px;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--forest-950);
+  color: #e6eef5;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.dev-log-line {
+  display: flex;
+  gap: 12px;
+}
+
+.dev-log-time {
+  flex-shrink: 0;
+  color: #8fa6b8;
+}
+
+.dev-log-text {
+  overflow-wrap: anywhere;
 }
 
 /* --- SQL console --------------------------------------------------------- */

@@ -240,6 +240,13 @@ class LifeDataService:
         else:
             self.db_path = Path(db_path)
         self._asset_number_options_cache: list[dict[str, str]] | None = None
+        # Building the asset list is a read followed by a store, and the two are
+        # not one step: a sync can finish in between, so the store has to be able
+        # to tell that what it holds was overtaken while it was being assembled.
+        # The counter says which era the data belongs to; the lock keeps the
+        # counter and the cache moving together.
+        self._asset_cache_lock = threading.Lock()
+        self._asset_cache_generation = 0
         self.ensure_schema()
         # Always remap when the stored rows predate the current mapper version,
         # even if refresh_on_startup is disabled (the web app and desktop GUI both
@@ -958,7 +965,7 @@ class LifeDataService:
         # imported or mapped by another GREMLIN process. Drop local asset-list
         # state before any early return so the next dropdown population reads
         # ``mapped_cmms_record`` even when this process has no upserts to make.
-        self._asset_number_options_cache = None
+        self.invalidate_caches()
         mapping_version = _MAPPING_VERSION
         with self.write_connection() as conn:
             if not self._table_exists(conn, "raw_cmms_record"):
@@ -1186,6 +1193,30 @@ class LifeDataService:
             return "INSPECTION", is_pm, is_wo, "inspection-only text rule"
         return "UNKNOWN", is_pm, is_wo, "default unknown"
 
+    def invalidate_caches(self) -> None:
+        """Forget derived state, because the database changed behind this instance.
+
+        The asset list is cached in memory and only dropped by *this* instance's
+        own mapping refresh, which is the right rule while this instance is the
+        only writer. It stops being true when something else maps into the same
+        database -- another GREMLIN process, or an on-demand Limble sync, which
+        maps through a service of its own. Without this the app would keep
+        serving the asset list from before the import, so a sync that reported
+        hundreds of newly mapped records would leave the Life Data page insisting
+        the new assets do not exist.
+
+        Safe to call from another thread while a request is mid-build: the
+        generation bump tells that build its rows are already out of date, so it
+        returns them to its own caller but does not leave them behind as the
+        cache. Otherwise the invalidation could be undone a moment after it
+        happened, and the stale list would then be served indefinitely -- the
+        exact failure this method exists to prevent.
+        """
+
+        with self._asset_cache_lock:
+            self._asset_number_options_cache = None
+            self._asset_cache_generation += 1
+
     def asset_numbers(self, *, refresh: bool = False) -> list[str]:
         return [row["asset_number"] for row in self.asset_number_options(refresh=refresh)]
 
@@ -1193,13 +1224,25 @@ class LifeDataService:
         if refresh:
             mapped_count = self.refresh_mapped_cmms_records()
             if mapped_count:
-                self._asset_number_options_cache = None
-        elif self._asset_number_options_cache is not None:
-            return [dict(option) for option in self._asset_number_options_cache]
+                self.invalidate_caches()
         else:
+            # Take the cache once, under the lock. Testing the field and then
+            # iterating it are two separate reads of something another thread is
+            # now allowed to clear between them, and the reader that lost that
+            # race would iterate None -- turning a sync finishing at an unlucky
+            # moment into a 500 on the asset list.
+            with self._asset_cache_lock:
+                cached = self._asset_number_options_cache
+            if cached is not None:
+                return [dict(option) for option in cached]
             mapped_count = self.ensure_mapped_records_available()
             if mapped_count:
-                self._asset_number_options_cache = None
+                self.invalidate_caches()
+        # Read the era *after* any mapping work above (which invalidates in its
+        # own right) and before the query, so that anything invalidating from
+        # here on is understood to have happened after these rows were taken.
+        with self._asset_cache_lock:
+            generation = self._asset_cache_generation
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -1226,8 +1269,16 @@ class LifeDataService:
             {"asset_number": str(row["asset_number"]), "asset_name": str(row["asset_name"])}
             for row in sorted(best_by_number.values(), key=lambda item: self._natural_key(str(item["asset_number"])))
         ]
-        self._asset_number_options_cache = [dict(option) for option in options]
+        self._store_asset_options(generation, options)
         return options
+
+    def _store_asset_options(self, generation: int, options: list[dict[str, str]]) -> None:
+        """Cache a freshly built asset list, unless it was overtaken while building."""
+
+        with self._asset_cache_lock:
+            if generation != self._asset_cache_generation:
+                return
+            self._asset_number_options_cache = [dict(option) for option in options]
 
     def _natural_key(self, value: str) -> list[Any]:
         return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]

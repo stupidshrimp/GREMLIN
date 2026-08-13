@@ -16,6 +16,7 @@ from services.availability_service import (
     AssetGroup,
     LinkedRule,
     WorkOrder,
+    WorkOrderDetail,
     add_months,
     availability_percent,
     build_series,
@@ -24,6 +25,7 @@ from services.availability_service import (
     last_complete_month,
     resolve_window,
     weekday_count,
+    work_order_contributions,
 )
 
 JAN = date(2026, 1, 1)
@@ -396,6 +398,146 @@ class GroupHandlingTests(unittest.TestCase):
         group = AssetGroup("G", ("A",), schedule_hours_per_day=0)
         series = build_series(compute_rows([group], [JAN], []), [group], [JAN])[0]
         self.assertIsNone(series.average[0])
+
+
+def detail(asset, when, hours, **text):
+    return WorkOrderDetail(
+        order=WorkOrder(asset_number=asset, created_local=when, downtime_hours=hours), **text
+    )
+
+
+def january_details():
+    """The workbook's January work orders, as the drill-down loads them."""
+
+    return [
+        detail(asset, datetime(2026, 1, 15, 9, 0), hours, task_name=f"{asset} breakdown")
+        for asset, hours in JANUARY_DIRECT.items()
+    ]
+
+
+class WorkOrderContributionTests(unittest.TestCase):
+    """The rows a reader is shown under a bar must add up to that bar.
+
+    Every assertion here is really the same one: whatever ``compute_rows``
+    counted, this lists, at the same hours, and nothing else.
+    """
+
+    def contributions(self, asset, **kwargs):
+        return work_order_contributions(
+            asset,
+            JAN,
+            kwargs.pop("details", january_details()),
+            linked_rules=kwargs.pop("linked_rules", LINKED_RULES),
+        )
+
+    def test_the_rows_sum_to_the_bar_for_every_asset(self):
+        rows = {row.asset_number: row for row in january_rows()}
+        for asset in SALVAGNINI.asset_numbers:
+            with self.subTest(asset=asset):
+                found = self.contributions(asset)
+                direct = sum(c.counted_hours for c in found if c.source == "direct")
+                linked = sum(c.counted_hours for c in found if c.source == "linked")
+                self.assertAlmostEqual(direct, rows[asset].direct_downtime_hours, places=12)
+                self.assertAlmostEqual(linked, rows[asset].linked_downtime_hours, places=12)
+
+    def test_the_workbook_linked_case_is_itemised(self):
+        """3102's 24.43 h, broken back out into the four rules that made it."""
+
+        found = {
+            c.order.asset_number: c for c in self.contributions("3102") if c.source == "linked"
+        }
+        self.assertEqual(set(found), {"3101", "3105", "3106", "3107"})
+        self.assertAlmostEqual(found["3107"].counted_hours, 3.35, places=12)
+        self.assertAlmostEqual(found["3101"].counted_hours, 5.0, places=12)
+        self.assertAlmostEqual(
+            sum(c.counted_hours for c in found.values()), 24.433333333333334, places=12
+        )
+
+    def test_a_linked_row_reports_its_own_downtime_and_its_share_separately(self):
+        """The two differ, and a reader tracing a number needs to see both."""
+
+        linked = next(c for c in self.contributions("3102") if c.order.asset_number == "3101")
+        self.assertEqual(linked.order.downtime_hours, 10.0)
+        self.assertEqual(linked.counted_hours, 5.0)
+        self.assertEqual(linked.impact_factor, 0.5)
+
+    def test_an_asset_with_no_rules_lists_only_its_own_work_orders(self):
+        found = self.contributions("3101")
+        self.assertEqual([c.source for c in found], ["direct"])
+        self.assertEqual(found[0].counted_hours, 10.0)
+
+    def test_the_biggest_contributor_comes_first(self):
+        counted = [c.counted_hours for c in self.contributions("3102")]
+        self.assertEqual(counted, sorted(counted, reverse=True))
+
+    def test_zero_downtime_orders_are_listed_and_count_nothing(self):
+        """An asset at 100% is either clean or unlogged; only the rows say which."""
+
+        details = [detail("3101", datetime(2026, 1, 8, 7, 0), 0.0, task_name="Inspection")]
+        found = self.contributions("3101", details=details, linked_rules=[])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].counted_hours, 0.0)
+        self.assertEqual(found[0].detail.task_name, "Inspection")
+
+    def test_negative_downtime_is_listed_as_contributing_nothing(self):
+        """Discarded from the sum, not from the evidence -- it is a data error."""
+
+        details = [detail("3101", datetime(2026, 1, 8, 7, 0), -4.0)]
+        found = self.contributions("3101", details=details, linked_rules=[])
+        self.assertEqual(found[0].order.downtime_hours, -4.0)
+        self.assertEqual(found[0].counted_hours, 0.0)
+
+    def test_other_months_are_excluded(self):
+        details = january_details() + [detail("3101", datetime(2026, 2, 3, 9, 0), 99.0)]
+        found = self.contributions("3101", details=details, linked_rules=[])
+        self.assertEqual([c.order.downtime_hours for c in found], [10.0])
+
+    def test_a_rule_with_no_impact_contributes_no_rows(self):
+        found = self.contributions("3102", linked_rules=[LinkedRule("3102", "3101", 0.0)])
+        self.assertEqual([c.source for c in found], ["direct"])
+
+    def test_an_asset_linked_to_itself_is_listed_twice(self):
+        """Because the calculator charges it twice; §2.4 caps and merges nothing.
+
+        Collapsing the pair here would show a bar of 15 h explained by rows
+        summing to 10 h, which is the one thing this view may not do.
+        """
+
+        rules = [LinkedRule("3101", "3101", 0.5)]
+        row = next(
+            r for r in compute_rows([SALVAGNINI], [JAN], january_work_orders(), linked_rules=rules)
+            if r.asset_number == "3101"
+        )
+        found = self.contributions("3101", linked_rules=rules)
+        self.assertEqual([c.source for c in found], ["direct", "linked"])
+        self.assertAlmostEqual(
+            sum(c.counted_hours for c in found), row.adjusted_downtime_hours, places=12
+        )
+
+    def test_the_crossing_rows_count_matches_the_overlap_column(self):
+        details = [
+            detail("3101", datetime(2026, 1, 31, 20, 0), 10.0),  # runs into February
+            detail("3101", datetime(2026, 1, 8, 7, 0), 2.0),
+        ]
+        row = compute_rows(
+            [SALVAGNINI], [JAN], [d.order for d in details], linked_rules=[]
+        )[0]
+        found = self.contributions("3101", details=details, linked_rules=[])
+        self.assertEqual(sum(1 for c in found if c.crosses_month), row.overlap_count)
+        self.assertEqual(row.overlap_count, 1)
+
+    def test_the_descriptive_text_never_reaches_the_calculator(self):
+        """Design doc §2.1, kept structural rather than remembered.
+
+        A ``WorkOrderDetail`` carries ``type_raw`` and ``record_class`` because
+        the drill-down displays them. It is a different type from the one
+        ``compute_rows`` consumes precisely so that no future change can filter
+        on either: passing one in does not quietly work, it fails.
+        """
+
+        self.assertIn("type_raw", WorkOrderDetail.__dataclass_fields__)
+        with self.assertRaises(AttributeError):
+            compute_rows([SALVAGNINI], [JAN], january_details())
 
 
 if __name__ == "__main__":
