@@ -225,6 +225,10 @@ def test_bootstrap_refuses_credentials_the_login_path_cannot_check(tmp_path):
         control.ensure_schema(initial_username="a" * 129, initial_pin="secret")
     with pytest.raises(ValueError, match="PIN must be"):
         control.ensure_schema(initial_username="admin", initial_pin="p" * 257)
+    # Whitespace is truthy, so it clears the "configured together" check and
+    # would otherwise be stored as an empty username nobody can type.
+    with pytest.raises(ValueError, match="must not be blank"):
+        control.ensure_schema(initial_username="   ", initial_pin="secret")
 
     # Refused loudly and completely: startup stops, and no account was left
     # behind that has_users() would count as a bootstrap already done.

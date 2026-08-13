@@ -1205,7 +1205,13 @@ def api_dev_runtime():
             "db_path": str(_configured_db_path()),
             "db_path_source": "GREMLIN_DB_PATH" if os.environ.get("GREMLIN_DB_PATH") else "default",
             "default_db_path": str(DEFAULT_DB_PATH),
-            "secret_key_source": "GREMLIN_SECRET_KEY" if os.environ.get("GREMLIN_SECRET_KEY") else "per-process random",
+            # Names where the key actually came from. The fallback is no longer
+            # per-process: it is one key kept in the access database, shared by
+            # every worker and held across restarts.
+            "secret_key_source": (
+                "GREMLIN_SECRET_KEY" if os.environ.get("GREMLIN_SECRET_KEY")
+                else f"generated, stored in {ACCESS_DB_PATH.name}"
+            ),
             "life_data_service_status": service_status,
             "life_data_service_error": service_error,
             "route_count": len(routes),

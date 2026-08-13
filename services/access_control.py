@@ -92,19 +92,23 @@ class AccessControl:
             """)
             if bool(initial_username) != bool(initial_pin):
                 raise RuntimeError("GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN must be configured together.")
+            bootstrap_username = (initial_username or "").strip()
             if initial_username and initial_pin:
-                # Bootstrap has to obey the bounds the login path enforces.
-                # authenticate_limited skips the users lookup entirely for
-                # credentials longer than these, so an over-long bootstrap
-                # account is one that can never sign in -- and because
-                # has_users() then reports the table as populated, no later
-                # start would replace it. Refusing here costs a restart;
-                # accepting it costs the deployment every protected write.
-                _check_credential_bounds(initial_username.strip(), initial_pin)
+                # Bootstrap has to survive the same checks save_user applies and
+                # the bounds the login path enforces. An account that is blank
+                # once stripped, or longer than authenticate_limited will look
+                # up, is one that can never sign in -- and because has_users()
+                # then reports the table as populated, no later start would
+                # replace it with corrected credentials. Refusing here costs a
+                # restart; accepting it costs the deployment every protected
+                # write, permanently.
+                if not bootstrap_username:
+                    raise ValueError("GREMLIN_ADMIN_USERNAME must not be blank.")
+                _check_credential_bounds(bootstrap_username, initial_pin)
             if initial_username and initial_pin and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
                 conn.execute(
                     "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
-                    (initial_username.strip(), generate_password_hash(initial_pin)),
+                    (bootstrap_username, generate_password_hash(initial_pin)),
                 )
 
     def shared_secret_key(self) -> str:
