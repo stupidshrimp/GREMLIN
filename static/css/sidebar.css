@@ -138,6 +138,7 @@ body.sidebar-collapsed .sidebar {
 }
 
 body.sidebar-collapsed .sidebar-heading {
+  display: none;
   opacity: 0;
   pointer-events: none;
 }
@@ -195,7 +196,9 @@ body.sidebar-collapsed .sidebar a:hover {
   }
 
   body.sidebar-collapsed .sidebar-heading {
+    display: block;
     opacity: 1;
+    pointer-events: auto;
   }
 
   .sidebar-toggle {
