@@ -761,7 +761,42 @@ class SyncRunnerTests(unittest.TestCase):
         self.assertEqual(described["credentials"]["base_url"], "https://example.test/v2")
         self.assertNotIn("secret", str(described))
 
-    def test_an_open_batch_is_only_somebody_elses_when_nothing_runs_here(self):
+    def test_another_process_importing_is_reported_even_while_we_run(self):
+        # The overlap worth warning about is precisely this one, and it used to
+        # be hidden: any open batch was assumed to be ours whenever a local sync
+        # was running, though a local run has no batch at all until its fetching
+        # is done -- minutes in.
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 60))
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch (source_system, status, import_started_at) VALUES ('Limble', 'STARTED', ?)",
+                (started,),
+            )
+
+        gate = threading.Event()
+        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
+        try:
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] == STATE_RUNNING))
+            described = self.runner.describe(self.db_path)
+            self.assertEqual(described["job"]["state"], STATE_RUNNING)
+            self.assertIsNotNone(described["in_flight_batch"])
+        finally:
+            gate.set()
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+
+    def test_our_own_batch_is_not_reported_as_somebody_elses(self):
+        # Once this run opens its own batch, that row must not be read back as
+        # a competing import.
+        self._run(FakeLimbleClient(self.tasks, self.assets))
+        batch_id = self.runner.status()["summary"]["import_batch_id"]
+        with sqlite3.connect(self.db_path) as conn:
+            # Reopen it, as it would look mid-write.
+            conn.execute("UPDATE import_batch SET status = 'STARTED', import_completed_at = NULL WHERE import_batch_id = ?", (batch_id,))
+
+        self.assertIsNotNone(read_import_history(self.db_path)["in_flight"])
+        self.assertIsNone(read_import_history(self.db_path, exclude_batch_id=batch_id)["in_flight"])
+
+    def test_an_open_batch_is_reported_when_nothing_runs_here(self):
         # An import batch left open by another process -- the nightly scheduled
         # job is the realistic case -- is worth warning about, because a second
         # sync would repeat its work.
@@ -772,19 +807,6 @@ class SyncRunnerTests(unittest.TestCase):
                 (started,),
             )
         self.assertIsNotNone(self.runner.describe(self.db_path)["in_flight_batch"])
-
-        gate = threading.Event()
-        self._run(FakeLimbleClient(self.tasks, self.assets, gate=gate), wait=False)
-        try:
-            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] == STATE_RUNNING))
-            described = self.runner.describe(self.db_path)
-            self.assertEqual(described["job"]["state"], STATE_RUNNING)
-            # While this process is the one importing, the open batch is ours:
-            # warning about it would be warning about ourselves.
-            self.assertIsNone(described["in_flight_batch"])
-        finally:
-            gate.set()
-            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
 
 
 class ScheduledJobTimingTests(unittest.TestCase):

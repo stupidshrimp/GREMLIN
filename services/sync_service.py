@@ -445,8 +445,18 @@ def _readonly_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def read_import_history(db_path: str | Path, *, scan_limit: int = 25) -> dict[str, Any]:
+def read_import_history(
+    db_path: str | Path,
+    *,
+    scan_limit: int = 25,
+    exclude_batch_id: int | None = None,
+) -> dict[str, Any]:
     """Report on recent import batches: the last completed one, and any still open.
+
+    ``exclude_batch_id`` leaves one batch out of the "still open" answer. A run
+    that is watching its own progress passes the batch it opened, so what comes
+    back is an import belonging to somebody *else* -- which is the only kind
+    worth warning about.
 
     Deliberately *not* a source of durations. A batch row is opened after the
     fetching finishes (see ``IngestionService.sync_all``), so the span between
@@ -485,6 +495,11 @@ def read_import_history(db_path: str | Path, *, scan_limit: int = 25) -> dict[st
             ]
             if "import_started_at" not in wanted:
                 return empty
+            if "import_batch_id" not in columns:
+                # A legacy table without the column still has the rowid the
+                # writer's INSERT returned, so a batch can always be named --
+                # which is what lets a run recognise its own.
+                wanted = ["rowid AS import_batch_id", *wanted]
             order = "import_batch_id" if "import_batch_id" in columns else "rowid"
             rows = conn.execute(
                 f"SELECT {', '.join(wanted)} FROM import_batch ORDER BY {order} DESC LIMIT ?",
@@ -512,14 +527,16 @@ def read_import_history(db_path: str | Path, *, scan_limit: int = 25) -> dict[st
         # look like a sync in progress for the next six hours.
         finished = status in _FINISHED_BATCH_STATUSES or completed is not None
 
-        if not finished and started is not None and in_flight is None:
+        batch_id = row["import_batch_id"] if "import_batch_id" in keys else None
+        ours = exclude_batch_id is not None and batch_id == exclude_batch_id
+        if not finished and not ours and started is not None and in_flight is None:
             age = (now - started).total_seconds()
             # Ignore rows a crashed run left open: reporting a months-old
             # "still running" batch would just train people to ignore the
             # warning that matters.
             if 0 <= age <= _MAX_RUN_SECONDS:
                 in_flight = {
-                    "import_batch_id": row["import_batch_id"] if "import_batch_id" in keys else None,
+                    "import_batch_id": batch_id,
                     "started_at": row["import_started_at"],
                     "age_seconds": round(age, 1),
                     "status": status or None,
@@ -794,6 +811,9 @@ class LimbleSyncRunner:
                 "_monotonic_start": time.monotonic(),
                 "_active": active,
                 "_share": share,
+                # Set once this run opens its import_batch, which does not
+                # happen until the fetching is done.
+                "_batch_id": None,
             }
             thread = threading.Thread(
                 target=self._run,
@@ -840,13 +860,16 @@ class LimbleSyncRunner:
 
         path = Path(db_path)
         job = self.status()
-        history = read_import_history(path)
+        # Leave this run's own batch out rather than every open batch: the row
+        # only appears once fetching is done, so for most of a run any open
+        # batch belongs to somebody else -- the nightly job, most likely, which
+        # is exactly the overlap the warning is for. Suppressing all of them
+        # while running hid the warning precisely when it was true.
+        with self._lock:
+            own_batch_id = self._job.get("_batch_id") if self._job.get("state") == STATE_RUNNING else None
+        history = read_import_history(path, exclude_batch_id=own_batch_id)
         timings = summarise_run_timings(path)
         in_flight = history.get("in_flight")
-        # Our own run owns the open batch while it is running; only report an
-        # open batch as somebody else's when nothing is running here.
-        if job.get("state") == STATE_RUNNING:
-            in_flight = None
         return {
             "job": job,
             "credentials": describe_credentials(),
@@ -879,6 +902,7 @@ class LimbleSyncRunner:
                 exclude_templates=not options.include_templates,
                 log=self._make_logger(log),
                 progress=self._on_progress,
+                on_batch_started=self._remember_batch,
             )
             self._append_message(f"Database: {db_path}")
             self._append_message(f"Limble base URL: {config.base_url}")
@@ -991,6 +1015,13 @@ class LimbleSyncRunner:
             # a later phase with an over-generous estimate could otherwise
             # compute a smaller fraction than the phase before it.
             self._job["progress"] = round(max(fraction, self._job.get("progress") or 0.0), 4)
+
+    def _remember_batch(self, batch_id: int) -> None:
+        """Note the import_batch this run opened, so it is not mistaken for another's."""
+
+        with self._lock:
+            if self._job.get("state") == STATE_RUNNING:
+                self._job["_batch_id"] = batch_id
 
     def _make_logger(self, log: Callable[[str], None]) -> Callable[[str], None]:
         """Tee a component's log lines to the status feed and the server console."""

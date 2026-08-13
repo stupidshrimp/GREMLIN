@@ -60,6 +60,7 @@ class IngestionService:
         exclude_templates: bool = True,
         log: Callable[[str], None] = print,
         progress: Callable[[str, int | None, int | None], None] | None = None,
+        on_batch_started: Callable[[int], None] | None = None,
     ) -> None:
         self.limble_client = limble_client
         self.raw_repo = raw_repo
@@ -73,6 +74,11 @@ class IngestionService:
         # ends (the Limble list endpoints do not report a total), so callers
         # must treat it as "unknown" rather than "zero".
         self._progress = progress
+        # Called with the import_batch id as soon as the row exists. A caller
+        # watching the database for other people's imports needs to know which
+        # open batch is this one's, and cannot infer it: the row does not appear
+        # until the fetching is over, so for most of a run there isn't one.
+        self._on_batch_started = on_batch_started
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -150,6 +156,11 @@ class IngestionService:
         self._emit(PHASE_WRITE, 0, len(records))
         self.raw_repo.ensure_schema()
         batch_id = self.raw_repo.start_batch(notes=f"Limble sync of {len(records)} task(s)")
+        if self._on_batch_started is not None:
+            try:
+                self._on_batch_started(batch_id)
+            except Exception:  # noqa: BLE001 - bookkeeping must not fail an import
+                pass
         try:
             counts = self.raw_repo.upsert_records(
                 batch_id,
