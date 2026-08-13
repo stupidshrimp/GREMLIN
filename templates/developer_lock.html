@@ -7,24 +7,15 @@
 {% block content %}
 <section class="glass-card fade-in-up dev-lock">
   <p class="eyebrow">Developer</p>
-  <h1>Enter the developer PIN.</h1>
+  <h1>Administrator access required.</h1>
   <p>
-    This workspace exposes GREMLIN's runtime configuration and a read-only view of
-    <code>GREMLIN.db</code>. It is intended for developers and maintainers.
+    Log in with an administrator account using the person icon at the bottom of the sidebar.
   </p>
 
   {% if error %}
     <p class="dev-lock-error" role="alert">{{ error }}</p>
   {% endif %}
 
-  <form class="dev-lock-form" method="post" action="{{ url_for('developer_unlock') }}">
-    <label for="dev-pin">PIN</label>
-    <input id="dev-pin" name="pin" type="password" inputmode="numeric" autocomplete="off"
-           autofocus required aria-describedby="dev-pin-hint">
-    <button type="submit" class="btn-primary">Unlock</button>
-  </form>
-  <p class="dev-lock-hint" id="dev-pin-hint">
-    The PIN unlocks this browser session only. Nothing on this page can modify the database.
-  </p>
+  <p class="dev-lock-hint">The initial account is <strong>admin</strong> with PIN <strong>1336</strong>, unless GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN were set before first launch.</p>
 </section>
 {% endblock %}

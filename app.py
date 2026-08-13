@@ -2,6 +2,7 @@ import io
 import math
 import os
 import secrets
+import sqlite3
 import sys
 import tempfile
 from functools import wraps
@@ -30,6 +31,7 @@ from services.life_data_service import (
     LifeDataService,
 )
 from services.schema_service import SchemaService, SchemaServiceError
+from services.access_control import AccessControl, ROLES
 from services.sync_service import (
     APP_ENV_KEYS,
     LimbleSyncRunner,
@@ -52,6 +54,39 @@ app = Flask(__name__)
 # unlock across restarts when one is configured; otherwise a per-process random
 # key simply means developers re-enter the PIN after a restart.
 app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
+
+ACCESS_DB_PATH = Path(os.environ.get("GREMLIN_ACCESS_DB_PATH", Path(__file__).with_name("accesscontrol.db")))
+access_control = AccessControl(ACCESS_DB_PATH)
+access_control.ensure_schema()
+ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
+
+
+def current_user() -> dict | None:
+    return session.get("user")
+
+
+def requires_role(role: str):
+    """Require a signed-in user at or above ``role`` for a modifying action."""
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            user = current_user()
+            if not user:
+                return jsonify({"error": "Log in to make changes; guest access is read-only."}), 401
+            if ROLE_LEVEL.get(user.get("role"), -1) < ROLE_LEVEL[role]:
+                return jsonify({"error": f"The {role} role is required for this action."}), 403
+            response = view(*args, **kwargs)
+            status = response[1] if isinstance(response, tuple) and len(response) > 1 else getattr(response, "status_code", 200)
+            if int(status) < 400:
+                access_control.record_change(user, f"{request.method} {request.path}")
+            return response
+        return wrapped
+    return decorator
+
+
+@app.context_processor
+def auth_context():
+    return {"auth_user": current_user()}
 
 ICONS = {
     "home": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 3.7 10A1 1 0 0 0 3.3 11.1a1 1 0 0 0 1 .7h1v7.3c0 .5.4.9.9.9h4.8v-5.3c0-.5.4-.9.9-.9h1.8c.5 0 .9.4.9.9V20h4.8c.5 0 .9-.4.9-.9v-7.3h1a1 1 0 0 0 .6-1.8L12 3.2Z"/></svg>',
@@ -286,6 +321,24 @@ def home():
     return render_template("home.html", page_title="Home", nav_links=NAV_LINKS)
 
 
+@app.post("/auth/login")
+def login():
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    user = access_control.authenticate(str((payload or {}).get("username", "")).strip(), str((payload or {}).get("pin", "")))
+    if not user:
+        return jsonify({"error": "Incorrect username or PIN."}), 401
+    session.clear()
+    session["user"] = user
+    session.permanent = False
+    return jsonify({"user": user})
+
+
+@app.post("/auth/logout")
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
 @app.route("/life-data-analysis")
 def life_data_analysis():
     return render_template(
@@ -497,6 +550,7 @@ def api_availability_config():
 
 @app.route("/metrics/api/availability/config/group/<path:asset_group>", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_group(asset_group: str):
     """Update one group's shift schedule and, optionally, its membership.
 
@@ -524,6 +578,7 @@ def api_availability_save_group(asset_group: str):
 
 @app.route("/metrics/api/availability/config/group/<path:asset_group>/reset", methods=["POST"])
 @availability_api
+@requires_role("editor")
 def api_availability_reset_group(asset_group: str):
     repository = get_availability_repository()
     repository.reset_group_to_defaults(asset_group)
@@ -532,6 +587,7 @@ def api_availability_reset_group(asset_group: str):
 
 @app.route("/metrics/api/availability/goal", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_goal():
     body = _json_body()
     group = str(body.get("asset_group") or "").strip()
@@ -545,6 +601,7 @@ def api_availability_save_goal():
 
 @app.route("/metrics/api/availability/ot", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_ot():
     body = _json_body()
     asset = str(body.get("asset_number") or "").strip()
@@ -558,6 +615,7 @@ def api_availability_save_ot():
 
 @app.route("/metrics/api/availability/display-name", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_display_name():
     body = _json_body()
     asset = str(body.get("asset_number") or "").strip()
@@ -570,6 +628,7 @@ def api_availability_save_display_name():
 
 @app.route("/metrics/api/availability/linked-rules", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_linked_rules():
     body = _json_body()
     rules = body.get("rules")
@@ -701,6 +760,7 @@ def api_dispositions():
 
 @app.route("/life-data-analysis/api/dispositions/save", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_save_dispositions():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -741,6 +801,7 @@ def api_download_disposition_excel():
 
 @app.route("/life-data-analysis/api/dispositions/excel", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_upload_disposition_excel():
     service = _service_or_api_error()
     asset_number = _required_asset()
@@ -958,7 +1019,8 @@ def get_schema_service() -> SchemaService:
 
 
 def _dev_unlocked() -> bool:
-    return bool(session.get(DEV_SESSION_KEY))
+    user = current_user()
+    return bool(user and user.get("role") == "admin")
 
 
 def dev_api(view):
@@ -981,13 +1043,37 @@ def dev_api(view):
 @app.route("/developer")
 def developer_dashboard():
     if not _dev_unlocked():
-        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS)
+        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS), 403
     return render_template(
         "developer_dashboard.html",
         page_title="Developer",
         nav_links=NAV_LINKS,
         db_path=str(_configured_db_path()),
+        access_db_path=str(ACCESS_DB_PATH),
+        users=access_control.list_users(),
+        roles=ROLES,
     )
+
+
+@app.post("/developer/access/users")
+@requires_role("admin")
+def developer_save_user():
+    try:
+        raw_id = request.form.get("user_id", "").strip()
+        access_control.save_user(int(raw_id) if raw_id else None, request.form.get("username", ""), request.form.get("pin", ""), request.form.get("role", ""))
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return redirect(url_for("developer_dashboard") + "#access")
+
+
+@app.post("/developer/access/users/<int:user_id>/delete")
+@requires_role("admin")
+def developer_delete_user(user_id: int):
+    try:
+        access_control.delete_user(user_id, int(current_user()["id"]))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return redirect(url_for("developer_dashboard") + "#access")
 
 
 @app.route("/developer/unlock", methods=["POST"])
@@ -1142,8 +1228,8 @@ def api_dev_sync_status():
     # Reported rather than enforced here: status stays readable when starting is
     # not allowed, so the page can explain why its button is disabled instead of
     # a click failing with no account of itself.
-    payload["start_allowed"] = DEV_PIN_IS_CONFIGURED
-    payload["start_blocked_reason"] = None if DEV_PIN_IS_CONFIGURED else SYNC_LOCKED_MESSAGE
+    payload["start_allowed"] = True
+    payload["start_blocked_reason"] = None
     return jsonify(payload)
 
 
@@ -1154,9 +1240,6 @@ def api_dev_sync_start():
 
     # Fail closed on the default PIN. This is the check the page's disabled
     # button reflects, but the button is not the guard -- the endpoint is.
-    if not DEV_PIN_IS_CONFIGURED:
-        return jsonify({"error": SYNC_LOCKED_MESSAGE}), 403
-
     # Require a JSON body. A cross-site <form> can POST to this URL with the
     # browser's cookies attached but cannot set this content type without a
     # preflight the browser will refuse, so insisting on it keeps a drive-by

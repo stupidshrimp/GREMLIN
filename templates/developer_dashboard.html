@@ -33,6 +33,7 @@
   <button type="button" class="dev-tab" data-tab="drift" aria-selected="false">Drift</button>
   <button type="button" class="dev-tab" data-tab="data" aria-selected="false">Data browser</button>
   <button type="button" class="dev-tab" data-tab="console" aria-selected="false">SQL console</button>
+  <button type="button" class="dev-tab" data-tab="access" aria-selected="false">Access control</button>
 </nav>
 
 <!-- Overview: the file itself plus how this process is configured. -->
@@ -84,11 +85,8 @@
     </p>
     <p class="dev-muted">
       Unlike the rest of this page, running a sync writes to <code>GREMLIN.db</code> and spends
-      this server's Limble credentials, so it needs a developer PIN that is actually a secret.
-      While the PIN is the published default the button stays disabled and every read-only panel
-      keeps working; to enable it, put <code>GREMLIN_DEV_PIN=your-pin</code> in the
-      <code>.env</code> file beside <code>app.py</code> and restart GREMLIN. That value is then
-      the PIN this page asks for.
+      this server's Limble credentials. Access to this developer page is therefore restricted
+      to signed-in administrators.
     </p>
 
     <dl class="dev-facts" id="dev-sync-facts"><dd class="dev-muted">Loading…</dd></dl>
@@ -209,6 +207,17 @@
       <span class="dev-muted" id="dev-sql-meta"></span>
     </div>
     <div class="dev-table-scroll" id="dev-sql-results"></div>
+  </div>
+</section>
+
+<section class="dev-panel" data-panel="access" id="access" aria-label="Access control">
+  <div class="glass-card slide-in">
+    <h2>User credentials</h2>
+    <p class="dev-muted">Accounts and the changed-by/changed-at audit trail for protected writes are stored separately in <code>{{ access_db_path }}</code>. Leave PIN blank while editing to keep the existing hash.</p>
+    <div class="dev-table-scroll"><table class="dev-data-table"><thead><tr><th>Username</th><th>Role</th><th>New PIN</th><th>Actions</th></tr></thead><tbody>
+      {% for user in users %}<tr><form method="post" action="{{ url_for('developer_save_user') }}"><input type="hidden" name="user_id" value="{{ user.id }}"><td><input name="username" value="{{ user.username }}" required></td><td><select name="role">{% for role in roles %}<option value="{{ role }}" {% if role == user.role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></td><td><input name="pin" type="password" inputmode="numeric" placeholder="Unchanged"></td><td><button class="btn-secondary" type="submit">Save</button></form><form method="post" action="{{ url_for('developer_delete_user', user_id=user.id) }}"><button class="btn-secondary" type="submit">Remove</button></form></td></tr>{% endfor %}
+      <tr><form method="post" action="{{ url_for('developer_save_user') }}"><td><input name="username" placeholder="New username" required></td><td><select name="role">{% for role in roles %}<option value="{{ role }}">{{ role }}</option>{% endfor %}</select></td><td><input name="pin" type="password" inputmode="numeric" required></td><td><button class="btn-primary" type="submit">Add user</button></td></form></tr>
+    </tbody></table></div>
   </div>
 </section>
 {% endblock %}
