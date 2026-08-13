@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 from threading import Barrier
 
 from services.access_control import AccessControl
@@ -105,9 +106,11 @@ def test_parallel_login_failures_are_counted_atomically(tmp_path):
 
     assert all(user is None for user, _retry_after in outcomes)
     assert any(retry_after > 0 for _user, retry_after in outcomes)
+    account_scope = "account:" + hashlib.sha256(b"root").hexdigest()
     with control._connect() as conn:
         account = conn.execute(
-            "SELECT failure_count, locked_until FROM login_attempts WHERE scope_key='account:root'"
+            "SELECT failure_count, locked_until FROM login_attempts WHERE scope_key=?",
+            (account_scope,),
         ).fetchone()
     assert account["failure_count"] == 5
     assert account["locked_until"] > 0
@@ -126,6 +129,16 @@ def test_stale_login_attempt_scopes_are_swept(tmp_path, monkeypatch):
         assert conn.execute(
             "SELECT 1 FROM login_attempts WHERE scope_key='client:stale'"
         ).fetchone() is None
+
+
+def test_login_attempt_scope_keys_are_fixed_length_for_oversized_input(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.authenticate_limited("x" * 1_000_000, "y" * 10_000, "z" * 1_000_000)
+    with control._connect() as conn:
+        keys = [row[0] for row in conn.execute("SELECT scope_key FROM login_attempts")]
+    assert len(keys) == 2
+    assert all(len(key) <= len("account:") + 64 for key in keys)
 
 
 def test_parallel_admin_demotions_preserve_an_administrator(tmp_path):

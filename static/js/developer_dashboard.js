@@ -1028,7 +1028,9 @@
     // panel that had just read the older numbers. Establishing the baseline
     // first costs one round trip on a page that is about to make several.
     await pollSync();
-    activate("overview");
+    const requested = window.location.hash.replace(/^#/, "");
+    const initial = Object.prototype.hasOwnProperty.call(LOADERS, requested) ? requested : "overview";
+    activate(initial);
   }
 
   // This script tag sits at the end of <body>, so every element it touches is

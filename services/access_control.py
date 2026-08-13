@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from pathlib import Path
@@ -13,6 +14,8 @@ LOGIN_FAILURE_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
 LOGIN_LOCK_SECONDS = 15 * 60
 DB_BUSY_TIMEOUT_SECONDS = 30
+MAX_USERNAME_CHARS = 128
+MAX_PIN_CHARS = 256
 
 
 class AccessControl:
@@ -92,7 +95,14 @@ class AccessControl:
     def authenticate_limited(self, username: str, pin: str, client_key: str) -> tuple[dict | None, int]:
         """Authenticate with persistent per-account and per-client lockouts."""
         now = time.time()
-        scopes = (f"account:{username.strip().casefold()}", f"client:{client_key}")
+        normalized_username = username.strip().casefold()
+        # Scope keys have a fixed storage cost even for attacker-controlled,
+        # oversized usernames/client identifiers. The real username remains a
+        # parameterized users-table lookup only when it satisfies the account
+        # input bound.
+        account_digest = hashlib.sha256(normalized_username.encode("utf-8")).hexdigest()
+        client_digest = hashlib.sha256(str(client_key).encode("utf-8")).hexdigest()
+        scopes = (f"account:{account_digest}", f"client:{client_digest}")
         with self._connect() as conn:
             # Serialize the complete read/check/increment sequence. A deferred
             # transaction would let parallel requests all read the same count
@@ -115,9 +125,10 @@ class AccessControl:
             locked_until = max((float(row["locked_until"]) for row in attempts.values()), default=0)
             if locked_until > now:
                 return None, max(1, int(locked_until - now + 0.999))
+            valid_input = len(username) <= MAX_USERNAME_CHARS and len(pin) <= MAX_PIN_CHARS
             row = conn.execute(
                 "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
-            ).fetchone()
+            ).fetchone() if valid_input else None
             if row and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
                 return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
