@@ -45,7 +45,7 @@ from services.sync_service import (
 # This is the one safe moment to do it: nothing has been built yet, so there is
 # no service holding a value that this could contradict. Only the names in
 # APP_ENV_KEYS are applied, and a real environment variable still wins over the
-# file -- so a host that exports GREMLIN_DEV_PIN keeps deciding.
+# file -- so host-exported access-control settings keep deciding.
 load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
@@ -189,51 +189,6 @@ MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
 
-# Developer dashboard access. The PIN is a shared speed bump for an app that has
-# no user accounts: it keeps dev tooling out of the way of normal users on the
-# plant network. It is deliberately NOT authentication, and the default is a
-# known value in a public repository -- so treat anyone who can reach this port
-# as able to read the whole database through the dashboard. That trade-off was
-# made knowingly in favour of the page working with no configuration; if it ever
-# needs to hold against the network, set GREMLIN_DEV_PIN rather than assuming
-# this default protects anything.
-DEFAULT_DEV_PIN = "1336"
-_DEV_PIN_FROM_ENV = os.environ.get("GREMLIN_DEV_PIN")
-DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or DEFAULT_DEV_PIN
-
-
-def _pin_is_configured(pin_from_env: str | None) -> bool:
-    """Whether the PIN in force is a secret, rather than the published fallback.
-
-    Exporting GREMLIN_DEV_PIN=1336 is not configuring a PIN. The value is in this
-    repository, so a deployment that sets it is protected by nothing at all --
-    and a check that only asked whether the variable *existed* would hand it
-    authority to write to the database on that basis. What matters is that the
-    PIN is not the one everybody can read.
-    """
-
-    return bool(pin_from_env) and pin_from_env != DEFAULT_DEV_PIN
-
-
-# Read once, from the same value the PIN itself comes from, so the two can never
-# disagree: a GREMLIN_DEV_PIN exported after startup does not change the PIN
-# being checked, and must not change this either.
-DEV_PIN_IS_CONFIGURED = _pin_is_configured(_DEV_PIN_FROM_ENV)
-DEV_SESSION_KEY = "dev_dashboard_unlocked"
-
-# Reading the database through this page needs no configuration; starting a sync
-# does. The difference is what the action can do: it writes to a GREMLIN.db other
-# people are using and spends this server's Limble credentials, and the default
-# PIN is published, so that authority has to be granted deliberately rather than
-# inherited from a fallback. Inspection panels are unaffected.
-SYNC_LOCKED_MESSAGE = (
-    "Starting a sync is disabled because the developer PIN is still the published default. "
-    "That is acceptable for the read-only panels, but not for an action that writes to "
-    "GREMLIN.db and calls the Limble API with this server's credentials. To enable it, put a "
-    "PIN of your own in the .env file beside app.py as GREMLIN_DEV_PIN=your-pin (or set it as "
-    "an environment variable on the GREMLIN host), then restart GREMLIN. That value becomes "
-    "the PIN this page asks for. The scheduled nightly sync is unaffected either way."
-)
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
 
@@ -1152,27 +1107,6 @@ def developer_delete_user(user_id: int):
     return redirect(url_for("developer_dashboard") + "#access")
 
 
-@app.route("/developer/unlock", methods=["POST"])
-def developer_unlock():
-    submitted = (request.form.get("pin") or "").strip()
-    # compare_digest keeps the check constant-time. Compare as UTF-8 bytes: on
-    # str arguments it rejects any non-ASCII character with a TypeError, so a
-    # stray accented character typed into the PIN box would surface as a 500
-    # with a traceback instead of an ordinary "Incorrect PIN".
-    if secrets.compare_digest(submitted.encode("utf-8"), DEV_DASHBOARD_PIN.encode("utf-8")):
-        session[DEV_SESSION_KEY] = True
-        return redirect(url_for("developer_dashboard"))
-    return (
-        render_template(
-            "developer_lock.html",
-            page_title="Developer",
-            nav_links=NAV_LINKS,
-            error="Incorrect PIN.",
-        ),
-        403,
-    )
-
-
 @app.route("/developer/lock", methods=["POST"])
 def developer_lock():
     session.clear()
@@ -1290,9 +1224,7 @@ def api_dev_query():
 # The one place on this page that writes. Everything else here reads GREMLIN.db
 # through SchemaService's read-only connections; this runs the same ingestion
 # the nightly Task Scheduler job runs, so it fetches from the Limble API and
-# writes what it finds. The PIN is what limits that to certain users -- it is the
-# only notion of one this app has -- and because it authorises a write, it has to
-# be a PIN someone chose: see DEV_PIN_IS_CONFIGURED.
+# writes what it finds. An administrator account limits this consequential write to named, auditable users.
 
 
 @app.route("/developer/api/sync")

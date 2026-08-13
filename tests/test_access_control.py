@@ -113,6 +113,21 @@ def test_parallel_login_failures_are_counted_atomically(tmp_path):
     assert account["locked_until"] > 0
 
 
+def test_stale_login_attempt_scopes_are_swept(tmp_path, monkeypatch):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with control._connect() as conn:
+        conn.execute(
+            "INSERT INTO login_attempts VALUES ('client:stale', 1, 1, 0)"
+        )
+    monkeypatch.setattr("services.access_control.time.time", lambda: 10_000.0)
+    control.authenticate_limited("unknown", "wrong", "current")
+    with control._connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM login_attempts WHERE scope_key='client:stale'"
+        ).fetchone() is None
+
+
 def test_parallel_admin_demotions_preserve_an_administrator(tmp_path):
     control = AccessControl(tmp_path / "accesscontrol.db")
     control.ensure_schema(initial_username="admin-one", initial_pin="secret-one")

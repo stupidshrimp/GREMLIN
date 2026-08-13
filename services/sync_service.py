@@ -171,7 +171,6 @@ LIMBLE_ENV_PREFIX = "LIMBLE_"
 # otherwise find the web app moving to that database on its next restart, which
 # is a decision for whoever runs it rather than a side effect of this change.
 APP_ENV_KEYS = frozenset({
-    "GREMLIN_DEV_PIN",
     "GREMLIN_SECRET_KEY",
     "GREMLIN_ACCESS_DB_PATH",
     "GREMLIN_ADMIN_USERNAME",

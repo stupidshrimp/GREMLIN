@@ -101,6 +101,14 @@ class AccessControl:
             # writer slot before the count is read, so every request observes
             # the preceding request's committed increment.
             conn.execute("BEGIN IMMEDIATE")
+            # Unknown usernames and rotating client addresses must not grow the
+            # limiter table forever. Rows no longer participating in a failure
+            # window or lockout are disposable; sweep them while already
+            # holding the serialized writer transaction.
+            conn.execute(
+                "DELETE FROM login_attempts WHERE window_started < ? AND locked_until <= ?",
+                (now - LOGIN_WINDOW_SECONDS, now),
+            )
             attempts = {row["scope_key"]: row for row in conn.execute(
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
             )}
