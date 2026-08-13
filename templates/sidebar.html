@@ -1,5 +1,5 @@
 <aside id="primarySidebar" class="sidebar" aria-label="Primary">
-  <nav>
+  <nav class="sidebar-nav">
     <p class="sidebar-heading">Navigation</p>
     <ul>
     {% for link in nav_links %}
@@ -13,4 +13,26 @@
     {% endfor %}
     </ul>
   </nav>
+  <div class="sidebar-account">
+    <button type="button" class="account-button" id="accountButton" title="{% if auth_user %}Signed in as {{ auth_user.username }}{% else %}Log in{% endif %}">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-5 0-8.5 2.5-8.5 5.5 0 .6.4 1 1 1h15c.6 0 1-.4 1-1 0-3-3.5-5.5-8.5-5.5Z"/></svg></span>
+      <span class="nav-label">{% if auth_user %}{{ auth_user.username }} · {{ auth_user.role }}{% else %}Log in{% endif %}</span>
+    </button>
+  </div>
 </aside>
+<dialog id="accountDialog" class="account-dialog">
+  <button type="button" class="account-close" id="accountClose" aria-label="Close">×</button>
+  {% if auth_user %}
+    <h2>Signed in</h2><p><strong>{{ auth_user.username }}</strong> · {{ auth_user.role }}</p>
+    <p>Your login lasts for this browser session. Closing the browser signs you out.</p>
+    <button type="button" class="btn-secondary" id="logoutButton">Log out</button>
+  {% else %}
+    <h2>Log in to edit</h2><p>GREMLIN remains available read-only without an account.</p>
+    <form id="loginForm">
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>
+      <p id="loginError" class="account-error" role="alert" hidden></p>
+      <button type="submit" class="btn-primary">Log in</button>
+    </form>
+  {% endif %}
+</dialog>

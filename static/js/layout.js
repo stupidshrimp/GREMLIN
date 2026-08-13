@@ -56,3 +56,26 @@
     saveState(collapsed);
   });
 })();
+
+(function () {
+  const dialog = document.getElementById("accountDialog");
+  const open = document.getElementById("accountButton");
+  if (!dialog || !open) return;
+  open.addEventListener("click", () => dialog.showModal());
+  document.getElementById("accountClose")?.addEventListener("click", () => dialog.close());
+  document.getElementById("logoutButton")?.addEventListener("click", async () => {
+    await fetch("/auth/logout", { method: "POST" });
+    window.location.reload();
+  });
+  document.getElementById("loginForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = document.getElementById("loginError");
+    const response = await fetch("/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+    });
+    const payload = await response.json();
+    if (!response.ok) { error.textContent = payload.error; error.hidden = false; return; }
+    window.location.reload();
+  });
+})();

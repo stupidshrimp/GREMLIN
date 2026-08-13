@@ -1,5 +1,8 @@
+accesscontrol.db
+accesscontrol.db-journal
 .venv/
 __pycache__/
 *.pyc
 .env
 .vscode/
+.pytest_cache/
