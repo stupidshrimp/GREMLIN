@@ -17,6 +17,30 @@ def test_users_are_hashed_and_authenticate(tmp_path):
     assert stored != "2468"
 
 
+def test_account_credentials_obey_login_input_bounds(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    for username, pin, message in (
+        ("u" * 129, "pin", "Username must be 128"),
+        ("user", "p" * 257, "PIN must be 256"),
+    ):
+        try:
+            control.save_user(None, username, pin, "editor")
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError("An unusable credential was accepted")
+
+    admin = control.authenticate("root", "secret")
+    try:
+        control.save_user(admin["id"], "root", "p" * 257, "admin")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An unusable replacement PIN was accepted")
+    assert control.authenticate("root", "secret") is not None
+
+
 def test_existing_user_schema_gains_credential_version(tmp_path):
     import sqlite3
 

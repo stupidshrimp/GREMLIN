@@ -547,10 +547,13 @@ class DeveloperAuthenticationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/developer/api/tables").status_code, 200)
 
     def test_bad_credentials_are_rejected_without_erroring(self):
-        for pin in ("0000", "", "   ", "13é6", "🔒", "test-secret" * 99):
+        pins = ("0000", "", "   ", "13é6", "🔒", "test-secret" * 99)
+        for index, pin in enumerate(pins):
             with self.subTest(pin=pin):
+                username = f"developer-{index}"
+                self.access_control.save_user(None, username, "valid-secret", "admin")
                 response = self.client.post(
-                    "/auth/login", json={"username": "developer", "pin": pin},
+                    "/auth/login", json={"username": username, "pin": pin},
                     environ_base={"REMOTE_ADDR": f"192.0.2.{len(pin) % 250 + 1}"},
                 )
                 self.assertEqual(response.status_code, 401)

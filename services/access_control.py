@@ -158,6 +158,10 @@ class AccessControl:
         username = username.strip()
         if not username or role not in ROLES or (user_id is None and not pin):
             raise ValueError("Username, a valid role, and a PIN for new users are required.")
+        if len(username) > MAX_USERNAME_CHARS:
+            raise ValueError(f"Username must be {MAX_USERNAME_CHARS} characters or fewer.")
+        if len(pin) > MAX_PIN_CHARS:
+            raise ValueError(f"PIN must be {MAX_PIN_CHARS} characters or fewer.")
         with self._connect() as conn:
             # The last-admin count and the mutation are one serialized decision.
             # Without taking the writer slot first, two concurrent demotions can
