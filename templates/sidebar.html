@@ -1,6 +1,19 @@
 <aside id="primarySidebar" class="sidebar" aria-label="Primary">
   <nav class="sidebar-nav">
-    <p class="sidebar-heading">Navigation</p>
+    <div class="sidebar-header">
+      <p class="sidebar-heading">Navigation</p>
+      <button
+        type="button"
+        id="sidebarToggle"
+        class="sidebar-toggle"
+        aria-controls="primarySidebar"
+        aria-expanded="true"
+        aria-label="Collapse sidebar"
+        title="Collapse sidebar"
+      >
+        <span class="sidebar-toggle-icon" aria-hidden="true">⇤</span>
+      </button>
+    </div>
     <ul>
     {% for link in nav_links %}
       <li>
