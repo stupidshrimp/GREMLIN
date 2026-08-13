@@ -78,3 +78,49 @@ def test_parallel_login_failures_are_counted_atomically(tmp_path):
         ).fetchone()
     assert account["failure_count"] == 5
     assert account["locked_until"] > 0
+
+
+def test_parallel_admin_demotions_preserve_an_administrator(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="admin-one", initial_pin="secret-one")
+    control.save_user(None, "admin-two", "secret-two", "admin")
+    admins = {user["username"]: user["id"] for user in control.list_users()}
+    barrier = Barrier(2)
+
+    def demote(username):
+        barrier.wait()
+        try:
+            control.save_user(admins[username], username, "", "editor")
+            return True
+        except ValueError as exc:
+            assert "last administrator" in str(exc)
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(demote, admins))
+
+    assert sorted(results) == [False, True]
+    assert sum(user["role"] == "admin" for user in control.list_users()) == 1
+
+
+def test_parallel_admin_deletions_preserve_an_administrator(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="admin-one", initial_pin="secret-one")
+    control.save_user(None, "admin-two", "secret-two", "admin")
+    admin_ids = [user["id"] for user in control.list_users()]
+    barrier = Barrier(2)
+
+    def delete(user_id):
+        barrier.wait()
+        try:
+            control.delete_user(user_id, current_user_id=999)
+            return True
+        except ValueError as exc:
+            assert "last administrator" in str(exc)
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(delete, admin_ids))
+
+    assert sorted(results) == [False, True]
+    assert sum(user["role"] == "admin" for user in control.list_users()) == 1

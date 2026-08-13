@@ -130,6 +130,10 @@ class AccessControl:
         if not username or role not in ROLES or (user_id is None and not pin):
             raise ValueError("Username, a valid role, and a PIN for new users are required.")
         with self._connect() as conn:
+            # The last-admin count and the mutation are one serialized decision.
+            # Without taking the writer slot first, two concurrent demotions can
+            # both observe two admins and then leave the database with none.
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone() if user_id else None
             if user_id and existing is None:
                 raise ValueError("That user no longer exists.")
@@ -147,6 +151,9 @@ class AccessControl:
         if user_id == current_user_id:
             raise ValueError("You cannot remove the account currently in use.")
         with self._connect() as conn:
+            # Serialize the invariant check with DELETE for the same reason as
+            # save_user's admin-demotion path.
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
             if row and row["role"] == "admin" and conn.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0] <= 1:
                 raise ValueError("The last administrator cannot be removed.")
