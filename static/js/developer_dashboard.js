@@ -389,6 +389,10 @@
     ["overview", "pipeline", "schema", "drift", "data"].forEach((key) => state.loaded.delete(key));
     const active = document.querySelector(".dev-tab.is-active");
     if (active && active.dataset.tab !== "sync") activate(active.dataset.tab);
+    // Reloading the Schema panel rebuilds the table *list*; an open table's
+    // detail is drawn separately and would sit there showing the row count and
+    // columns from before the import, which mapping can genuinely change.
+    if (state.selectedTable) selectTable(state.selectedTable);
   }
 
   // Identifies a finished run that changed the database, so the panels can be
@@ -696,8 +700,13 @@
     renderTableList();
     const container = $("dev-table-detail");
     replaceChildren(container, el("p", "dev-muted", "Loading…"));
+    // This detail is fetched outside the panel loaders, so it carries its own
+    // copy of the invalidation era: a sync that finishes mid-request would
+    // otherwise be answered with columns and a row count from before it.
+    const generation = state.panelGeneration;
     try {
       const detail = await getJSON(API.table(name));
+      if (generation !== state.panelGeneration) return;
       container.textContent = "";
 
       const heading = el("div", "dev-detail-head");

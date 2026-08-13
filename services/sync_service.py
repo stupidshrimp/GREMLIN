@@ -34,12 +34,24 @@ every read and write is best effort, and losing it costs an estimate, not data.
 Concurrency
 -----------
 One sync at a time per process, enforced by :class:`LimbleSyncRunner`'s lock.
-That is not a distributed lock and cannot be: the nightly Task Scheduler job is
-a different process entirely, and could overlap with a run started here. Nothing
-corrupts if that happens -- SQLite serialises the writers through
-``BEGIN IMMEDIATE`` and the import is idempotent -- but the two runs would
-duplicate each other's work, so :meth:`LimbleSyncRunner.describe` reports any
-import batch that is still open and lets the page warn about it.
+That is not a distributed lock: the nightly Task Scheduler job is a different
+process entirely, and could overlap with a run started here.
+
+The database survives that -- SQLite serialises the writers through
+``BEGIN IMMEDIATE``, and the import is idempotent -- but the *content* has one
+sharp edge worth naming. Each run writes the snapshot it fetched, and
+``RawRepository`` takes the last write for a task without comparing how old the
+payload is. Two overlapping runs whose writes land in the opposite order to
+their fetches therefore leave the earlier snapshot in place for any task edited
+between them, until the next sync corrects it. It takes an overlap, an edit
+inside the window, and reversed ordering (a rate-limit backoff is the plausible
+cause), so it is a narrow case rather than an impossible one.
+
+What this module does about it is warn: :meth:`LimbleSyncRunner.describe`
+reports an import batch that is open and is not this run's own. It does not
+prevent the overlap, because preventing it means deciding which run loses --
+and a scheduled nightly import that silently does not happen is its own kind of
+bad day. That decision belongs to whoever runs GREMLIN.
 """
 
 from __future__ import annotations
