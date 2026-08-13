@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import os
 from threading import Barrier
 
 import pytest
@@ -268,3 +269,44 @@ def test_workers_starting_together_agree_on_one_signing_key(tmp_path):
         keys = list(executor.map(lambda _: start(), range(4)))
 
     assert len(set(keys)) == 1
+
+
+def test_stale_bootstrap_values_do_not_break_an_established_deployment(tmp_path):
+    """GREMLIN_ADMIN_* creates the first administrator and nothing else.
+
+    On a database that already has accounts these values are inert, so a stale
+    or mistyped one left in .env must not take a working deployment offline on
+    the next restart to report something that changes nothing.
+    """
+    path = tmp_path / "accesscontrol.db"
+    control = AccessControl(path)
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+
+    for username, pin in (("   ", "secret"), ("u" * 129, "secret"), ("root", "p" * 257)):
+        control.ensure_schema(initial_username=username, initial_pin=pin)
+    # Half-configured is equally inert once there is an administrator.
+    control.ensure_schema(initial_username="root", initial_pin=None)
+    control.ensure_schema(initial_username=None, initial_pin="secret")
+
+    assert [user["username"] for user in control.list_users()] == ["root"]
+    assert control.authenticate("root", "secret") is not None
+
+
+def test_a_half_configured_bootstrap_is_still_refused_on_a_fresh_database(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    with pytest.raises(RuntimeError, match="configured together"):
+        control.ensure_schema(initial_username="root", initial_pin=None)
+
+
+def test_the_access_database_is_not_created_world_readable(tmp_path):
+    """It holds the password hashes and the signing key; reading it is enough."""
+    if os.name != "posix":
+        pytest.skip("POSIX mode bits do not govern access on this platform")
+    path = tmp_path / "accesscontrol.db"
+    AccessControl(path).ensure_schema(initial_username="root", initial_pin="secret")
+    assert path.stat().st_mode & 0o077 == 0
+
+    # An operator who widens it deliberately is not overruled on restart.
+    os.chmod(path, 0o640)
+    AccessControl(path).ensure_schema()
+    assert path.stat().st_mode & 0o777 == 0o640

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import sqlite3
 import time
@@ -46,6 +47,9 @@ class AccessControl:
 
     def ensure_schema(self, *, initial_username: str | None = None, initial_pin: str | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Whether this call is what brings the file into existence, decided
+        # before connecting -- sqlite creates it on connect.
+        creating = not self.path.exists()
         with self._connect() as conn:
             # Startup can occur concurrently in a multi-worker deployment.
             # Claim the writer slot before schema migration and the empty-table
@@ -90,26 +94,57 @@ class AccessControl:
                     secret TEXT NOT NULL
                 )
             """)
-            if bool(initial_username) != bool(initial_pin):
-                raise RuntimeError("GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN must be configured together.")
-            bootstrap_username = (initial_username or "").strip()
-            if initial_username and initial_pin:
-                # Bootstrap has to survive the same checks save_user applies and
-                # the bounds the login path enforces. An account that is blank
-                # once stripped, or longer than authenticate_limited will look
-                # up, is one that can never sign in -- and because has_users()
-                # then reports the table as populated, no later start would
-                # replace it with corrected credentials. Refusing here costs a
-                # restart; accepting it costs the deployment every protected
-                # write, permanently.
-                if not bootstrap_username:
-                    raise ValueError("GREMLIN_ADMIN_USERNAME must not be blank.")
-                _check_credential_bounds(bootstrap_username, initial_pin)
-            if initial_username and initial_pin and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-                conn.execute(
-                    "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
-                    (bootstrap_username, generate_password_hash(initial_pin)),
-                )
+            # GREMLIN_ADMIN_* creates the first administrator and nothing else,
+            # so it is read only when there is a first administrator to create.
+            # Every complaint about it belongs inside this branch: on a
+            # deployment that is already bootstrapped these values are inert,
+            # and refusing to start over an inert setting -- a stale one left in
+            # .env, a typo nobody has needed since -- would take a working plant
+            # offline to report something that changes nothing.
+            if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+                if bool(initial_username) != bool(initial_pin):
+                    raise RuntimeError("GREMLIN_ADMIN_USERNAME and GREMLIN_ADMIN_PIN must be configured together.")
+                if initial_username and initial_pin:
+                    # The account being created has to survive the checks
+                    # save_user applies and the bounds the login path enforces.
+                    # One that is blank once stripped, or longer than
+                    # authenticate_limited will look up, can never sign in --
+                    # and has_users() would then report the table as populated,
+                    # so no later start would replace it with corrected
+                    # credentials. Refusing costs a restart; accepting costs the
+                    # deployment every protected write, permanently.
+                    bootstrap_username = initial_username.strip()
+                    if not bootstrap_username:
+                        raise ValueError("GREMLIN_ADMIN_USERNAME must not be blank.")
+                    _check_credential_bounds(bootstrap_username, initial_pin)
+                    conn.execute(
+                        "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
+                        (bootstrap_username, generate_password_hash(initial_pin)),
+                    )
+        if creating:
+            self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """Keep the file readable only by the account GREMLIN runs as.
+
+        This database holds the password hashes and the session signing key, so
+        read access to it is enough to forge an administrator without knowing a
+        PIN. The default location is beside GREMLIN.db, which on a plant share
+        is a directory other people can list -- and a default umask would have
+        created this file world-readable there.
+
+        Only applied when this call creates the file, so an operator who
+        deliberately widens it later is not overruled on the next restart. Best
+        effort by nature: on Windows, where GREMLIN actually runs, POSIX mode
+        bits are not what governs access -- the directory's ACL is, and a
+        deployment sharing that directory should point
+        GREMLIN_ACCESS_DB_PATH at somewhere only the service account can read.
+        """
+
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def shared_secret_key(self) -> str:
         """The session signing key every worker of this deployment agrees on.
