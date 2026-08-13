@@ -206,6 +206,7 @@
 
 <div id="lda-workspace" class="lda-workspace"></div>
 
+{% if auth_can_edit %}
 <section id="lda-calculate-all-card" class="glass-card lda-card" hidden>
   <button type="button" class="btn-secondary" id="lda-calculate-all">
     Calculate MLE beta/eta for all modes and mechanisms
@@ -213,6 +214,7 @@
   <p class="lda-hint">Runs and saves Weibull MLE fits for every available failure mode and failure
      mechanism on the selected asset. Requires the calculation password.</p>
 </section>
+{% endif %}
 
 <div id="lda-loading" class="lda-loading" hidden>
   <div class="lda-spinner" aria-hidden="true"></div>

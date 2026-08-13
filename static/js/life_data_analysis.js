@@ -10,6 +10,11 @@
   "use strict";
 
   const API = "/life-data-analysis/api";
+  // Whether this browser session may write. Rendered by the server into every
+  // page, so it reflects the account's role rather than anything the client
+  // decided. The API enforces the same rule on its own -- this only keeps the
+  // page from offering an action that would be refused.
+  const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
   // Analysis types offered by the Step 1 selector. Weibull and Failure Mode Trend
   // are implemented; the rest render a "Coming soon" placeholder for now. The
   // selected type only controls the secondary analysis panel — the Pareto chart
@@ -507,8 +512,12 @@
     const actionsBar = $("lda-actions");
     const calcCard = $("lda-calculate-all-card");
     if (summaryCard) summaryCard.hidden = !ready;
+    // The action bar holds a read-only Pareto toggle alongside the write
+    // buttons, so it still appears; its buttons are hidden by the template for
+    // a viewer. The calculate-all card is nothing but a write, so selecting an
+    // asset must not be what puts it on screen.
     if (actionsBar) actionsBar.hidden = !ready;
-    if (calcCard) calcCard.hidden = !ready;
+    if (calcCard) calcCard.hidden = !ready || !CAN_EDIT;
     if (asset) {
       $("lda-asset-hint").textContent = asset.asset_name
         ? `Selected ${asset.asset_number} — ${asset.asset_name}.`
@@ -4248,10 +4257,15 @@
 
   function initAnalysisPage() {
     state.pageMode = "analysis";
-    $("lda-perform").addEventListener("click", performAnalysis);
-    $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
-    $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
-    $("lda-calculate-all").addEventListener("click", calculateAll);
+    // Only wire the writing controls for an account that may write. Un-hiding
+    // the buttons in the developer tools then leaves them inert, rather than
+    // sending a request the server is about to refuse.
+    if (CAN_EDIT) {
+      $("lda-perform").addEventListener("click", performAnalysis);
+      $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
+      $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
+      $("lda-calculate-all").addEventListener("click", calculateAll);
+    }
     $("lda-pareto-toggle").addEventListener("change", (event) => {
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();

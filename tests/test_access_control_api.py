@@ -168,18 +168,51 @@ def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
     assert response.status_code != 403
 
 
-def test_guest_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
-    module = _app(monkeypatch, tmp_path)
-    client = module.app.test_client()
+def _assert_read_only_ui(client):
+    """No page offers a control that writes, whoever this read-only caller is."""
     settings = client.get("/settings").data
     assert b"Asset group schedules" not in settings
     assert b"Refresh CMMS mapping" not in settings
+    assert b"Linked downtime rules" not in settings
     analysis = client.get("/life-data-analysis/perform-analysis").data
     assert b'id="lda-perform" hidden' in analysis
     assert b'id="lda-disposition-wo" hidden' in analysis
+    assert b'id="lda-disposition-pm" hidden' in analysis
+    # Not merely hidden: this card is nothing but a write, and selecting an
+    # asset is what un-hides it, so it must not be in the page at all.
+    assert b"lda-calculate-all" not in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 403
     landing = client.get("/life-data-analysis").data
     assert b'href="/life-data-analysis/disposition"' not in landing
+    assert b'name="gremlin-can-edit" content="false"' in landing
+
+
+def test_guest_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _assert_read_only_ui(module.app.test_client())
+
+
+def test_viewer_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
+    """A signed-in viewer sees exactly what a signed-out visitor sees."""
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "viewer", "1357", "viewer")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "viewer", "pin": "1357"}).status_code == 200
+    _assert_read_only_ui(client)
+
+
+def test_refused_disposition_page_explains_itself(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "viewer", "1357", "viewer")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "viewer", "pin": "1357"}).status_code == 200
+    response = client.get("/life-data-analysis/disposition")
+    assert response.status_code == 403
+    # The refusal names the role and the account, rather than quietly serving
+    # some other page that looks like nothing went wrong.
+    assert b"Disposition is for editors." in response.data
+    assert b"editor role" in response.data
+    assert b"viewer" in response.data
 
 
 def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_path):
@@ -190,7 +223,26 @@ def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_pat
     settings = client.get("/settings").data
     assert b"Asset group schedules" in settings
     assert b"Refresh CMMS mapping" in settings
+    analysis = client.get("/life-data-analysis/perform-analysis").data
+    assert b'id="lda-perform" hidden' not in analysis
+    assert b"lda-calculate-all" in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 200
+
+
+def test_leaving_the_developer_page_needs_the_session_csrf_token(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+
+    # The button now ends the whole session, so a cross-site form must not be
+    # able to press it.
+    assert client.post("/developer/lock").status_code == 403
+    assert client.get("/developer").status_code == 200
+
+    with client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    assert client.post("/developer/lock", data={"csrf_token": token}).status_code == 302
+    assert client.get("/developer").status_code == 403
 
 
 def test_access_database_defaults_next_to_configured_gremlin_database(monkeypatch, tmp_path):

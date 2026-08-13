@@ -50,10 +50,21 @@ load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
-# Needed for the developer dashboard's PIN session. A stable value keeps the
-# unlock across restarts when one is configured; otherwise a per-process random
-# key simply means developers re-enter the PIN after a restart.
+# Signs the cookie that says who is logged in, so this is now what stands
+# between a session and a forged one. A generated key is a working default for
+# the single process GREMLIN normally runs as -- the only cost is that everyone
+# signs in again after a restart. It is NOT sufficient for a multi-process
+# deployment: each worker would generate its own key and reject the cookies the
+# others issued, so set GREMLIN_SECRET_KEY before running more than one.
 app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
+
+# Lax is the browsers' own default for a cookie that does not say; setting it
+# means the session is not sent with a cross-site form POST regardless of which
+# browser is asking. Secure is deliberately left off: GREMLIN is served over
+# plain HTTP on the plant network, and a Secure cookie would simply never be
+# sent. Set SESSION_COOKIE_SECURE where the deployment is behind TLS.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 _gremlin_db_for_access = Path(os.environ.get("GREMLIN_DB_PATH") or DEFAULT_DB_PATH)
 ACCESS_DB_PATH = Path(
@@ -390,9 +401,24 @@ def perform_analysis():
 
 @app.route("/life-data-analysis/disposition")
 def disposition():
+    # The whole page is an editor: every table on it writes dispositions back to
+    # GREMLIN.db. There is nothing here to show a viewer with the controls taken
+    # away, so the page is refused rather than rendered read-only. The link that
+    # leads here is hidden from viewers too; this is what a typed or bookmarked
+    # URL meets.
     _user, error = _authorised_user("editor")
     if error:
-        return render_template("home.html", page_title="Not Authorized", nav_links=NAV_LINKS), 403
+        return (
+            render_template(
+                "not_authorized.html",
+                page_title="Disposition",
+                page_heading="Disposition is for editors.",
+                required_role="editor",
+                back_url=url_for("perform_analysis"),
+                nav_links=NAV_LINKS,
+            ),
+            403,
+        )
     return render_template(
         "disposition.html",
         page_title="Disposition",
@@ -1122,9 +1148,14 @@ def developer_delete_user(user_id: int):
 
 
 @app.route("/developer/lock", methods=["POST"])
+@requires_csrf
 def developer_lock():
+    # There is no dashboard-only lock left to release: reaching this page is a
+    # property of the account, so the only thing this button can do is end the
+    # session. It says so, and it lands on Home rather than bouncing off the
+    # 403 the developer page would now return.
     session.clear()
-    return redirect(url_for("developer_dashboard"))
+    return redirect(url_for("home"))
 
 
 @app.route("/developer/api/runtime")

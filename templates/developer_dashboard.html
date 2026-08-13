@@ -18,8 +18,11 @@
     </p>
     <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
   </div>
+  {# Access is now the account's, not this page's, so leaving means signing out
+     of GREMLIN entirely. Labelled for what it does. #}
   <form method="post" action="{{ url_for('developer_lock') }}" class="dev-hero-actions">
-    <button type="submit" class="btn-secondary">Lock</button>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn-secondary">Log out</button>
   </form>
 </section>
 
