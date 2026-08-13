@@ -1,5 +1,16 @@
 <header class="topbar">
   <div class="brand-group">
+    <button
+      type="button"
+      id="sidebarToggle"
+      class="sidebar-toggle"
+      aria-controls="primarySidebar"
+      aria-expanded="true"
+      aria-label="Collapse sidebar"
+    >
+      <span class="sidebar-toggle-icon" aria-hidden="true">⇤</span>
+      <span class="sidebar-toggle-label">Collapse</span>
+    </button>
     <img class="brand-logo" src="{{ url_for('static', filename='img/logo1.jpg') }}" alt="GREMLIN logo">
     <div class="brand-copy">
       <strong>GREMLIN</strong>

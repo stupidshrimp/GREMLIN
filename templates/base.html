@@ -13,6 +13,15 @@
   {% block head_extra %}{% endblock %}
 </head>
 <body>
+  <script>
+    // Applied before first paint so a collapsed sidebar does not flash open on
+    // every page load. layout.js takes over once the toggle button exists.
+    try {
+      if (localStorage.getItem("gremlin.sidebar.collapsed") === "true") {
+        document.body.classList.add("sidebar-collapsed");
+      }
+    } catch (e) {}
+  </script>
   <div class="app-layout" id="appLayout">
     {% include "topbar.html" %}
     {% include "sidebar.html" %}
@@ -20,6 +29,7 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  <script src="{{ url_for('static', filename='js/layout.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

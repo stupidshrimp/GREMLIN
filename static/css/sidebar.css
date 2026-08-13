@@ -22,6 +22,8 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #115337;
+  white-space: nowrap;
+  transition: opacity 130ms ease;
 }
 
 .sidebar ul {
@@ -88,7 +90,74 @@
   color: #ffffff;
 }
 
+/* Collapsed: the nav shrinks to an icon rail. Labels are faded out and taken out
+   of the flow so they cannot force the anchor wider than the rail, and the icons
+   center themselves in what is left. */
+body.sidebar-collapsed .sidebar {
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+body.sidebar-collapsed .sidebar-heading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.sidebar-collapsed .sidebar a {
+  justify-content: center;
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+body.sidebar-collapsed .nav-label {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+body.sidebar-collapsed .sidebar a:hover {
+  /* The 2px nudge reads as a wobble on a 72px rail. */
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-layout,
+  .sidebar,
+  .nav-label,
+  .sidebar-heading {
+    transition: none;
+  }
+}
+
 @media (max-width: 900px) {
+  /* Stacked layout: the sidebar spans the single column, so the collapse rail
+     does not apply. Undo it so the nav is always usable on small screens. */
+  .sidebar,
+  body.sidebar-collapsed .sidebar {
+    width: auto;
+    padding: 1rem 0.7rem;
+  }
+
+  body.sidebar-collapsed .sidebar a {
+    justify-content: flex-start;
+    gap: 0.7rem;
+    padding: 0.55rem 0.6rem;
+  }
+
+  body.sidebar-collapsed .nav-label {
+    opacity: 1;
+    width: auto;
+  }
+
+  body.sidebar-collapsed .sidebar-heading {
+    opacity: 1;
+  }
+
+  .sidebar-toggle {
+    display: none;
+  }
+
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid rgba(15, 18, 26, 0.18);
