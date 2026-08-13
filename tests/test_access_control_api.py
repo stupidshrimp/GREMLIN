@@ -58,3 +58,26 @@ def test_role_is_revalidated_on_protected_request(monkeypatch, tmp_path):
     module.access_control.save_user(user["id"], "editor", "", "viewer")
     response = client.post("/life-data-analysis/api/refresh-mapping", json={})
     assert response.status_code == 403
+
+
+def test_account_management_requires_session_csrf_token(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+    form = {"username": "attacker", "pin": "known-pin", "role": "admin"}
+
+    assert client.post("/developer/access/users", data=form).status_code == 403
+    assert client.post(
+        "/developer/access/users", data={**form, "csrf_token": "forged"}
+    ).status_code == 403
+    assert module.access_control.authenticate("attacker", "known-pin") is None
+
+    # Rendering the trusted form establishes a token in this signed session.
+    assert client.get("/developer").status_code == 200
+    with client.session_transaction() as session:
+        token = session["csrf_token"]
+    response = client.post(
+        "/developer/access/users", data={**form, "csrf_token": token}
+    )
+    assert response.status_code == 302
+    assert module.access_control.authenticate("attacker", "known-pin")["role"] == "admin"

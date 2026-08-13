@@ -98,6 +98,27 @@ def requires_role(role: str):
     return decorator
 
 
+def csrf_token() -> str:
+    """Return the unpredictable token bound to the current browser session."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def requires_csrf(view):
+    """Reject form writes that were not submitted by a page from this session."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        expected = session.get("csrf_token") or ""
+        submitted = request.form.get("csrf_token") or ""
+        if not expected or not secrets.compare_digest(expected, submitted):
+            return jsonify({"error": "The form expired or was submitted from another site. Reload and try again."}), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
 @app.context_processor
 def auth_context():
     return {"auth_user": current_user()}
@@ -1061,7 +1082,7 @@ def dev_api(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not _dev_unlocked():
-            return jsonify({"error": "Developer dashboard is locked. Enter the PIN to continue."}), 403
+            return jsonify({"error": "Developer dashboard access requires an administrator account."}), 403
         try:
             return view(*args, **kwargs)
         except SchemaServiceError as exc:
@@ -1084,11 +1105,13 @@ def developer_dashboard():
         access_db_path=str(ACCESS_DB_PATH),
         users=access_control.list_users(),
         roles=ROLES,
+        csrf_token=csrf_token(),
     )
 
 
 @app.post("/developer/access/users")
 @requires_role("admin")
+@requires_csrf
 def developer_save_user():
     try:
         raw_id = request.form.get("user_id", "").strip()
@@ -1100,6 +1123,7 @@ def developer_save_user():
 
 @app.post("/developer/access/users/<int:user_id>/delete")
 @requires_role("admin")
+@requires_csrf
 def developer_delete_user(user_id: int):
     try:
         access_control.delete_user(user_id, int(current_user()["id"]))
