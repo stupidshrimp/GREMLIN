@@ -44,11 +44,11 @@ class DeveloperSyncApiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        # Most of these tests are about a server whose PIN was configured; the
-        # unconfigured case has its own tests below.
-        pin = mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", True)
-        pin.start()
-        self.addCleanup(pin.stop)
+        existing = next((u for u in app_module.access_control.list_users() if u["username"] == "sync-test-admin"), None)
+        if existing:
+            app_module.access_control.save_user(existing["id"], "sync-test-admin", "test-pin", "admin")
+        else:
+            app_module.access_control.save_user(None, "sync-test-admin", "test-pin", "admin")
 
         app_module.app.config["TESTING"] = True
         self.client = app_module.app.test_client()
@@ -63,14 +63,15 @@ class DeveloperSyncApiTests(unittest.TestCase):
         _wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING)
 
     def _unlock(self):
+        user = app_module.access_control.authenticate("sync-test-admin", "test-pin")
         with self.client.session_transaction() as session:
-            session[app_module.DEV_SESSION_KEY] = True
+            session["user"] = user
 
     def _start(self, **body):
         return self.client.post("/developer/api/sync", json=body or {})
 
     # -- access ------------------------------------------------------------
-    def test_the_pin_gates_both_reading_and_starting(self):
+    def test_an_admin_account_gates_both_reading_and_starting(self):
         self.assertEqual(self.client.get("/developer/api/sync").status_code, 403)
         self.assertEqual(self._start().status_code, 403)
         # Nothing ran on the way to being refused.
@@ -172,38 +173,17 @@ class DeveloperSyncApiTests(unittest.TestCase):
         # service, which is the outcome that actually matters.
         self.assertIn("7", service.asset_numbers())
 
-    # -- the default PIN authorises reading, not writing --------------------
-    def test_exporting_the_published_pin_is_not_configuring_one(self):
-        # The fallback value is in this repository, so a deployment that exports
-        # it is protected by nothing -- and must not be handed write authority
-        # on the strength of the variable merely existing.
-        self.assertFalse(app_module._pin_is_configured(None))
-        self.assertFalse(app_module._pin_is_configured(""))
-        self.assertFalse(app_module._pin_is_configured(app_module.DEFAULT_DEV_PIN))
-        self.assertTrue(app_module._pin_is_configured("a-pin-of-our-own"))
-
-    def test_the_default_pin_cannot_start_a_sync(self):
+    def test_a_demoted_admin_cannot_start_a_sync(self):
         self._unlock()
-        with mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", False):
-            response = self._start()
-            self.assertEqual(response.status_code, 403)
-            self.assertIn("GREMLIN_DEV_PIN", response.get_json()["error"])
-            # Refused by the endpoint, not merely by a disabled button.
-            self.assertEqual(self.runner.status()["state"], "idle")
-
-    def test_status_still_reads_and_explains_why_starting_is_refused(self):
-        self._unlock()
-        with mock.patch.object(app_module, "DEV_PIN_IS_CONFIGURED", False):
-            payload = self.client.get("/developer/api/sync").get_json()
-        # The panel has to be able to say why its button is disabled, so status
-        # stays readable when starting is not allowed.
-        self.assertFalse(payload["start_allowed"])
-        self.assertIn("GREMLIN_DEV_PIN", payload["start_blocked_reason"])
-        self.assertTrue(payload["db_exists"])
-
-        payload = self.client.get("/developer/api/sync").get_json()
-        self.assertTrue(payload["start_allowed"])
-        self.assertIsNone(payload["start_blocked_reason"])
+        user = app_module.access_control.authenticate("sync-test-admin", "test-pin")
+        # Add another admin so demoting this test account cannot violate the
+        # production last-administrator invariant.
+        if not any(u["username"] == "sync-test-backup" for u in app_module.access_control.list_users()):
+            app_module.access_control.save_user(None, "sync-test-backup", "backup-pin", "admin")
+        app_module.access_control.save_user(user["id"], "sync-test-admin", "", "editor")
+        response = self._start()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.runner.status()["state"], "idle")
 
     def test_a_missing_database_is_refused_with_a_reason(self):
         self._unlock()

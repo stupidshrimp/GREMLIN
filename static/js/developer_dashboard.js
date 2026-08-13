@@ -930,6 +930,7 @@
       await loadRows();
     },
     console: async () => {},
+    access: async () => {},
   };
 
   async function activate(key) {

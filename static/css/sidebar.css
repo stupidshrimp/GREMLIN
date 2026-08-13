@@ -12,7 +12,21 @@
   align-self: start;
   height: calc(100vh - 74px);
   z-index: 20;
+  display: flex;
+  flex-direction: column;
 }
+.sidebar-nav { flex: 1; }
+.sidebar-account { margin-top: auto; padding-top: .75rem; border-top: 1px solid rgba(24,116,61,.16); }
+.account-button { width:100%; border:0; background:transparent; cursor:pointer; display:flex; align-items:center; gap:.7rem; color:#115337; border-radius:10px; padding:.55rem .6rem; font:inherit; text-align:left; }
+.account-button:hover { background:rgba(31,138,76,.1); }
+.account-dialog { width:min(420px, calc(100vw - 32px)); border:1px solid rgba(24,116,61,.25); border-radius:16px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
+.account-dialog::backdrop { background:rgba(8,30,18,.45); }
+.account-dialog h2 { margin-top:0; }
+.account-dialog form, .account-dialog label { display:grid; gap:8px; }
+.account-dialog form { gap:16px; }
+.account-dialog input { font:inherit; padding:10px 12px; border:1px solid #b8c9bf; border-radius:8px; }
+.account-close { float:right; border:0; background:none; font-size:1.6rem; cursor:pointer; }
+.account-error { color:#96261a; margin:0; }
 
 .sidebar-heading {
   margin: 0 0 0.8rem;
@@ -109,6 +123,7 @@ body.sidebar-collapsed .sidebar a {
   padding-left: 0;
   padding-right: 0;
 }
+body.sidebar-collapsed .account-button { justify-content:center; gap:0; padding-left:0; padding-right:0; }
 
 body.sidebar-collapsed .nav-label {
   opacity: 0;
