@@ -39,6 +39,16 @@ def test_fresh_database_has_no_published_login(monkeypatch, tmp_path):
     assert "No accounts are configured" in response.get_json()["error"]
 
 
+def test_login_rejects_non_object_json(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    for payload in ('"x"', "[1]", "42", "null"):
+        response = client.post("/auth/login", data=payload, content_type="application/json")
+        assert response.status_code == 400
+        assert response.is_json
+        assert "JSON object" in response.get_json()["error"]
+
+
 def test_role_is_revalidated_on_protected_request(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     module.access_control.save_user(None, "editor", "2468", "editor")

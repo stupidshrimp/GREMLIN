@@ -338,6 +338,8 @@ def home():
 @app.post("/auth/login")
 def login():
     payload = request.get_json(silent=True) if request.is_json else request.form
+    if request.is_json and not isinstance(payload, dict):
+        return jsonify({"error": "Login credentials must be a JSON object."}), 400
     if not access_control.has_users():
         return jsonify({
             "error": "No accounts are configured. Set GREMLIN_ADMIN_USERNAME and "
@@ -1054,7 +1056,7 @@ def _dev_unlocked() -> bool:
 
 
 def dev_api(view):
-    """Gate a dev JSON endpoint behind the PIN and normalise its errors."""
+    """Gate a developer JSON endpoint behind an admin account and normalise errors."""
 
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -1265,11 +1267,10 @@ def api_dev_sync_status():
 
 @app.route("/developer/api/sync", methods=["POST"])
 @dev_api
+@requires_role("admin")
 def api_dev_sync_start():
     """Start a Limble sync in the background and return its initial status."""
 
-    # Fail closed on the default PIN. This is the check the page's disabled
-    # button reflects, but the button is not the guard -- the endpoint is.
     # Require a JSON body. A cross-site <form> can POST to this URL with the
     # browser's cookies attached but cannot set this content type without a
     # preflight the browser will refuse, so insisting on it keeps a drive-by

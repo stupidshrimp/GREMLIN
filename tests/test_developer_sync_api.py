@@ -130,6 +130,17 @@ class DeveloperSyncApiTests(unittest.TestCase):
         self.assertTrue(payload["db_exists"])
         self.assertTrue(payload["credentials"]["configured"])
 
+    def test_starting_a_sync_is_audited(self):
+        self._unlock()
+        self.assertEqual(self._start(dry_run=True).status_code, 200)
+        self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+        with app_module.access_control._connect() as conn:
+            row = conn.execute(
+                "SELECT username, action FROM audit_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(row["username"], "sync-test-admin")
+        self.assertEqual(row["action"], "POST /developer/api/sync")
+
     def test_a_bad_date_is_a_bad_request_not_a_failed_job(self):
         self._unlock()
         response = self._start(since="whenever")
