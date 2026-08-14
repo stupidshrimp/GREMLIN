@@ -66,3 +66,23 @@
     arm();
   });
 })();
+
+(function () {
+  "use strict";
+
+  // A card a viewer cannot open is still on the page, and clicking it has to
+  // say why rather than do nothing. The wording is rendered into the card by
+  // the template, because what to do next depends on whether anybody is signed
+  // in: a guest needs the login, a viewer needs an administrator.
+  var card = document.querySelector(".life-data-card-locked");
+  if (!card) {
+    return;
+  }
+
+  card.addEventListener("click", function () {
+    var message = card.getAttribute("data-locked-message");
+    if (message && window.gremlinToast) {
+      window.gremlinToast(message);
+    }
+  });
+})();

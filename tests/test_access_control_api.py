@@ -185,24 +185,34 @@ def _assert_read_only_ui(client):
     assert b"lda-calculate-all" not in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 403
     # The workflow cards moved onto the home page, so that is where the
-    # Disposition card must stay hidden from a caller who may only read.
+    # Disposition card explains itself to a caller who may only read: still on
+    # the page, but a button that names the role rather than a link into a 403.
     landing = client.get("/").data
+    assert b"life-data-card-locked" in landing
+    assert b"Only authorized users can open Disposition." in landing
     assert b'href="/life-data-analysis/disposition"' not in landing
     assert b'name="gremlin-can-edit" content="false"' in landing
 
 
-def test_guest_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
+def test_guest_ui_offers_no_write_controls(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
-    _assert_read_only_ui(module.app.test_client())
+    client = module.app.test_client()
+    _assert_read_only_ui(client)
+    # Nobody is signed in, so the card sends them to the login rather than to
+    # an administrator who cannot help until they have an account.
+    assert b"Log in with the person icon" in client.get("/").data
 
 
-def test_viewer_ui_hides_all_editing_and_disposition_controls(monkeypatch, tmp_path):
-    """A signed-in viewer sees exactly what a signed-out visitor sees."""
+def test_viewer_ui_offers_no_write_controls(monkeypatch, tmp_path):
+    """A signed-in viewer can write no more than a signed-out visitor can."""
     module = _app(monkeypatch, tmp_path)
     module.access_control.save_user(None, "viewer", "1357", "viewer")
     client = module.app.test_client()
     assert client.post("/auth/login", json={"username": "viewer", "pin": "1357"}).status_code == 200
     _assert_read_only_ui(client)
+    # This one already has an account: logging in again would change nothing,
+    # so the card names the role their account is missing instead.
+    assert b"It needs the editor role" in client.get("/").data
 
 
 def test_refused_disposition_page_explains_itself(monkeypatch, tmp_path):
@@ -231,6 +241,10 @@ def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_pat
     assert b'id="lda-perform" hidden' not in analysis
     assert b"lda-calculate-all" in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 200
+    # An editor gets the card as a working link, with nothing left to explain.
+    landing = client.get("/").data
+    assert b'href="/life-data-analysis/disposition"' in landing
+    assert b"life-data-card-locked" not in landing
 
 
 def test_leaving_the_developer_page_needs_the_session_csrf_token(monkeypatch, tmp_path):

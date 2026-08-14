@@ -282,6 +282,19 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   overflow: hidden;
 }
 
+/* The Disposition card is a <button> for a visitor who may only read, so that
+   clicking it explains the refusal instead of walking into one. These are the
+   button defaults a card does not want: its own font, centred text, shrink-to-
+   fit width, and the arrow cursor. Everything else still comes from
+   .glass-card and .life-data-card, so the two variants look identical. */
+button.life-data-card {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+
 .life-data-card h2,
 .life-data-card p {
   transition: transform 240ms ease, opacity 240ms ease;
