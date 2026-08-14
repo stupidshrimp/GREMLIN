@@ -46,6 +46,7 @@
     pollDelay: null,
     tickTimer: null,
     starting: false,
+    requestVersion: 0,
   };
 
   function now() {
@@ -63,12 +64,18 @@
 
   async function pollSync(options) {
     const propagate = Boolean(options && options.propagate);
+    // A GET that began before a newer request must not replace that request's
+    // result. In particular, an idle poll can still be doing history/database
+    // work when the POST below has already started a job.
+    const requestVersion = ++state.requestVersion;
     try {
       const payload = await dev.getJSON(dev.API.sync);
+      if (requestVersion !== state.requestVersion) return;
       state.payload = payload;
       state.polledAt = now();
       renderSync();
     } catch (err) {
+      if (requestVersion !== state.requestVersion) return;
       // Stop the interval rather than retry into a wall: a failing poll is
       // either an expired session (getJSON reloads) or a server-side problem,
       // and one banner is more useful than one per second.
@@ -85,6 +92,10 @@
       no_assets: $("dev-sync-no-assets").checked,
       since: since || null,
     };
+    // Invalidate any status GET already in flight before starting the job. Its
+    // snapshot may say "idle" even if it completes after this POST.
+    state.requestVersion += 1;
+    stopSyncTimers();
     state.starting = true;
     $("dev-sync-run").disabled = true;
     dev.showStatus("");
@@ -94,6 +105,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      // Also supersede a poll triggered while the POST was in flight (for
+      // example, by the page becoming visible).
+      state.requestVersion += 1;
       // The POST answers with the job alone; keep the credentials/history
       // context the last GET provided.
       if (state.payload) {
