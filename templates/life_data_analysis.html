@@ -16,13 +16,13 @@
     </div>
   </a>
 
-  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+  {% if auth_can_edit %}<a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
     <h2>Disposition</h2>
     <p>Disposition work orders and PM reset events on a dedicated, scrollable workspace.</p>
     <div class="card-hover-copy">
       <p>Assign failure modes and mechanisms, set record classes, and flag the observations that feed Weibull analysis.</p>
     </div>
-  </a>
+  </a>{% endif %}
 
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
     <h2>Standards and Documentation</h2>

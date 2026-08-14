@@ -43,6 +43,10 @@
   }
 
   function show(hostId, message, kind) {
+    if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+      window.gremlinToast(message);
+      return;
+    }
     const node = document.getElementById(hostId);
     if (!node) return;
     node.textContent = message;
@@ -53,7 +57,11 @@
   async function request(url, options) {
     const response = await fetch(url, options);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+    if (!response.ok) {
+      const message = data.error || `Request failed (${response.status}).`;
+      if ((response.status === 401 || response.status === 403) && window.gremlinToast) window.gremlinToast(message);
+      throw new Error(message);
+    }
     return data;
   }
 
@@ -148,7 +156,11 @@
       if (!window.confirm(`Restore the seeded schedule and asset list for ${group.asset_group}?`)) return;
       try {
         config = await request(
-          `${CONFIG_API}/group/${encodeURIComponent(group.asset_group)}/reset`, { method: "POST" }
+          `${CONFIG_API}/group/${encodeURIComponent(group.asset_group)}/reset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          }
         );
         show("settings-availability-status", `${group.asset_group} restored to defaults.`, "success");
         renderGroups();

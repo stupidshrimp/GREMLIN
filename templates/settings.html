@@ -26,6 +26,7 @@
      because these values are structural: they change rarely and they change
      every month at once, including months already reported. Goal % and manual
      OT hours are per-month values and are edited inline on the card instead. -->
+{% if auth_can_edit %}
 <section class="glass-card slide-in lda-card" aria-labelledby="settings-availability-heading">
   <p class="eyebrow">Availability</p>
   <h2 id="settings-availability-heading">Asset group schedules</h2>
@@ -60,11 +61,13 @@
     <button type="button" class="btn-secondary" id="settings-refresh-mapping">Refresh CMMS mapping</button>
   </div>
 </section>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/metrics.css') }}">
-  <script src="{{ url_for('static', filename='js/availability_config.js') }}"></script>
+  {% if auth_can_edit %}<script src="{{ url_for('static', filename='js/availability_config.js') }}"></script>{% endif %}
+{% if auth_can_edit %}
 <script>
   (function () {
     const button = document.getElementById("settings-refresh-mapping");
@@ -72,6 +75,10 @@
     if (!button) return;
 
     function show(message, kind) {
+      if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+        window.gremlinToast(message);
+        return;
+      }
       if (!status) return;
       status.textContent = message;
       status.className = "lda-banner" + (kind ? " is-" + kind : "");
@@ -102,4 +109,5 @@
     });
   })();
 </script>
+{% endif %}
 {% endblock %}

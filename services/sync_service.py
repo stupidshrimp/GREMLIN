@@ -170,7 +170,13 @@ LIMBLE_ENV_PREFIX = "LIMBLE_"
 # list all the same: a deployment with one in .env for the scheduled job would
 # otherwise find the web app moving to that database on its next restart, which
 # is a decision for whoever runs it rather than a side effect of this change.
-APP_ENV_KEYS = frozenset({"GREMLIN_DEV_PIN", "GREMLIN_SECRET_KEY"})
+APP_ENV_KEYS = frozenset({
+    "GREMLIN_SECRET_KEY",
+    "GREMLIN_ACCESS_DB_PATH",
+    "GREMLIN_ADMIN_USERNAME",
+    "GREMLIN_ADMIN_PIN",
+    "GREMLIN_TRUSTED_PROXY_HOPS",
+})
 
 
 def _dotenv_candidates() -> list[Path]:

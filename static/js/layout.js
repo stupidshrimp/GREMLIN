@@ -55,3 +55,49 @@
     saveState(collapsed);
   });
 })();
+
+(function () {
+  window.gremlinToast = function (message) {
+    let host = document.getElementById("gremlinToastHost");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "gremlinToastHost";
+      host.className = "gremlin-toast-host";
+      document.body.appendChild(host);
+    }
+    const toast = document.createElement("div");
+    toast.className = "gremlin-toast";
+    toast.setAttribute("role", "status");
+    toast.textContent = message;
+    host.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("is-visible"));
+    setTimeout(() => { toast.classList.remove("is-visible"); setTimeout(() => toast.remove(), 250); }, 5000);
+  };
+
+  const dialog = document.getElementById("accountDialog");
+  const open = document.getElementById("accountButton");
+  if (!dialog || !open) return;
+  open.addEventListener("click", () => dialog.showModal());
+  document.getElementById("accountClose")?.addEventListener("click", () => dialog.close());
+  document.getElementById("logoutButton")?.addEventListener("click", async () => {
+    // Carry the session's token: signing out is a session write like any
+    // other, and the server refuses one that did not come from a page it
+    // rendered. The token is in the page whenever somebody is signed in,
+    // which is the only time this button exists.
+    const body = new FormData();
+    body.append("csrf_token", document.querySelector('meta[name="gremlin-csrf-token"]')?.content || "");
+    await fetch("/auth/logout", { method: "POST", body });
+    window.location.reload();
+  });
+  document.getElementById("loginForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = document.getElementById("loginError");
+    const response = await fetch("/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+    });
+    const payload = await response.json();
+    if (!response.ok) { error.textContent = payload.error; error.hidden = false; return; }
+    window.location.reload();
+  });
+})();

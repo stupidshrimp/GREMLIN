@@ -23,6 +23,7 @@
   const AVAILABILITY_BREAKDOWN_TOOLTIP =
     "toggle here if you would like to see the work order breakdown that is causing downtime";
   const ALERT_THRESHOLD = 70;
+  const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
 
   // Forest palette (matches theme.css) used for the comparison bars.
   const BAR_COLOR = "#3f5e77";
@@ -146,6 +147,10 @@
   }
 
   function showBanner(message, kind) {
+    if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+      window.gremlinToast(message);
+      return;
+    }
     const banner = $("metrics-status");
     banner.textContent = message;
     banner.className = "metrics-banner " + (kind === "error" ? "is-error" : "is-info");
@@ -2613,7 +2618,14 @@
         body: JSON.stringify(body),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+      if (!response.ok) {
+        const message = data.error || `Request failed (${response.status}).`;
+        if ((response.status === 401 || response.status === 403) && window.gremlinToast) {
+          window.gremlinToast(message);
+          return;
+        }
+        throw new Error(message);
+      }
       clearBanner();
       if (onDone) await onDone();
     } catch (err) {
@@ -2646,7 +2658,8 @@
             class: "availability-input",
             value: row ? String(row.manual_ot_hours) : "0",
           });
-          input.addEventListener("change", () => {
+          input.disabled = !CAN_EDIT;
+          if (CAN_EDIT) input.addEventListener("change", () => {
             saveAvailabilityValue(
               `${AVAILABILITY_API}/ot`,
               { asset_number: asset.asset_number, month, hours: Number(input.value) },
@@ -2666,6 +2679,7 @@
 
     const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
       months.map((month, index) => {
+        if (!CAN_EDIT) return el("td", { text: `${(((group.goal || [])[index] ?? 0.95) * 100).toFixed(2)}%` });
         const input = el("input", {
           type: "number",
           min: "0",
@@ -2762,7 +2776,7 @@
         el("div", { class: "metrics-panel availability-group" }, [
           el("div", { class: "availability-group-head" }, [
             el("h3", { text: `${group.asset_group} Availability % by Month` }),
-            el("div", { class: "availability-group-actions" }, [detailButton, toggle]),
+            el("div", { class: "availability-group-actions" }, CAN_EDIT ? [detailButton, toggle] : [detailButton]),
           ]),
           el("p", {
             class: "metrics-hint",

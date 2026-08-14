@@ -10,6 +10,11 @@
   "use strict";
 
   const API = "/life-data-analysis/api";
+  // Whether this browser session may write. Rendered by the server into every
+  // page, so it reflects the account's role rather than anything the client
+  // decided. The API enforces the same rule on its own -- this only keeps the
+  // page from offering an action that would be refused.
+  const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
   // Analysis types offered by the Step 1 selector. Weibull and Failure Mode Trend
   // are implemented; the rest render a "Coming soon" placeholder for now. The
   // selected type only controls the secondary analysis panel — the Pareto chart
@@ -181,6 +186,12 @@
     }
     if (!response.ok) {
       const message = (data && data.error) || `Request failed (${response.status}).`;
+      if ((response.status === 401 || response.status === 403) && window.gremlinToast) {
+        window.gremlinToast(message);
+        const error = new Error(message);
+        error.toastShown = true;
+        throw error;
+      }
       throw new Error(message);
     }
     return data;
@@ -238,6 +249,10 @@
   }
 
   function showBanner(message, kind) {
+    if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+      window.gremlinToast(message);
+      return;
+    }
     const banner = $("lda-status");
     banner.textContent = message;
     banner.className = "lda-banner " + (kind ? "is-" + kind : "is-info");
@@ -497,8 +512,12 @@
     const actionsBar = $("lda-actions");
     const calcCard = $("lda-calculate-all-card");
     if (summaryCard) summaryCard.hidden = !ready;
+    // The action bar holds a read-only Pareto toggle alongside the write
+    // buttons, so it still appears; its buttons are hidden by the template for
+    // a viewer. The calculate-all card is nothing but a write, so selecting an
+    // asset must not be what puts it on screen.
     if (actionsBar) actionsBar.hidden = !ready;
-    if (calcCard) calcCard.hidden = !ready;
+    if (calcCard) calcCard.hidden = !ready || !CAN_EDIT;
     if (asset) {
       $("lda-asset-hint").textContent = asset.asset_name
         ? `Selected ${asset.asset_number} — ${asset.asset_name}.`
@@ -2540,6 +2559,8 @@
       if (!file) return;
       const form = new FormData();
       form.append("file", file);
+      const csrf = document.querySelector('meta[name="gremlin-csrf-token"]');
+      if (csrf) form.append("csrf_token", csrf.content);
       beginLoading("Importing disposition Excel…");
       try {
         const url = `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}`;
@@ -4236,10 +4257,15 @@
 
   function initAnalysisPage() {
     state.pageMode = "analysis";
-    $("lda-perform").addEventListener("click", performAnalysis);
-    $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
-    $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
-    $("lda-calculate-all").addEventListener("click", calculateAll);
+    // Only wire the writing controls for an account that may write. Un-hiding
+    // the buttons in the developer tools then leaves them inert, rather than
+    // sending a request the server is about to refuse.
+    if (CAN_EDIT) {
+      $("lda-perform").addEventListener("click", performAnalysis);
+      $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
+      $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
+      $("lda-calculate-all").addEventListener("click", calculateAll);
+    }
     $("lda-pareto-toggle").addEventListener("change", (event) => {
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();

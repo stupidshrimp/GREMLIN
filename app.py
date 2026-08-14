@@ -2,12 +2,13 @@ import io
 import math
 import os
 import secrets
+import sqlite3
 import sys
 import tempfile
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, jsonify, make_response, redirect, render_template, request, send_file, session, url_for
 
 from repositories.analysis_repo import AnalysisRepository
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
@@ -30,6 +31,7 @@ from services.life_data_service import (
     LifeDataService,
 )
 from services.schema_service import SchemaService, SchemaServiceError
+from services.access_control import AccessControl, ROLES
 from services.sync_service import (
     APP_ENV_KEYS,
     LimbleSyncRunner,
@@ -43,15 +45,154 @@ from services.sync_service import (
 # This is the one safe moment to do it: nothing has been built yet, so there is
 # no service holding a value that this could contradict. Only the names in
 # APP_ENV_KEYS are applied, and a real environment variable still wins over the
-# file -- so a host that exports GREMLIN_DEV_PIN keeps deciding.
+# file -- so host-exported access-control settings keep deciding.
 load_dotenv_files(only_keys=APP_ENV_KEYS)
 
 app = Flask(__name__)
 
-# Needed for the developer dashboard's PIN session. A stable value keeps the
-# unlock across restarts when one is configured; otherwise a per-process random
-# key simply means developers re-enter the PIN after a restart.
-app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or secrets.token_hex(32)
+# Who the login limiter thinks it is talking to. Served directly, that is
+# request.remote_addr and nothing needs saying. Behind a reverse proxy or a TLS
+# terminator it is the *proxy* -- one address for the whole plant -- so five
+# wrong PINs from anybody would lock the shared per-client scope and hand every
+# other user a 429 for fifteen minutes, correct credentials included.
+#
+# Opt-in, because trusting X-Forwarded-For without a proxy in front is worse
+# than not reading it: any client could then claim whatever address it liked and
+# step around the limiter entirely. Set this to the number of proxies GREMLIN
+# actually sits behind (usually 1) and only that many hops are believed.
+def _parse_trusted_proxy_hops(raw: str | None) -> int:
+    """How many forwarding hops to believe; 0 when the setting is absent."""
+
+    value = (raw or "").strip()
+    if not value:
+        return 0
+    try:
+        hops = int(value)
+    except ValueError:
+        hops = 0
+    if hops < 1:
+        # Refuse rather than fall back. A deployment that set this believes its
+        # per-client throttling works, and silently ignoring the value would
+        # leave that belief wrong -- which is the direction that hurts.
+        raise RuntimeError(
+            "GREMLIN_TRUSTED_PROXY_HOPS must be a positive whole number of proxies "
+            f"(got {value!r})."
+        )
+    return hops
+
+
+_trusted_proxy_hops = _parse_trusted_proxy_hops(os.environ.get("GREMLIN_TRUSTED_PROXY_HOPS"))
+if _trusted_proxy_hops:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_trusted_proxy_hops)
+
+_gremlin_db_for_access = Path(os.environ.get("GREMLIN_DB_PATH") or DEFAULT_DB_PATH)
+ACCESS_DB_PATH = Path(
+    os.environ.get("GREMLIN_ACCESS_DB_PATH") or _gremlin_db_for_access.with_name("accesscontrol.db")
+)
+access_control = AccessControl(ACCESS_DB_PATH)
+access_control.ensure_schema(
+    initial_username=os.environ.get("GREMLIN_ADMIN_USERNAME"),
+    initial_pin=os.environ.get("GREMLIN_ADMIN_PIN"),
+)
+
+# Signs the cookie that says who is logged in, so this is what stands between a
+# session and a forged one. Falling back to a key generated per process would
+# have been wrong the moment GREMLIN runs as more than one: each worker would
+# reject the cookies the others signed. The access database holds one key for
+# the whole deployment instead, generated on first start and kept across
+# restarts, so no configuration is needed and nobody is signed out by a
+# restart. An exported GREMLIN_SECRET_KEY still wins.
+app.secret_key = os.environ.get("GREMLIN_SECRET_KEY") or access_control.shared_secret_key()
+
+# Lax is the browsers' own default for a cookie that does not say; setting it
+# means the session is not sent with a cross-site form POST regardless of which
+# browser is asking. Secure is deliberately left off: GREMLIN is served over
+# plain HTTP on the plant network, and a Secure cookie would simply never be
+# sent. Set SESSION_COOKIE_SECURE where the deployment is behind TLS.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
+
+
+def current_user() -> dict | None:
+    return session.get("user")
+
+
+def _authorised_user(role: str) -> tuple[dict | None, tuple | None]:
+    """Reload the account so deletion and demotion revoke access immediately."""
+    snapshot = current_user()
+    user = access_control.get_user(snapshot.get("id")) if snapshot and snapshot.get("id") else None
+    if not user or snapshot.get("credential_version") != user.get("credential_version"):
+        session.pop("user", None)
+        return None, (jsonify({"error": "Log in to make changes; guest access is read-only."}), 401)
+    session["user"] = user
+    if ROLE_LEVEL.get(user["role"], -1) < ROLE_LEVEL[role]:
+        return None, (jsonify({"error": f"The {role} role is required for this action."}), 403)
+    return user, None
+
+
+def requires_role(role: str):
+    """Require a signed-in user at or above ``role`` for a modifying action."""
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            user, error = _authorised_user(role)
+            if error:
+                return error
+            response = view(*args, **kwargs)
+            status = response[1] if isinstance(response, tuple) and len(response) > 1 else getattr(response, "status_code", 200)
+            if int(status) < 400:
+                try:
+                    access_control.record_change(user, f"{request.method} {request.path}")
+                except (sqlite3.Error, OSError):
+                    # The protected view may already have committed its write.
+                    # Never turn that success into a 500 that invites a retry;
+                    # surface the audit failure separately and log its traceback
+                    # for the operator to repair.
+                    app.logger.exception("Protected write succeeded, but its audit entry could not be stored")
+                    response = make_response(response)
+                    response.headers["X-GREMLIN-Audit-Warning"] = "audit-entry-not-stored"
+            return response
+        return wrapped
+    return decorator
+
+
+def csrf_token() -> str:
+    """Return the unpredictable token bound to the current browser session."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def requires_csrf(view):
+    """Reject form writes that were not submitted by a page from this session."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        expected = session.get("csrf_token") or ""
+        submitted = request.form.get("csrf_token") or ""
+        if not expected or not secrets.compare_digest(expected, submitted):
+            return jsonify({"error": "The form expired or was submitted from another site. Reload and try again."}), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.context_processor
+def auth_context():
+    snapshot = current_user()
+    user = access_control.get_user(snapshot["id"]) if snapshot and snapshot.get("id") else None
+    valid = bool(user and snapshot.get("credential_version") == user.get("credential_version"))
+    user = user if valid else None
+    can_edit = bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL["editor"])
+    return {
+        "auth_user": user,
+        "auth_can_edit": can_edit,
+        "auth_csrf_token": csrf_token() if user else None,
+    }
 
 ICONS = {
     "home": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 3.7 10A1 1 0 0 0 3.3 11.1a1 1 0 0 0 1 .7h1v7.3c0 .5.4.9.9.9h4.8v-5.3c0-.5.4-.9.9-.9h1.8c.5 0 .9.4.9.9V20h4.8c.5 0 .9-.4.9-.9v-7.3h1a1 1 0 0 0 .6-1.8L12 3.2Z"/></svg>',
@@ -109,51 +250,6 @@ MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
 
-# Developer dashboard access. The PIN is a shared speed bump for an app that has
-# no user accounts: it keeps dev tooling out of the way of normal users on the
-# plant network. It is deliberately NOT authentication, and the default is a
-# known value in a public repository -- so treat anyone who can reach this port
-# as able to read the whole database through the dashboard. That trade-off was
-# made knowingly in favour of the page working with no configuration; if it ever
-# needs to hold against the network, set GREMLIN_DEV_PIN rather than assuming
-# this default protects anything.
-DEFAULT_DEV_PIN = "1336"
-_DEV_PIN_FROM_ENV = os.environ.get("GREMLIN_DEV_PIN")
-DEV_DASHBOARD_PIN = _DEV_PIN_FROM_ENV or DEFAULT_DEV_PIN
-
-
-def _pin_is_configured(pin_from_env: str | None) -> bool:
-    """Whether the PIN in force is a secret, rather than the published fallback.
-
-    Exporting GREMLIN_DEV_PIN=1336 is not configuring a PIN. The value is in this
-    repository, so a deployment that sets it is protected by nothing at all --
-    and a check that only asked whether the variable *existed* would hand it
-    authority to write to the database on that basis. What matters is that the
-    PIN is not the one everybody can read.
-    """
-
-    return bool(pin_from_env) and pin_from_env != DEFAULT_DEV_PIN
-
-
-# Read once, from the same value the PIN itself comes from, so the two can never
-# disagree: a GREMLIN_DEV_PIN exported after startup does not change the PIN
-# being checked, and must not change this either.
-DEV_PIN_IS_CONFIGURED = _pin_is_configured(_DEV_PIN_FROM_ENV)
-DEV_SESSION_KEY = "dev_dashboard_unlocked"
-
-# Reading the database through this page needs no configuration; starting a sync
-# does. The difference is what the action can do: it writes to a GREMLIN.db other
-# people are using and spends this server's Limble credentials, and the default
-# PIN is published, so that authority has to be granted deliberately rather than
-# inherited from a fallback. Inspection panels are unaffected.
-SYNC_LOCKED_MESSAGE = (
-    "Starting a sync is disabled because the developer PIN is still the published default. "
-    "That is acceptable for the read-only panels, but not for an action that writes to "
-    "GREMLIN.db and calls the Limble API with this server's credentials. To enable it, put a "
-    "PIN of your own in the .env file beside app.py as GREMLIN_DEV_PIN=your-pin (or set it as "
-    "an environment variable on the GREMLIN host), then restart GREMLIN. That value becomes "
-    "the PIN this page asks for. The scheduled nightly sync is unaffected either way."
-)
 _schema_service: SchemaService | None = None
 _availability_repository: AvailabilityRepository | None = None
 
@@ -286,6 +382,48 @@ def home():
     return render_template("home.html", page_title="Home", nav_links=NAV_LINKS)
 
 
+@app.post("/auth/login")
+def login():
+    # JSON is deliberately required. Cross-origin HTML forms cannot send this
+    # content type, and a scripted cross-origin request must pass a CORS
+    # preflight that GREMLIN does not allow, preventing login CSRF/session swaps.
+    if not request.is_json:
+        return jsonify({"error": "Login credentials must be sent as JSON."}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Login credentials must be a JSON object."}), 400
+    if not access_control.has_users():
+        return jsonify({
+            "error": "No accounts are configured. Set GREMLIN_ADMIN_USERNAME and "
+                     "GREMLIN_ADMIN_PIN in the deployment environment or .env, then restart GREMLIN."
+        }), 503
+    username = str(payload.get("username", "")).strip()
+    pin = str(payload.get("pin", ""))
+    user, retry_after = access_control.authenticate_limited(username, pin, request.remote_addr or "unknown")
+    if not user:
+        if retry_after:
+            response = jsonify({"error": "Too many login attempts. Try again later."})
+            response.headers["Retry-After"] = str(retry_after)
+            return response, 429
+        return jsonify({"error": "Incorrect username or PIN."}), 401
+    session.clear()
+    session["user"] = user
+    session.permanent = False
+    return jsonify({"user": user})
+
+
+@app.post("/auth/logout")
+@requires_csrf
+def logout():
+    # Same protection as /developer/lock, which does the same thing. SameSite
+    # keeps the session off a cross-*site* form post, but a hostile page on
+    # another origin of the same site is still same-site, and being signed out
+    # mid-edit by one is a nuisance somebody would have to diagnose. The token
+    # is what that page cannot obtain.
+    session.clear()
+    return jsonify({"ok": True})
+
+
 @app.route("/life-data-analysis")
 def life_data_analysis():
     return render_template(
@@ -308,6 +446,24 @@ def perform_analysis():
 
 @app.route("/life-data-analysis/disposition")
 def disposition():
+    # The whole page is an editor: every table on it writes dispositions back to
+    # GREMLIN.db. There is nothing here to show a viewer with the controls taken
+    # away, so the page is refused rather than rendered read-only. The link that
+    # leads here is hidden from viewers too; this is what a typed or bookmarked
+    # URL meets.
+    _user, error = _authorised_user("editor")
+    if error:
+        return (
+            render_template(
+                "not_authorized.html",
+                page_title="Disposition",
+                page_heading="Disposition is for editors.",
+                required_role="editor",
+                back_url=url_for("perform_analysis"),
+                nav_links=NAV_LINKS,
+            ),
+            403,
+        )
     return render_template(
         "disposition.html",
         page_title="Disposition",
@@ -497,6 +653,7 @@ def api_availability_config():
 
 @app.route("/metrics/api/availability/config/group/<path:asset_group>", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_group(asset_group: str):
     """Update one group's shift schedule and, optionally, its membership.
 
@@ -524,7 +681,10 @@ def api_availability_save_group(asset_group: str):
 
 @app.route("/metrics/api/availability/config/group/<path:asset_group>/reset", methods=["POST"])
 @availability_api
+@requires_role("editor")
 def api_availability_reset_group(asset_group: str):
+    if not request.is_json:
+        return jsonify({"error": "Reset requests must be sent as JSON."}), 415
     repository = get_availability_repository()
     repository.reset_group_to_defaults(asset_group)
     return jsonify(build_config(repository))
@@ -532,6 +692,7 @@ def api_availability_reset_group(asset_group: str):
 
 @app.route("/metrics/api/availability/goal", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_goal():
     body = _json_body()
     group = str(body.get("asset_group") or "").strip()
@@ -545,6 +706,7 @@ def api_availability_save_goal():
 
 @app.route("/metrics/api/availability/ot", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_ot():
     body = _json_body()
     asset = str(body.get("asset_number") or "").strip()
@@ -558,6 +720,7 @@ def api_availability_save_ot():
 
 @app.route("/metrics/api/availability/display-name", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_display_name():
     body = _json_body()
     asset = str(body.get("asset_number") or "").strip()
@@ -570,6 +733,7 @@ def api_availability_save_display_name():
 
 @app.route("/metrics/api/availability/linked-rules", methods=["PUT"])
 @availability_api
+@requires_role("editor")
 def api_availability_save_linked_rules():
     body = _json_body()
     rules = body.get("rules")
@@ -608,19 +772,22 @@ def settings():
 @app.route("/life-data-analysis/api/assets")
 @life_data_api
 def api_assets():
-    service = _service_or_api_error()
     # Auto-map only happens when the mapped table is empty, so an already-populated
     # database does not silently pick up later Limble syncs. Allow the client to
     # request an explicit re-map (mirroring the desktop "Refresh CMMS mapping"
     # action) before reading the asset list.
     if request.values.get("refresh") in ("1", "true", "yes"):
-        service.refresh_mapped_cmms_records()
+        return jsonify({"error": "Refreshing via GET is not allowed. Use the refresh action."}), 405
+    service = _service_or_api_error()
     return jsonify({"assets": service.asset_number_options()})
 
 
 @app.route("/life-data-analysis/api/refresh-mapping", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_refresh_mapping():
+    if not request.is_json:
+        return jsonify({"error": "Refresh requests must be sent as JSON."}), 415
     service = _service_or_api_error()
     mapped = service.refresh_mapped_cmms_records()
     return jsonify({"mapped": int(mapped or 0), "assets": service.asset_number_options()})
@@ -701,6 +868,7 @@ def api_dispositions():
 
 @app.route("/life-data-analysis/api/dispositions/save", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_save_dispositions():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -741,6 +909,8 @@ def api_download_disposition_excel():
 
 @app.route("/life-data-analysis/api/dispositions/excel", methods=["POST"])
 @life_data_api
+@requires_role("editor")
+@requires_csrf
 def api_upload_disposition_excel():
     service = _service_or_api_error()
     asset_number = _required_asset()
@@ -838,6 +1008,7 @@ def _serialize_analysis_result(result) -> dict:
 
 @app.route("/life-data-analysis/api/perform-analysis", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_perform_analysis():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -860,6 +1031,7 @@ def api_perform_analysis():
 
 @app.route("/life-data-analysis/api/calculate-all", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_calculate_all():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -873,6 +1045,7 @@ def api_calculate_all():
 
 @app.route("/life-data-analysis/api/parameter-adjustment", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_parameter_adjustment():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -891,6 +1064,7 @@ def api_parameter_adjustment():
 
 @app.route("/life-data-analysis/api/weibull-report", methods=["POST"])
 @life_data_api
+@requires_role("editor")
 def api_weibull_report():
     service = _service_or_api_error()
     payload = request.get_json(silent=True) or {}
@@ -958,16 +1132,17 @@ def get_schema_service() -> SchemaService:
 
 
 def _dev_unlocked() -> bool:
-    return bool(session.get(DEV_SESSION_KEY))
+    user, error = _authorised_user("admin")
+    return bool(user and not error)
 
 
 def dev_api(view):
-    """Gate a dev JSON endpoint behind the PIN and normalise its errors."""
+    """Gate a developer JSON endpoint behind an admin account and normalise errors."""
 
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not _dev_unlocked():
-            return jsonify({"error": "Developer dashboard is locked. Enter the PIN to continue."}), 403
+            return jsonify({"error": "Developer dashboard access requires an administrator account."}), 403
         try:
             return view(*args, **kwargs)
         except SchemaServiceError as exc:
@@ -981,40 +1156,51 @@ def dev_api(view):
 @app.route("/developer")
 def developer_dashboard():
     if not _dev_unlocked():
-        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS)
+        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS), 403
     return render_template(
         "developer_dashboard.html",
         page_title="Developer",
         nav_links=NAV_LINKS,
         db_path=str(_configured_db_path()),
+        access_db_path=str(ACCESS_DB_PATH),
+        users=access_control.list_users(),
+        roles=ROLES,
+        csrf_token=csrf_token(),
     )
 
 
-@app.route("/developer/unlock", methods=["POST"])
-def developer_unlock():
-    submitted = (request.form.get("pin") or "").strip()
-    # compare_digest keeps the check constant-time. Compare as UTF-8 bytes: on
-    # str arguments it rejects any non-ASCII character with a TypeError, so a
-    # stray accented character typed into the PIN box would surface as a 500
-    # with a traceback instead of an ordinary "Incorrect PIN".
-    if secrets.compare_digest(submitted.encode("utf-8"), DEV_DASHBOARD_PIN.encode("utf-8")):
-        session[DEV_SESSION_KEY] = True
-        return redirect(url_for("developer_dashboard"))
-    return (
-        render_template(
-            "developer_lock.html",
-            page_title="Developer",
-            nav_links=NAV_LINKS,
-            error="Incorrect PIN.",
-        ),
-        403,
-    )
+@app.post("/developer/access/users")
+@requires_role("admin")
+@requires_csrf
+def developer_save_user():
+    try:
+        raw_id = request.form.get("user_id", "").strip()
+        access_control.save_user(int(raw_id) if raw_id else None, request.form.get("username", ""), request.form.get("pin", ""), request.form.get("role", ""))
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return redirect(url_for("developer_dashboard") + "#access")
+
+
+@app.post("/developer/access/users/<int:user_id>/delete")
+@requires_role("admin")
+@requires_csrf
+def developer_delete_user(user_id: int):
+    try:
+        access_control.delete_user(user_id, int(current_user()["id"]))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return redirect(url_for("developer_dashboard") + "#access")
 
 
 @app.route("/developer/lock", methods=["POST"])
+@requires_csrf
 def developer_lock():
-    session.pop(DEV_SESSION_KEY, None)
-    return redirect(url_for("developer_dashboard"))
+    # There is no dashboard-only lock left to release: reaching this page is a
+    # property of the account, so the only thing this button can do is end the
+    # session. It says so, and it lands on Home rather than bouncing off the
+    # 403 the developer page would now return.
+    session.clear()
+    return redirect(url_for("home"))
 
 
 @app.route("/developer/api/runtime")
@@ -1056,7 +1242,13 @@ def api_dev_runtime():
             "db_path": str(_configured_db_path()),
             "db_path_source": "GREMLIN_DB_PATH" if os.environ.get("GREMLIN_DB_PATH") else "default",
             "default_db_path": str(DEFAULT_DB_PATH),
-            "secret_key_source": "GREMLIN_SECRET_KEY" if os.environ.get("GREMLIN_SECRET_KEY") else "per-process random",
+            # Names where the key actually came from. The fallback is no longer
+            # per-process: it is one key kept in the access database, shared by
+            # every worker and held across restarts.
+            "secret_key_source": (
+                "GREMLIN_SECRET_KEY" if os.environ.get("GREMLIN_SECRET_KEY")
+                else f"generated, stored in {ACCESS_DB_PATH.name}"
+            ),
             "life_data_service_status": service_status,
             "life_data_service_error": service_error,
             "route_count": len(routes),
@@ -1128,9 +1320,7 @@ def api_dev_query():
 # The one place on this page that writes. Everything else here reads GREMLIN.db
 # through SchemaService's read-only connections; this runs the same ingestion
 # the nightly Task Scheduler job runs, so it fetches from the Limble API and
-# writes what it finds. The PIN is what limits that to certain users -- it is the
-# only notion of one this app has -- and because it authorises a write, it has to
-# be a PIN someone chose: see DEV_PIN_IS_CONFIGURED.
+# writes what it finds. An administrator account limits this consequential write to named, auditable users.
 
 
 @app.route("/developer/api/sync")
@@ -1142,20 +1332,16 @@ def api_dev_sync_status():
     # Reported rather than enforced here: status stays readable when starting is
     # not allowed, so the page can explain why its button is disabled instead of
     # a click failing with no account of itself.
-    payload["start_allowed"] = DEV_PIN_IS_CONFIGURED
-    payload["start_blocked_reason"] = None if DEV_PIN_IS_CONFIGURED else SYNC_LOCKED_MESSAGE
+    payload["start_allowed"] = True
+    payload["start_blocked_reason"] = None
     return jsonify(payload)
 
 
 @app.route("/developer/api/sync", methods=["POST"])
 @dev_api
+@requires_role("admin")
 def api_dev_sync_start():
     """Start a Limble sync in the background and return its initial status."""
-
-    # Fail closed on the default PIN. This is the check the page's disabled
-    # button reflects, but the button is not the guard -- the endpoint is.
-    if not DEV_PIN_IS_CONFIGURED:
-        return jsonify({"error": SYNC_LOCKED_MESSAGE}), 403
 
     # Require a JSON body. A cross-site <form> can POST to this URL with the
     # browser's cookies attached but cannot set this content type without a

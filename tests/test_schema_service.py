@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from services import schema_service
+from services.access_control import AccessControl
 
 from services.schema_service import (
     MAX_CELL_CHARS,
@@ -512,8 +513,8 @@ class SchemaServiceTests(unittest.TestCase):
         self.assertFalse(drift["available"])
 
 
-class DeveloperUnlockTests(unittest.TestCase):
-    """The PIN gate must reject bad input, never crash on it."""
+class DeveloperAuthenticationTests(unittest.TestCase):
+    """The developer API requires a current administrator account."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -529,19 +530,33 @@ class DeveloperUnlockTests(unittest.TestCase):
 
         app_module.app.config["PROPAGATE_EXCEPTIONS"] = False
         self.app_module = app_module
+        self.access_control = AccessControl(Path(self._tmp.name) / "accesscontrol.db")
+        self.access_control.ensure_schema(initial_username="developer", initial_pin="test-secret")
+        access_patch = mock.patch.object(app_module, "access_control", self.access_control)
+        access_patch.start()
+        self.addCleanup(access_patch.stop)
         self.client = app_module.app.test_client()
 
-    def test_correct_pin_unlocks(self):
-        self.assertEqual(self.client.post("/developer/unlock", data={"pin": "1336"}).status_code, 302)
+    def test_admin_login_unlocks(self):
+        self.assertEqual(
+            self.client.post(
+                "/auth/login", json={"username": "developer", "pin": "test-secret"}
+            ).status_code,
+            200,
+        )
         self.assertEqual(self.client.get("/developer/api/tables").status_code, 200)
 
-    def test_bad_pins_are_rejected_without_erroring(self):
-        # compare_digest raises TypeError on non-ASCII str, which would turn a
-        # mistyped PIN into a 500 with a traceback.
-        for pin in ("0000", "", "   ", "13é6", "🔒", "1336" * 99):
+    def test_bad_credentials_are_rejected_without_erroring(self):
+        pins = ("0000", "", "   ", "13é6", "🔒", "test-secret" * 99)
+        for index, pin in enumerate(pins):
             with self.subTest(pin=pin):
-                response = self.client.post("/developer/unlock", data={"pin": pin})
-                self.assertEqual(response.status_code, 403)
+                username = f"developer-{index}"
+                self.access_control.save_user(None, username, "valid-secret", "admin")
+                response = self.client.post(
+                    "/auth/login", json={"username": username, "pin": pin},
+                    environ_base={"REMOTE_ADDR": f"192.0.2.{len(pin) % 250 + 1}"},
+                )
+                self.assertEqual(response.status_code, 401)
 
     def test_api_is_locked_until_unlocked(self):
         self.assertEqual(self.client.get("/developer/api/tables").status_code, 403)

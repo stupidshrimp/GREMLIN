@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{#- Shown in place of a page whose whole purpose is editing, for a visitor who
+    may only read. It says which role the page needs and where the login is,
+    rather than bouncing to a page that looks like nothing went wrong. -#}
+
+{% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Read-only access</p>
+  <h1>{{ page_heading or "You do not have access to this page." }}</h1>
+  <p>
+    {% if auth_user %}
+      You are signed in as <strong>{{ auth_user.username }}</strong> ({{ auth_user.role }}).
+      This page changes stored data, so it needs the {{ required_role or "editor" }} role.
+      Ask an administrator to change your role.
+    {% else %}
+      This page changes stored data, so it needs an account with the
+      {{ required_role or "editor" }} role. Log in with the person icon at the
+      bottom of the sidebar. Everything else in GREMLIN stays readable without
+      one.
+    {% endif %}
+  </p>
+  <p><a class="btn-secondary" href="{{ back_url or url_for('life_data_analysis') }}">Go back</a></p>
+</section>
+{% endblock %}

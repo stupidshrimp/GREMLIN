@@ -21,6 +21,7 @@ from unittest import mock
 import repositories.availability_repo
 from repositories.availability_repo import AvailabilityConfigError, AvailabilityRepository
 from repositories.raw_repo import RawRepository
+from services.access_control import AccessControl
 from services.availability_dashboard import (
     build_config,
     build_dashboard,
@@ -1230,9 +1231,22 @@ class ApiTests(AvailabilityTestCase):
         app_module._availability_repository = None
         app_module._life_data_service = None
         self.app_module = app_module
+
+        # Every configuration write below is role-protected, so these tests need
+        # a real signed-in editor. Point the app at an access database of this
+        # test's own -- never the deployment's -- and log in through the same
+        # endpoint a browser uses, so the session is built the production way.
+        access = AccessControl(Path(self._tmp.name) / "accesscontrol.db")
+        access.ensure_schema()
+        access.save_user(None, "editor", "test-pin", "editor")
+        self._real_access_control = app_module.access_control
+        app_module.access_control = access
         self.client = app_module.app.test_client()
+        login = self.client.post("/auth/login", json={"username": "editor", "pin": "test-pin"})
+        self.assertEqual(login.status_code, 200, login.get_data(as_text=True))
 
     def tearDown(self):
+        self.app_module.access_control = self._real_access_control
         self.app_module._availability_repository = None
         self.app_module._life_data_service = None
 
@@ -1298,7 +1312,13 @@ class ApiTests(AvailabilityTestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_group_names_with_spaces_and_ampersands_route_correctly(self):
-        response = self.client.post("/metrics/api/availability/config/group/Dilo %26 Enervac/reset")
+        # The JSON content type is what keeps a cross-site <form> from reaching
+        # this write, so the reset the page sends carries one.
+        response = self.client.post(
+            "/metrics/api/availability/config/group/Dilo %26 Enervac/reset",
+            data="{}",
+            content_type="application/json",
+        )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
 
     def test_the_work_order_endpoint_itemises_a_bar(self):
