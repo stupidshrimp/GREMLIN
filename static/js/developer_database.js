@@ -38,9 +38,9 @@
     // than `limit` when the server's byte budget ends one early, so neither
     // direction can be navigated by arithmetic on `limit`.
     data: { table: null, offset: 0, limit: 50, total: null, nextOffset: null, history: [] },
-    // The last completed sync whose changes these panels already account for;
-    // undefined until the first status answer. See checkForCompletedSync.
-    lastWritingRun: undefined,
+    // The last persisted import whose changes these panels already account
+    // for; undefined until the first status answer. See checkForCompletedSync.
+    lastCompletedImport: undefined,
     syncWatchTimer: null,
     syncWatchRequest: null,
   };
@@ -179,13 +179,17 @@
       return false;
     }
     const job = payload.job || {};
-    const runId = dev.writingRunId(job);
-    if (state.lastWritingRun === undefined) {
+    // `job` describes only this web process's in-memory runner. The scheduled
+    // importer runs in another process, so it never appears there. Import
+    // history is read from the database and therefore provides the shared
+    // completion marker for both web-triggered and scheduled imports.
+    const completedAt = (payload.history || {}).last_completed_at || null;
+    if (state.lastCompletedImport === undefined) {
       // The first answer of this page load is the baseline: every panel read
       // after it is already reading post-sync data, so there is nothing to drop.
-      state.lastWritingRun = runId;
-    } else if (runId && runId !== state.lastWritingRun) {
-      state.lastWritingRun = runId;
+      state.lastCompletedImport = completedAt;
+    } else if (completedAt && completedAt !== state.lastCompletedImport) {
+      state.lastCompletedImport = completedAt;
       refreshPanels();
     }
     return job.state === "running";

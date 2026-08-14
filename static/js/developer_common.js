@@ -165,19 +165,6 @@
     }
   }
 
-  // Identifies a finished run that changed the database. The inspection page
-  // caches what it reads, and only a sync changes the file underneath it, so it
-  // invalidates by *which* sync completed rather than by having watched one
-  // happen -- a page that was open elsewhere while a sync ran never sees the
-  // running state at all. Dry runs change nothing and deliberately produce no id.
-  function writingRunId(job) {
-    if (!job || job.state !== "succeeded") return null;
-    if (job.options && job.options.dry_run) return null;
-    const summary = job.summary || {};
-    const batch = summary.import_batch_id === undefined || summary.import_batch_id === null ? "" : summary.import_batch_id;
-    return `${job.started_at || ""}#${batch}`;
-  }
-
   window.GremlinDev = {
     API: API,
     $: $,
@@ -192,6 +179,5 @@
     formatDuration: formatDuration,
     formatTimestamp: formatTimestamp,
     whenReady: whenReady,
-    writingRunId: writingRunId,
   };
 })();
