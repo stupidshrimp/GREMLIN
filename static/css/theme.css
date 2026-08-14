@@ -95,11 +95,36 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 
 .hero-copy { max-width: 75ch; }
 
-.hero-actions {
-  margin-top: 1.2rem;
+/* Home hero: copy on the left, the run-once animation on the right. The media
+   column is capped rather than fluid so the 640px artwork cannot crowd out the
+   sentence it sits beside. */
+.home-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+  gap: 1.6rem;
+  align-items: center;
+}
+
+.home-hero-copy { min-width: 0; }
+
+.home-hero-media {
   display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.home-hero-animation {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+  border-radius: 16px;
+}
+
+@media (max-width: 900px) {
+  .home-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .home-hero-media { justify-content: center; }
 }
 
 .btn-primary,
@@ -193,10 +218,9 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   .content { padding: 1rem; }
 }
 
-.life-data-card-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
+/* The workflow cards use .card-grid's own three columns. A .life-data-card-grid
+   rule used to restate them here, below the responsive override, which quietly
+   kept the cards three-abreast on a phone. */
 .life-data-card {
   display: flex;
   flex-direction: column;
