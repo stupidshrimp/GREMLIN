@@ -31,6 +31,13 @@ LOGIN_ATTEMPT_ROW_CAP = 10_000
 logger = logging.getLogger(__name__)
 
 
+def _account_scope(username: str) -> str:
+    """The limiter key for one account name, however it was typed."""
+
+    normalized = username.strip().casefold()
+    return "account:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _check_credential_bounds(username: str, pin: str) -> None:
     """Refuse credentials the login path would decline to look up.
 
@@ -231,14 +238,12 @@ class AccessControl:
     def authenticate_limited(self, username: str, pin: str, client_key: str) -> tuple[dict | None, int]:
         """Authenticate with persistent per-account and per-client lockouts."""
         now = time.time()
-        normalized_username = username.strip().casefold()
         # Scope keys have a fixed storage cost even for attacker-controlled,
         # oversized usernames/client identifiers. The real username remains a
         # parameterized users-table lookup only when it satisfies the account
         # input bound.
-        account_digest = hashlib.sha256(normalized_username.encode("utf-8")).hexdigest()
         client_digest = hashlib.sha256(str(client_key).encode("utf-8")).hexdigest()
-        scopes = (f"account:{account_digest}", f"client:{client_digest}")
+        scopes = (_account_scope(username), f"client:{client_digest}")
         with self._connect() as conn:
             # Serialize the complete read/check/increment sequence. A deferred
             # transaction would let parallel requests all read the same count
@@ -256,20 +261,37 @@ class AccessControl:
                 (now - LOGIN_WINDOW_SECONDS, now),
             )
             # The sweep above only reaches rows whose window has already run
-            # out, so a fast enough burst outruns it inside the window. Keep
-            # the newest LOGIN_ATTEMPT_ROW_CAP unlocked rows and drop the rest:
-            # discarding the oldest costs at most a partial failure count on a
-            # scope nobody has touched recently, which is cheaper than letting
-            # the file grow without limit.
-            conn.execute(
-                """DELETE FROM login_attempts WHERE scope_key IN (
-                       SELECT scope_key FROM login_attempts
-                        WHERE locked_until <= ?
-                        ORDER BY window_started DESC
-                        LIMIT -1 OFFSET ?
-                   )""",
-                (now, LOGIN_ATTEMPT_ROW_CAP),
-            )
+            # out, so a fast enough burst outruns it inside the window. Cap
+            # what is left.
+            #
+            # Locked rows are capped too, which they were not at first. The
+            # reason they can be is that a lockout guarding a *real* account is
+            # distinguishable from one guarding a name an attacker invented:
+            # the scope key is a digest of the username, and this deployment
+            # has tens of accounts, so their digests can simply be listed and
+            # held back. Everything else -- lockouts on names that match no
+            # account, and per-address lockouts -- is evictable, so no flood
+            # can clear the protection on somebody's real account, and the
+            # table is still bounded by cap + accounts + this request's two.
+            #
+            # Only when there is something to cap: this is the one place that
+            # reads the users table on a login, and the ordinary case is a
+            # table far below the cap.
+            if conn.execute("SELECT COUNT(*) FROM login_attempts").fetchone()[0] > LOGIN_ATTEMPT_ROW_CAP:
+                protected = [
+                    _account_scope(row["username"])
+                    for row in conn.execute("SELECT username FROM users")
+                ]
+                placeholders = ",".join("?" * len(protected)) or "NULL"
+                conn.execute(
+                    f"""DELETE FROM login_attempts WHERE scope_key IN (
+                            SELECT scope_key FROM login_attempts
+                             WHERE scope_key NOT IN ({placeholders})
+                             ORDER BY window_started DESC
+                             LIMIT -1 OFFSET ?
+                        )""",
+                    (*protected, LOGIN_ATTEMPT_ROW_CAP),
+                )
             attempts = {row["scope_key"]: row for row in conn.execute(
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
             )}

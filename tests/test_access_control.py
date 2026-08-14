@@ -362,8 +362,13 @@ def test_login_attempt_rows_are_capped(tmp_path, monkeypatch):
     assert unlocked <= 20 + 2
 
 
-def test_capping_never_evicts_an_active_lockout(tmp_path, monkeypatch):
-    """Otherwise a flood would be a way to clear your own lockout."""
+def test_capping_never_evicts_a_real_account_lockout(tmp_path, monkeypatch):
+    """A flood must not be a way to clear the protection on someone's account.
+
+    That is what makes capping locked rows safe: a lockout guarding a real
+    account is identifiable, because the scope key is a digest of the username
+    and the deployment has a listable number of accounts.
+    """
     monkeypatch.setattr("services.access_control.LOGIN_ATTEMPT_ROW_CAP", 5)
     control = AccessControl(tmp_path / "accesscontrol.db")
     control.ensure_schema(initial_username="root", initial_pin="secret")
@@ -373,10 +378,33 @@ def test_capping_never_evicts_an_active_lockout(tmp_path, monkeypatch):
     _user, retry_after = control.authenticate_limited("root", "secret", "attacker")
     assert retry_after > 0
 
-    # Flood well past the cap from unrelated scopes.
-    for index in range(100):
-        control.authenticate_limited(f"nobody-{index}", "wrong", f"client-{index}")
+    # Flood well past the cap, every request locking out a fresh scope pair --
+    # which is exactly the shape that would evict the lockout above if locked
+    # rows were evicted indiscriminately.
+    for index in range(60):
+        for _ in range(LOGIN_FAILURE_LIMIT):
+            control.authenticate_limited(f"nobody-{index}", "wrong", f"client-{index}")
 
-    # The lockout survived, and the correct PIN is still held.
+    # The real account is still locked, and its correct PIN is still held.
     _user, retry_after = control.authenticate_limited("root", "secret", "attacker")
     assert retry_after > 0
+
+
+def test_locked_scopes_are_capped_too(tmp_path, monkeypatch):
+    """Five failures per fresh scope used to sail past the cap entirely."""
+    monkeypatch.setattr("services.access_control.LOGIN_ATTEMPT_ROW_CAP", 20)
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+
+    for index in range(120):
+        for _ in range(LOGIN_FAILURE_LIMIT):
+            control.authenticate_limited(f"nobody-{index}", "wrong", f"client-{index}")
+
+    with control._connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM login_attempts").fetchone()[0]
+        locked = conn.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE locked_until > ?", (time.time(),)
+        ).fetchone()[0]
+    assert locked > 0, "the flood should be producing lockouts, or this proves nothing"
+    # cap, plus the one real account that is held back, plus this request's two.
+    assert total <= 20 + 1 + 2
