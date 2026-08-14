@@ -89,6 +89,12 @@ PAGES = [
         "title": "Developer",
         "icon": ICONS["code"],
     },
+    {
+        "route": "/testing",
+        "template": "testing.html",
+        "title": "Testing",
+        "icon": ICONS["code"],
+    },
 ]
 
 
@@ -358,6 +364,14 @@ def api_metrics_reliability():
             start_date=start,
             end_date=end,
         )
+    )
+
+@app.route("/testing")
+def testing():
+    return render_template(
+        "testing.html",
+        page_title="Testing",
+        nav_links=NAV_LINKS,
     )
 
 
