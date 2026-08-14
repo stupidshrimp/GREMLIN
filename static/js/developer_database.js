@@ -41,6 +41,7 @@
     // The last completed sync whose changes these panels already account for;
     // undefined until the first status answer. See checkForCompletedSync.
     lastWritingRun: undefined,
+    syncWatchTimer: null,
   };
 
   // --- Overview -----------------------------------------------------------
@@ -133,13 +134,26 @@
   // --- Staleness ----------------------------------------------------------
   //
   // These panels cache what they read because only a sync changes the database
-  // underneath them. A sync now runs on its own page, so the realistic way this
-  // page goes stale is a sync run in another tab while this one sat in the
-  // background -- which is exactly when this page stops being visible and comes
-  // back. Asking on that transition (and once at load, to establish the
-  // baseline) costs nothing while the page is being used and catches the case
-  // that matters. Navigating here after a sync needs no help at all: a fresh
-  // document has no cache to invalidate.
+  // underneath them. A sync now runs on its own page -- and may equally be run
+  // from another browser, or by the nightly scheduled job -- so this page cannot
+  // learn about one by watching a run it started. It asks instead.
+  //
+  // Asking on becoming visible again is not enough on its own: two windows side
+  // by side are both `visible`, so a sync watched on one monitor while this page
+  // sits on the other produces no transition at all, and these panels would keep
+  // serving pre-sync counts until something else disturbed them. So the check
+  // also runs on a timer, slowly while nothing is happening and faster once the
+  // server says a sync is under way, which is the only window in which the
+  // answer is about to change. The timer is chained rather than an interval, so
+  // a slow answer delays the next question instead of stacking another on top of
+  // it, and it stops entirely while the page is hidden -- there is nothing to
+  // keep fresh for a reader who is not there, and returning re-checks at once.
+  //
+  // Navigating here after a sync needs none of this: a fresh document has no
+  // cache to invalidate.
+
+  const SYNC_WATCH_IDLE_MS = 30000;
+  const SYNC_WATCH_RUNNING_MS = 5000;
 
   function refreshPanels() {
     state.panelGeneration += 1;
@@ -152,26 +166,46 @@
     if (state.selectedTable) selectTable(state.selectedTable);
   }
 
+  // Returns whether a sync is running now, which is what sets the next delay.
   async function checkForCompletedSync() {
     let payload;
     try {
       payload = await getJSON(dev.API.sync);
     } catch (err) {
       // Losing sight of syncs is not worth a banner on a page that is otherwise
-      // working; the panels are still showing what they last read.
-      return;
+      // working; the panels are still showing what they last read, and the next
+      // question is already scheduled.
+      return false;
     }
-    const runId = dev.writingRunId(payload.job);
+    const job = payload.job || {};
+    const runId = dev.writingRunId(job);
     if (state.lastWritingRun === undefined) {
       // The first answer of this page load is the baseline: every panel read
       // after it is already reading post-sync data, so there is nothing to drop.
       state.lastWritingRun = runId;
-      return;
-    }
-    if (runId && runId !== state.lastWritingRun) {
+    } else if (runId && runId !== state.lastWritingRun) {
       state.lastWritingRun = runId;
       refreshPanels();
     }
+    return job.state === "running";
+  }
+
+  function stopSyncWatch() {
+    if (state.syncWatchTimer) {
+      window.clearTimeout(state.syncWatchTimer);
+      state.syncWatchTimer = null;
+    }
+  }
+
+  async function runSyncWatch() {
+    stopSyncWatch();
+    if (document.visibilityState !== "visible") return;
+    const running = await checkForCompletedSync();
+    // Re-read the visibility rather than trust the check above: the page can be
+    // hidden while the request is in flight, and arming a timer then would keep
+    // questioning the server on behalf of nobody.
+    if (document.visibilityState !== "visible") return;
+    state.syncWatchTimer = window.setTimeout(runSyncWatch, running ? SYNC_WATCH_RUNNING_MS : SYNC_WATCH_IDLE_MS);
   }
 
   // --- Schema -------------------------------------------------------------
@@ -523,7 +557,10 @@
       loadRows();
     });
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") checkForCompletedSync();
+      // Returning asks straight away rather than waiting out the timer that was
+      // stopped on the way out; leaving stops asking at all.
+      if (document.visibilityState === "visible") runSyncWatch();
+      else stopSyncWatch();
     });
 
     // Ask about syncs *before* reading any of the database. A sync outlives the
@@ -534,7 +571,10 @@
     // reported the sync as already finished: nothing would then invalidate the
     // panel that had just read the older numbers. Establishing the baseline
     // first costs one round trip on a page that is about to make several.
-    await checkForCompletedSync();
+    const running = await checkForCompletedSync();
+    if (document.visibilityState === "visible") {
+      state.syncWatchTimer = window.setTimeout(runSyncWatch, running ? SYNC_WATCH_RUNNING_MS : SYNC_WATCH_IDLE_MS);
+    }
     const requested = window.location.hash.replace(/^#/, "");
     const initial = Object.prototype.hasOwnProperty.call(LOADERS, requested) ? requested : "overview";
     activate(initial);
