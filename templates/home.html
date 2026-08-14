@@ -2,6 +2,19 @@
 
 {% block content %}
 <section class="hero glass-card fade-in-up home-hero">
+  {#- Decorative backdrop for the card. `muted` and `playsinline` are what buy
+      the autoplay: browsers refuse to start a video with sound, and iOS Safari
+      otherwise takes it fullscreen. It carries no information, so it is hidden
+      from assistive tech and kept out of the tab order. -#}
+  <video class="home-hero-video"
+         src="{{ url_for('static', filename='img/maincard.mp4') }}"
+         autoplay
+         loop
+         muted
+         playsinline
+         disablepictureinpicture
+         tabindex="-1"
+         aria-hidden="true"></video>
   <div class="home-hero-copy">
     <p class="eyebrow">GREMLIN Platform</p>
     <h1>Build confidence in each equipment lifecycle.</h1>
