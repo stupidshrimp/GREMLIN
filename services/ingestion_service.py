@@ -175,13 +175,20 @@ class IngestionService:
             f"{counts['updated']} updated, {counts['skipped']} unchanged."
         )
 
-        mapping = {"mapped": 0, "mapping_ok": True, "mapping_note": "skipped (--no-map)"}
-        if self.refresh_mapping:
-            # The mapping refresh is one SQL statement inside LifeDataService, so
-            # there is no count to report while it runs -- only that it started.
-            self._emit(PHASE_MAP, None, None)
-            self._log("Refreshing the mapped layer ...")
-            mapping = self._refresh_mapped_records()
+        try:
+            mapping = {"mapped": 0, "mapping_ok": True, "mapping_note": "skipped (--no-map)"}
+            if self.refresh_mapping:
+                # The mapping refresh is one SQL statement inside LifeDataService, so
+                # there is no count to report while it runs -- only that it started.
+                self._emit(PHASE_MAP, None, None)
+                self._log("Refreshing the mapped layer ...")
+                mapping = self._refresh_mapped_records()
+        except Exception:
+            # _refresh_mapped_records handles failures from the mapper itself as
+            # best-effort outcomes, but setup work such as schema inspection can
+            # still raise. Do not leave a committed raw batch looking in-flight.
+            self.raw_repo.complete_batch(batch_id, status="FAILED", raw_row_count=len(records))
+            raise
 
         # The batch completion timestamp is also the database-backed signal
         # used by other processes to decide that every derived view is current.

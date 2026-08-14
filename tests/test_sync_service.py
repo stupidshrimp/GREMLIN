@@ -663,6 +663,26 @@ class SyncRunnerTests(unittest.TestCase):
             self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
             self.assertIsNotNone(read_import_history(self.db_path)["last_completed_at"])
 
+    def test_mapping_setup_failure_closes_the_import_batch(self):
+        with mock.patch(
+            "services.ingestion_service.IngestionService._missing_mapping_columns",
+            side_effect=RuntimeError("cannot inspect mapping schema"),
+        ):
+            self._run(
+                FakeLimbleClient(self.tasks, self.assets),
+                options=SyncOptions(refresh_mapping=True),
+            )
+
+        self.assertEqual(self.runner.status()["state"], STATE_FAILED)
+        self.assertIn("cannot inspect mapping schema", self.runner.status()["error"])
+        history = read_import_history(self.db_path)
+        self.assertIsNone(history["in_flight"])
+        with RawRepository(self.db_path).connect() as conn:
+            batch = conn.execute(
+                "SELECT status, raw_row_count FROM import_batch ORDER BY import_batch_id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(tuple(batch), ("FAILED", len(self.tasks)))
+
     def test_a_real_sync_refuses_a_missing_database_but_a_dry_run_does_not(self):
         missing = Path(self._tmp.name) / "not-there.db"
         with self.assertRaises(SyncOptionError) as caught:
