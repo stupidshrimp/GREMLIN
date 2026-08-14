@@ -408,6 +408,16 @@ class ImportHistoryTests(unittest.TestCase):
         self.assertEqual(history["last_completed_at"], completed)
         self.assertEqual(history["last_row_count"], 20)
 
+    def test_completion_time_wins_when_batches_finish_out_of_order(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:03:00", 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", "2026-08-05 02:02:00", 20)
+
+        history = read_import_history(self.db_path)
+
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_completed_at"], "2026-08-05 02:03:00")
+        self.assertEqual(history["last_row_count"], 10)
+
     def test_an_open_batch_is_reported_as_in_flight(self):
         started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
         self._insert("STARTED", started, None, None)

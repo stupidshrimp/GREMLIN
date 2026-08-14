@@ -530,6 +530,7 @@ def read_import_history(
     last_completed_batch_id: int | None = None
     last_completed_at: str | None = None
     last_row_count: int | None = None
+    last_completed_key: tuple[datetime, int] | None = None
     in_flight: dict[str, Any] | None = None
     now = datetime.now(timezone.utc)
 
@@ -562,7 +563,7 @@ def read_import_history(
                     "status": status or None,
                 }
 
-        if started is None or completed is None or last_completed_at is not None:
+        if started is None or completed is None:
             continue
         # Prefer what the row says; fall back to its timestamps where the schema
         # cannot say. On a table without a status column a failed import is
@@ -571,6 +572,14 @@ def read_import_history(
         # and the alternative is reporting nothing at all.
         if status and status != "COMPLETED":
             continue
+        # Batch IDs describe when imports started, not when their mapping work
+        # finished. Concurrent imports can therefore complete out of order.
+        # Compare the persisted completion time first, using the unique batch ID
+        # only to distinguish completions recorded in the same second.
+        completion_key = (completed, int(batch_id) if batch_id is not None else 0)
+        if last_completed_key is not None and completion_key <= last_completed_key:
+            continue
+        last_completed_key = completion_key
         last_completed_at = row["import_completed_at"]
         last_completed_batch_id = batch_id
         raw_count = row["raw_row_count"] if "raw_row_count" in keys else None
