@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-header">
+    <h1>Contact Directory</h1>
+    <p>Search by name, email, department, role, or phone number.</p>
+</div>
+
+<input
+    type="text"
+    id="contactSearch"
+    placeholder="Search contacts..."
+    class="contact-search"
+>
+
+<table id="contactsTable" class="contacts-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Phone</th>
+            <th>Department</th>
+        </tr>
+    </thead>
+
+    <tbody id="contactsBody">
+    </tbody>
+</table>
+
+<style>
+
+.contact-search {
+    width: 100%;
+    padding: 14px;
+    margin: 20px 0 25px 0;
+    border: 1px solid #cfcfcf;
+    border-radius: 10px;
+    font-size: 1rem;
+}
+
+.contacts-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.contacts-table th {
+    text-align: left;
+    padding: 18px 12px;
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #1f2f44;
+    border-bottom: 2px solid #d9d9d9;
+}
+
+.contacts-table td {
+    text-align: left;
+    padding: 16px 12px;
+    font-size: 1.15rem;
+    color: #1f2f44;
+    border-bottom: 1px solid #ececec;
+}
+
+.contacts-table tbody tr:hover {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+.contacts-table th:nth-child(1),
+.contacts-table td:nth-child(1) {
+    width: 25%;
+}
+
+.contacts-table th:nth-child(2),
+.contacts-table td:nth-child(2) {
+    width: 35%;
+}
+
+.contacts-table th:nth-child(3),
+.contacts-table td:nth-child(3) {
+    width: 20%;
+}
+
+.contacts-table th:nth-child(4),
+.contacts-table td:nth-child(4) {
+    width: 20%;
+}
+
+</style>
+
+<script>
+
+async function loadContacts() {
+
+    try {
+
+        const response = await fetch("/api/contacts");
+        const contacts = await response.json();
+
+        const tbody = document.getElementById("contactsBody");
+
+        tbody.innerHTML = "";
+
+        contacts.forEach(contact => {
+
+            tbody.innerHTML += `
+                <tr>
+                    <td>${contact.name || ""}</td>
+                    <td>${contact.email || ""}</td>
+                    <td>${contact.phone || ""}</td>
+                    <td>${contact.department || ""}</td>
+                </tr>
+            `;
+
+        });
+
+    } catch (error) {
+
+        console.error("Error loading contacts:", error);
+
+    }
+
+}
+
+document.getElementById("contactSearch")
+.addEventListener("keyup", function () {
+
+    const value = this.value.toLowerCase();
+
+    document.querySelectorAll("#contactsBody tr")
+        .forEach(row => {
+
+            row.style.display =
+                row.innerText.toLowerCase().includes(value)
+                ? ""
+                : "none";
+
+        });
+
+});
+
+loadContacts();
+
+</script>
+
+{% endblock %}

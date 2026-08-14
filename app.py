@@ -40,6 +40,7 @@ from services.sync_service import (
     SyncOptions,
     load_dotenv_files,
 )
+from integrations.limble import LimbleClient, LimbleConfig
 
 # Read the app's own settings out of .env before anything below looks at them.
 # This is the one safe moment to do it: nothing has been built yet, so there is
@@ -232,6 +233,12 @@ PAGES = [
         "template": "reliability_links.html",
         "title": "Reliability Links",
         "icon": ICONS["docs"],
+    },
+    {
+    "route": "/contacts",
+    "template": "contacts.html",
+    "title": "Contacts",
+    "icon": ICONS["docs"],
     },
     {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
     {
@@ -1143,6 +1150,42 @@ def pm_calendar():
         page_title="PM Calendar",
         nav_links=NAV_LINKS,
     )
+
+@app.route("/api/contacts")
+def api_contacts():
+
+    config = LimbleConfig.from_env()
+    client = LimbleClient(config)
+
+    users = client.get_users()
+
+    contacts = []
+
+    for user in users:
+
+        department = ""
+
+        if user.get("teams"):
+            department = user["teams"][0].get("name", "")
+
+        contacts.append({
+            "name": f"{user.get('firstName', '')} {user.get('lastName', '')}".strip(),
+            "email": user.get("email", ""),
+            "phone": user.get("phone", ""),
+            "department": department
+        })
+
+    return jsonify(contacts)
+
+@app.route("/contacts")
+def contacts():
+    return render_template(
+        "contacts.html",
+        page_title="Contacts",
+        nav_links=NAV_LINKS,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Developer area
 #

@@ -130,6 +130,11 @@ class LimbleClient:
 
         return list(self._paginate("/assets/", {}, on_page=on_page))
 
+    def get_users(self, *, on_page: Callable[[int, int], None] | None = None) -> list[dict[str, Any]]:
+        """Return all users from Limble."""
+
+        return list(self._paginate("/users/", {}, on_page=on_page))
+
     # ------------------------------------------------------------------
     # Pagination + transport
     # ------------------------------------------------------------------
