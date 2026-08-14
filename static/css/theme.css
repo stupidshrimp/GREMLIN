@@ -164,10 +164,23 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   .home-hero-media { justify-content: center; }
 }
 
+/* These classes are worn by both <a> and <button>, and the two elements do not
+   start from the same place: a button takes its font and border from the
+   browser's own stylesheet instead of inheriting the page's, so it would render
+   smaller and in the wrong typeface next to an identically classed link. The
+   account dialog stacks one of each, which is where the mismatch showed. Every
+   property that differs between the two elements is therefore declared here
+   rather than left to the default. */
 .btn-primary,
 .btn-secondary {
-  text-decoration: none;
+  display: inline-block;
+  font: inherit;
   font-weight: 600;
+  line-height: 1.6;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
   border-radius: 999px;
   padding: 0.6rem 1rem;
   transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;

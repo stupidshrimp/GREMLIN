@@ -28,7 +28,6 @@
 /* The developer area is entered from this dialog and nowhere else, so its link
    is given a line of its own rather than sitting inside the sign-out prose. */
 .account-dialog-dev { margin:0 0 16px; }
-.account-dialog-dev a { display:inline-block; text-decoration:none; }
 .account-close { float:right; border:0; background:none; font-size:1.6rem; cursor:pointer; }
 .account-error { color:#96261a; margin:0; }
 .gremlin-toast-host { position:fixed; top:1rem; right:1rem; z-index:2000; display:grid; gap:.6rem; max-width:min(380px,calc(100vw - 2rem)); pointer-events:none; }

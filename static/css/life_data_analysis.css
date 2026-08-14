@@ -160,13 +160,8 @@
 .lda-portal-list { position: fixed; right: auto; }
 .lda-combobox-option-label { font-weight: 600; color: var(--forest-900); font-size: 0.86rem; }
 
-/* Buttons rendered as <button> reuse theme btn classes */
-button.btn-primary,
-button.btn-secondary {
-  font: inherit;
-  cursor: pointer;
-}
-button.btn-primary { border: 1px solid var(--forest-800); }
+/* Buttons rendered as <button> reuse theme btn classes, which now normalise the
+   font, cursor and border for both elements; only the disabled state is local. */
 button.btn-primary:disabled,
 button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
 
