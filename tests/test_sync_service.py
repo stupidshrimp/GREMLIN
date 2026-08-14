@@ -848,6 +848,19 @@ class SyncRunnerTests(unittest.TestCase):
         self.assertEqual(described["credentials"]["base_url"], "https://example.test/v2")
         self.assertNotIn("secret", str(described))
 
+    def test_describe_exposes_the_latest_finished_batch_for_cache_invalidation(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch "
+                "(source_system, status, import_started_at, import_completed_at, raw_row_count) "
+                "VALUES ('Limble', 'FAILED', '2026-08-05 03:00:00', '2026-08-05 03:01:00', 12)"
+            )
+            batch_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        described = self.runner.describe(self.db_path)
+
+        self.assertEqual(described["history"]["last_finished_batch_id"], batch_id)
+
     def test_another_process_importing_is_reported_even_while_we_run(self):
         # The overlap worth warning about is precisely this one, and it used to
         # be hidden: any open batch was assumed to be ours whenever a local sync

@@ -929,6 +929,7 @@ class LimbleSyncRunner:
                 "last_completed_batch_id": history.get("last_completed_batch_id"),
                 "last_completed_at": history.get("last_completed_at"),
                 "last_row_count": history.get("last_row_count"),
+                "last_finished_batch_id": history.get("last_finished_batch_id"),
                 "timed_runs": timings.get("runs"),
                 "median_seconds": timings.get("median_full_seconds"),
             },
