@@ -126,8 +126,11 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 /* Scrim between the video and the copy. The text here is dark on light and the
    footage underneath is arbitrary, so this is what keeps the headline readable
    whatever frame is showing -- raise the alpha values to favour contrast, lower
-   them to let more of the video through. It leans opaque over the copy column
-   and thins out to the right, where only the artwork sits. */
+   them to let more of the video through. It is set thin enough for the footage
+   to read as footage rather than a wash, which is as far as it can go before
+   the copy starts to struggle over the darker shots in the loop. It still
+   leans heavier over the copy column and thins out to the right, where only
+   the artwork sits. */
 .home-hero::after {
   content: "";
   position: absolute;
@@ -136,13 +139,19 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   pointer-events: none;
   background: linear-gradient(
     100deg,
-    rgba(255, 255, 255, 0.9) 0%,
-    rgba(255, 255, 255, 0.86) 40%,
-    rgba(229, 245, 236, 0.72) 100%
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(255, 255, 255, 0.62) 45%,
+    rgba(229, 245, 236, 0.3) 100%
   );
 }
 
 .home-hero-copy { min-width: 0; }
+
+/* The scrim is thin enough that the shared muted greys lose their footing over
+   the darkest frames, so the copy in this card runs a step darker than
+   elsewhere. */
+.home-hero-copy .eyebrow { color: var(--forest-900); }
+.home-hero-copy .hero-copy { color: var(--text); }
 
 .home-hero-media {
   display: flex;
@@ -159,6 +168,17 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 @media (max-width: 900px) {
   .home-hero {
     grid-template-columns: 1fr;
+  }
+
+  /* Stacked layout: the copy now runs the full width of the card, including the
+     stretch the two-column scrim leaves thin, so even it out rather than let
+     the last lines fall on bare footage. */
+  .home-hero::after {
+    background: linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.74) 0%,
+      rgba(229, 245, 236, 0.62) 100%
+    );
   }
 
   .home-hero-media { justify-content: center; }
