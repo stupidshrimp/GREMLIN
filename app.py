@@ -213,10 +213,8 @@ PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
     {
         # The sidebar "Life Data Analysis" link goes straight to the Perform an
-        # Analysis workspace instead of the "Choose a reliability workflow" landing
-        # page. The landing page (/life-data-analysis) still exists and remains
-        # reachable from the Home "Explore Analysis" button, so Failure
-        # Classification and Standards and Documentation stay accessible.
+        # Analysis workspace. The workflow cards that used to sit on a separate
+        # landing page live on Home now, so that is the other way in.
         "route": "/life-data-analysis/perform-analysis",
         "template": "perform_analysis.html",
         "title": "Life Data Analysis",
@@ -434,11 +432,10 @@ def logout():
 
 @app.route("/life-data-analysis")
 def life_data_analysis():
-    return render_template(
-        "life_data_analysis.html",
-        page_title="Life Data Analysis",
-        nav_links=NAV_LINKS,
-    )
+    # The "Choose a reliability workflow" landing page now *is* the home page:
+    # its cards were moved there wholesale. The route survives only so existing
+    # bookmarks and links land somewhere sensible instead of on a 404.
+    return redirect(url_for("home"))
 
 
 

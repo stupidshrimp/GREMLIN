@@ -184,7 +184,9 @@ def _assert_read_only_ui(client):
     # asset is what un-hides it, so it must not be in the page at all.
     assert b"lda-calculate-all" not in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 403
-    landing = client.get("/life-data-analysis").data
+    # The workflow cards moved onto the home page, so that is where the
+    # Disposition card must stay hidden from a caller who may only read.
+    landing = client.get("/").data
     assert b'href="/life-data-analysis/disposition"' not in landing
     assert b'name="gremlin-can-edit" content="false"' in landing
 

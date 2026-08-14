@@ -1,30 +1,56 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="hero glass-card fade-in-up">
-  <p class="eyebrow">GREMLIN Platform</p>
-  <h1>Build confidence in each equipment lifecycle.</h1>
-  <p class="hero-copy">
-    A modern toolkit for Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface workflows, metrics intelligence, and standards-aligned documentation.
-  </p>
-  <div class="hero-actions">
-    <a class="btn-primary" href="/life-data-analysis">Explore Analysis</a>
-    <a class="btn-secondary" href="/metrics">View Metrics</a>
+<section class="hero glass-card fade-in-up home-hero">
+  <div class="home-hero-copy">
+    <p class="eyebrow">GREMLIN Platform</p>
+    <h1>Build confidence in each equipment lifecycle.</h1>
+    <p class="hero-copy">
+      A modern toolkit for Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface workflows, metrics intelligence, and standards-aligned documentation.
+    </p>
+  </div>
+  <div class="home-hero-media">
+    {#- Plays once and then holds on the frame it had reached, so the page
+        settles instead of looping forever. home.js swaps the still in on a
+        timer; with scripting off the animation simply keeps running. -#}
+    <img id="home-hero-animation"
+         class="home-hero-animation"
+         src="{{ url_for('static', filename='img/sc_loading_animation.gif') }}"
+         data-still-src="{{ url_for('static', filename='img/sc_loading_animation_still.png') }}"
+         alt=""
+         width="640"
+         height="640"
+         aria-hidden="true">
   </div>
 </section>
 
 <section class="card-grid">
-  <article class="glass-card tile slide-in">
-    <h2>Life Data Analysis</h2>
-    <p>Model failure distributions, compare cohorts, and estimate reliability with confidence bounds.</p>
-  </article>
-  <article class="glass-card tile slide-in">
-    <h2>Metrics</h2>
-    <p>Monitor MTBF, MTTR, failure rate trends, and SLA health in a consolidated command view.</p>
-  </article>
-  <article class="glass-card tile slide-in">
-    <h2>Standards & Documentation</h2>
-    <p>Keep workflows aligned to industry standards with living documentation and reusable templates.</p>
-  </article>
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+    <h2>Perform an Analysis</h2>
+    <p>Run life distribution fitting and compare model confidence quickly.</p>
+    <div class="card-hover-copy">
+      <p>Includes guided setup, model summaries, and reliability projection outputs for mission-time planning.</p>
+    </div>
+  </a>
+
+  {% if auth_can_edit %}<a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+    <h2>Disposition</h2>
+    <p>Disposition work orders and PM reset events on a dedicated, scrollable workspace.</p>
+    <div class="card-hover-copy">
+      <p>Assign failure modes and mechanisms, set record classes, and flag the observations that feed Weibull analysis.</p>
+    </div>
+  </a>{% endif %}
+
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
+    <h2>Standards and Documentation</h2>
+    <p>Open key standards references and documentation artifacts.</p>
+    <div class="card-hover-copy">
+      <p>Jump to approved test standards, internal procedures, and documentation templates used by your team.</p>
+    </div>
+  </a>
 </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/home.js') }}"></script>
 {% endblock %}
