@@ -21,6 +21,7 @@
   // moves smoothly instead of jumping once a second.
   const SYNC_POLL_MS = 1000;
   const SYNC_IDLE_POLL_MS = 30000;
+  const SYNC_RETRY_POLL_MS = 5000;
   const SYNC_TICK_MS = 250;
 
   const SYNC_SUMMARY_FIELDS = [
@@ -73,15 +74,25 @@
       if (requestVersion !== state.requestVersion) return;
       state.payload = payload;
       state.polledAt = now();
+      dev.showStatus("");
       renderSync();
     } catch (err) {
       if (requestVersion !== state.requestVersion) return;
-      // Stop the interval rather than retry into a wall: a failing poll is
-      // either an expired session (getJSON reloads) or a server-side problem,
-      // and one banner is more useful than one per second.
       stopSyncTimers();
       if (propagate) throw err;
       dev.showStatus(err.message, true);
+      // A brief network or server failure must not strand a running display.
+      // Retry at a slower cadence so recovery is automatic without hammering a
+      // sick endpoint. Authentication failures reload the access-denied page
+      // in getJSON and must not start another request during navigation.
+      if (!document.hidden && err.status !== 401 && err.status !== 403) {
+        state.pollDelay = SYNC_RETRY_POLL_MS;
+        state.pollTimer = window.setTimeout(function () {
+          state.pollTimer = null;
+          state.pollDelay = null;
+          pollSync();
+        }, SYNC_RETRY_POLL_MS);
+      }
     }
   }
 

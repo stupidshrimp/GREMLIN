@@ -54,7 +54,11 @@
       if (response.status === 403) {
         window.location.reload();
       }
-      throw new Error((payload && payload.error) || `Request failed (${response.status}).`);
+      const error = new Error((payload && payload.error) || `Request failed (${response.status}).`);
+      // Callers that retry transient failures need to distinguish them from an
+      // authentication failure, for which the reload above is the recovery.
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
