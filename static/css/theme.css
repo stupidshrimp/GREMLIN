@@ -113,24 +113,42 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   align-items: center;
 }
 
+/* The scale is overscan, not styling. maincard.mp4 ships with its letterbox
+   baked into the picture -- roughly 24px of black at the top and bottom of the
+   1080 -- and `cover` only crops those away while the card stays wider than the
+   footage. Once the card narrows past the breakpoint below and the crop turns
+   tall, both bars land inside it and read as hard black bands against the
+   scrim. 6% is sized off the bars themselves (2.2% a side) with enough left
+   over to absorb rounding. */
 .home-hero-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform: scale(1.06);
   z-index: -2;
   pointer-events: none;
 }
 
-/* Scrim between the video and the copy. The text here is dark on light and the
-   footage underneath is arbitrary, so this is what keeps the headline readable
-   whatever frame is showing -- raise the alpha values to favour contrast, lower
-   them to let more of the video through. It is set thin enough for the footage
-   to read as footage rather than a wash, which is as far as it can go before
-   the copy starts to struggle over the darker shots in the loop. It still
-   leans heavier over the copy column and thins out to the right, where only
-   the artwork sits. */
+/* Scrim between the video and the copy, and the reason this one card runs its
+   copy light instead of dark. The loop is dark footage -- shop interiors and
+   machinery, around 0.19 median luminance with a good quarter of the copy
+   column sitting near black -- so holding dark text over it took a white wash
+   heavy enough to leave the video a pale ghost of itself. Tinting dark instead
+   dims the footage rather than bleaching it: the alpha over the copy is no
+   lower than the white scrim's was, but it is spent pulling dark frames
+   further down instead of hauling them up towards white, so shape and colour
+   survive it where they did not before.
+
+   The stops are placed off where the copy actually ends rather than spread
+   evenly: the text runs out around 60% of the card, so the scrim holds its
+   depth to 62% and then drops away to almost nothing. That last stretch is
+   plain footage -- only the artwork sits there, and it carries its own
+   background -- which is where most of the video you can actually see comes
+   from. Raise the first two stops to favour contrast, lower them to let more
+   of the video through; the 62% stop should move with the copy, not the
+   alphas. */
 .home-hero::after {
   content: "";
   position: absolute;
@@ -139,19 +157,30 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   pointer-events: none;
   background: linear-gradient(
     100deg,
-    rgba(255, 255, 255, 0.72) 0%,
-    rgba(255, 255, 255, 0.62) 45%,
-    rgba(229, 245, 236, 0.3) 100%
+    rgba(6, 20, 14, 0.74) 0%,
+    rgba(6, 20, 14, 0.66) 62%,
+    rgba(6, 20, 14, 0.06) 100%
   );
 }
 
 .home-hero-copy { min-width: 0; }
 
-/* The scrim is thin enough that the shared muted greys lose their footing over
-   the darkest frames, so the copy in this card runs a step darker than
-   elsewhere. */
-.home-hero-copy .eyebrow { color: var(--forest-900); }
-.home-hero-copy .hero-copy { color: var(--text); }
+/* Light copy for the dark card. The shared heading and body colours are picked
+   for light panels and would vanish here, so every line of this card is
+   restated. These run close to full white deliberately: the loop's brightest
+   frames are what set the contrast floor, and dimming the small text to a soft
+   grey is the one thing that pushes it under AA over those shots. The shadow
+   is for the same handful of frames -- a specular highlight can climb high
+   enough to close on white text, and it costs nothing over the dark majority. */
+.home-hero-copy .eyebrow { color: rgba(255, 255, 255, 0.92); }
+.home-hero-copy h1 { color: #fff; }
+.home-hero-copy .hero-copy { color: rgba(255, 255, 255, 0.94); }
+
+.home-hero-copy .eyebrow,
+.home-hero-copy h1,
+.home-hero-copy .hero-copy {
+  text-shadow: 0 1px 3px rgba(6, 20, 14, 0.55);
+}
 
 .home-hero-media {
   display: flex;
@@ -176,8 +205,8 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   .home-hero::after {
     background: linear-gradient(
       160deg,
-      rgba(255, 255, 255, 0.74) 0%,
-      rgba(229, 245, 236, 0.62) 100%
+      rgba(6, 20, 14, 0.72) 0%,
+      rgba(6, 20, 14, 0.66) 100%
     );
   }
 
