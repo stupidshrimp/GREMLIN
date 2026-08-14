@@ -562,10 +562,73 @@ class DeveloperAuthenticationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/developer/api/tables").status_code, 403)
         self.assertEqual(self.client.post("/developer/api/query", json={"sql": "SELECT 1"}).status_code, 403)
 
-    def test_developer_page_is_not_linked_from_the_sidebar(self):
-        # The page is meant to be reachable only by typing its URL.
+    def test_developer_pages_are_not_linked_for_a_visitor(self):
+        # There is no sidebar entry, and nothing on a page a signed-out visitor
+        # can reach mentions the developer area at all.
         self.assertNotIn("/developer", [link["url"] for link in self.app_module.NAV_LINKS])
-        self.assertNotIn(b'href="/developer"', self.client.get("/").data)
+        self.assertNotIn(b"/developer", self.client.get("/").data)
+
+    def test_the_account_dialog_is_the_entrance_for_an_administrator(self):
+        self.client.post("/auth/login", json={"username": "developer", "pin": "test-secret"})
+        # Still not in the sidebar navigation itself...
+        self.assertNotIn("/developer", [link["url"] for link in self.app_module.NAV_LINKS])
+        # ...but the account dialog behind the person icon now offers the way in.
+        self.assertIn(b'href="/developer"', self.client.get("/").data)
+
+    def test_an_editor_is_not_offered_the_developer_link(self):
+        self.access_control.save_user(None, "shopfloor", "editor-secret", "editor")
+        self.client.post("/auth/login", json={"username": "shopfloor", "pin": "editor-secret"})
+        self.assertNotIn(b"/developer", self.client.get("/").data)
+
+    def test_every_developer_page_turns_away_a_non_administrator(self):
+        pages = ("/developer", "/developer/database", "/developer/limble-sync", "/developer/access")
+        for page in pages:
+            with self.subTest(page=page, signed_in=False):
+                self.assertEqual(self.client.get(page).status_code, 403)
+
+        self.access_control.save_user(None, "shopfloor", "editor-secret", "editor")
+        self.client.post("/auth/login", json={"username": "shopfloor", "pin": "editor-secret"})
+        for page in pages:
+            with self.subTest(page=page, signed_in="editor"):
+                response = self.client.get(page)
+                self.assertEqual(response.status_code, 403)
+                self.assertIn(b"Administrator access required", response.data)
+
+    def test_an_administrator_reaches_all_three_pages(self):
+        self.client.post("/auth/login", json={"username": "developer", "pin": "test-secret"})
+
+        hub = self.client.get("/developer")
+        self.assertEqual(hub.status_code, 200)
+        # The hub's whole job is to link to the three tools.
+        for target in (b"/developer/database", b"/developer/limble-sync", b"/developer/access"):
+            self.assertIn(target, hub.data)
+
+        for page in ("/developer/database", "/developer/limble-sync", "/developer/access"):
+            with self.subTest(page=page):
+                self.assertEqual(self.client.get(page).status_code, 200)
+
+    def test_each_page_carries_only_its_own_sections(self):
+        """The split has to be real: no page may still render another's panels."""
+
+        self.client.post("/auth/login", json={"username": "developer", "pin": "test-secret"})
+
+        database = self.client.get("/developer/database").data
+        self.assertIn(b'data-tab="overview"', database)
+        self.assertIn(b'data-tab="console"', database)
+        # Sync and access control moved out; their controls must not be here.
+        self.assertNotIn(b'id="dev-sync-run"', database)
+        self.assertNotIn(b"developer_save_user", database)
+        self.assertNotIn(b'data-tab="sync"', database)
+        self.assertNotIn(b'data-tab="access"', database)
+
+        sync = self.client.get("/developer/limble-sync").data
+        self.assertIn(b'id="dev-sync-run"', sync)
+        self.assertNotIn(b'id="dev-sql"', sync)
+
+        access = self.client.get("/developer/access").data
+        self.assertIn(b'id="add-user"', access)
+        self.assertNotIn(b'id="dev-sync-run"', access)
+        self.assertNotIn(b'id="dev-sql"', access)
 
 
 if __name__ == "__main__":

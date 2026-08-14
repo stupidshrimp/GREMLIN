@@ -188,9 +188,15 @@ def auth_context():
     valid = bool(user and snapshot.get("credential_version") == user.get("credential_version"))
     user = user if valid else None
     can_edit = bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL["editor"])
+    # The account dialog is the only entrance to the developer area, so every
+    # page needs to know whether to draw that door. Derived from the reloaded
+    # account rather than the session snapshot, so a demoted administrator
+    # stops being offered the link on their next page load.
+    is_admin = bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL["admin"])
     return {
         "auth_user": user,
         "auth_can_edit": can_edit,
+        "auth_is_admin": is_admin,
         "auth_csrf_token": csrf_token() if user else None,
     }
 
@@ -226,7 +232,7 @@ PAGES = [
     {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
     {
         "route": "/developer",
-        "template": "developer_dashboard.html",
+        "template": "developer_home.html",
         "title": "Developer",
         "icon": ICONS["code"],
     },
@@ -364,10 +370,12 @@ def _disposition_kind() -> str:
     return kind
 
 
-# Pages that exist and are routable but are deliberately kept out of the
-# sidebar. Standards and Documentation is reached from the Life Data Analysis
-# landing page instead; the developer dashboard is unlisted on purpose, so it is
-# only reachable by typing its URL (and then entering the PIN).
+# Pages that exist and are routable but are deliberately kept out of the sidebar
+# navigation. Standards and Documentation is reached from the Life Data Analysis
+# landing page instead; the developer area is reached from the account dialog
+# behind the person icon, and only when the signed-in account is an
+# administrator. Typing the URL still works, but only for that same account --
+# every developer route checks the role for itself.
 UNLISTED_ROUTES = {"/standards-and-documentation", "/developer"}
 
 NAV_LINKS = [
@@ -1102,13 +1110,23 @@ def api_weibull_report():
 
 
 # ---------------------------------------------------------------------------
-# Developer dashboard
+# Developer area
 #
-# A PIN-gated workspace for developers and maintainers. The database explorer is
-# one panel among several: the dashboard also reports app/runtime configuration,
-# the health of GREMLIN.db as a file, how far data has travelled down the
-# ingestion -> Weibull pipeline, and where the live file's schema has drifted
-# from what the schema code would build today.
+# An admin-gated workspace for developers and maintainers, split across three
+# pages behind a hub at /developer:
+#
+#   /developer/database    - database inspection: runtime/app configuration, the
+#                            health of GREMLIN.db as a file, how far data has
+#                            travelled down the ingestion -> Weibull pipeline,
+#                            the live schema, where that schema has drifted from
+#                            what the schema code would build today, a row
+#                            browser and a read-only SQL console.
+#   /developer/limble-sync - run the nightly Limble import on demand.
+#   /developer/access      - accounts and roles.
+#
+# Splitting them apart keeps the one page that writes (Limble sync) and the one
+# that grants access (accounts) off the same screen as read-only inspection, so
+# neither is a mis-click away from a panel someone opened to read.
 #
 # Every database read goes through SchemaService, which only ever opens
 # `mode=ro` connections. That is deliberate: GREMLIN.db is expected to sit on a
@@ -1153,19 +1171,75 @@ def dev_api(view):
     return wrapped
 
 
+def dev_page(view):
+    """Turn away anyone but a signed-in administrator, on every developer page.
+
+    The developer area is entered from the account dialog, which only offers the
+    link to an administrator -- but a link is not a gate. Every page checks the
+    role itself, so typing a URL, keeping an old bookmark or being demoted
+    mid-session all end at the same explanation rather than at the page.
+    """
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _dev_unlocked():
+            return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _dev_page_context(section: str, **extra):
+    """Shared template context: the sub-navigation needs to know where it is."""
+
+    return {
+        "page_title": "Developer",
+        "nav_links": NAV_LINKS,
+        "dev_section": section,
+        "db_path": str(_configured_db_path()),
+        **extra,
+    }
+
+
 @app.route("/developer")
-def developer_dashboard():
-    if not _dev_unlocked():
-        return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS), 403
+@dev_page
+def developer_home():
     return render_template(
-        "developer_dashboard.html",
-        page_title="Developer",
-        nav_links=NAV_LINKS,
-        db_path=str(_configured_db_path()),
-        access_db_path=str(ACCESS_DB_PATH),
-        users=access_control.list_users(),
-        roles=ROLES,
-        csrf_token=csrf_token(),
+        "developer_home.html",
+        **_dev_page_context(
+            "home",
+            access_db_path=str(ACCESS_DB_PATH),
+            # Rendering the hub establishes the session token the pages behind
+            # it post with, so arriving here is enough to make their forms work.
+            csrf_token=csrf_token(),
+        ),
+    )
+
+
+@app.route("/developer/database")
+@dev_page
+def developer_database():
+    return render_template("developer_database.html", **_dev_page_context("database"))
+
+
+@app.route("/developer/limble-sync")
+@dev_page
+def developer_limble_sync():
+    return render_template("developer_sync.html", **_dev_page_context("sync"))
+
+
+@app.route("/developer/access")
+@dev_page
+def developer_access():
+    return render_template(
+        "developer_access.html",
+        **_dev_page_context(
+            "access",
+            access_db_path=str(ACCESS_DB_PATH),
+            users=access_control.list_users(),
+            roles=ROLES,
+            csrf_token=csrf_token(),
+        ),
     )
 
 
@@ -1178,7 +1252,7 @@ def developer_save_user():
         access_control.save_user(int(raw_id) if raw_id else None, request.form.get("username", ""), request.form.get("pin", ""), request.form.get("role", ""))
     except (ValueError, sqlite3.IntegrityError) as exc:
         return jsonify({"error": str(exc)}), 400
-    return redirect(url_for("developer_dashboard") + "#access")
+    return redirect(url_for("developer_access"))
 
 
 @app.post("/developer/access/users/<int:user_id>/delete")
@@ -1189,7 +1263,7 @@ def developer_delete_user(user_id: int):
         access_control.delete_user(user_id, int(current_user()["id"]))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    return redirect(url_for("developer_dashboard") + "#access")
+    return redirect(url_for("developer_access"))
 
 
 @app.route("/developer/lock", methods=["POST"])

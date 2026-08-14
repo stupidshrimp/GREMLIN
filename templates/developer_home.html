@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>Three tools, kept apart.</h1>
+    <p>
+      Database inspection reads and only reads: every panel behind it opens
+      <code>GREMLIN.db</code> <code>mode=ro</code>, so it can neither change the file nor
+      take the writer lock other users depend on. The other two are consequential —
+      Limble sync writes to the database and spends this server's API credentials, and
+      access control decides who may sign in — so they each get their own page rather
+      than a tab next to something you opened to read.
+    </p>
+    <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
+  </div>
+  {# Access is the account's, not this page's, so leaving means signing out of
+     GREMLIN entirely. Labelled for what it does. #}
+  <form method="post" action="{{ url_for('developer_lock') }}" class="dev-hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn-secondary">Log out</button>
+  </form>
+</section>
+
+<section class="card-grid dev-card-grid">
+  <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_database') }}">
+    <h2>Database inspection</h2>
+    <p>Read the runtime, the file, the schema and the rows — without touching any of them.</p>
+    <div class="card-hover-copy">
+      <p>
+        Runtime configuration and registered routes, database file health, ingestion
+        pipeline throughput, the live schema table by table, drift between the code and
+        the file, a paginated row browser and a read-only SQL console.
+      </p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_limble_sync') }}">
+    <h2>Limble sync</h2>
+    <p>Run tonight's import now, and watch it work.</p>
+    <div class="card-hover-copy">
+      <p>
+        The same job the nightly scheduled task runs: pulls tasks and assets from the
+        Limble API, upserts them into the raw import tables and refreshes the mapped
+        layer. Writes to the database. Idempotent, so running it again is safe.
+      </p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_access') }}">
+    <h2>Access control</h2>
+    <p>Accounts, roles and PINs for everyone who signs in to GREMLIN.</p>
+    <div class="card-hover-copy">
+      <p>
+        Add and remove users, change roles between viewer, editor and administrator, and
+        reset PINs. Stored separately from the analysis database, in
+        <code>{{ access_db_path }}</code>.
+      </p>
+    </div>
+  </a>
+</section>
+{% endblock %}

@@ -38,6 +38,15 @@
   {% if auth_user %}
     <h2>Signed in</h2><p><strong>{{ auth_user.username }}</strong> · {{ auth_user.role }}</p>
     <p>Your login lasts for this browser session. Closing the browser signs you out.</p>
+    {#- The developer area has no sidebar entry and is not linked from any page:
+        this dialog is its entrance, and only an administrator is shown the door.
+        The pages behind it check the role themselves, so hiding the link is
+        presentation, not protection. -#}
+    {% if auth_is_admin %}
+      <p class="account-dialog-dev">
+        <a class="btn-secondary" href="{{ url_for('developer_home') }}">Developer tools</a>
+      </p>
+    {% endif %}
     <button type="button" class="btn-secondary" id="logoutButton">Log out</button>
   {% else %}
     <h2>Log in to edit</h2><p>GREMLIN remains available read-only without an account.</p>

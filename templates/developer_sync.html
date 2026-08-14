@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include "developer_subnav.html" %}
+
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>Limble sync</h1>
+    <p>
+      The one developer page that writes. Everything under Database inspection reads
+      <code>GREMLIN.db</code> through read-only connections; this runs the nightly import,
+      so it writes to the database and spends this server's Limble credentials. Access is
+      restricted to signed-in administrators for that reason.
+    </p>
+    <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
+  </div>
+</section>
+
+<div id="dev-status" class="dev-banner" role="status" hidden></div>
+
+<section class="dev-panel is-active" data-panel="sync" aria-label="Limble sync">
+  <div class="glass-card slide-in">
+    <h2>Run a Limble sync</h2>
+    <p class="dev-muted">
+      This is the same import the scheduled task runs every night
+      (<code>python -m jobs.sync_limble</code>): it pulls tasks and assets from the Limble
+      API, upserts them into the raw import tables and refreshes the mapped layer the
+      dashboards read. Run it here when a change in Limble needs to reach GREMLIN before
+      tonight. The import is idempotent, so running it again is safe — unchanged tasks are
+      skipped, and a sync never deletes curated data.
+    </p>
+
+    <dl class="dev-facts" id="dev-sync-facts"><dd class="dev-muted">Loading…</dd></dl>
+
+    <div id="dev-sync-warning" class="dev-callout" hidden></div>
+
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-sync-since">Only tasks touched since (optional)</label>
+        <input type="date" id="dev-sync-since" autocomplete="off">
+      </div>
+      <div class="dev-field">
+        <span class="dev-field-legend">Options</span>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-dry-run"> Dry run — fetch and transform, write nothing</label>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-no-assets"> Skip asset enrichment</label>
+      </div>
+      <div class="dev-field dev-field-actions">
+        <!-- Disabled until the first status response says otherwise. Whether a
+             sync may start depends on the account, the credentials and the
+             database, none of which this page knows yet at first paint; a click
+             inside that window would be answered with a 403 the client reads as
+             an expired session, reloading the page instead of explaining itself. -->
+        <button type="button" class="btn-primary" id="dev-sync-run" disabled>Run sync now</button>
+      </div>
+    </div>
+    <p class="dev-muted">
+      Limble has no “updated since” filter on its task endpoint, so a date narrows what is
+      written, not what is downloaded — the fetch takes just as long either way.
+    </p>
+  </div>
+
+  <div class="glass-card slide-in" id="dev-sync-progress-card" hidden>
+    <h2 id="dev-sync-state">Sync</h2>
+    <div class="dev-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+         aria-labelledby="dev-sync-state" id="dev-sync-bar">
+      <div class="dev-progress-fill" id="dev-sync-fill"></div>
+    </div>
+    <div class="dev-progress-meta">
+      <span id="dev-sync-phase" class="dev-progress-phase">—</span>
+      <span id="dev-sync-timing" class="dev-muted"></span>
+    </div>
+    <dl class="dev-facts" id="dev-sync-summary" hidden></dl>
+    <h3>Activity</h3>
+    <div class="dev-log" id="dev-sync-log" role="log" aria-live="polite" aria-atomic="false"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/developer_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/developer_sync.js') }}"></script>
+{% endblock %}

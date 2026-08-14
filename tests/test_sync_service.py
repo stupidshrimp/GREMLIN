@@ -390,11 +390,59 @@ class ImportHistoryTests(unittest.TestCase):
         self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:30", 30)
 
         history = read_import_history(self.db_path)
+        self.assertEqual(history["last_completed_batch_id"], 3)
         self.assertEqual(history["last_row_count"], 30)
         self.assertEqual(history["last_completed_at"], "2026-08-05 02:01:30")
         # A batch row opens only once fetching is done, so it says nothing about
         # how long a sync takes and must not pretend to.
         self.assertNotIn("median_seconds", history)
+
+    def test_latest_finished_batch_includes_a_failed_post_write_import(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:00", 10)
+        self._insert("FAILED", "2026-08-05 03:00:00", "2026-08-05 03:01:00", 12)
+
+        history = read_import_history(self.db_path)
+
+        # Success reporting remains anchored to the completed import, while the
+        # cache generation publishes the later terminal write attempt.
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_finished_batch_id"], 2)
+        self.assertEqual(history["last_finished_at"], "2026-08-05 03:01:00")
+        self.assertEqual(history["last_finished_status"], "FAILED")
+
+    def test_batch_id_distinguishes_completions_in_the_same_second(self):
+        completed = "2026-08-05 02:01:30"
+        self._insert("COMPLETED", "2026-08-05 02:00:00", completed, 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", completed, 20)
+
+        history = read_import_history(self.db_path)
+
+        self.assertEqual(history["last_completed_batch_id"], 2)
+        self.assertEqual(history["last_completed_at"], completed)
+        self.assertEqual(history["last_row_count"], 20)
+
+    def test_completion_time_wins_when_batches_finish_out_of_order(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:03:00", 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", "2026-08-05 02:02:00", 20)
+
+        history = read_import_history(self.db_path)
+
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_completed_at"], "2026-08-05 02:03:00")
+        self.assertEqual(history["last_row_count"], 10)
+
+    def test_fractional_completion_time_wins_within_the_same_second(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:30.900000", 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", "2026-08-05 02:01:30.100000", 20)
+
+        history = read_import_history(self.db_path)
+
+        # Batch 1 started first but finished last. Fractional timestamps ensure
+        # its later mapping commit becomes the cache generation instead of
+        # allowing the higher start-assigned ID to win a whole-second tie.
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_finished_batch_id"], 1)
+        self.assertEqual(history["last_completed_at"], "2026-08-05 02:01:30.900000")
 
     def test_an_open_batch_is_reported_as_in_flight(self):
         started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
@@ -430,6 +478,7 @@ class ImportHistoryTests(unittest.TestCase):
         history = read_import_history(self._legacy_database([(started, completed, 42)]))
 
         self.assertIsNone(history["in_flight"])
+        self.assertEqual(history["last_completed_batch_id"], 1)
         self.assertEqual(history["last_completed_at"], completed)
         self.assertEqual(history["last_row_count"], 42)
 
@@ -619,6 +668,57 @@ class SyncRunnerTests(unittest.TestCase):
         self.assertTrue(status["summary"]["dry_run"])
         self.assertEqual(RawRepository(self.db_path).raw_record_count(), 0)
 
+    def test_import_is_not_completed_until_mapping_finishes(self):
+        mapping_started = threading.Event()
+        release_mapping = threading.Event()
+
+        def blocking_refresh(_service):
+            mapping_started.set()
+            release_mapping.wait(timeout=10)
+            return 7
+
+        with mock.patch(
+            "services.life_data_service.LifeDataService.refresh_mapped_cmms_records",
+            blocking_refresh,
+        ):
+            self._run(
+                FakeLimbleClient(self.tasks, self.assets),
+                options=SyncOptions(refresh_mapping=True),
+                wait=False,
+            )
+            try:
+                self.assertTrue(mapping_started.wait(timeout=10), "sync never reached mapping")
+                history = read_import_history(self.db_path)
+                self.assertIsNone(history["last_completed_at"])
+                self.assertIsNotNone(history["in_flight"])
+                self.assertEqual(self.runner.status()["state"], STATE_RUNNING)
+            finally:
+                release_mapping.set()
+
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+            self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+            self.assertIsNotNone(read_import_history(self.db_path)["last_completed_at"])
+
+    def test_mapping_setup_failure_closes_the_import_batch(self):
+        with mock.patch(
+            "services.ingestion_service.IngestionService._missing_mapping_columns",
+            side_effect=RuntimeError("cannot inspect mapping schema"),
+        ):
+            self._run(
+                FakeLimbleClient(self.tasks, self.assets),
+                options=SyncOptions(refresh_mapping=True),
+            )
+
+        self.assertEqual(self.runner.status()["state"], STATE_FAILED)
+        self.assertIn("cannot inspect mapping schema", self.runner.status()["error"])
+        history = read_import_history(self.db_path)
+        self.assertIsNone(history["in_flight"])
+        with RawRepository(self.db_path).connect() as conn:
+            batch = conn.execute(
+                "SELECT status, raw_row_count FROM import_batch ORDER BY import_batch_id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(tuple(batch), ("FAILED", len(self.tasks)))
+
     def test_a_real_sync_refuses_a_missing_database_but_a_dry_run_does_not(self):
         missing = Path(self._tmp.name) / "not-there.db"
         with self.assertRaises(SyncOptionError) as caught:
@@ -760,6 +860,19 @@ class SyncRunnerTests(unittest.TestCase):
         self.assertTrue(described["credentials"]["configured"])
         self.assertEqual(described["credentials"]["base_url"], "https://example.test/v2")
         self.assertNotIn("secret", str(described))
+
+    def test_describe_exposes_the_latest_finished_batch_for_cache_invalidation(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO import_batch "
+                "(source_system, status, import_started_at, import_completed_at, raw_row_count) "
+                "VALUES ('Limble', 'FAILED', '2026-08-05 03:00:00', '2026-08-05 03:01:00', 12)"
+            )
+            batch_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        described = self.runner.describe(self.db_path)
+
+        self.assertEqual(described["history"]["last_finished_batch_id"], batch_id)
 
     def test_another_process_importing_is_reported_even_while_we_run(self):
         # The overlap worth warning about is precisely this one, and it used to

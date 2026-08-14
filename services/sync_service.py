@@ -428,10 +428,10 @@ def _as_bool(field: str, value: Any) -> bool:
 def _parse_db_timestamp(value: Any) -> datetime | None:
     """Parse an import_batch timestamp into an aware UTC datetime.
 
-    Both writers store UTC: ``RawRepository`` formats ``%Y-%m-%d %H:%M:%S`` and
-    SQLite's ``datetime('now')`` default produces the same shape. Older rows may
-    hold an ISO string instead, so try that too, and treat anything else as
-    unusable rather than guessing.
+    Both writers store UTC: ``RawRepository`` uses an ISO-compatible timestamp
+    with microseconds, while SQLite's ``datetime('now')`` default and older
+    GREMLIN versions use whole seconds. Treat anything else as unusable rather
+    than guessing.
     """
 
     if not isinstance(value, str) or not value.strip():
@@ -489,8 +489,12 @@ def read_import_history(
     """
 
     empty: dict[str, Any] = {
+        "last_completed_batch_id": None,
         "last_completed_at": None,
         "last_row_count": None,
+        "last_finished_batch_id": None,
+        "last_finished_at": None,
+        "last_finished_status": None,
         "in_flight": None,
         "available": False,
     }
@@ -526,8 +530,14 @@ def read_import_history(
     except sqlite3.Error:
         return empty
 
+    last_completed_batch_id: int | None = None
     last_completed_at: str | None = None
     last_row_count: int | None = None
+    last_completed_key: tuple[datetime, int] | None = None
+    last_finished_batch_id: int | None = None
+    last_finished_at: str | None = None
+    last_finished_status: str | None = None
+    last_finished_key: tuple[datetime, int] | None = None
     in_flight: dict[str, Any] | None = None
     now = datetime.now(timezone.utc)
 
@@ -560,8 +570,18 @@ def read_import_history(
                     "status": status or None,
                 }
 
-        if started is None or completed is None or last_completed_at is not None:
+        if started is None or completed is None:
             continue
+        completion_key = (completed, int(batch_id) if batch_id is not None else 0)
+        # This marker is deliberately independent of success. Raw writes commit
+        # before mapping starts, so a mapping-setup failure still changes the
+        # database and must invalidate inspection-panel caches without being
+        # advertised as the latest successful import.
+        if last_finished_key is None or completion_key > last_finished_key:
+            last_finished_key = completion_key
+            last_finished_batch_id = batch_id
+            last_finished_at = row["import_completed_at"]
+            last_finished_status = status or None
         # Prefer what the row says; fall back to its timestamps where the schema
         # cannot say. On a table without a status column a failed import is
         # indistinguishable from a successful one, so this can name a failure as
@@ -569,13 +589,25 @@ def read_import_history(
         # and the alternative is reporting nothing at all.
         if status and status != "COMPLETED":
             continue
+        # Batch IDs describe when imports started, not when their mapping work
+        # finished. Concurrent imports can therefore complete out of order.
+        # Compare the persisted completion time first, using the unique batch ID
+        # only to distinguish completions recorded in the same second.
+        if last_completed_key is not None and completion_key <= last_completed_key:
+            continue
+        last_completed_key = completion_key
         last_completed_at = row["import_completed_at"]
+        last_completed_batch_id = batch_id
         raw_count = row["raw_row_count"] if "raw_row_count" in keys else None
         last_row_count = int(raw_count) if isinstance(raw_count, (int, float)) else None
 
     return {
+        "last_completed_batch_id": last_completed_batch_id,
         "last_completed_at": last_completed_at,
         "last_row_count": last_row_count,
+        "last_finished_batch_id": last_finished_batch_id,
+        "last_finished_at": last_finished_at,
+        "last_finished_status": last_finished_status,
         "in_flight": in_flight,
         "available": True,
     }
@@ -894,8 +926,10 @@ class LimbleSyncRunner:
             "db_path": str(path),
             "db_exists": path.is_file(),
             "history": {
+                "last_completed_batch_id": history.get("last_completed_batch_id"),
                 "last_completed_at": history.get("last_completed_at"),
                 "last_row_count": history.get("last_row_count"),
+                "last_finished_batch_id": history.get("last_finished_batch_id"),
                 "timed_runs": timings.get("runs"),
                 "median_seconds": timings.get("median_full_seconds"),
             },

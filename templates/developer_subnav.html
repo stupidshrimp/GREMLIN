@@ -1,0 +1,20 @@
+{#- Cross-navigation shared by every developer page.
+
+    The hub at /developer is the front door, but moving between the three tools
+    should not mean going back through it, so each page carries the same three
+    links. `dev_section` is set by the view, so the current page is marked
+    rather than inferred from the URL. -#}
+<nav class="dev-subnav" aria-label="Developer sections">
+  <a class="dev-subnav-home" href="{{ url_for('developer_home') }}"
+     {% if dev_section == 'home' %}aria-current="page"{% endif %}>Developer</a>
+  <span class="dev-subnav-sep" aria-hidden="true">/</span>
+  <a class="dev-subnav-link{% if dev_section == 'database' %} is-active{% endif %}"
+     href="{{ url_for('developer_database') }}"
+     {% if dev_section == 'database' %}aria-current="page"{% endif %}>Database inspection</a>
+  <a class="dev-subnav-link{% if dev_section == 'sync' %} is-active{% endif %}"
+     href="{{ url_for('developer_limble_sync') }}"
+     {% if dev_section == 'sync' %}aria-current="page"{% endif %}>Limble sync</a>
+  <a class="dev-subnav-link{% if dev_section == 'access' %} is-active{% endif %}"
+     href="{{ url_for('developer_access') }}"
+     {% if dev_section == 'access' %}aria-current="page"{% endif %}>Access control</a>
+</nav>

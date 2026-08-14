@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from repositories.raw_repo import RawRepository, _merge_preserved_fields
+from repositories.raw_repo import RawRepository, _merge_preserved_fields, _utc_now_text
 
 
 class MergePreservedFieldsTests(unittest.TestCase):
@@ -40,6 +40,9 @@ class MergePreservedFieldsTests(unittest.TestCase):
 
 
 class RawRepositoryTests(unittest.TestCase):
+    def test_batch_timestamps_retain_fractional_seconds(self):
+        self.assertRegex(_utc_now_text(), r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$")
+
     def test_duplicate_task_ids_are_preserved_instead_of_mass_updated(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "gremlin.db"
