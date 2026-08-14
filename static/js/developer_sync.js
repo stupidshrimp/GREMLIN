@@ -20,6 +20,7 @@
   // the clock between those answers. The clock ticks locally so the elapsed time
   // moves smoothly instead of jumping once a second.
   const SYNC_POLL_MS = 1000;
+  const SYNC_IDLE_POLL_MS = 30000;
   const SYNC_TICK_MS = 250;
 
   const SYNC_SUMMARY_FIELDS = [
@@ -38,7 +39,14 @@
 
   // `payload` is the last /developer/api/sync response; `polledAt` is when it
   // arrived, so the clock can advance past it between polls.
-  const state = { payload: null, polledAt: 0, pollTimer: null, tickTimer: null, starting: false };
+  const state = {
+    payload: null,
+    polledAt: 0,
+    pollTimer: null,
+    pollDelay: null,
+    tickTimer: null,
+    starting: false,
+  };
 
   function now() {
     return (window.performance && performance.now()) || Date.now();
@@ -107,20 +115,34 @@
   }
 
   function startSyncTimers() {
-    if (!state.pollTimer) {
-      state.pollTimer = window.setInterval(function () {
+    const running = isSyncRunning();
+    const pollDelay = running ? SYNC_POLL_MS : SYNC_IDLE_POLL_MS;
+
+    // Keep a slow watch even while idle: another administrator can start a run
+    // from a different window. Use a chained timeout so a slow response can never
+    // cause status requests to overlap.
+    if (!document.hidden && (!state.pollTimer || state.pollDelay !== pollDelay)) {
+      if (state.pollTimer) window.clearTimeout(state.pollTimer);
+      state.pollDelay = pollDelay;
+      state.pollTimer = window.setTimeout(function () {
+        state.pollTimer = null;
+        state.pollDelay = null;
         pollSync();
-      }, SYNC_POLL_MS);
+      }, pollDelay);
     }
-    if (!state.tickTimer) {
+    if (running && !state.tickTimer) {
       state.tickTimer = window.setInterval(renderSyncTiming, SYNC_TICK_MS);
+    } else if (!running && state.tickTimer) {
+      window.clearInterval(state.tickTimer);
+      state.tickTimer = null;
     }
   }
 
   function stopSyncTimers() {
     if (state.pollTimer) {
-      window.clearInterval(state.pollTimer);
+      window.clearTimeout(state.pollTimer);
       state.pollTimer = null;
+      state.pollDelay = null;
     }
     if (state.tickTimer) {
       window.clearInterval(state.tickTimer);
@@ -158,8 +180,7 @@
       $(id).disabled = running;
     });
 
-    if (running) startSyncTimers();
-    else stopSyncTimers();
+    startSyncTimers();
   }
 
   function renderSyncFacts(payload) {
@@ -367,10 +388,18 @@
   async function init() {
     $("dev-sync-run").addEventListener("click", startSync);
     // Whether a database is required depends on this checkbox, and nothing else
-    // redraws the page while it sits idle -- polling only runs during a sync --
-    // so the button would stay disabled until something else happened.
+    // redraws the page immediately while it sits idle, so the button would otherwise
+    // stay disabled until the next status poll.
     $("dev-sync-dry-run").addEventListener("change", () => {
       if (state.payload) renderSync();
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        stopSyncTimers();
+      } else {
+        // Ask immediately on return rather than waiting through an idle interval.
+        pollSync();
+      }
     });
     await pollSync();
   }
