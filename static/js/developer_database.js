@@ -42,6 +42,7 @@
     // undefined until the first status answer. See checkForCompletedSync.
     lastWritingRun: undefined,
     syncWatchTimer: null,
+    syncWatchRequest: null,
   };
 
   // --- Overview -----------------------------------------------------------
@@ -200,7 +201,17 @@
   async function runSyncWatch() {
     stopSyncWatch();
     if (document.visibilityState !== "visible") return;
-    const running = await checkForCompletedSync();
+    // A visibility transition can arrive while the previous status request is
+    // still pending. Share that request instead of starting another watcher
+    // chain (and consequently arming two independent timers when both finish).
+    if (state.syncWatchRequest) return state.syncWatchRequest;
+    state.syncWatchRequest = checkForCompletedSync();
+    let running;
+    try {
+      running = await state.syncWatchRequest;
+    } finally {
+      state.syncWatchRequest = null;
+    }
     // Re-read the visibility rather than trust the check above: the page can be
     // hidden while the request is in flight, and arming a timer then would keep
     // questioning the server on behalf of nobody.
@@ -571,10 +582,7 @@
     // reported the sync as already finished: nothing would then invalidate the
     // panel that had just read the older numbers. Establishing the baseline
     // first costs one round trip on a page that is about to make several.
-    const running = await checkForCompletedSync();
-    if (document.visibilityState === "visible") {
-      state.syncWatchTimer = window.setTimeout(runSyncWatch, running ? SYNC_WATCH_RUNNING_MS : SYNC_WATCH_IDLE_MS);
-    }
+    await runSyncWatch();
     const requested = window.location.hash.replace(/^#/, "");
     const initial = Object.prototype.hasOwnProperty.call(LOADERS, requested) ? requested : "overview";
     activate(initial);
