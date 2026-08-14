@@ -142,12 +142,12 @@
   }
 
   // SQLite writes import_batch timestamps as UTC without a zone suffix
-  // ("2026-08-11 03:00:12"). A browser reads that shape as *local* time, so the
-  // zone has to be restated before it can be shown in the reader's own.
+  // ("2026-08-11 03:00:12.123456"). A browser reads that shape as *local* time,
+  // so the zone has to be restated before it can be shown in the reader's own.
   function formatTimestamp(value) {
     if (!value) return "—";
     const text = String(value).trim();
-    const normalised = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(text)
+    const normalised = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(text)
       ? `${text.replace(" ", "T")}Z`
       : text;
     const parsed = new Date(normalised);
