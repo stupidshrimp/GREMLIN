@@ -492,6 +492,9 @@ def read_import_history(
         "last_completed_batch_id": None,
         "last_completed_at": None,
         "last_row_count": None,
+        "last_finished_batch_id": None,
+        "last_finished_at": None,
+        "last_finished_status": None,
         "in_flight": None,
         "available": False,
     }
@@ -531,6 +534,10 @@ def read_import_history(
     last_completed_at: str | None = None
     last_row_count: int | None = None
     last_completed_key: tuple[datetime, int] | None = None
+    last_finished_batch_id: int | None = None
+    last_finished_at: str | None = None
+    last_finished_status: str | None = None
+    last_finished_key: tuple[datetime, int] | None = None
     in_flight: dict[str, Any] | None = None
     now = datetime.now(timezone.utc)
 
@@ -565,6 +572,16 @@ def read_import_history(
 
         if started is None or completed is None:
             continue
+        completion_key = (completed, int(batch_id) if batch_id is not None else 0)
+        # This marker is deliberately independent of success. Raw writes commit
+        # before mapping starts, so a mapping-setup failure still changes the
+        # database and must invalidate inspection-panel caches without being
+        # advertised as the latest successful import.
+        if last_finished_key is None or completion_key > last_finished_key:
+            last_finished_key = completion_key
+            last_finished_batch_id = batch_id
+            last_finished_at = row["import_completed_at"]
+            last_finished_status = status or None
         # Prefer what the row says; fall back to its timestamps where the schema
         # cannot say. On a table without a status column a failed import is
         # indistinguishable from a successful one, so this can name a failure as
@@ -576,7 +593,6 @@ def read_import_history(
         # finished. Concurrent imports can therefore complete out of order.
         # Compare the persisted completion time first, using the unique batch ID
         # only to distinguish completions recorded in the same second.
-        completion_key = (completed, int(batch_id) if batch_id is not None else 0)
         if last_completed_key is not None and completion_key <= last_completed_key:
             continue
         last_completed_key = completion_key
@@ -589,6 +605,9 @@ def read_import_history(
         "last_completed_batch_id": last_completed_batch_id,
         "last_completed_at": last_completed_at,
         "last_row_count": last_row_count,
+        "last_finished_batch_id": last_finished_batch_id,
+        "last_finished_at": last_finished_at,
+        "last_finished_status": last_finished_status,
         "in_flight": in_flight,
         "available": True,
     }

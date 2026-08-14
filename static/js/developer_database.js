@@ -38,7 +38,7 @@
     // than `limit` when the server's byte budget ends one early, so neither
     // direction can be navigated by arithmetic on `limit`.
     data: { table: null, offset: 0, limit: 50, total: null, nextOffset: null, history: [] },
-    // The last persisted import whose changes these panels already account
+    // The last persisted finished import whose changes these panels account
     // for; undefined until the first status answer. See checkForCompletedSync.
     lastCompletedImport: undefined,
     syncWatchTimer: null,
@@ -186,13 +186,16 @@
     // Batch IDs are unique even when two writers finish within the same second;
     // completion timestamps are not, because the repository stores them with
     // second precision.
-    const completedBatchId = (payload.history || {}).last_completed_batch_id ?? null;
+    // Failed batches matter here too: raw writes commit before mapping, so a
+    // mapping failure can leave changed raw tables even though it must not be
+    // presented by the server as the latest successful import.
+    const finishedBatchId = (payload.history || {}).last_finished_batch_id ?? null;
     if (state.lastCompletedImport === undefined) {
       // The first answer of this page load is the baseline: every panel read
       // after it is already reading post-sync data, so there is nothing to drop.
-      state.lastCompletedImport = completedBatchId;
-    } else if (completedBatchId !== null && completedBatchId !== state.lastCompletedImport) {
-      state.lastCompletedImport = completedBatchId;
+      state.lastCompletedImport = finishedBatchId;
+    } else if (finishedBatchId !== null && finishedBatchId !== state.lastCompletedImport) {
+      state.lastCompletedImport = finishedBatchId;
       refreshPanels();
     }
     return job.state === "running";

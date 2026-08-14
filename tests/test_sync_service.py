@@ -397,6 +397,19 @@ class ImportHistoryTests(unittest.TestCase):
         # how long a sync takes and must not pretend to.
         self.assertNotIn("median_seconds", history)
 
+    def test_latest_finished_batch_includes_a_failed_post_write_import(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:00", 10)
+        self._insert("FAILED", "2026-08-05 03:00:00", "2026-08-05 03:01:00", 12)
+
+        history = read_import_history(self.db_path)
+
+        # Success reporting remains anchored to the completed import, while the
+        # cache generation publishes the later terminal write attempt.
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_finished_batch_id"], 2)
+        self.assertEqual(history["last_finished_at"], "2026-08-05 03:01:00")
+        self.assertEqual(history["last_finished_status"], "FAILED")
+
     def test_batch_id_distinguishes_completions_in_the_same_second(self):
         completed = "2026-08-05 02:01:30"
         self._insert("COMPLETED", "2026-08-05 02:00:00", completed, 10)
