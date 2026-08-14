@@ -1,9 +1,107 @@
-/* Developer dashboard styling.
+/* Developer area styling.
  *
- * Reuses the theme.css palette and the shared .glass-card / .btn-* primitives so
- * the dev tooling matches the rest of GREMLIN. Everything here is scoped under a
- * .dev- prefix to keep it out of the product pages.
+ * Shared by the hub at /developer and the three pages behind it (database
+ * inspection, Limble sync, access control). Reuses the theme.css palette and the
+ * shared .glass-card / .btn-* primitives so the dev tooling matches the rest of
+ * GREMLIN. Everything here is scoped under a .dev- prefix to keep it out of the
+ * product pages.
  */
+
+/* --- Cross-navigation ---------------------------------------------------- */
+
+.dev-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+}
+
+.dev-subnav-home {
+  font-weight: 700;
+  color: var(--muted);
+  text-decoration: none;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dev-subnav-home:hover {
+  color: var(--text);
+}
+
+.dev-subnav-sep {
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.dev-subnav-link {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.dev-subnav-link:hover {
+  color: var(--text);
+  border-color: var(--forest-500);
+}
+
+.dev-subnav-link.is-active {
+  background: var(--forest-700);
+  border-color: var(--forest-700);
+  color: #fff;
+}
+
+/* --- Hub cards ----------------------------------------------------------- */
+
+.dev-card-grid {
+  margin-top: 18px;
+}
+
+.dev-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
+  min-height: 220px;
+  position: relative;
+  overflow: hidden;
+}
+
+.dev-card h2,
+.dev-card > p {
+  transition: transform 240ms ease, opacity 240ms ease;
+}
+
+.dev-card h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.dev-card:hover .card-hover-copy,
+.dev-card:focus-visible .card-hover-copy {
+  opacity: 1;
+  max-height: 200px;
+  transform: translateY(0);
+}
+
+.dev-card:hover > p,
+.dev-card:focus-visible > p {
+  opacity: 0.55;
+  transform: translateY(-3px);
+}
+
+.dev-card .card-hover-copy p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
 
 /* --- Lock screen --------------------------------------------------------- */
 
@@ -147,8 +245,9 @@
    horizontal overflow. Allowing these to shrink keeps wide content scrolling in
    its own container and the page body at viewport width.
    `.content` is the shared layout column from theme.css; it is scoped by :has()
-   so only the developer page is affected. */
-body:has(.dev-tabs) .content,
+   so only the developer pages are affected -- every one of them wraps its
+   content in a .dev-panel, including the two that carry no tab strip. */
+body:has(.dev-panel) .content,
 .dev-panel,
 .dev-panel-grid > *,
 .dev-split > * {
@@ -255,6 +354,21 @@ body:has(.dev-tabs) .content,
 .dev-null {
   color: var(--muted);
   font-style: italic;
+}
+
+/* --- Access control ------------------------------------------------------ */
+
+/* Save and Remove are two separate forms in one cell, so they stack as blocks
+   unless told otherwise. */
+.dev-user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dev-user-actions form {
+  margin: 0;
 }
 
 /* --- Pipeline ------------------------------------------------------------ */
