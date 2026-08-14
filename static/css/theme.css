@@ -97,12 +97,49 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 
 /* Home hero: copy on the left, the run-once animation on the right. The media
    column is capped rather than fluid so the 640px artwork cannot crowd out the
-   sentence it sits beside. */
+   sentence it sits beside.
+
+   The looping video sits behind both. `isolation` gives the card its own
+   stacking context, which pins the negative-z-index layers inside it: they
+   paint over the glass gradient but under the copy, without needing a z-index
+   on every child. `overflow` clips the video to the card's rounded corners. */
 .home-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
   gap: 1.6rem;
   align-items: center;
+}
+
+.home-hero-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: -2;
+  pointer-events: none;
+}
+
+/* Scrim between the video and the copy. The text here is dark on light and the
+   footage underneath is arbitrary, so this is what keeps the headline readable
+   whatever frame is showing -- raise the alpha values to favour contrast, lower
+   them to let more of the video through. It leans opaque over the copy column
+   and thins out to the right, where only the artwork sits. */
+.home-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.9) 0%,
+    rgba(255, 255, 255, 0.86) 40%,
+    rgba(229, 245, 236, 0.72) 100%
+  );
 }
 
 .home-hero-copy { min-width: 0; }
