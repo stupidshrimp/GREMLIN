@@ -15,7 +15,7 @@ install it just for this (``pip install pillow``).
 
 Usage::
 
-    python tools/freeze_frame.py                       # 1200 ms of the home page GIF
+    python tools/freeze_frame.py                       # 1330 ms of the home page GIF
     python tools/freeze_frame.py --at 2000
     python tools/freeze_frame.py --gif in.gif --out still.png --at 500
 """
@@ -30,7 +30,7 @@ from PIL import Image
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GIF = REPO_ROOT / "static" / "img" / "sc_loading_animation.gif"
 DEFAULT_OUT = REPO_ROOT / "static" / "img" / "sc_loading_animation_still.png"
-DEFAULT_AT_MS = 1200
+DEFAULT_AT_MS = 1330
 
 
 def frame_at(gif_path: Path, at_ms: int) -> Image.Image:
