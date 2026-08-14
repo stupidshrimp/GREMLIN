@@ -431,6 +431,19 @@ class ImportHistoryTests(unittest.TestCase):
         self.assertEqual(history["last_completed_at"], "2026-08-05 02:03:00")
         self.assertEqual(history["last_row_count"], 10)
 
+    def test_fractional_completion_time_wins_within_the_same_second(self):
+        self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:30.900000", 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", "2026-08-05 02:01:30.100000", 20)
+
+        history = read_import_history(self.db_path)
+
+        # Batch 1 started first but finished last. Fractional timestamps ensure
+        # its later mapping commit becomes the cache generation instead of
+        # allowing the higher start-assigned ID to win a whole-second tie.
+        self.assertEqual(history["last_completed_batch_id"], 1)
+        self.assertEqual(history["last_finished_batch_id"], 1)
+        self.assertEqual(history["last_completed_at"], "2026-08-05 02:01:30.900000")
+
     def test_an_open_batch_is_reported_as_in_flight(self):
         started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
         self._insert("STARTED", started, None, None)

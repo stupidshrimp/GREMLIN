@@ -428,10 +428,10 @@ def _as_bool(field: str, value: Any) -> bool:
 def _parse_db_timestamp(value: Any) -> datetime | None:
     """Parse an import_batch timestamp into an aware UTC datetime.
 
-    Both writers store UTC: ``RawRepository`` formats ``%Y-%m-%d %H:%M:%S`` and
-    SQLite's ``datetime('now')`` default produces the same shape. Older rows may
-    hold an ISO string instead, so try that too, and treat anything else as
-    unusable rather than guessing.
+    Both writers store UTC: ``RawRepository`` uses an ISO-compatible timestamp
+    with microseconds, while SQLite's ``datetime('now')`` default and older
+    GREMLIN versions use whole seconds. Treat anything else as unusable rather
+    than guessing.
     """
 
     if not isinstance(value, str) or not value.strip():

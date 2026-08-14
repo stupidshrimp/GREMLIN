@@ -626,5 +626,8 @@ def _task_key(record: dict[str, Any]) -> str | None:
 
 
 def _utc_now_text() -> str:
-    # Matches SQLite's datetime('now') format (UTC, no timezone suffix).
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # Keep the SQLite-compatible UTC shape, but retain microseconds. Completion
+    # order is significant when a scheduled import overlaps a web-triggered
+    # import: batch IDs describe start order and cannot break a timestamp tie
+    # without potentially hiding the batch that actually finished last.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
