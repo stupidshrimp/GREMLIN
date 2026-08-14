@@ -170,7 +170,6 @@ class IngestionService:
         except Exception:
             self.raw_repo.complete_batch(batch_id, status="FAILED", raw_row_count=0)
             raise
-        self.raw_repo.complete_batch(batch_id, status="COMPLETED", raw_row_count=len(records))
         self._log(
             f"Raw import complete: {counts['inserted']} inserted, "
             f"{counts['updated']} updated, {counts['skipped']} unchanged."
@@ -183,6 +182,13 @@ class IngestionService:
             self._emit(PHASE_MAP, None, None)
             self._log("Refreshing the mapped layer ...")
             mapping = self._refresh_mapped_records()
+
+        # The batch completion timestamp is also the database-backed signal
+        # used by other processes to decide that every derived view is current.
+        # Keep the batch open until mapping has returned; publishing COMPLETED
+        # immediately after the raw upsert lets a reader reload and cache the
+        # old mapped layer while this final phase is still in progress.
+        self.raw_repo.complete_batch(batch_id, status="COMPLETED", raw_row_count=len(records))
 
         return {
             "fetched_tasks": fetched_tasks,

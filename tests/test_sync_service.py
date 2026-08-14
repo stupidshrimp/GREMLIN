@@ -619,6 +619,37 @@ class SyncRunnerTests(unittest.TestCase):
         self.assertTrue(status["summary"]["dry_run"])
         self.assertEqual(RawRepository(self.db_path).raw_record_count(), 0)
 
+    def test_import_is_not_completed_until_mapping_finishes(self):
+        mapping_started = threading.Event()
+        release_mapping = threading.Event()
+
+        def blocking_refresh(_service):
+            mapping_started.set()
+            release_mapping.wait(timeout=10)
+            return 7
+
+        with mock.patch(
+            "services.life_data_service.LifeDataService.refresh_mapped_cmms_records",
+            blocking_refresh,
+        ):
+            self._run(
+                FakeLimbleClient(self.tasks, self.assets),
+                options=SyncOptions(refresh_mapping=True),
+                wait=False,
+            )
+            try:
+                self.assertTrue(mapping_started.wait(timeout=10), "sync never reached mapping")
+                history = read_import_history(self.db_path)
+                self.assertIsNone(history["last_completed_at"])
+                self.assertIsNotNone(history["in_flight"])
+                self.assertEqual(self.runner.status()["state"], STATE_RUNNING)
+            finally:
+                release_mapping.set()
+
+            self.assertTrue(_wait_for(lambda: self.runner.status()["state"] != STATE_RUNNING))
+            self.assertEqual(self.runner.status()["state"], STATE_SUCCEEDED)
+            self.assertIsNotNone(read_import_history(self.db_path)["last_completed_at"])
+
     def test_a_real_sync_refuses_a_missing_database_but_a_dry_run_does_not(self):
         missing = Path(self._tmp.name) / "not-there.db"
         with self.assertRaises(SyncOptionError) as caught:
