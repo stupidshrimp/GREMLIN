@@ -489,6 +489,7 @@ def read_import_history(
     """
 
     empty: dict[str, Any] = {
+        "last_completed_batch_id": None,
         "last_completed_at": None,
         "last_row_count": None,
         "in_flight": None,
@@ -526,6 +527,7 @@ def read_import_history(
     except sqlite3.Error:
         return empty
 
+    last_completed_batch_id: int | None = None
     last_completed_at: str | None = None
     last_row_count: int | None = None
     in_flight: dict[str, Any] | None = None
@@ -570,10 +572,12 @@ def read_import_history(
         if status and status != "COMPLETED":
             continue
         last_completed_at = row["import_completed_at"]
+        last_completed_batch_id = batch_id
         raw_count = row["raw_row_count"] if "raw_row_count" in keys else None
         last_row_count = int(raw_count) if isinstance(raw_count, (int, float)) else None
 
     return {
+        "last_completed_batch_id": last_completed_batch_id,
         "last_completed_at": last_completed_at,
         "last_row_count": last_row_count,
         "in_flight": in_flight,
@@ -894,6 +898,7 @@ class LimbleSyncRunner:
             "db_path": str(path),
             "db_exists": path.is_file(),
             "history": {
+                "last_completed_batch_id": history.get("last_completed_batch_id"),
                 "last_completed_at": history.get("last_completed_at"),
                 "last_row_count": history.get("last_row_count"),
                 "timed_runs": timings.get("runs"),

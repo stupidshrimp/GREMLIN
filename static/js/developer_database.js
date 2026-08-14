@@ -183,13 +183,16 @@
     // importer runs in another process, so it never appears there. Import
     // history is read from the database and therefore provides the shared
     // completion marker for both web-triggered and scheduled imports.
-    const completedAt = (payload.history || {}).last_completed_at || null;
+    // Batch IDs are unique even when two writers finish within the same second;
+    // completion timestamps are not, because the repository stores them with
+    // second precision.
+    const completedBatchId = (payload.history || {}).last_completed_batch_id ?? null;
     if (state.lastCompletedImport === undefined) {
       // The first answer of this page load is the baseline: every panel read
       // after it is already reading post-sync data, so there is nothing to drop.
-      state.lastCompletedImport = completedAt;
-    } else if (completedAt && completedAt !== state.lastCompletedImport) {
-      state.lastCompletedImport = completedAt;
+      state.lastCompletedImport = completedBatchId;
+    } else if (completedBatchId !== null && completedBatchId !== state.lastCompletedImport) {
+      state.lastCompletedImport = completedBatchId;
       refreshPanels();
     }
     return job.state === "running";

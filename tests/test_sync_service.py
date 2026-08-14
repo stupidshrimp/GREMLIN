@@ -390,11 +390,23 @@ class ImportHistoryTests(unittest.TestCase):
         self._insert("COMPLETED", "2026-08-05 02:00:00", "2026-08-05 02:01:30", 30)
 
         history = read_import_history(self.db_path)
+        self.assertEqual(history["last_completed_batch_id"], 3)
         self.assertEqual(history["last_row_count"], 30)
         self.assertEqual(history["last_completed_at"], "2026-08-05 02:01:30")
         # A batch row opens only once fetching is done, so it says nothing about
         # how long a sync takes and must not pretend to.
         self.assertNotIn("median_seconds", history)
+
+    def test_batch_id_distinguishes_completions_in_the_same_second(self):
+        completed = "2026-08-05 02:01:30"
+        self._insert("COMPLETED", "2026-08-05 02:00:00", completed, 10)
+        self._insert("COMPLETED", "2026-08-05 02:00:30", completed, 20)
+
+        history = read_import_history(self.db_path)
+
+        self.assertEqual(history["last_completed_batch_id"], 2)
+        self.assertEqual(history["last_completed_at"], completed)
+        self.assertEqual(history["last_row_count"], 20)
 
     def test_an_open_batch_is_reported_as_in_flight(self):
         started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 120))
@@ -430,6 +442,7 @@ class ImportHistoryTests(unittest.TestCase):
         history = read_import_history(self._legacy_database([(started, completed, 42)]))
 
         self.assertIsNone(history["in_flight"])
+        self.assertEqual(history["last_completed_batch_id"], 1)
         self.assertEqual(history["last_completed_at"], completed)
         self.assertEqual(history["last_row_count"], 42)
 
