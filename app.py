@@ -477,9 +477,9 @@ def perform_analysis():
 def disposition():
     # The whole page is an editor: every table on it writes dispositions back to
     # GREMLIN.db. There is nothing here to show a viewer with the controls taken
-    # away, so the page is refused rather than rendered read-only. The link that
-    # leads here is hidden from viewers too; this is what a typed or bookmarked
-    # URL meets.
+    # away, so the page is refused rather than rendered read-only. Home still
+    # shows the card to a viewer, but as a button that explains the role instead
+    # of a link; this is what a typed or bookmarked URL meets.
     _user, error = _authorised_user("editor")
     if error:
         return (

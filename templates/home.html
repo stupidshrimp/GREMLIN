@@ -46,13 +46,31 @@
     </div>
   </a>
 
-  {% if auth_can_edit %}<a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+  {#- The Disposition card is shown to everybody, but only an editor gets a link
+      out of it. A card that simply vanishes reads as a feature GREMLIN does not
+      have; one that answers the click says which role opens it and who to ask.
+      A viewer therefore gets a button, not a link: it is keyboard-operable and
+      it advertises no URL that would only meet a 403. Refusing the page itself
+      stays the route's job -- this is the explanation, not the lock. -#}
+  {%- macro disposition_card_body() %}
     <h2>Disposition</h2>
     <p>Disposition work orders and PM reset events on a dedicated, scrollable workspace.</p>
     <div class="card-hover-copy">
       <p>Assign failure modes and mechanisms, set record classes, and flag the observations that feed Weibull analysis.</p>
     </div>
-  </a>{% endif %}
+  {%- endmacro %}
+
+  {% if auth_can_edit -%}
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+    {{- disposition_card_body() }}
+  </a>
+  {%- else -%}
+  <button type="button"
+          class="glass-card tile slide-in life-data-card life-data-card-locked"
+          data-locked-message="{% if auth_user %}Only authorized users can open Disposition. It needs the editor role; ask an administrator to change yours.{% else %}Only authorized users can open Disposition. Log in with the person icon at the bottom of the sidebar.{% endif %}">
+    {{- disposition_card_body() }}
+  </button>
+  {%- endif %}
 
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
     <h2>Standards and Documentation</h2>
