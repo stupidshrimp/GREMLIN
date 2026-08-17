@@ -121,6 +121,7 @@
     : null;
 
   var media = document.querySelectorAll(".card-hover-media[data-hover-src]");
+  var resyncs = [];
 
   Array.prototype.forEach.call(media, function (image) {
     var card = image.closest(".life-data-card");
@@ -162,6 +163,23 @@
       }, HOLD_MS);
     }
 
+    // The preference can change while a card is already under the pointer or
+    // holding focus, and neither `play` nor `stop` will run again to notice:
+    // hovering is what asks the question, and the hovering already happened. So
+    // the answer is brought to the card instead. Turning stillness on takes the
+    // source away mid-hover; turning it off gives it back, rather than leaving
+    // the corner revealed and empty until the pointer has left and returned.
+    function resync() {
+      if (stillness.matches) {
+        window.clearTimeout(release);
+        image.removeAttribute("src");
+      } else if (card.matches(":hover, :focus-visible")) {
+        play();
+      }
+    }
+
+    resyncs.push(resync);
+
     // `pointerenter` rather than `mouseenter` so a pen or a finger landing on
     // the card counts the same as a cursor. Focus is the keyboard's equivalent:
     // the card reveals its extra copy on :focus-visible, and the animation is
@@ -171,4 +189,12 @@
     card.addEventListener("pointerleave", stop);
     card.addEventListener("blur", stop);
   });
+
+  if (stillness && stillness.addEventListener) {
+    stillness.addEventListener("change", function () {
+      for (var i = 0; i < resyncs.length; i += 1) {
+        resyncs[i]();
+      }
+    });
+  }
 })();
