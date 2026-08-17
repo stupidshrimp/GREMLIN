@@ -86,3 +86,44 @@
     }
   });
 })();
+
+(function () {
+  "use strict";
+
+  // Each workflow card has an animation it plays only while it is being pointed
+  // at. The three GIFs run from 650 KB to 2 MB, so the template ships them
+  // without a `src` and the first hover is what fills it in: loading the home
+  // page costs nothing extra, and a visitor who never reaches for a card never
+  // downloads any of them.
+  //
+  // Once set, `src` stays set -- the GIF is in the HTTP cache by then, so later
+  // hovers are instant. Stopping it between hovers is the stylesheet's job: it
+  // hides the image with `visibility` rather than opacity alone, which is what
+  // lets the browser suspend the animation while nobody is looking at it.
+  var media = document.querySelectorAll(".card-hover-media[data-hover-src]");
+
+  Array.prototype.forEach.call(media, function (image) {
+    var card = image.closest(".life-data-card");
+    if (!card) {
+      return;
+    }
+
+    function load() {
+      var src = image.getAttribute("data-hover-src");
+      // Whichever of the two events below arrives first does the work; the
+      // other still fires once and has to find nothing left to do.
+      if (!src) {
+        return;
+      }
+      image.removeAttribute("data-hover-src");
+      image.src = src;
+    }
+
+    // `pointerenter` rather than `mouseenter` so a pen or a finger landing on
+    // the card counts the same as a cursor. Focus is the keyboard's equivalent:
+    // the card reveals its extra copy on :focus-visible, and the animation is
+    // written to come with it.
+    card.addEventListener("pointerenter", load, { once: true });
+    card.addEventListener("focus", load, { once: true });
+  });
+})();

@@ -320,6 +320,10 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 /* The workflow cards use .card-grid's own three columns. A .life-data-card-grid
    rule used to restate them here, below the responsive override, which quietly
    kept the cards three-abreast on a phone. */
+/* `isolation` is what lets the hover artwork below blend against this card's own
+   gradient rather than against whatever the page has behind it, and it pins the
+   negative-z-index layer inside the card. `overflow` clips it to the rounded
+   corners. */
 .life-data-card {
   display: flex;
   flex-direction: column;
@@ -328,7 +332,57 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   color: inherit;
   min-height: 220px;
   position: relative;
+  isolation: isolate;
   overflow: hidden;
+}
+
+/* The animation a card plays while it is pointed at. It lives in the bottom
+   right corner, which is the one part of the card the copy does not reach --
+   and the hover rule below keeps it that way by wrapping the revealed sentence
+   clear of it. Bleeding a little past both edges is what pushes the subject
+   into the corner: all three GIFs are drawn with a wide margin around the
+   artwork, and cropping it away is cheaper than scaling the whole square down
+   until the drawing inside it is too small to read.
+
+   `multiply` is why this reads as part of the card rather than a picture pasted
+   onto it. The GIFs are green line work on a near-white ground -- around 246 of
+   255 -- and multiplying drops that ground out: white is the identity for it,
+   so only the ink lands and the glass gradient carries on underneath.
+   Compositing normally would instead lay a pale rectangle over the card and
+   show its edges.
+
+   The mask then fades the artwork along the diagonal away from that corner, so
+   whatever does end up under a line of text is the faintest part of it. */
+.card-hover-media {
+  position: absolute;
+  right: -2%;
+  bottom: -8%;
+  /* Capped as well as proportional: below 1100px the grid drops to one column
+     and a card two or three times this wide would otherwise take an animation
+     of the same multiple with it. */
+  width: min(46%, 178px);
+  height: min(72%, 198px);
+  z-index: -1;
+  pointer-events: none;
+  object-fit: contain;
+  object-position: bottom right;
+  mix-blend-mode: multiply;
+  -webkit-mask-image: linear-gradient(to top left, #000 0%, rgba(0, 0, 0, 0.9) 28%, transparent 76%);
+  mask-image: linear-gradient(to top left, #000 0%, rgba(0, 0, 0, 0.9) 28%, transparent 76%);
+  opacity: 0;
+  visibility: hidden;
+  /* `visibility` rather than opacity alone, because a GIF faded to zero keeps
+     decoding: hiding it is what lets the browser stop the animation between
+     hovers. It has to be delayed out so the fade is still visible on the way
+     out, and undelayed in so the first frame is not held back. */
+  transition: opacity 260ms ease, visibility 0s linear 260ms;
+}
+
+.life-data-card:hover .card-hover-media,
+.life-data-card:focus-visible .card-hover-media {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 260ms ease, visibility 0s;
 }
 
 /* The Disposition card is a <button> for a visitor who may only read, so that
@@ -357,11 +411,17 @@ button.life-data-card {
   transition: opacity 260ms ease, transform 260ms ease, max-height 260ms ease;
 }
 
+/* The padding is the corner the animation above sits in, kept out of the text's
+   reach. It costs nothing at rest, where this copy is not on screen to be
+   narrowed, and by the time it is the artwork is fading in beside it. The
+   height had to come up with it: the same sentence in a column two fifths
+   narrower runs a line or two longer, and 120px started clipping the last one. */
 .life-data-card:hover .card-hover-copy,
 .life-data-card:focus-visible .card-hover-copy {
   opacity: 1;
-  max-height: 120px;
+  max-height: 190px;
   transform: translateY(0);
+  padding-right: min(36%, 145px);
 }
 
 .life-data-card:hover > p,
