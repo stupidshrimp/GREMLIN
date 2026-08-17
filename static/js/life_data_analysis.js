@@ -73,7 +73,12 @@
     downtimeSelection: null,
     downtimeData: null,
     downtimeToken: 0,
+    // `latestResult` is the Weibull result rendered in the workspace; `analysisToken`
+    // drops stale responses (same pattern as the PM and Downtime analyses above), so an
+    // older group's result -- or its "nothing saved" empty state -- cannot land on top
+    // of a newer one.
     latestResult: null,
+    analysisToken: 0,
     // Operating schedule (hours per day the asset actually runs) used to convert the
     // Weibull MTTF from operating hours into approximate calendar months/days. 24 =
     // continuous running; users with a fixed shift (e.g. 20 h/day) can adjust it
@@ -500,6 +505,9 @@
       state.downtimeSelection = null;
       state.downtimeData = null;
       state.downtimeToken += 1;
+      // Same for a Weibull lookup still in flight: clearWorkspace() below empties the
+      // workspace, and a late response for the old asset must not refill it.
+      state.analysisToken += 1;
       // A new asset's failure mode/mechanism ids may not apply; drop the carried
       // selection so a type switch doesn't auto-run a stale mechanism on it.
       state.activeMechanismRow = null;
@@ -3231,7 +3239,19 @@
     // this request is in flight, applyAnalysisTypeUI() clears the workspace, so a
     // late Weibull response must not repopulate it under the non-Weibull panel.
     const analysisType = state.analysisType;
-    const isStale = () => state.selectedAsset !== asset || state.analysisType !== analysisType;
+    // A response is stale when a newer lookup superseded this one, or the asset or
+    // analysis type changed while it was in flight. The asset/type checks alone cannot
+    // separate two groups on the same asset, so the token covers that: a slower
+    // response would otherwise render the older group over the newer one, or clear the
+    // workspace when the older group has nothing saved. Overlapping lookups are not
+    // reachable from the UI today -- the loading overlay covers the viewport and
+    // swallows the second click -- but every other analysis here carries a token for
+    // the same reason, and that overlay is styling, not a guarantee.
+    const token = ++state.analysisToken;
+    const isStale = () =>
+      token !== state.analysisToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== analysisType;
     // Computing a fit rebuilds and stores event processing, observations, a dataset,
     // a run and a result, so it is an editor-only write. A viewer (or a signed-out
     // visitor) reads back the fit an editor already saved for the same group instead:
@@ -3246,7 +3266,7 @@
             failure_mechanism_id: group.failure_mechanism_id,
           })
         : await getJson(`${API}/saved-analysis?${savedAnalysisQuery(asset, group)}`);
-      if (isStale()) return; // asset or analysis type changed mid-request; drop the stale result
+      if (isStale()) return; // superseded, or the asset/analysis type changed mid-request
       if (!data.result) {
         // Only reachable on the read-only path: the group has never been analyzed, so
         // there is nothing saved to show and a viewer cannot create it.
