@@ -320,6 +320,10 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 /* The workflow cards use .card-grid's own three columns. A .life-data-card-grid
    rule used to restate them here, below the responsive override, which quietly
    kept the cards three-abreast on a phone. */
+/* `isolation` is what lets the hover artwork below blend against this card's own
+   gradient rather than against whatever the page has behind it, and it pins the
+   negative-z-index layer inside the card. `overflow` clips it to the rounded
+   corners. */
 .life-data-card {
   display: flex;
   flex-direction: column;
@@ -328,7 +332,67 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   color: inherit;
   min-height: 220px;
   position: relative;
+  isolation: isolate;
   overflow: hidden;
+  /* Makes the card queryable by its own width further down. How much room the
+     artwork gets is a question about the card, and the viewport is a poor proxy
+     for it: three columns at 1200px and three columns at 1200px with the
+     sidebar collapsed are 70px apart per card. */
+  container-type: inline-size;
+}
+
+/* The animation a card plays while it is pointed at. It lives in the bottom
+   right corner, which is the one part of the card the copy does not reach --
+   and the hover rule below keeps it that way by wrapping the revealed sentence
+   clear of it. Bleeding a little past both edges is what pushes the subject
+   into the corner: all three GIFs are drawn with a wide margin around the
+   artwork, and cropping it away is cheaper than scaling the whole square down
+   until the drawing inside it is too small to read.
+
+   `multiply` is why this reads as part of the card rather than a picture pasted
+   onto it. The GIFs are green line work on a near-white ground -- around 246 of
+   255 -- and multiplying drops that ground out: white is the identity for it,
+   so only the ink lands and the glass gradient carries on underneath.
+   Compositing normally would instead lay a pale rectangle over the card and
+   show its edges.
+
+   The mask then fades the artwork along the diagonal away from that corner, so
+   whatever does end up under a line of text is the faintest part of it. */
+.card-hover-media {
+  position: absolute;
+  right: -2%;
+  bottom: -8%;
+  /* Capped as well as proportional: below 1100px the grid drops to one column
+     and a card two or three times this wide would otherwise take an animation
+     of the same multiple with it. */
+  width: min(46%, 178px);
+  height: min(72%, 198px);
+  z-index: -1;
+  pointer-events: none;
+  object-fit: contain;
+  object-position: bottom right;
+  mix-blend-mode: multiply;
+  -webkit-mask-image: linear-gradient(to top left, #000 0%, rgba(0, 0, 0, 0.9) 28%, transparent 76%);
+  mask-image: linear-gradient(to top left, #000 0%, rgba(0, 0, 0, 0.9) 28%, transparent 76%);
+  opacity: 0;
+  visibility: hidden;
+  /* `visibility` takes the image out of the page entirely between hovers,
+     rather than leaving it present at zero opacity. It is not what stops the
+     animation -- Chromium advances a hidden GIF just the same, which is why
+     home.js drops the source instead -- it is what makes the element inert
+     while there is nothing to see. Delayed out so the fade survives on the way
+     out, undelayed in so the first frame is not held back.
+
+     The 260ms here is the fade home.js waits out before releasing the source.
+     Shorten one without the other and the artwork blinks off mid-fade. */
+  transition: opacity 260ms ease, visibility 0s linear 260ms;
+}
+
+.life-data-card:hover .card-hover-media,
+.life-data-card:focus-visible .card-hover-media {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 260ms ease, visibility 0s;
 }
 
 /* The Disposition card is a <button> for a visitor who may only read, so that
@@ -357,11 +421,75 @@ button.life-data-card {
   transition: opacity 260ms ease, transform 260ms ease, max-height 260ms ease;
 }
 
+/* These cards unfold on a row of their own where the width is whatever the grid
+   hands over, so the reveal is measured rather than guessed: a `0fr` track grows
+   to `1fr`, which is the copy's real height at whatever width it wrapped to. The
+   shared `max-height` above cannot do that -- it is a number picked for one
+   column width, and any width where the sentence wraps longer than the number
+   allows loses its last line to the card's `overflow: hidden`. 190px was such a
+   number, and the padding below is what made it one.
+
+   Wanted only here. The developer dashboard's .dev-card keeps the max-height
+   reveal it already had; its cards carry no artwork and never narrow the copy. */
+.life-data-card .card-hover-copy {
+  display: grid;
+  grid-template-rows: 0fr;
+  max-height: none;
+  transition: opacity 260ms ease, transform 260ms ease, grid-template-rows 260ms ease;
+}
+
+/* The row is what collapses, so the paragraph has to be able to be clipped by
+   it. Without this it simply overflows a zero-height track and stays on screen. */
+.life-data-card .card-hover-copy > p {
+  overflow: hidden;
+}
+
+/* The padding is the corner the animation sits in, kept out of the text's reach.
+   It costs nothing at rest, where this copy is not on screen to be narrowed, and
+   by the time it is the artwork is fading in beside it. */
 .life-data-card:hover .card-hover-copy,
 .life-data-card:focus-visible .card-hover-copy {
   opacity: 1;
-  max-height: 120px;
+  grid-template-rows: 1fr;
   transform: translateY(0);
+  padding-right: min(36%, 145px);
+}
+
+/* Three columns hold up until roughly here, and then the card runs out of room
+   to be read and looked at side by side: at 1101px, the narrowest the grid gets
+   before it folds, the reserved corner left the sentence a 124px column that
+   stacked eight lines deep. So below this the copy takes the card back, and the
+   animation gives up being an illustration -- it shrinks into the corner and
+   plays behind the tail of the text, where the mask has it at its faintest.
+
+   280px is the content box, which is the width the two of them actually share;
+   the card around it is 43px wider. */
+@container (max-width: 280px) {
+  .card-hover-media {
+    width: min(56%, 128px);
+    height: min(44%, 128px);
+  }
+
+  .life-data-card:hover .card-hover-copy,
+  .life-data-card:focus-visible .card-hover-copy {
+    padding-right: 0;
+  }
+}
+
+/* A GIF has no pause and no still to fall back on, and this one loops for as
+   long as the pointer rests on the card -- precisely the continuous motion the
+   preference is asking us not to start. So it is never revealed, and the corner
+   it would have occupied goes back to the copy. home.js reads the same
+   preference and does not fetch the file either. */
+@media (prefers-reduced-motion: reduce) {
+  .card-hover-media {
+    display: none;
+  }
+
+  .life-data-card:hover .card-hover-copy,
+  .life-data-card:focus-visible .card-hover-copy {
+    padding-right: 0;
+  }
 }
 
 .life-data-card:hover > p,

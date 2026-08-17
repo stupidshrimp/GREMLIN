@@ -86,3 +86,115 @@
     }
   });
 })();
+
+(function () {
+  "use strict";
+
+  // Each workflow card has an animation that runs only while it is being
+  // pointed at. Assigning `src` is what starts it and removing `src` is what
+  // stops it, because for a GIF there is nothing else: it has no playback API,
+  // and hiding it is not enough. Chromium keeps a `visibility: hidden` GIF
+  // advancing -- hide one of these for 2400ms and it comes back 21 frames on,
+  // not where it left -- so an image parked at zero opacity would go on
+  // decoding 20 frames a second for the life of the page, three of them at
+  // once, for nobody. The source is therefore held only for as long as the card
+  // is.
+  //
+  // Two things fall out of that, both wanted. The first hover is also the first
+  // download, so the home page itself fetches none of the three -- they run
+  // from 650 KB to 2 MB -- and a visitor who never reaches for a card never
+  // pays for one. And every hover after that starts the animation from its
+  // first frame rather than resuming mid-stride, off the HTTP cache, so there
+  // is no second download and no wait.
+  //
+  // `data-hover-src` is the lasting record of which file belongs to which card;
+  // `src` is only ever the live one.
+  var HOLD_MS = 260;
+
+  // The stylesheet refuses to reveal the animation to anyone who has asked for
+  // reduced motion, and there is no reason to spend their bandwidth on a file
+  // they will not be shown. Read at hover rather than at load, so that turning
+  // the preference off part way through a session is enough to get the
+  // animations without a reload.
+  var stillness = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+
+  var media = document.querySelectorAll(".card-hover-media[data-hover-src]");
+  var resyncs = [];
+
+  Array.prototype.forEach.call(media, function (image) {
+    var card = image.closest(".life-data-card");
+    var source = image.getAttribute("data-hover-src");
+    if (!card || !source) {
+      return;
+    }
+
+    var release = null;
+
+    function play() {
+      window.clearTimeout(release);
+      if (stillness && stillness.matches) {
+        return;
+      }
+      // Pointer and focus can both be on the same card; whichever arrives
+      // second must not restart what the first one began.
+      if (!image.getAttribute("src")) {
+        image.src = source;
+      }
+    }
+
+    function stop() {
+      window.clearTimeout(release);
+      // Waits out the fade the stylesheet is running. Dropping the source at
+      // the moment the pointer leaves would blank the artwork instantly and
+      // there would be nothing left to fade.
+      release = window.setTimeout(function () {
+        // The pointer leaving is not the same as the card being finished with.
+        // A card tabbed to and then brushed past with the mouse gets a
+        // `pointerleave` while it still holds focus -- and the stylesheet is
+        // still showing the animation, so releasing here would empty the
+        // corner in front of someone looking at it. This is the same pair of
+        // states the reveal is written against, asked the other way round.
+        if (card.matches(":hover, :focus-visible")) {
+          return;
+        }
+        image.removeAttribute("src");
+      }, HOLD_MS);
+    }
+
+    // The preference can change while a card is already under the pointer or
+    // holding focus, and neither `play` nor `stop` will run again to notice:
+    // hovering is what asks the question, and the hovering already happened. So
+    // the answer is brought to the card instead. Turning stillness on takes the
+    // source away mid-hover; turning it off gives it back, rather than leaving
+    // the corner revealed and empty until the pointer has left and returned.
+    function resync() {
+      if (stillness.matches) {
+        window.clearTimeout(release);
+        image.removeAttribute("src");
+      } else if (card.matches(":hover, :focus-visible")) {
+        play();
+      }
+    }
+
+    resyncs.push(resync);
+
+    // `pointerenter` rather than `mouseenter` so a pen or a finger landing on
+    // the card counts the same as a cursor. Focus is the keyboard's equivalent:
+    // the card reveals its extra copy on :focus-visible, and the animation is
+    // written to come with it.
+    card.addEventListener("pointerenter", play);
+    card.addEventListener("focus", play);
+    card.addEventListener("pointerleave", stop);
+    card.addEventListener("blur", stop);
+  });
+
+  if (stillness && stillness.addEventListener) {
+    stillness.addEventListener("change", function () {
+      for (var i = 0; i < resyncs.length; i += 1) {
+        resyncs[i]();
+      }
+    });
+  }
+})();

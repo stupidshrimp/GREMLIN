@@ -38,7 +38,22 @@
 </section>
 
 <section class="card-grid">
+  {#- Artwork that only exists while a card is pointed at or focused. The three
+      GIFs are 650 KB to 2 MB apiece, so the markup deliberately ships without a
+      `src`: home.js fills it in the first time the card is actually hovered,
+      and a visitor who never touches one never downloads any of them. With
+      scripting off the element stays empty and the cards read exactly as they
+      did before. Decorative, so it is hidden from assistive tech -- the card
+      already says in words what the animation illustrates. -#}
+  {%- macro card_hover_media(filename) %}
+    <img class="card-hover-media"
+         data-hover-src="{{ url_for('static', filename=filename) }}"
+         alt=""
+         aria-hidden="true">
+  {%- endmacro %}
+
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+    {{- card_hover_media('img/analysis_gif.gif') }}
     <h2>Perform an Analysis</h2>
     <p>Run life distribution fitting and compare model confidence quickly.</p>
     <div class="card-hover-copy">
@@ -53,6 +68,7 @@
       it advertises no URL that would only meet a 403. Refusing the page itself
       stays the route's job -- this is the explanation, not the lock. -#}
   {%- macro disposition_card_body() %}
+    {{- card_hover_media('img/disposition_gif.gif') }}
     <h2>Disposition</h2>
     <p>Disposition work orders and PM reset events on a dedicated, scrollable workspace.</p>
     <div class="card-hover-copy">
@@ -73,6 +89,7 @@
   {%- endif %}
 
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
+    {{- card_hover_media('img/standards_doc_gif.gif') }}
     <h2>Standards and Documentation</h2>
     <p>Open key standards references and documentation artifacts.</p>
     <div class="card-hover-copy">
