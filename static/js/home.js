@@ -154,7 +154,7 @@
         // A card tabbed to and then brushed past with the mouse gets a
         // `pointerleave` while it still holds focus -- and the stylesheet is
         // still showing the animation, so releasing here would empty the
-        // corner in front of someone looking at it. This is the same pair of
+        // card in front of someone looking at it. This is the same pair of
         // states the reveal is written against, asked the other way round.
         if (card.matches(":hover, :focus-visible")) {
           return;
@@ -168,7 +168,7 @@
     // hovering is what asks the question, and the hovering already happened. So
     // the answer is brought to the card instead. Turning stillness on takes the
     // source away mid-hover; turning it off gives it back, rather than leaving
-    // the corner revealed and empty until the pointer has left and returned.
+    // the card revealed and empty until the pointer has left and returned.
     function resync() {
       if (stillness.matches) {
         window.clearTimeout(release);
