@@ -770,6 +770,42 @@
     };
   }
 
+  // The topbar is pinned at the top of the viewport and the Step 1 card is pinned
+  // directly below it, so a plain scrollIntoView({block:"start"}) parks the target's
+  // heading underneath them. scrollIntoView honours scroll-margin-top, so reserve the
+  // pinned height there. offsetHeight (not getBoundingClientRect) is used for the
+  // Step 1 card because its on-screen box depends on how far the page is already
+  // scrolled, while its layout height does not.
+  const STICKY_TOPBAR_HEIGHT = 74;
+  function scrollBelowSticky(node) {
+    if (!node) return;
+    const step1 = $("lda-step1-card");
+    const pinned = STICKY_TOPBAR_HEIGHT + (step1 && !step1.hidden ? step1.offsetHeight : 0);
+    node.style.scrollMarginTop = `${pinned + 12}px`;
+    node.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // First panel a Pareto click should bring into view, per analysis type. Weibull
+  // renders a whole results card into the workspace and scrolls to that itself; the
+  // other types update panels that are already on the page, so nothing would move the
+  // viewport without this.
+  const ANALYSIS_SCROLL_TARGETS = {
+    [ANALYSIS_TYPES.TREND]: "lda-trend-chart-panel",
+    [ANALYSIS_TYPES.PM]: "lda-pm-chart-panel",
+    [ANALYSIS_TYPES.DOWNTIME]: "lda-downtime-trend-panel",
+  };
+
+  // Scroll to the active analysis type's first result panel. Deferred to the next
+  // frame so it runs after the render that precedes it has laid out — the summary
+  // cards above the panel change height when a first selection populates them, which
+  // would otherwise move the target out from under an already-started smooth scroll.
+  function scrollToAnalysisPanel() {
+    const id = ANALYSIS_SCROLL_TARGETS[state.analysisType];
+    const panel = id ? $(id) : null;
+    if (!panel || panel.hidden) return;
+    requestAnimationFrame(() => scrollBelowSticky(panel));
+  }
+
   // A Pareto bar click drives the active analysis: Weibull runs the clicked
   // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. The
   // not-yet-implemented types have no secondary action, so the click is ignored.
@@ -1109,6 +1145,9 @@
     renderTrendChart();
     renderTrendTable();
     renderTrendRecordsTable();
+    // The trend is computed from data already on the client, so the panels are fully
+    // rendered by this point and the viewport can follow the selection down to them.
+    scrollToAnalysisPanel();
   }
 
   // Show and populate the date-range inputs whenever the selected mode/mechanism
@@ -1311,7 +1350,7 @@
         hint.textContent = "The specific work orders that populate the months plotted above. Click a month/data point to drill in.";
       }
     }
-    const headers = ["WO #", "WO Title", "Month", "Request Description", "Completion Notes"];
+    const headers = ["WO #", "WO Title", "Month", "Downtime (h)", "Request Description", "Completion Notes"];
     const table = el("table", { class: "lda-table" });
     table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
     const tbody = el("tbody");
@@ -1334,6 +1373,7 @@
             el("td", { text: record.task_id != null ? String(record.task_id) : "" }),
             el("td", { text: record.task_name || "" }),
             el("td", { text: monthLabel(record.month) }),
+            el("td", { text: record.downtime_hours != null ? fmtFixed(record.downtime_hours) : "" }),
             el("td", { class: "lda-wo-text", text: record.requestor_description || "" }),
             el("td", { class: "lda-wo-text", text: record.completion_notes || "" }),
           ])
@@ -1611,10 +1651,14 @@
     // Clear the previous mechanism's cards/chart/table immediately so a slow or
     // failed request can't leave stale results visible under the new selection.
     renderPm();
-    loadPmEffectiveness();
+    // Scroll only once the response has rendered: the summary cards sit above the
+    // chart panel and change height when they populate, which would drag the panel
+    // out from under a scroll started now.
+    loadPmEffectiveness({ scrollToPanel: true });
   }
 
-  async function loadPmEffectiveness() {
+  async function loadPmEffectiveness(opts) {
+    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
     if (state.pageMode === "disposition") return;
     if (!state.selectedAsset || !state.pmSelection) {
       renderPm();
@@ -1644,12 +1688,16 @@
       // like has_pm_history / months / rows directly off state.pmData.
       state.pmData = data.pm_effectiveness || null;
       renderPm();
+      if (scrollWhenRendered) scrollToAnalysisPanel();
     } catch (err) {
       if (!isStale()) {
         showBanner(err.message, "error");
         // Reflect the (now-cleared) data so a failed load doesn't leave another
         // mechanism's results on screen; an in-place refresh keeps its own data.
         renderPm();
+        // The panel now says why there is nothing to plot, so the click still lands
+        // somewhere the user can read rather than leaving them where they clicked.
+        if (scrollWhenRendered) scrollToAnalysisPanel();
       }
     } finally {
       endLoading();
@@ -2607,10 +2655,13 @@
     // Clear the previous mechanism's cards/charts/table immediately so a slow or
     // failed request can't leave stale results visible under the new selection.
     renderDowntime();
-    loadDowntime();
+    // Scroll only once the response has rendered, for the same reason as PM: the
+    // summary cards above the first chart panel resize when they populate.
+    loadDowntime({ scrollToPanel: true });
   }
 
-  async function loadDowntime() {
+  async function loadDowntime(opts) {
+    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
     if (state.pageMode === "disposition") return;
     if (!state.selectedAsset || !state.downtimeSelection) {
       renderDowntime();
@@ -2635,12 +2686,15 @@
       if (isStale()) return;
       state.downtimeData = data.downtime_drivers || null;
       renderDowntime();
+      if (scrollWhenRendered) scrollToAnalysisPanel();
     } catch (err) {
       if (!isStale()) {
         showBanner(err.message, "error");
         // Reflect the (now-cleared) data so a failed load doesn't leave another
         // mechanism's results on screen.
         renderDowntime();
+        // Same as PM: the panel explains the empty state, so still scroll to it.
+        if (scrollWhenRendered) scrollToAnalysisPanel();
       }
     } finally {
       endLoading();
@@ -3158,6 +3212,18 @@
     runAnalysisForGroup(groups[choice]);
   }
 
+  // Query string for the read-only saved-analysis lookup. The mechanism id is omitted
+  // for a mode-level group so the server matches the mode-only population.
+  function savedAnalysisQuery(asset, group) {
+    const params = new URLSearchParams({
+      asset,
+      grouping_level: group.grouping_level,
+      failure_mode_id: group.failure_mode_id,
+    });
+    if (group.failure_mechanism_id != null) params.set("failure_mechanism_id", group.failure_mechanism_id);
+    return params.toString();
+  }
+
   async function runAnalysisForGroup(group, message) {
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
@@ -3166,15 +3232,31 @@
     // late Weibull response must not repopulate it under the non-Weibull panel.
     const analysisType = state.analysisType;
     const isStale = () => state.selectedAsset !== asset || state.analysisType !== analysisType;
-    beginLoading(message || "Running Weibull analysis…");
+    // Computing a fit rebuilds and stores event processing, observations, a dataset,
+    // a run and a result, so it is an editor-only write. A viewer (or a signed-out
+    // visitor) reads back the fit an editor already saved for the same group instead:
+    // same shape, same rendered view, nothing written.
+    beginLoading(CAN_EDIT ? message || "Running Weibull analysis…" : "Loading the saved Weibull analysis…");
     try {
-      const data = await postJson(`${API}/perform-analysis`, {
-        asset,
-        grouping_level: group.grouping_level,
-        failure_mode_id: group.failure_mode_id,
-        failure_mechanism_id: group.failure_mechanism_id,
-      });
+      const data = CAN_EDIT
+        ? await postJson(`${API}/perform-analysis`, {
+            asset,
+            grouping_level: group.grouping_level,
+            failure_mode_id: group.failure_mode_id,
+            failure_mechanism_id: group.failure_mechanism_id,
+          })
+        : await getJson(`${API}/saved-analysis?${savedAnalysisQuery(asset, group)}`);
       if (isStale()) return; // asset or analysis type changed mid-request; drop the stale result
+      if (!data.result) {
+        // Only reachable on the read-only path: the group has never been analyzed, so
+        // there is nothing saved to show and a viewer cannot create it.
+        clearWorkspace();
+        showBanner(
+          "No Weibull analysis has been saved for this failure group yet. An editor has to run it once before it can be viewed.",
+          "info"
+        );
+        return;
+      }
       state.latestResult = data.result;
       renderAnalysisResult(data.result);
       refreshSummary();
@@ -3200,14 +3282,21 @@
 
   function renderAnalysisResult(result) {
     clearWorkspace();
-    const dataTable = buildWeibullDataTable(result);
+    // The table and the charts point at each other: clicking a plotted point highlights
+    // its data row, and clicking a data row rings that observation on the graph that
+    // plots it. The charts are built second, so the row handler reads `chartApi` when it
+    // fires rather than closing over the value it had here.
+    let chartApi = null;
+    const dataTable = buildWeibullDataTable(result, (obs) => {
+      if (chartApi) chartApi.focus(obs);
+    });
 
     const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(result.beta_mle, 6) });
     const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(result.eta_mle, 6) });
     const reasonInput = el("input", { class: "lda-input", placeholder: "Adjustment reason based on empirical data points…" });
 
     const charts = el("div", { class: "lda-charts" });
-    const chartApi = buildAnalysisCharts(charts, result, dataTable.highlight);
+    chartApi = buildAnalysisCharts(charts, result, dataTable.highlight);
 
     function applyParameters() {
       const beta = Number(betaInput.value);
@@ -3243,7 +3332,10 @@
           text: `Observations: ${result.total_observation_count} total, ${result.failure_count} failures, ${result.censored_count} right-censored.`,
         }),
       ]),
-      adjustRow,
+      // Adjusting beta/eta and saving the adjustment are writes, so the whole row is
+      // left out for a viewer or a signed-out visitor rather than shown inert. They
+      // still get the full read-only view at the fitted MLE parameters.
+      CAN_EDIT ? adjustRow : null,
       legend(),
       charts,
       el("p", {
@@ -3258,12 +3350,15 @@
       panel("Weibull Data Used for Graphs", dataTable.node,
 
         "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Click a row to jump back up to the graph that plots it, with that observation ringed. " +
         "Use the ▾ menu in any column header to sort or filter the rows."),
-      buildReportBar(result, charts, chartApi, betaInput, etaInput),
+      // Generating the report reserves a REL report number, which is a write, so the
+      // whole section is editor-only.
+      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput) : null,
 
     ]);
     $("lda-workspace").appendChild(card);
-    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollBelowSticky(card);
   }
 
   // Action bar at the bottom of the results: generates a formal, high-level
@@ -3421,17 +3516,18 @@
     ]);
   }
 
-  function buildWeibullDataTable(result) {
+  function buildWeibullDataTable(result, onRowActivate) {
     // Each column knows how to render its header and pull its value from an
     // observation, so the header row and body cells can never drift apart. The
-    // Task ID / Work Title / Request Description / Completion Notes columns come
-    // from the source CMMS work order that closed the life interval (joined in
+    // Task ID / Work Title / Downtime / Request Description / Completion Notes columns
+    // come from the source CMMS work order that closed the life interval (joined in
     // perform_weibull_analysis); they are blank for trailing current-life rows.
     const columns = [
       { label: "#", get: (obs) => String(obs.ordered_index ?? "") },
       { label: "Observation ID", get: (obs) => String(obs.weibull_observation_id ?? "") },
       { label: "Task ID", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : "") },
       { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
+      { label: "Downtime (h)", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
       { label: "Type", get: (obs) => obs.observation_type || "" },
       { label: "Life Hours", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
       { label: "Failure", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
@@ -3448,14 +3544,30 @@
     );
     const tbody = el("tbody");
     const rowByObs = new Map();
+    const activate = typeof onRowActivate === "function" ? onRowActivate : null;
     (result.observations || []).forEach((obs) => {
       const tr = el("tr", {}, columns.map((c) => el("td", { text: c.get(obs), class: c.cls || null })));
+      if (activate) {
+        tr.classList.add("is-clickable");
+        tr.title = "Show this observation on the graphs above";
+        // The reverse of the chart's click-to-row jump: mark the row so it stays
+        // identifiable once the viewport leaves it, then hand the observation to the
+        // charts, which ring it and scroll to the pane that plots it.
+        tr.addEventListener("click", () => {
+          markRow(tr);
+          activate(obs);
+        });
+      }
       rowByObs.set(Number(obs.weibull_observation_id), tr);
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
     const tableTools = enableTableColumnTools(table);
     const node = el("div", { class: "lda-data-scroll" }, [table]);
+    function markRow(tr) {
+      tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
+      tr.classList.add("is-highlight");
+    }
     function highlight(observationId) {
       const tr = rowByObs.get(Number(observationId));
       if (!tr) return;
@@ -3463,8 +3575,7 @@
       // filter is hiding (e.g. filtered to Failure=Yes, then clicking a censored
       // point). Clear the filters so the jump actually reveals the row.
       if (tr.style.display === "none" && tableTools) tableTools.clearFilters();
-      tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
-      tr.classList.add("is-highlight");
+      markRow(tr);
       tr.scrollIntoView({ behavior: "smooth", block: "center" });
     }
     return { node, highlight };
@@ -3598,8 +3709,22 @@
       const canvas = el("canvas", { class: "lda-canvas" });
       const card = el("div", { class: "lda-chart-card" }, [el("h4", { text: pane.title }), el("div", { class: "lda-chart-wrap" }, [canvas])]);
       container.appendChild(card);
-      canvases[pane.key] = { canvas, height: pane.height };
+      // The card, not just the canvas, is what focus() scrolls to, so the pane's title
+      // comes along with its plot.
+      canvases[pane.key] = { canvas, height: pane.height, card };
     });
+
+    // The observation a Weibull data-table row click asked to see, and the panes that
+    // turned out to plot it. Each draw refills the set, because which panes show a
+    // given observation depends on what it is: a failure lands on the probability plot
+    // and the CDF, a historical censored observation only on the CDF, and a current-life
+    // marker on all four.
+    let focusedObsId = null;
+    const focusedPanes = new Set();
+    // Last parameters drawn, so focus() can redraw with the ring without disturbing an
+    // on-screen beta/eta adjustment.
+    let lastBeta = result.beta_mle;
+    let lastEta = result.eta_mle;
 
     function analyticCurves(beta, eta) {
       const pts = [];
@@ -3619,17 +3744,25 @@
     }
 
     function draw(beta, eta) {
+      lastBeta = beta;
+      lastEta = eta;
+      focusedPanes.clear();
       const curves = analyticCurves(beta, eta);
       const ciPairs = [];
       if (result.beta_lower_ci != null && result.eta_lower_ci != null) ciPairs.push([result.beta_lower_ci, result.eta_lower_ci]);
       if (result.beta_upper_ci != null && result.eta_upper_ci != null) ciPairs.push([result.beta_upper_ci, result.eta_upper_ci]);
+      // Each pane reports whether it drew the focus ring, which is how focus() knows
+      // which pane is worth scrolling to.
+      const record = (key, drewRing) => {
+        if (drewRing) focusedPanes.add(key);
+      };
 
       // 1) Weibull probability plot in (ln t, ln(-ln R)) space
-      drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight, currentCensors);
+      record("prob", drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, focusedObsId));
       // 2) CDF vs time. White points are completed failures (KM estimate); red
       //    points are historical right-censored observations placed on the fitted
       //    curve at their censoring time; the red vertical line marks current life.
-      drawCurvePane(canvases.cdf, {
+      record("cdf", drawCurvePane(canvases.cdf, {
         mleLine: curves.map((p) => [p.life_hours, p.cdf]),
         ciLines: ciPairs.map(([b, e]) => analyticCurves(b, e).map((p) => [p.life_hours, p.cdf])),
         scatter: km.filter((p) => p.cdf_estimate != null).map((p) => [p.life_hours, p.cdf_estimate, p]),
@@ -3645,9 +3778,10 @@
         scatterObs: (p) => nearestFailureObs(p.life_hours),
         censoredPick: jumpToObs,
         markerPick: jumpToObs,
-      });
+        highlightObsId: focusedObsId,
+      }));
       // 3) PDF (MLE only) + current-life marker
-      drawCurvePane(canvases.pdf, {
+      record("pdf", drawCurvePane(canvases.pdf, {
         mleLine: curves.map((p) => [p.life_hours, p.pdf]),
         ciLines: [],
         scatter: [],
@@ -3655,9 +3789,10 @@
         xLabel: "Life hours",
         yLabel: "Density",
         markerPick: jumpToObs,
-      });
+        highlightObsId: focusedObsId,
+      }));
       // 4) Hazard (MLE only) + current-life marker
-      drawCurvePane(canvases.hazard, {
+      record("hazard", drawCurvePane(canvases.hazard, {
         mleLine: curves.map((p) => [p.life_hours, p.hazard]),
         ciLines: [],
         scatter: [],
@@ -3665,7 +3800,8 @@
         xLabel: "Life hours",
         yLabel: "Hazard",
         markerPick: jumpToObs,
-      });
+        highlightObsId: focusedObsId,
+      }));
     }
 
     function highlightFailureByTime(point) {
@@ -3674,15 +3810,62 @@
       if (best && highlight) highlight(best.weibull_observation_id);
     }
 
+    // The other direction of the table/chart link: ring one observation on the graphs
+    // and bring the pane that actually plots it into view. Redrawn at the parameters
+    // currently on screen so a beta/eta adjustment being explored is not thrown away.
+    function focus(obs) {
+      if (!obs || obs.weibull_observation_id == null) return;
+      focusedObsId = Number(obs.weibull_observation_id);
+      draw(lastBeta, lastEta);
+      // Probability plot first: it is the primary Weibull graph, so when an observation
+      // appears on several panes that is the one to land on. Failing that, whichever
+      // pane did plot it; failing that (nothing plotted), the probability plot anyway.
+      const pane = ["prob", "cdf", "pdf", "hazard"].find((key) => focusedPanes.has(key)) || "prob";
+      scrollBelowSticky(canvases[pane].card);
+    }
+
     // Defer the first draw to the next frame. renderAnalysisResult appends this
     // chart container to the DOM synchronously after buildAnalysisCharts returns,
     // so by the time this callback runs the canvases are attached and report their
     // real on-screen width instead of 0 (which collapsed the plots into a strip).
     requestAnimationFrame(() => draw(result.beta_mle, result.eta_mle));
-    return { update: draw };
+    return { update: draw, focus };
   }
 
-  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight, currentCensors) {
+  // Emphasis ring marking the observation a Weibull data-table row click focused, so it
+  // is identifiable among the other plotted points once the graph scrolls into view.
+  function drawFocusRing(ctx, hit) {
+    ctx.save();
+    ctx.strokeStyle = "#0a3a27";
+    ctx.lineWidth = 2.5;
+    if (hit.vertical) {
+      // Current-life markers are full-height lines, so bracket the line in a band
+      // instead of ringing a point that isn't there. Nothing is drawn over the line
+      // itself: its red is what identifies it as current life in the legend.
+      const halfWidth = 6;
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = "#0a3a27";
+      ctx.fillRect(hit.px - halfWidth, hit.top, halfWidth * 2, hit.bottom - hit.top);
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.5;
+      [-halfWidth, halfWidth].forEach((offset) => {
+        ctx.beginPath();
+        ctx.moveTo(hit.px + offset, hit.top);
+        ctx.lineTo(hit.px + offset, hit.bottom);
+        ctx.stroke();
+      });
+    } else {
+      ctx.beginPath();
+      ctx.arc(hit.px, hit.py, 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  const sameObservation = (obs, observationId) =>
+    Boolean(obs) && observationId != null && Number(obs.weibull_observation_id) === Number(observationId);
+
+  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, highlightObsId) {
     const { ctx, width: W, height: H } = setupCanvas(target.canvas, target.height);
     ctx.clearRect(0, 0, W, H);
     const points = km.filter((p) => p.weibull_plot_y != null && isFinite(p.weibull_plot_x) && isFinite(p.weibull_plot_y));
@@ -3774,6 +3957,18 @@
       ctx.stroke();
     });
 
+    // Ring the focused observation last so it sits over the points and fit lines. A
+    // current-life marker takes precedence over a KM point, matching how `locate`
+    // below resolves an ambiguous cursor position.
+    let drewRing = false;
+    if (highlightObsId != null) {
+      const marker = markers.find((m) => sameObservation(m.obs, highlightObsId));
+      const hit = marker ? null : hits.find((h) => sameObservation(h.obs, highlightObsId));
+      if (marker) drawFocusRing(ctx, { vertical: true, px: sx(marker.x), top, bottom });
+      else if (hit) drawFocusRing(ctx, hit);
+      drewRing = Boolean(marker || hit);
+    }
+
     // Resolve the observation under the cursor: a current-life marker (matched on
     // x, since it spans the pane height) takes precedence, then the nearest point.
     const locate = (mx, my) => {
@@ -3789,6 +3984,7 @@
       if (obs && highlight) highlight(obs.weibull_observation_id);
     };
     attachPointHover(target.canvas, locate);
+    return drewRing;
   }
 
   function drawCurvePane(target, opts) {
@@ -3859,6 +4055,13 @@
       ctx.stroke();
       hits.push({ px, vertical: true, top, bottom, point: m[1], obs: m[1], pick: opts.markerPick });
     });
+    // Ring the focused observation last so it sits over the points and curves. A pane
+    // that does not plot it (the PDF and hazard panes carry only current-life markers)
+    // simply reports back that it drew nothing.
+    const focusedHit = opts.highlightObsId != null
+      ? hits.find((h) => sameObservation(h.obs, opts.highlightObsId))
+      : null;
+    if (focusedHit) drawFocusRing(ctx, focusedHit);
     // Locate the hit under the cursor (canvas pixels). Vertical markers span the
     // pane height, so they match on x proximity; points match within a small radius.
     const locate = (mx, my) =>
@@ -3879,6 +4082,7 @@
         return hit ? hit.obs : null;
       });
     }
+    return Boolean(focusedHit);
   }
 
   function strokePolyline(ctx, line, sx, sy) {

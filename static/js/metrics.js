@@ -254,6 +254,10 @@
   function renderSelectedChips() {
     const wrap = $("metrics-selected-wrap");
     const chips = $("metrics-selected-chips");
+    // Clearing an already-empty selection would be a no-op, so the control reads as
+    // unavailable until there is something to clear.
+    const clear = $("metrics-clear");
+    if (clear) clear.disabled = !state.selected.size;
     chips.innerHTML = "";
     if (!state.selected.size) {
       wrap.hidden = true;
@@ -2955,6 +2959,20 @@
       to.value = "";
       renderSelectedChips();
       renderAssetMenu();
+      loadMetrics();
+    });
+
+    $("metrics-clear").addEventListener("click", () => {
+      // Clearing every asset is its own scope, not the same as Reset: the metrics API
+      // reads an empty selection as "every asset", which is how the whole plant gets
+      // compared. The date range is deliberately left alone — this control is only
+      // about which assets are compared.
+      state.selected.clear();
+      state.assetQuery = "";
+      search.value = "";
+      renderSelectedChips();
+      renderAssetMenu();
+      renderScopeHint();
       loadMetrics();
     });
   }

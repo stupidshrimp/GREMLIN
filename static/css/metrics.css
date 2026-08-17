@@ -31,7 +31,21 @@
 
 .metrics-field { display: flex; flex-direction: column; gap: 0.35rem; min-width: 150px; }
 .metrics-field-grow { flex: 1 1 320px; min-width: 260px; }
-.metrics-field-actions { justify-content: flex-end; }
+/* The filter bar's buttons sit side by side at the end of the row instead of
+   stacking the way the labelled fields beside them do. */
+.metrics-field-actions {
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.metrics-field-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
 
 .metrics-field label {
   font-size: 0.78rem;
