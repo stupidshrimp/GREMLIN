@@ -325,6 +325,29 @@ class LifeDataService:
             if conn is not None:
                 conn.close()
 
+    @contextmanager
+    def read_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection whose every read sees one consistent database snapshot.
+
+        Outside a transaction each SELECT is its own implicit one, so a read built from
+        several queries can straddle another process's write and stitch together rows
+        that never coexisted -- a parent row from before the write beside child rows
+        from after it, or none at all. A deferred ``BEGIN`` takes SQLite's shared read
+        lock on the first query and holds it until the transaction ends, which keeps a
+        concurrent writer from committing mid-read; the writer waits on its own busy
+        timeout, and these reads are short.
+
+        Read-only by contract: nothing is committed, and the rollback on the way out is
+        what releases the shared lock.
+        """
+
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN DEFERRED")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
 
     def _begin_write_transaction(self, conn: sqlite3.Connection) -> None:
         """Start a write transaction and report when SQLite enters busy-timeout waiting."""
@@ -4171,7 +4194,11 @@ class LifeDataService:
         if grouping_level == "FAILURE_MECHANISM" and failure_mechanism_id is None:
             raise ValueError("Failure-mechanism Weibull analysis requires a selected failure mechanism.")
         population_mechanism_id = failure_mechanism_id if grouping_level == "FAILURE_MECHANISM" else None
-        with self.connect() as conn:
+        # One snapshot for all five reads below. An editor rerunning this same population
+        # deletes its dataset, run, KM points, curve points and observations and inserts
+        # replacements, so reading them in separate implicit transactions could pair the
+        # old result row with the new run's (or no) graph and table data.
+        with self.read_transaction() as conn:
             population = conn.execute(
                 """
                 SELECT modeled_population_id, population_name, grouping_level_used

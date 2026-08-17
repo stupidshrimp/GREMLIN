@@ -6,6 +6,7 @@ the source work order's downtime travelling with each Weibull observation, and
 what lets a viewer or a signed-out visitor open the Weibull view.
 """
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +164,38 @@ class WeibullSavedAnalysisTests(unittest.TestCase):
                 grouping_level="FAILURE_MECHANISM",
                 failure_mode_id=self.mode_id,
             )
+
+    def test_a_read_transaction_holds_one_snapshot_across_its_queries(self):
+        """The isolation load_saved_weibull_analysis relies on for its five queries.
+
+        Rerunning an analysis deletes a population's dataset, run, KM points, curve
+        points and observations and inserts replacements. Reading those in separate
+        implicit transactions could pair the old result row with the new run's — or
+        with none at all — so the read holds a shared lock a writer cannot commit past.
+        """
+        self._perform()
+
+        with self.service.read_transaction() as conn:
+            before = conn.execute("SELECT COUNT(*) FROM weibull_observation").fetchone()[0]
+            self.assertGreater(before, 0)
+
+            writer = sqlite3.connect(self.service.db_path, timeout=0.2)
+            try:
+                # Reserving the writer slot is allowed alongside a reader; it is the
+                # commit that has to wait, and here it gives up on the busy timeout.
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute("DELETE FROM weibull_observation")
+                with self.assertRaises(sqlite3.OperationalError):
+                    writer.commit()
+                writer.rollback()
+            finally:
+                writer.close()
+
+            # Same snapshot as the first query, despite the delete attempt in between.
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM weibull_observation").fetchone()[0], before)
+
+        # The lock is released on the way out, so the next write is free to proceed.
+        self.assertIsNotNone(self._load_saved())
 
     def test_saved_analysis_returns_the_latest_run_for_the_group(self):
         self._perform()

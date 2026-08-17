@@ -3719,7 +3719,7 @@
     // given observation depends on what it is: a failure lands on the probability plot
     // and the CDF, a historical censored observation only on the CDF, and a current-life
     // marker on all four.
-    let focusedObsId = null;
+    let focusedObs = null;
     const focusedPanes = new Set();
     // Last parameters drawn, so focus() can redraw with the ring without disturbing an
     // on-screen beta/eta adjustment.
@@ -3758,7 +3758,7 @@
       };
 
       // 1) Weibull probability plot in (ln t, ln(-ln R)) space
-      record("prob", drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, focusedObsId));
+      record("prob", drawProbabilityPlot(canvases.prob, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, focusedObs));
       // 2) CDF vs time. White points are completed failures (KM estimate); red
       //    points are historical right-censored observations placed on the fitted
       //    curve at their censoring time; the red vertical line marks current life.
@@ -3778,7 +3778,7 @@
         scatterObs: (p) => nearestFailureObs(p.life_hours),
         censoredPick: jumpToObs,
         markerPick: jumpToObs,
-        highlightObsId: focusedObsId,
+        highlightObs: focusedObs,
       }));
       // 3) PDF (MLE only) + current-life marker
       record("pdf", drawCurvePane(canvases.pdf, {
@@ -3789,7 +3789,7 @@
         xLabel: "Life hours",
         yLabel: "Density",
         markerPick: jumpToObs,
-        highlightObsId: focusedObsId,
+        highlightObs: focusedObs,
       }));
       // 4) Hazard (MLE only) + current-life marker
       record("hazard", drawCurvePane(canvases.hazard, {
@@ -3800,7 +3800,7 @@
         xLabel: "Life hours",
         yLabel: "Hazard",
         markerPick: jumpToObs,
-        highlightObsId: focusedObsId,
+        highlightObs: focusedObs,
       }));
     }
 
@@ -3815,7 +3815,7 @@
     // currently on screen so a beta/eta adjustment being explored is not thrown away.
     function focus(obs) {
       if (!obs || obs.weibull_observation_id == null) return;
-      focusedObsId = Number(obs.weibull_observation_id);
+      focusedObs = obs;
       draw(lastBeta, lastEta);
       // Probability plot first: it is the primary Weibull graph, so when an observation
       // appears on several panes that is the one to land on. Failing that, whichever
@@ -3862,10 +3862,27 @@
     ctx.restore();
   }
 
-  const sameObservation = (obs, observationId) =>
-    Boolean(obs) && observationId != null && Number(obs.weibull_observation_id) === Number(observationId);
+  // Does this plotted hit stand for the observation a data-table row focused?
+  //
+  // Censored points and current-life markers carry their own observation, so an id
+  // match settles it. Kaplan-Meier points do not: every failure sharing a lifetime is
+  // aggregated into one point, and the nearest-observation lookup that maps a point
+  // back to a row keeps only the first of them as its representative. Clicking any of
+  // the others would then find no hit and get no ring, so an aggregate point also
+  // matches a focused failure plotted at the same lifetime. The failure check is what
+  // stops a censored row from ringing the failure point that happens to share its
+  // lifetime.
+  function hitMatchesFocus(hit, focus) {
+    if (!hit || !hit.obs || !focus) return false;
+    if (Number(hit.obs.weibull_observation_id) === Number(focus.weibull_observation_id)) return true;
+    return Boolean(
+      hit.aggregate &&
+        Number(focus.failure_indicator) &&
+        Number(hit.obs.life_hours_for_weibull) === Number(focus.life_hours_for_weibull)
+    );
+  }
 
-  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, highlightObsId) {
+  function drawProbabilityPlot(target, beta, eta, ciPairs, km, failureObs, highlight, currentCensors, highlightObs) {
     const { ctx, width: W, height: H } = setupCanvas(target.canvas, target.height);
     ctx.clearRect(0, 0, W, H);
     const points = km.filter((p) => p.weibull_plot_y != null && isFinite(p.weibull_plot_x) && isFinite(p.weibull_plot_y));
@@ -3943,7 +3960,9 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p, obs: nearestFailureByX(p.weibull_plot_x) });
+      // aggregate: this point stands for every failure at its lifetime, not only the
+      // representative observation the nearest-match lookup returned.
+      hits.push({ px, py, point: p, obs: nearestFailureByX(p.weibull_plot_x), aggregate: true });
     });
 
     // Current-life "now" markers: full-height red vertical lines.
@@ -3961,9 +3980,9 @@
     // current-life marker takes precedence over a KM point, matching how `locate`
     // below resolves an ambiguous cursor position.
     let drewRing = false;
-    if (highlightObsId != null) {
-      const marker = markers.find((m) => sameObservation(m.obs, highlightObsId));
-      const hit = marker ? null : hits.find((h) => sameObservation(h.obs, highlightObsId));
+    if (highlightObs) {
+      const marker = markers.find((m) => hitMatchesFocus(m, highlightObs));
+      const hit = marker ? null : hits.find((h) => hitMatchesFocus(h, highlightObs));
       if (marker) drawFocusRing(ctx, { vertical: true, px: sx(marker.x), top, bottom });
       else if (hit) drawFocusRing(ctx, hit);
       drewRing = Boolean(marker || hit);
@@ -4030,7 +4049,17 @@
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      hits.push({ px, py, point: p[2], obs: opts.scatterObs ? opts.scatterObs(p[2]) : null, pick: opts.scatterPick });
+      // Scatter points come from the Kaplan-Meier series, so like the probability
+      // plot's they stand for every failure at their lifetime, not just the one the
+      // nearest-match lookup returned.
+      hits.push({
+        px,
+        py,
+        point: p[2],
+        obs: opts.scatterObs ? opts.scatterObs(p[2]) : null,
+        pick: opts.scatterPick,
+        aggregate: true,
+      });
     });
     (opts.censored || []).forEach((p) => {
       const px = sx(p[0]);
@@ -4058,8 +4087,8 @@
     // Ring the focused observation last so it sits over the points and curves. A pane
     // that does not plot it (the PDF and hazard panes carry only current-life markers)
     // simply reports back that it drew nothing.
-    const focusedHit = opts.highlightObsId != null
-      ? hits.find((h) => sameObservation(h.obs, opts.highlightObsId))
+    const focusedHit = opts.highlightObs
+      ? hits.find((h) => hitMatchesFocus(h, opts.highlightObs))
       : null;
     if (focusedHit) drawFocusRing(ctx, focusedHit);
     // Locate the hit under the cursor (canvas pixels). Vertical markers span the
