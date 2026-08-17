@@ -246,17 +246,7 @@ PAGES = [
         "template": "developer_home.html",
         "title": "Developer",
         "icon": ICONS["code"],
-<<<<<<< HEAD
     }
-=======
-    },
-    {
-        "route": "/testing",
-        "template": "testing.html",
-        "title": "Testing",
-        "icon": ICONS["code"],
-    },
->>>>>>> origin/sania-testing-sidebar
 ]
 
 
@@ -1172,6 +1162,8 @@ def pm_calendar():
 @app.route("/api/contacts")
 def api_contacts():
 
+    load_dotenv_files(force=True, only_prefix="LIMBLE_")
+    
     config = LimbleConfig.from_env()
     client = LimbleClient(config)
 
