@@ -474,52 +474,63 @@ button.life-data-card {
     text-align: center;
   }
 }
-2
 
+/* Reliability Links. Each category is its own .glass-card section, laid out the
+   way .documentation-tabs is, so the heading and its grid space themselves
+   rather than relying on a margin the card cannot see. */
+.links-section {
+  display: grid;
+  gap: 0.9rem;
+}
+
+/* `min(280px, 100%)` rather than a bare 280px: auto-fit sizes the track from the
+   minimum, so a flat 280px keeps that width even once the card holding it is
+   narrower and pushes the page into a horizontal scroll. Below roughly 357px --
+   .content's padding plus the card's, subtracted from the viewport -- 280px no
+   longer fits, which covers a folding phone's cover screen and anyone zoomed in
+   on an ordinary one. Clamping the minimum to the container instead lets the
+   single column shrink with it, and costs nothing above that width. */
 .link-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 16px;
-    margin-bottom: 32px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 1rem;
 }
 
+/* A link card is a .tile that happens to be an anchor: same lift on hover, same
+   palette tokens, so the section reads as one surface with the cards on the
+   other pages. */
 .link-card {
-    display: flex;
-    flex-direction: column;
-
-    padding: 20px;
-
-    border-radius: 12px;
-
-    background: white;
-
-    border: 1px solid #dbe4ec;
-
-    text-decoration: none;
-
-    transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--border);
+  text-decoration: none;
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
 }
 
-.link-card:hover {
-    transform: translateY(-2px);
+.link-card:hover,
+.link-card:focus-visible {
+  transform: translateY(-4px);
+  border-color: var(--forest-700);
+  box-shadow: 0 24px 48px rgba(6, 43, 28, 0.16);
+}
 
-    border-color: #15803d;
-
-    box-shadow: 0 4px 12px rgba(0,0,0,.08);
+.link-card:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
 }
 
 .link-title {
-    font-size: 18px;
-
-    font-weight: 600;
-
-    color: #1f2937;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--forest-900);
 }
 
 .link-description {
-    margin-top: 8px;
-
-    color: #6b7280;
-
-    font-size: 14px;
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
 }
