@@ -376,10 +376,15 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   mask-image: linear-gradient(to top left, #000 0%, rgba(0, 0, 0, 0.9) 28%, transparent 76%);
   opacity: 0;
   visibility: hidden;
-  /* `visibility` rather than opacity alone, because a GIF faded to zero keeps
-     decoding: hiding it is what lets the browser stop the animation between
-     hovers. It has to be delayed out so the fade is still visible on the way
-     out, and undelayed in so the first frame is not held back. */
+  /* `visibility` takes the image out of the page entirely between hovers,
+     rather than leaving it present at zero opacity. It is not what stops the
+     animation -- Chromium advances a hidden GIF just the same, which is why
+     home.js drops the source instead -- it is what makes the element inert
+     while there is nothing to see. Delayed out so the fade survives on the way
+     out, undelayed in so the first frame is not held back.
+
+     The 260ms here is the fade home.js waits out before releasing the source.
+     Shorten one without the other and the artwork blinks off mid-fade. */
   transition: opacity 260ms ease, visibility 0s linear 260ms;
 }
 
