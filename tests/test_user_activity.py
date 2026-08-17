@@ -140,8 +140,11 @@ def test_the_daily_series_covers_every_day_including_the_quiet_ones(tmp_path):
     assert days[-1]["day"] == report["window"]["last_day"]
     assert days[-1]["logins"] == 1
     assert [day["logins"] for day in days[:-1]] == [0] * 6
-    assert len(report["hourly"]) == 24
-    assert sum(report["hourly"]) == 1
+    # Hour buckets keep their own date, so the page can convert each one at the
+    # offset that was in force that day rather than at today's.
+    assert [bucket["day"] for bucket in report["hourly"]] == [report["window"]["last_day"]]
+    assert sum(bucket["logins"] for bucket in report["hourly"]) == 1
+    assert 0 <= report["hourly"][0]["hour"] < 24
 
 
 @pytest.mark.parametrize("days", [0, -1, ACTIVITY_MAX_DAYS + 1, "soon", None])
@@ -164,6 +167,11 @@ def test_history_outlives_the_account_it_belongs_to(tmp_path):
     assert [user["username"] for user in report["users"]] == ["root"]
     assert report["summary"]["logins_by_removed_accounts"] == 1
     assert report["summary"]["successful_logins"] == 1
+    # Counted against the accounts that exist, so the page cannot end up saying
+    # "1 of 0 accounts used" -- the departed account's sign-in is reported above
+    # instead.
+    assert report["summary"]["users_seen"] == 0
+    assert report["summary"]["users_seen"] <= report["summary"]["accounts"]
 
 
 def test_the_history_is_capped_and_sheds_unrecognised_attempts_first(tmp_path, monkeypatch):
@@ -181,6 +189,31 @@ def test_the_history_is_capped_and_sheds_unrecognised_attempts_first(tmp_path, m
     events = _events(control)
     assert len(events) == 3
     assert sum(1 for event in events if event["username"] == "root") == 2
+
+
+def test_a_flood_against_a_real_account_cannot_evict_its_sign_ins(tmp_path, monkeypatch):
+    """Attributed attempts are cheap to manufacture too.
+
+    Aiming at a name that exists puts a real user_id on every wrong PIN, and a
+    locked-out attempt is refused before any hash is checked -- so an outsider
+    can produce attributed rows about as fast as anonymous ones. Sign-ins are
+    what "last signed in" and "never signed in" are read from, so they outrank
+    both.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    for index in range(20):
+        control.authenticate_limited("root", "wrong", f"10.9.9.{index}")
+
+    events = _events(control)
+    assert len(events) == 3
+    successes = [event for event in events if event["outcome"] == "success"]
+    assert len(successes) == 1
+    # And the account is still reported as having signed in, which is the fact
+    # the flood was able to erase before.
+    assert control.activity_report(30)["users"][0]["last_login"] == successes[0]["occurred_at"]
 
 
 def test_an_existing_access_database_gains_the_history_table(tmp_path):

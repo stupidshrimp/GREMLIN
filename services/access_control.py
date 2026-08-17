@@ -410,18 +410,26 @@ class AccessControl:
                 client_digest,
             ),
         )
-        # Attempts against names that match no account are what an outsider can
-        # produce without limit, so they are the first thing evicted -- ordering
-        # attributed rows ahead of unattributed ones means no flood of invented
-        # names can push a real account's sign-in history out of the file. Within
-        # each group the newest rows are kept. A deployment whose own accounts
-        # fill the cap loses its oldest history, which is the intended meaning of
-        # a cap.
+        # What is kept when the cap is reached, in order of what an outsider can
+        # manufacture:
+        #
+        #   1. Successful sign-ins. Only somebody holding a PIN can produce one,
+        #      so this is the record that must survive a flood -- it is what
+        #      "last signed in" and "never signed in" are read from, and those
+        #      being wrong is worse than a failure count being short.
+        #   2. Failures and lockouts against a real account. Cheap to produce in
+        #      bulk (a locked-out attempt is refused before any hash is checked),
+        #      but they name an account somebody is working on, which is worth
+        #      keeping over the alternative.
+        #   3. Attempts on names matching no account -- unlimited and anonymous.
+        #
+        # Within each group the newest rows are kept. A deployment whose own
+        # sign-ins fill the cap loses its oldest ones, which is what a cap means.
         if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP:
             conn.execute(
-                """DELETE FROM login_events WHERE id IN (
+                f"""DELETE FROM login_events WHERE id IN (
                        SELECT id FROM login_events
-                        ORDER BY (user_id IS NOT NULL) DESC, id DESC
+                        ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC, id DESC
                         LIMIT -1 OFFSET ?
                    )""",
                 (LOGIN_EVENT_ROW_CAP,),
@@ -504,6 +512,14 @@ class AccessControl:
         days = self._activity_days(days)
         recent_limit = max(1, min(int(recent_limit), 200))
         with self._connect() as conn:
+            # One snapshot for the whole report. Each section below is its own
+            # SELECT, and a login committing between two of them would otherwise
+            # be counted by one and not the other -- a summary that does not add
+            # up to the table beneath it reads as a bug in the page rather than
+            # as a request that overlapped a sign-in. Deferred rather than
+            # IMMEDIATE: this only reads, and taking the writer slot would make
+            # opening the page block somebody trying to sign in.
+            conn.execute("BEGIN")
             # The cutoff is midnight UTC of the first day in the window, so the
             # window is exactly `days` calendar days ending with today rather
             # than a rolling interval that cuts today's morning in half. Both
@@ -556,7 +572,13 @@ class AccessControl:
             """SELECT SUM(outcome='success') AS successes,
                       SUM(outcome='failure') AS failures,
                       SUM(outcome='blocked') AS blocked,
-                      COUNT(DISTINCT CASE WHEN outcome='success' THEN user_id END) AS users_seen,
+                      -- Only accounts that still exist, because this is shown
+                      -- against the number of accounts configured: counting a
+                      -- since-removed account here would let the page report
+                      -- "2 of 1 accounts used". Their sign-ins are not lost --
+                      -- logins_by_removed_accounts below is where they are said.
+                      COUNT(DISTINCT CASE WHEN outcome='success'
+                            AND user_id IN (SELECT id FROM users) THEN user_id END) AS users_seen,
                       COUNT(DISTINCT CASE WHEN outcome='success' THEN client_digest END) AS sources,
                       COUNT(DISTINCT CASE WHEN outcome='success' THEN date(occurred_at) END) AS days_used,
                       SUM(outcome<>'success' AND user_id IS NULL) AS unknown_account_attempts
@@ -696,19 +718,33 @@ class AccessControl:
             day += timedelta(days=1)
         return series
 
-    def _activity_hourly(self, conn: sqlite3.Connection, window_start: str) -> list[int]:
-        """Successful sign-ins by hour of the UTC day, 24 buckets from 00:00."""
+    def _activity_hourly(self, conn: sqlite3.Connection, window_start: str) -> list[dict]:
+        """Successful sign-ins per UTC hour, each still carrying its own date.
 
-        buckets = [0] * 24
-        for row in conn.execute(
-            """SELECT CAST(strftime('%H', occurred_at) AS INTEGER) AS hour, COUNT(*) AS logins
-                 FROM login_events WHERE occurred_at >= ? AND outcome='success' GROUP BY hour""",
-            (window_start,),
-        ):
-            hour = row["hour"]
-            if hour is not None and 0 <= hour < 24:
-                buckets[hour] = self._count(row["logins"])
-        return buckets
+        The page draws these as one 24-hour distribution in the reader's local
+        time, which is why the date comes with them rather than being summed
+        away here. An hour of the year is not a fixed distance from UTC: a
+        window spanning a daylight-saving change would put half its sign-ins in
+        the wrong local hour if the reader's *current* offset were applied to all
+        of them. With the date attached the browser can convert each bucket under
+        the rules in force on that day.
+
+        Bounded by 24 rows per day in the window -- only hours with a sign-in in
+        them are returned, so an ordinary window is a few rows a day.
+        """
+
+        return [
+            {"day": row["day"], "hour": int(row["hour"]), "logins": self._count(row["logins"])}
+            for row in conn.execute(
+                """SELECT date(occurred_at) AS day,
+                          CAST(strftime('%H', occurred_at) AS INTEGER) AS hour,
+                          COUNT(*) AS logins
+                     FROM login_events WHERE occurred_at >= ? AND outcome='success'
+                    GROUP BY day, hour ORDER BY day, hour""",
+                (window_start,),
+            )
+            if row["hour"] is not None
+        ]
 
     def _activity_recent_logins(self, conn: sqlite3.Connection, window_start: str, limit: int) -> list[dict]:
         return [

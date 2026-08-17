@@ -57,7 +57,7 @@ def test_a_login_through_the_endpoint_shows_up_in_the_report(monkeypatch, tmp_pa
     assert payload["access_db_path"] == str(module.ACCESS_DB_PATH)
     assert [user["username"] for user in payload["users"]] == ["root"]
     assert len(payload["daily"]) == 7
-    assert len(payload["hourly"]) == 24
+    assert sum(bucket["logins"] for bucket in payload["hourly"]) == 1
     assert payload["recent_logins"][0]["outcome"] == "failure"
     assert payload["retention"]["login_events"] == 2
 

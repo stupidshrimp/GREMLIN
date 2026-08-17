@@ -34,14 +34,18 @@
     return `${formatNumber(count)} ${count === 1 ? singular : pluralForm || `${singular}s`}`;
   }
 
-  // The server buckets by UTC hour, because that is what its timestamps are in.
-  // A plant reading "most sign-ins at 13:00" wants its own clock, so the buckets
-  // are rotated by the reader's offset -- but only when that offset is a whole
-  // number of hours. Where it is not (India, parts of Australia), rotating would
-  // put half of one local hour into another, so the chart keeps UTC and says so.
-  function hourOffset() {
-    const minutes = -new Date().getTimezoneOffset();
-    return minutes % 60 === 0 ? minutes / 60 : null;
+  // The server buckets by UTC hour and keeps each bucket's date, because a
+  // plant reading "most sign-ins at 13:00" wants its own clock and an hour of
+  // the year is not a fixed distance from UTC. Converting each bucket through a
+  // Date built from its own day applies the daylight-saving rules that were in
+  // force *then*, so a winter sign-in read in summer stays in the hour it
+  // happened. Where the local offset is not a whole number of hours (India,
+  // parts of Australia), a UTC hour straddles two local ones and is counted in
+  // the local hour it began in.
+  function localHour(day, hour) {
+    const parts = String(day).split("-");
+    const at = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), hour));
+    return isNaN(at.getTime()) ? null : at.getHours();
   }
 
   function render(payload) {
@@ -166,18 +170,14 @@
   }
 
   function renderHourly(hourly) {
-    const buckets = hourly || [];
-    const offset = hourOffset();
-    const local = offset !== null;
-    const values = [];
-    for (let hour = 0; hour < 24; hour += 1) {
-      // Column `hour` is local, so it holds the UTC bucket that hour came from.
-      const source = local ? (hour + ((24 - (offset % 24)) % 24)) % 24 : hour;
-      values.push(buckets[source] || 0);
-    }
-    $("dev-activity-hourly-note").textContent = local
-      ? "Successful sign-ins by hour of the day, in this browser's local time."
-      : "Successful sign-ins by hour of the day, in UTC — this browser's time zone is offset by part of an hour.";
+    const values = new Array(24).fill(0);
+    (hourly || []).forEach(function (bucket) {
+      const hour = localHour(bucket.day, bucket.hour);
+      if (hour !== null) values[hour] += bucket.logins;
+    });
+    $("dev-activity-hourly-note").textContent =
+      "Successful sign-ins by hour of the day, in this browser's local time — each day " +
+      "converted at the offset that was in force on it.";
     buildChart(
       $("dev-activity-hourly"),
       values.map(function (value, hour) {
