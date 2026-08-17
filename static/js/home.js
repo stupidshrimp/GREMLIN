@@ -100,6 +100,16 @@
   // hovers are instant. Stopping it between hovers is the stylesheet's job: it
   // hides the image with `visibility` rather than opacity alone, which is what
   // lets the browser suspend the animation while nobody is looking at it.
+  // The stylesheet refuses to reveal the animation to anyone who has asked for
+  // reduced motion, and there is no reason to spend their bandwidth on a file
+  // they will not be shown. Read at hover rather than at load, so that turning
+  // the preference off part way through a session is enough to get the
+  // animations without a reload -- which is also why the listeners below are not
+  // `once: true`, and why a refusal here leaves `data-hover-src` in place.
+  var stillness = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+
   var media = document.querySelectorAll(".card-hover-media[data-hover-src]");
 
   Array.prototype.forEach.call(media, function (image) {
@@ -109,9 +119,12 @@
     }
 
     function load() {
+      if (stillness && stillness.matches) {
+        return;
+      }
       var src = image.getAttribute("data-hover-src");
-      // Whichever of the two events below arrives first does the work; the
-      // other still fires once and has to find nothing left to do.
+      // Whichever of the two events below arrives first does the work; the rest
+      // of them have to find nothing left to do.
       if (!src) {
         return;
       }
@@ -123,7 +136,7 @@
     // the card counts the same as a cursor. Focus is the keyboard's equivalent:
     // the card reveals its extra copy on :focus-visible, and the animation is
     // written to come with it.
-    card.addEventListener("pointerenter", load, { once: true });
-    card.addEventListener("focus", load, { once: true });
+    card.addEventListener("pointerenter", load);
+    card.addEventListener("focus", load);
   });
 })();

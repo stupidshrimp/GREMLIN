@@ -334,6 +334,11 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   position: relative;
   isolation: isolate;
   overflow: hidden;
+  /* Makes the card queryable by its own width further down. How much room the
+     artwork gets is a question about the card, and the viewport is a poor proxy
+     for it: three columns at 1200px and three columns at 1200px with the
+     sidebar collapsed are 70px apart per card. */
+  container-type: inline-size;
 }
 
 /* The animation a card plays while it is pointed at. It lives in the bottom
@@ -411,17 +416,75 @@ button.life-data-card {
   transition: opacity 260ms ease, transform 260ms ease, max-height 260ms ease;
 }
 
-/* The padding is the corner the animation above sits in, kept out of the text's
-   reach. It costs nothing at rest, where this copy is not on screen to be
-   narrowed, and by the time it is the artwork is fading in beside it. The
-   height had to come up with it: the same sentence in a column two fifths
-   narrower runs a line or two longer, and 120px started clipping the last one. */
+/* These cards unfold on a row of their own where the width is whatever the grid
+   hands over, so the reveal is measured rather than guessed: a `0fr` track grows
+   to `1fr`, which is the copy's real height at whatever width it wrapped to. The
+   shared `max-height` above cannot do that -- it is a number picked for one
+   column width, and any width where the sentence wraps longer than the number
+   allows loses its last line to the card's `overflow: hidden`. 190px was such a
+   number, and the padding below is what made it one.
+
+   Wanted only here. The developer dashboard's .dev-card keeps the max-height
+   reveal it already had; its cards carry no artwork and never narrow the copy. */
+.life-data-card .card-hover-copy {
+  display: grid;
+  grid-template-rows: 0fr;
+  max-height: none;
+  transition: opacity 260ms ease, transform 260ms ease, grid-template-rows 260ms ease;
+}
+
+/* The row is what collapses, so the paragraph has to be able to be clipped by
+   it. Without this it simply overflows a zero-height track and stays on screen. */
+.life-data-card .card-hover-copy > p {
+  overflow: hidden;
+}
+
+/* The padding is the corner the animation sits in, kept out of the text's reach.
+   It costs nothing at rest, where this copy is not on screen to be narrowed, and
+   by the time it is the artwork is fading in beside it. */
 .life-data-card:hover .card-hover-copy,
 .life-data-card:focus-visible .card-hover-copy {
   opacity: 1;
-  max-height: 190px;
+  grid-template-rows: 1fr;
   transform: translateY(0);
   padding-right: min(36%, 145px);
+}
+
+/* Three columns hold up until roughly here, and then the card runs out of room
+   to be read and looked at side by side: at 1101px, the narrowest the grid gets
+   before it folds, the reserved corner left the sentence a 124px column that
+   stacked eight lines deep. So below this the copy takes the card back, and the
+   animation gives up being an illustration -- it shrinks into the corner and
+   plays behind the tail of the text, where the mask has it at its faintest.
+
+   280px is the content box, which is the width the two of them actually share;
+   the card around it is 43px wider. */
+@container (max-width: 280px) {
+  .card-hover-media {
+    width: min(56%, 128px);
+    height: min(44%, 128px);
+  }
+
+  .life-data-card:hover .card-hover-copy,
+  .life-data-card:focus-visible .card-hover-copy {
+    padding-right: 0;
+  }
+}
+
+/* A GIF has no pause and no still to fall back on, and this one loops for as
+   long as the pointer rests on the card -- precisely the continuous motion the
+   preference is asking us not to start. So it is never revealed, and the corner
+   it would have occupied goes back to the copy. home.js reads the same
+   preference and does not fetch the file either. */
+@media (prefers-reduced-motion: reduce) {
+  .card-hover-media {
+    display: none;
+  }
+
+  .life-data-card:hover .card-hover-copy,
+  .life-data-card:focus-visible .card-hover-copy {
+    padding-right: 0;
+  }
 }
 
 .life-data-card:hover > p,
