@@ -483,9 +483,16 @@ button.life-data-card {
   gap: 0.9rem;
 }
 
+/* `min(280px, 100%)` rather than a bare 280px: auto-fit sizes the track from the
+   minimum, so a flat 280px keeps that width even once the card holding it is
+   narrower and pushes the page into a horizontal scroll. Below roughly 357px --
+   .content's padding plus the card's, subtracted from the viewport -- 280px no
+   longer fits, which covers a folding phone's cover screen and anyone zoomed in
+   on an ordinary one. Clamping the minimum to the container instead lets the
+   single column shrink with it, and costs nothing above that width. */
 .link-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 1rem;
 }
 
