@@ -246,7 +246,17 @@ PAGES = [
         "template": "developer_home.html",
         "title": "Developer",
         "icon": ICONS["code"],
+<<<<<<< HEAD
     }
+=======
+    },
+    {
+        "route": "/testing",
+        "template": "testing.html",
+        "title": "Testing",
+        "icon": ICONS["code"],
+    },
+>>>>>>> origin/sania-testing-sidebar
 ]
 
 
@@ -550,6 +560,14 @@ def api_metrics_reliability():
             start_date=start,
             end_date=end,
         )
+    )
+
+@app.route("/testing")
+def testing():
+    return render_template(
+        "testing.html",
+        page_title="Testing",
+        nav_links=NAV_LINKS,
     )
 
 
