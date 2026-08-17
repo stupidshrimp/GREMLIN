@@ -1,10 +1,10 @@
 /* Shared plumbing for the developer pages.
  *
- * Database inspection and Limble sync are separate documents that talk to the
- * same /developer/api/* endpoints and are drawn from the same primitives, so the
- * fetch wrapper, the DOM builders and the formatters live here rather than being
- * copied into each. Published as window.GremlinDev; both page scripts load this
- * first.
+ * Database inspection, Limble sync and user activity are separate documents that
+ * talk to the same /developer/api/* endpoints and are drawn from the same
+ * primitives, so the fetch wrapper, the DOM builders and the formatters live
+ * here rather than being copied into each. Published as window.GremlinDev; every
+ * page script loads this first.
  *
  * Rendering is text-only on purpose: every value that came out of the database
  * goes through textContent, never innerHTML, so stored content cannot inject
@@ -23,6 +23,7 @@
     rows: (name) => `/developer/api/tables/${encodeURIComponent(name)}/rows`,
     query: "/developer/api/query",
     sync: "/developer/api/sync",
+    activity: (days) => `/developer/api/activity?days=${encodeURIComponent(days)}`,
   };
 
   const $ = (id) => document.getElementById(id);

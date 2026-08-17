@@ -1,7 +1,7 @@
 /* Developer area styling.
  *
- * Shared by the hub at /developer and the three pages behind it (database
- * inspection, Limble sync, access control). Reuses the theme.css palette and the
+ * Shared by the hub at /developer and the four pages behind it (database
+ * inspection, Limble sync, access control, user activity). Reuses the theme.css palette and the
  * shared .glass-card / .btn-* primitives so the dev tooling matches the rest of
  * GREMLIN. Everything here is scoped under a .dev- prefix to keep it out of the
  * product pages.
@@ -754,4 +754,118 @@ body:has(.dev-panel) .content,
 #dev-sql:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;
+}
+
+/* --- User activity ------------------------------------------------------- */
+
+.dev-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dev-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--forest-100);
+}
+
+.dev-stat-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dev-stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--forest-900);
+}
+
+.dev-stat-note {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Both distributions on this page are columns scaled against the busiest one.
+   Sized in percentages inside a fixed-height track so the chart survives any
+   window width without a redraw, and so a 365-day window simply gets narrower
+   columns rather than overflowing. */
+.dev-chart {
+  margin-top: 14px;
+}
+
+.dev-chart-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 180px;
+}
+
+/* A year of columns cannot afford a 2px gap between each: the gaps would take
+   more width than the bars. Close them up and let the columns carry the shape. */
+.dev-chart-bars.is-dense {
+  gap: 1px;
+}
+
+.dev-chart.is-compact .dev-chart-bars {
+  height: 130px;
+}
+
+.dev-chart-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.dev-chart-track {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+  background: var(--forest-100);
+}
+
+.dev-chart-fill {
+  width: 100%;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, var(--forest-500), var(--forest-700));
+}
+
+/* A day with nothing on it still shows its track, so the gap is legible as a
+   quiet day rather than as a missing column. */
+.dev-chart-fill.is-empty {
+  background: none;
+}
+
+/* Only every nth column is labelled, and at a year's width a column is a couple
+   of pixels wide -- narrower than the date it carries. The label is allowed to
+   spill past its own column so it stays readable; the page script spaces the
+   labelled columns far enough apart that they do not collide. */
+.dev-chart-label {
+  flex-shrink: 0;
+  height: 1.1em;
+  overflow: visible;
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.dev-chart-caption {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
 }

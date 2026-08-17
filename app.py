@@ -31,7 +31,7 @@ from services.life_data_service import (
     LifeDataService,
 )
 from services.schema_service import SchemaService, SchemaServiceError
-from services.access_control import AccessControl, ROLES
+from services.access_control import ACTIVITY_DEFAULT_DAYS, ACTIVITY_MAX_DAYS, AccessControl, ROLES
 from services.sync_service import (
     APP_ENV_KEYS,
     LimbleSyncRunner,
@@ -1301,6 +1301,20 @@ def developer_limble_sync():
     return render_template("developer_sync.html", **_dev_page_context("sync"))
 
 
+@app.route("/developer/activity")
+@dev_page
+def developer_activity():
+    return render_template(
+        "developer_activity.html",
+        **_dev_page_context(
+            "activity",
+            access_db_path=str(ACCESS_DB_PATH),
+            default_days=ACTIVITY_DEFAULT_DAYS,
+            max_days=ACTIVITY_MAX_DAYS,
+        ),
+    )
+
+
 @app.route("/developer/access")
 @dev_page
 def developer_access():
@@ -1460,6 +1474,34 @@ def api_dev_table_rows(table):
 def api_dev_query():
     payload = request.get_json(silent=True) or {}
     return jsonify(get_schema_service().run_query(payload.get("sql") or ""))
+
+
+# --- User activity ---------------------------------------------------------
+#
+# The one developer endpoint that reads the access database rather than
+# GREMLIN.db: who has been signing in, how often, and what they changed once
+# inside. Both sources are already collected for other reasons -- login_events
+# by the login endpoint, audit_log by every protected write -- so this reports
+# what the deployment already knows instead of adding tracking of its own.
+
+
+@app.route("/developer/api/activity")
+@dev_api
+def api_dev_activity():
+    """Sign-in and change activity over a window of days."""
+
+    raw = request.args.get("days")
+    try:
+        days = ACTIVITY_DEFAULT_DAYS if raw in (None, "") else int(raw)
+        payload = access_control.activity_report(days)
+    except ValueError:
+        # Covers both a window that is not a number and one out of range; the
+        # service owns the bound, so its message is the one worth showing.
+        return jsonify({
+            "error": f"days must be a whole number between 1 and {ACTIVITY_MAX_DAYS}."
+        }), 400
+    payload["access_db_path"] = str(ACCESS_DB_PATH)
+    return jsonify(payload)
 
 
 # --- Limble sync -----------------------------------------------------------

@@ -1,0 +1,202 @@
+"""What the access database records about sign-ins, and what it reports back.
+
+The developer area's user-activity page is only as honest as this history, so
+these cover what is written (and deliberately not written) on each kind of
+attempt, what a window counts, and what happens when the file reaches its cap.
+"""
+
+import sqlite3
+
+import pytest
+
+from services import access_control as access_control_module
+from services.access_control import ACTIVITY_MAX_DAYS, LOGIN_FAILURE_LIMIT, AccessControl
+
+
+def _control(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    return control
+
+
+def _events(control):
+    with control._connect() as conn:
+        return [dict(row) for row in conn.execute("SELECT * FROM login_events ORDER BY id")]
+
+
+def test_a_successful_login_is_recorded_against_the_account(tmp_path):
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    events = _events(control)
+    assert [(event["username"], event["outcome"]) for event in events] == [("root", "success")]
+    assert events[0]["user_id"] == control.authenticate("root", "secret")["id"]
+    # The origin is kept as a digest, never as an address: it is here to count
+    # distinct sources, not to say where anybody was sitting.
+    assert events[0]["client_digest"] != "10.0.0.5"
+    assert len(events[0]["client_digest"]) == 64
+
+
+def test_a_wrong_pin_is_recorded_against_the_account_it_was_aimed_at(tmp_path):
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "wrong", "10.0.0.5")
+
+    events = _events(control)
+    assert [(event["username"], event["outcome"]) for event in events] == [("root", "failure")]
+
+
+def test_a_name_matching_no_account_is_recorded_without_storing_what_was_typed(tmp_path):
+    """A PIN typed into the username box must not end up in the clear.
+
+    That is the commonest way to produce an unrecognised name, and this file
+    otherwise holds only hashes. The attempt is still counted -- the outcome and
+    the origin digest are what the activity page reports -- but the text is not
+    kept.
+    """
+
+    control = _control(tmp_path)
+    control.authenticate_limited("8675309-mistyped-pin", "whatever", "10.0.0.5")
+
+    events = _events(control)
+    assert [(event["user_id"], event["username"], event["outcome"]) for event in events] == [
+        (None, None, "failure")
+    ]
+    assert b"8675309-mistyped-pin" not in (tmp_path / "accesscontrol.db").read_bytes()
+
+
+def test_an_attempt_refused_by_the_lockout_is_recorded_as_blocked(tmp_path):
+    control = _control(tmp_path)
+    for _ in range(LOGIN_FAILURE_LIMIT):
+        control.authenticate_limited("root", "wrong", "10.0.0.5")
+    # Refused before the PIN is even considered -- and still attributed, so the
+    # page can name the account somebody is being kept out of.
+    user, retry_after = control.authenticate_limited("root", "secret", "10.0.0.5")
+    assert user is None and retry_after > 0
+
+    outcomes = [event["outcome"] for event in _events(control)]
+    assert outcomes == ["failure"] * LOGIN_FAILURE_LIMIT + ["blocked"]
+    assert _events(control)[-1]["username"] == "root"
+
+
+def test_the_report_counts_each_account_and_still_lists_the_quiet_ones(tmp_path):
+    control = _control(tmp_path)
+    control.save_user(None, "operator", "2468", "editor")
+    control.save_user(None, "quiet", "1357", "viewer")
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    control.authenticate_limited("operator", "2468", "10.0.0.6")
+    control.authenticate_limited("operator", "2468", "10.0.0.7")
+    control.authenticate_limited("operator", "nope", "10.0.0.7")
+    control.record_change({"id": 1, "username": "root"}, "POST /developer/api/sync")
+
+    report = control.activity_report(30)
+    users = {user["username"]: user for user in report["users"]}
+
+    assert users["operator"]["logins"] == 2
+    assert users["operator"]["failed_logins"] == 1
+    assert users["operator"]["distinct_sources"] == 2
+    assert users["operator"]["active_days"] == 1
+    # Two sign-ins on one day is a different fact from two sign-ins on two days.
+    assert users["operator"]["logins_per_active_day"] == 2.0
+    assert users["root"]["changes"] == 1
+
+    # An account nobody uses is the reason to open this page, so it is present
+    # rather than absent for having no rows to join against.
+    assert users["quiet"]["logins"] == 0
+    assert users["quiet"]["last_login"] is None
+
+    summary = report["summary"]
+    assert summary["successful_logins"] == 3
+    assert summary["failed_logins"] == 1
+    assert summary["users_seen"] == 2
+    assert summary["accounts"] == 3
+    assert summary["never_signed_in"] == 1
+    assert summary["changes"] == 1
+    assert report["top_actions"][0]["action"] == "POST /developer/api/sync"
+    assert [event["outcome"] for event in report["recent_logins"]][0] == "failure"
+
+
+def test_the_window_bounds_what_is_counted(tmp_path):
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    with control._connect() as conn:
+        conn.execute("UPDATE login_events SET occurred_at = datetime('now', '-40 days')")
+
+    assert control.activity_report(30)["summary"]["successful_logins"] == 0
+    assert control.activity_report(90)["summary"]["successful_logins"] == 1
+    # The account is still listed, with its last sign-in from outside the window:
+    # "nothing this month, last seen in June" is the useful reading.
+    older = {user["username"]: user for user in control.activity_report(30)["users"]}["root"]
+    assert older["logins"] == 0 and older["last_login"] is not None
+
+
+def test_the_daily_series_covers_every_day_including_the_quiet_ones(tmp_path):
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    report = control.activity_report(7)
+    days = report["daily"]
+    assert len(days) == 7
+    assert [day["day"] for day in days] == sorted(day["day"] for day in days)
+    assert days[-1]["day"] == report["window"]["last_day"]
+    assert days[-1]["logins"] == 1
+    assert [day["logins"] for day in days[:-1]] == [0] * 6
+    assert len(report["hourly"]) == 24
+    assert sum(report["hourly"]) == 1
+
+
+@pytest.mark.parametrize("days", [0, -1, ACTIVITY_MAX_DAYS + 1, "soon", None])
+def test_an_unusable_window_is_refused(tmp_path, days):
+    control = _control(tmp_path)
+    with pytest.raises(ValueError):
+        control.activity_report(days)
+
+
+def test_history_outlives_the_account_it_belongs_to(tmp_path):
+    """Removing a user must not quietly rewrite what the deployment recorded."""
+
+    control = _control(tmp_path)
+    control.save_user(None, "leaver", "2468", "editor")
+    control.authenticate_limited("leaver", "2468", "10.0.0.6")
+    leaver = control.authenticate("leaver", "2468")
+    control.delete_user(leaver["id"], current_user_id=999)
+
+    report = control.activity_report(30)
+    assert [user["username"] for user in report["users"]] == ["root"]
+    assert report["summary"]["logins_by_removed_accounts"] == 1
+    assert report["summary"]["successful_logins"] == 1
+
+
+def test_the_history_is_capped_and_sheds_unrecognised_attempts_first(tmp_path, monkeypatch):
+    """A flood of invented names must not push real sign-ins out of the file."""
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    # Each attempt uses a fresh name and origin so the limiter's own lockouts do
+    # not stop the flood before the cap is reached.
+    for index in range(8):
+        control.authenticate_limited(f"ghost-{index}", "x", f"10.9.9.{index}")
+
+    events = _events(control)
+    assert len(events) == 3
+    assert sum(1 for event in events if event["username"] == "root") == 2
+
+
+def test_an_existing_access_database_gains_the_history_table(tmp_path):
+    """Deployments upgrade in place: the file predates this feature."""
+
+    path = tmp_path / "legacy-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, role TEXT,
+            credential_version INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT)""")
+        conn.execute("""CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY, user_id INTEGER, username TEXT, action TEXT, changed_at TEXT)""")
+
+    control = AccessControl(path)
+    control.ensure_schema()
+    control.save_user(None, "root", "secret", "admin")
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    assert control.activity_report(30)["summary"]["successful_logins"] == 1

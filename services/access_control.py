@@ -8,6 +8,7 @@ import os
 import secrets
 import sqlite3
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -27,6 +28,25 @@ MAX_PIN_CHARS = 256
 # currently locked out are never evicted -- those are the ones doing the work,
 # and dropping them would let a flood clear somebody's lockout.
 LOGIN_ATTEMPT_ROW_CAP = 10_000
+
+# Sign-in history, which is what the developer area's user-activity page counts.
+# Distinct from login_attempts above: that table is the rate limiter's working
+# state and is deleted the moment a login succeeds, so it can say who is locked
+# out right now but nothing about who has been using GREMLIN.
+LOGIN_SUCCESS = "success"
+LOGIN_FAILURE = "failure"
+LOGIN_BLOCKED = "blocked"
+LOGIN_OUTCOMES = (LOGIN_SUCCESS, LOGIN_FAILURE, LOGIN_BLOCKED)
+# Same reasoning as LOGIN_ATTEMPT_ROW_CAP: every attempt writes a row, including
+# ones nobody legitimate made, so the history is capped rather than allowed to
+# enlarge the file forever. Sized for years of ordinary use by a plant-sized
+# roster -- a few dozen accounts signing in a handful of times a day.
+LOGIN_EVENT_ROW_CAP = 50_000
+# What the activity page may ask for. A window is a whole number of days back
+# from now; the cap keeps a hand-edited URL from asking for a decade of history.
+ACTIVITY_DEFAULT_DAYS = 30
+ACTIVITY_MAX_DAYS = 365
+ACTIVITY_RECENT_LIMIT = 25
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +133,40 @@ class AccessControl:
                     secret TEXT NOT NULL
                 )
             """)
+            # One row per sign-in attempt that reached the login endpoint.
+            #
+            # `username` holds the account's own name and is filled in only when
+            # the typed name matched a real account. A name that matched nothing
+            # is stored as NULL rather than as typed: the commonest way to
+            # produce one is a PIN entered in the username box, and this file
+            # otherwise keeps no credential in the clear. What is lost is the
+            # ability to read back which invented names were tried; `outcome`
+            # and `client_digest` still count the attempts and group them by
+            # origin, which is what the activity page reports.
+            #
+            # `user_id` is not a foreign key. History outlives the account it
+            # belongs to -- removing a user must not silently rewrite what the
+            # deployment recorded about the period they were signing in.
+            # Built from the constants rather than repeating them, so the column
+            # and the code writing it cannot drift apart. Quoted here rather than
+            # bound as parameters: a CHECK constraint is part of the table
+            # definition, and these values are this module's own literals.
+            outcomes = ",".join(f"'{outcome}'" for outcome in LOGIN_OUTCOMES)
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS login_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    username TEXT,
+                    outcome TEXT NOT NULL CHECK(outcome IN ({outcomes})),
+                    client_digest TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Every activity query is "since a cutoff", and the per-user panel
+            # then groups by account.
+            conn.execute("CREATE INDEX IF NOT EXISTS login_events_occurred_at ON login_events(occurred_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS login_events_user ON login_events(user_id, occurred_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS audit_log_changed_at ON audit_log(changed_at)")
             # GREMLIN_ADMIN_* creates the first administrator and nothing else,
             # so it is read only when there is a first administrator to create.
             # Every complaint about it belongs inside this branch: on a
@@ -296,14 +350,22 @@ class AccessControl:
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
             )}
             locked_until = max((float(row["locked_until"]) for row in attempts.values()), default=0)
-            if locked_until > now:
-                return None, max(1, int(locked_until - now + 0.999))
             valid_input = len(username) <= MAX_USERNAME_CHARS and len(pin) <= MAX_PIN_CHARS
+            if locked_until > now:
+                # Named, so the activity page can report an account somebody is
+                # being kept out of rather than only a count of refusals. The
+                # lookup is the same bounded one the credential check uses, and
+                # no hash is verified here -- the attempt was refused before any
+                # PIN was considered.
+                account = conn.execute("SELECT id,username FROM users WHERE username=?", (username,)).fetchone() if valid_input else None
+                self._record_login_event(conn, account, LOGIN_BLOCKED, client_digest)
+                return None, max(1, int(locked_until - now + 0.999))
             row = conn.execute(
                 "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
             ).fetchone() if valid_input else None
             if row and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
+                self._record_login_event(conn, row, LOGIN_SUCCESS, client_digest)
                 return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
             retry_after = 0
             for scope in scopes:
@@ -321,7 +383,49 @@ class AccessControl:
                        locked_until=excluded.locked_until""",
                     (scope, count, started, lock_until),
                 )
+            self._record_login_event(conn, row, LOGIN_FAILURE, client_digest)
             return None, retry_after
+
+    def _record_login_event(
+        self,
+        conn: sqlite3.Connection,
+        account: sqlite3.Row | None,
+        outcome: str,
+        client_digest: str,
+    ) -> None:
+        """Append one attempt to the sign-in history, inside the caller's transaction.
+
+        Written from ``authenticate_limited`` -- the login endpoint's only door --
+        so an attempt is recorded exactly once, under the same serialized writer
+        slot that decided its outcome. A history row can therefore never
+        contradict the lockout state it was recorded alongside.
+        """
+
+        conn.execute(
+            "INSERT INTO login_events(user_id,username,outcome,client_digest) VALUES (?,?,?,?)",
+            (
+                account["id"] if account else None,
+                account["username"] if account else None,
+                outcome,
+                client_digest,
+            ),
+        )
+        # Attempts against names that match no account are what an outsider can
+        # produce without limit, so they are the first thing evicted -- ordering
+        # attributed rows ahead of unattributed ones means no flood of invented
+        # names can push a real account's sign-in history out of the file. Within
+        # each group the newest rows are kept. A deployment whose own accounts
+        # fill the cap loses its oldest history, which is the intended meaning of
+        # a cap.
+        if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP:
+            conn.execute(
+                """DELETE FROM login_events WHERE id IN (
+                       SELECT id FROM login_events
+                        ORDER BY (user_id IS NOT NULL) DESC, id DESC
+                        LIMIT -1 OFFSET ?
+                   )""",
+                (LOGIN_EVENT_ROW_CAP,),
+            )
 
     def list_users(self) -> list[dict]:
         with self._connect() as conn:
@@ -371,3 +475,294 @@ class AccessControl:
                 "INSERT INTO audit_log(user_id,username,action) VALUES (?,?,?)",
                 (user["id"], user["username"], action),
             )
+
+    # -- activity ------------------------------------------------------------
+    #
+    # What the developer area's user-activity page reads. Two tables answer it:
+    # login_events, which says who arrived and when, and audit_log, which says
+    # what they changed once inside. Both are already here -- nothing about
+    # activity is stored in GREMLIN.db, so a plant with an empty analysis
+    # database still has a complete account of its users.
+    #
+    # Every timestamp in both tables is SQLite's CURRENT_TIMESTAMP, which is UTC
+    # with no zone suffix. Days and hours are therefore bucketed in UTC; the page
+    # says so, and shifts the hour-of-day chart into the reader's own zone.
+
+    def activity_report(
+        self,
+        days: int = ACTIVITY_DEFAULT_DAYS,
+        *,
+        recent_limit: int = ACTIVITY_RECENT_LIMIT,
+    ) -> dict:
+        """Sign-in and change activity over the last ``days`` calendar days.
+
+        One connection answers the whole page: a summary, a row per account, a
+        daily and an hour-of-day distribution, the most recent sign-ins and
+        changes, and which protected endpoints were used. Read-only.
+        """
+
+        days = self._activity_days(days)
+        recent_limit = max(1, min(int(recent_limit), 200))
+        with self._connect() as conn:
+            # The cutoff is midnight UTC of the first day in the window, so the
+            # window is exactly `days` calendar days ending with today rather
+            # than a rolling interval that cuts today's morning in half. Both
+            # timestamp columns are "YYYY-MM-DD HH:MM:SS", so a string
+            # comparison against this is a date comparison.
+            first_day = conn.execute("SELECT date('now', ?)", (f"-{days - 1} days",)).fetchone()[0]
+            window_start = f"{first_day} 00:00:00"
+            today = conn.execute("SELECT date('now')").fetchone()[0]
+            return {
+                "window": {
+                    "days": days,
+                    "start": window_start,
+                    "first_day": first_day,
+                    "last_day": today,
+                    "timezone": "UTC",
+                },
+                "summary": self._activity_summary(conn, window_start),
+                "users": self._activity_users(conn, window_start),
+                "daily": self._activity_daily(conn, window_start, first_day, today),
+                "hourly": self._activity_hourly(conn, window_start),
+                "recent_logins": self._activity_recent_logins(conn, window_start, recent_limit),
+                "recent_changes": self._activity_recent_changes(conn, window_start, recent_limit),
+                "top_actions": self._activity_top_actions(conn, window_start),
+                "retention": {
+                    "login_event_cap": LOGIN_EVENT_ROW_CAP,
+                    **self._activity_retention(conn),
+                },
+            }
+
+    @staticmethod
+    def _activity_days(days: int) -> int:
+        """Bound the window a caller may ask for."""
+
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise ValueError("The activity window must be a whole number of days.") from None
+        if not 1 <= days <= ACTIVITY_MAX_DAYS:
+            raise ValueError(f"The activity window must be between 1 and {ACTIVITY_MAX_DAYS} days.")
+        return days
+
+    @staticmethod
+    def _count(value) -> int:
+        """SUM over no rows is NULL; every count this page shows is a number."""
+
+        return int(value or 0)
+
+    def _activity_summary(self, conn: sqlite3.Connection, window_start: str) -> dict:
+        logins = conn.execute(
+            """SELECT SUM(outcome='success') AS successes,
+                      SUM(outcome='failure') AS failures,
+                      SUM(outcome='blocked') AS blocked,
+                      COUNT(DISTINCT CASE WHEN outcome='success' THEN user_id END) AS users_seen,
+                      COUNT(DISTINCT CASE WHEN outcome='success' THEN client_digest END) AS sources,
+                      COUNT(DISTINCT CASE WHEN outcome='success' THEN date(occurred_at) END) AS days_used,
+                      SUM(outcome<>'success' AND user_id IS NULL) AS unknown_account_attempts
+                 FROM login_events WHERE occurred_at >= ?""",
+            (window_start,),
+        ).fetchone()
+        changes = conn.execute(
+            "SELECT COUNT(*) AS changes, COUNT(DISTINCT user_id) AS authors FROM audit_log WHERE changed_at >= ?",
+            (window_start,),
+        ).fetchone()
+        accounts = conn.execute(
+            """SELECT COUNT(*) AS accounts,
+                      SUM(id NOT IN (SELECT user_id FROM login_events
+                                      WHERE user_id IS NOT NULL AND outcome='success')) AS never_signed_in
+                 FROM users""",
+        ).fetchone()
+        # Sign-ins by an account that no longer exists. The history outlives the
+        # user row on purpose, and an administrator looking at a window that
+        # includes somebody's last week should see that the activity was theirs
+        # rather than find it missing from every per-account row.
+        departed = conn.execute(
+            """SELECT COUNT(*) FROM login_events e
+                WHERE e.occurred_at >= ? AND e.outcome='success' AND e.user_id IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)""",
+            (window_start,),
+        ).fetchone()[0]
+        return {
+            "successful_logins": self._count(logins["successes"]),
+            "failed_logins": self._count(logins["failures"]),
+            "blocked_logins": self._count(logins["blocked"]),
+            "users_seen": self._count(logins["users_seen"]),
+            "distinct_sources": self._count(logins["sources"]),
+            "days_with_logins": self._count(logins["days_used"]),
+            "unknown_account_attempts": self._count(logins["unknown_account_attempts"]),
+            "changes": self._count(changes["changes"]),
+            "change_authors": self._count(changes["authors"]),
+            "accounts": self._count(accounts["accounts"]),
+            "never_signed_in": self._count(accounts["never_signed_in"]),
+            "logins_by_removed_accounts": self._count(departed),
+        }
+
+    def _activity_users(self, conn: sqlite3.Connection, window_start: str) -> list[dict]:
+        """One row per account: how often, how recently, and what they changed.
+
+        Accounts with nothing in the window are still listed, at zero. "Who has
+        not signed in" is the question this page is most often opened to answer,
+        and an account that is absent from the table cannot answer it.
+        """
+
+        rows = conn.execute(
+            """SELECT u.id, u.username, u.role, u.created_at,
+                      COALESCE(w.logins, 0) AS logins,
+                      COALESCE(w.failures, 0) AS failed_logins,
+                      COALESCE(w.blocked, 0) AS blocked_logins,
+                      COALESCE(w.active_days, 0) AS active_days,
+                      COALESCE(w.sources, 0) AS distinct_sources,
+                      COALESCE(c.changes, 0) AS changes,
+                      c.last_change,
+                      a.last_login,
+                      COALESCE(a.total_logins, 0) AS total_logins
+                 FROM users u
+                 LEFT JOIN (
+                      SELECT user_id,
+                             SUM(outcome='success') AS logins,
+                             SUM(outcome='failure') AS failures,
+                             SUM(outcome='blocked') AS blocked,
+                             COUNT(DISTINCT CASE WHEN outcome='success' THEN date(occurred_at) END) AS active_days,
+                             COUNT(DISTINCT CASE WHEN outcome='success' THEN client_digest END) AS sources
+                        FROM login_events WHERE occurred_at >= ? AND user_id IS NOT NULL
+                       GROUP BY user_id
+                 ) w ON w.user_id = u.id
+                 LEFT JOIN (
+                      SELECT user_id, COUNT(*) AS total_logins, MAX(occurred_at) AS last_login
+                        FROM login_events WHERE outcome='success' AND user_id IS NOT NULL
+                       GROUP BY user_id
+                 ) a ON a.user_id = u.id
+                 LEFT JOIN (
+                      SELECT user_id, COUNT(*) AS changes, MAX(changed_at) AS last_change
+                        FROM audit_log WHERE changed_at >= ? GROUP BY user_id
+                 ) c ON c.user_id = u.id
+                ORDER BY logins DESC, changes DESC, u.username COLLATE NOCASE""",
+            (window_start, window_start),
+        ).fetchall()
+        users = []
+        for row in rows:
+            entry = dict(row)
+            # How concentrated the use was: five sign-ins across five days is a
+            # daily user, five in one day is somebody who kept being signed out.
+            entry["logins_per_active_day"] = (
+                round(entry["logins"] / entry["active_days"], 1) if entry["active_days"] else 0.0
+            )
+            users.append(entry)
+        return users
+
+    def _activity_daily(
+        self, conn: sqlite3.Connection, window_start: str, first_day: str, last_day: str
+    ) -> list[dict]:
+        """Sign-ins per UTC day, with quiet days present as zeroes.
+
+        Gaps are filled here rather than in the browser so the trend is read as
+        a calendar: a week nobody used GREMLIN should be a flat stretch, not two
+        adjacent bars.
+        """
+
+        counted = {
+            row["day"]: row
+            for row in conn.execute(
+                """SELECT date(occurred_at) AS day,
+                          SUM(outcome='success') AS logins,
+                          SUM(outcome<>'success') AS refused,
+                          COUNT(DISTINCT CASE WHEN outcome='success' THEN user_id END) AS users
+                     FROM login_events WHERE occurred_at >= ?
+                    GROUP BY day""",
+                (window_start,),
+            )
+        }
+        changes = {
+            row["day"]: row["changes"]
+            for row in conn.execute(
+                "SELECT date(changed_at) AS day, COUNT(*) AS changes FROM audit_log WHERE changed_at >= ? GROUP BY day",
+                (window_start,),
+            )
+        }
+        series = []
+        day = date.fromisoformat(first_day)
+        end = date.fromisoformat(last_day)
+        while day <= end:
+            key = day.isoformat()
+            row = counted.get(key)
+            series.append({
+                "day": key,
+                "logins": self._count(row["logins"]) if row else 0,
+                "refused": self._count(row["refused"]) if row else 0,
+                "users": self._count(row["users"]) if row else 0,
+                "changes": self._count(changes.get(key)),
+            })
+            day += timedelta(days=1)
+        return series
+
+    def _activity_hourly(self, conn: sqlite3.Connection, window_start: str) -> list[int]:
+        """Successful sign-ins by hour of the UTC day, 24 buckets from 00:00."""
+
+        buckets = [0] * 24
+        for row in conn.execute(
+            """SELECT CAST(strftime('%H', occurred_at) AS INTEGER) AS hour, COUNT(*) AS logins
+                 FROM login_events WHERE occurred_at >= ? AND outcome='success' GROUP BY hour""",
+            (window_start,),
+        ):
+            hour = row["hour"]
+            if hour is not None and 0 <= hour < 24:
+                buckets[hour] = self._count(row["logins"])
+        return buckets
+
+    def _activity_recent_logins(self, conn: sqlite3.Connection, window_start: str, limit: int) -> list[dict]:
+        return [
+            {
+                "username": row["username"],
+                "outcome": row["outcome"],
+                "occurred_at": row["occurred_at"],
+                # False means the typed name matched no account, which is why
+                # there is no username to show alongside it.
+                "known_account": bool(row["known_account"]),
+            }
+            for row in conn.execute(
+                """SELECT username, outcome, occurred_at, user_id IS NOT NULL AS known_account
+                     FROM login_events WHERE occurred_at >= ? ORDER BY id DESC LIMIT ?""",
+                (window_start, limit),
+            )
+        ]
+
+    def _activity_recent_changes(self, conn: sqlite3.Connection, window_start: str, limit: int) -> list[dict]:
+        return [
+            dict(row)
+            for row in conn.execute(
+                """SELECT username, action, changed_at FROM audit_log
+                    WHERE changed_at >= ? ORDER BY id DESC LIMIT ?""",
+                (window_start, limit),
+            )
+        ]
+
+    def _activity_top_actions(self, conn: sqlite3.Connection, window_start: str, limit: int = 10) -> list[dict]:
+        """Which protected endpoints the window's writes went through."""
+
+        return [
+            dict(row)
+            for row in conn.execute(
+                """SELECT action, COUNT(*) AS count, COUNT(DISTINCT user_id) AS users,
+                          MAX(changed_at) AS last_used
+                     FROM audit_log WHERE changed_at >= ?
+                    GROUP BY action ORDER BY count DESC, action LIMIT ?""",
+                (window_start, limit),
+            )
+        ]
+
+    def _activity_retention(self, conn: sqlite3.Connection) -> dict:
+        """How much history there is, so a window can be read against its limits."""
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS events, MIN(occurred_at) AS first_event, MAX(occurred_at) AS last_event FROM login_events"
+        ).fetchone()
+        events = self._count(row["events"])
+        return {
+            "login_events": events,
+            "first_event": row["first_event"],
+            "last_event": row["last_event"],
+            # At the cap the oldest attempts have started being dropped, so a
+            # window reaching further back than first_event is under-counted.
+            "capped": events >= LOGIN_EVENT_ROW_CAP,
+        }
