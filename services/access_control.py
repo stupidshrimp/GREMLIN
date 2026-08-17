@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -42,6 +43,15 @@ LOGIN_OUTCOMES = (LOGIN_SUCCESS, LOGIN_FAILURE, LOGIN_BLOCKED)
 # enlarge the file forever. Sized for years of ordinary use by a plant-sized
 # roster -- a few dozen accounts signing in a handful of times a day.
 LOGIN_EVENT_ROW_CAP = 50_000
+# How far over the cap the history is allowed to run before it is trimmed back
+# to it. Deciding what to keep means ordering the whole table by a priority no
+# index can supply, which is a full scan and a temporary sort -- tens of
+# milliseconds at the cap, held inside the login path's serialized writer slot.
+# Paying that on every attempt would let anyone who first fills the cap put
+# every subsequent sign-in, their own or somebody else's, behind another sort.
+# Trimming in batches pays it once per this many attempts instead, so the file
+# holds at most cap + this.
+LOGIN_EVENT_PRUNE_SLACK = 500
 # What the activity page may ask for. A window is a whole number of days back
 # from now; the cap keeps a hand-edited URL from asking for a decade of history.
 ACTIVITY_DEFAULT_DAYS = 30
@@ -76,6 +86,7 @@ def _check_credential_bounds(username: str, pin: str) -> None:
 class AccessControl:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._origin_key_cache: bytes | None = None
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=DB_BUSY_TIMEOUT_SECONDS)
@@ -273,6 +284,40 @@ class AccessControl:
             conn.execute("INSERT INTO deployment_secret(id, secret) VALUES (1, ?)", (secret,))
         return secret
 
+    def _origin_key(self) -> bytes:
+        """The deployment's own key for digesting where an attempt came from.
+
+        Derived from the deployment secret rather than being it: that value
+        signs session cookies, and a key should do one job. Read once per
+        process -- the secret is settled at startup and never rotates while
+        GREMLIN is running.
+        """
+
+        if self._origin_key_cache is None:
+            self._origin_key_cache = hashlib.sha256(
+                b"gremlin-login-origin:" + self.shared_secret_key().encode("utf-8")
+            ).digest()
+        return self._origin_key_cache
+
+    def _origin_digest(self, client_key: str) -> str:
+        """A stable, deployment-scoped stand-in for a client address.
+
+        The activity page counts *distinct* origins; it never needs to say where
+        anybody was sitting, so the address itself is not kept. A plain SHA-256
+        would not have achieved that: IPv4 is four billion values and a plant
+        subnet is tens of thousands, so anybody holding the digest could simply
+        hash every candidate address until one matched. Keyed, the stored value
+        means nothing without this deployment's secret -- which is what these
+        rows need, because unlike the rate limiter's working state they are
+        years of history that gets exported, screenshotted and pasted into
+        tickets.
+
+        Not a defence against somebody holding the access database itself. The
+        key is in it, beside the password hashes; nothing in this file is.
+        """
+
+        return hmac.new(self._origin_key(), str(client_key).encode("utf-8"), hashlib.sha256).hexdigest()
+
     def get_user(self, user_id: int) -> dict | None:
         with self._connect() as conn:
             row = conn.execute("SELECT id,username,role,credential_version FROM users WHERE id=?", (user_id,)).fetchone()
@@ -296,7 +341,11 @@ class AccessControl:
         # oversized usernames/client identifiers. The real username remains a
         # parameterized users-table lookup only when it satisfies the account
         # input bound.
-        client_digest = hashlib.sha256(str(client_key).encode("utf-8")).hexdigest()
+        #
+        # Computed before the transaction below is opened: the first call reads
+        # the deployment secret on a connection of its own, which cannot be done
+        # while this one holds the writer slot.
+        client_digest = self._origin_digest(client_key)
         scopes = (_account_scope(username), f"client:{client_digest}")
         with self._connect() as conn:
             # Serialize the complete read/check/increment sequence. A deferred
@@ -350,20 +399,28 @@ class AccessControl:
                 "SELECT * FROM login_attempts WHERE scope_key IN (?,?)", scopes
             )}
             locked_until = max((float(row["locked_until"]) for row in attempts.values()), default=0)
-            valid_input = len(username) <= MAX_USERNAME_CHARS and len(pin) <= MAX_PIN_CHARS
+            # Two bounds doing two different jobs, so they are asked separately.
+            # The username bound decides whether the account is looked up at all
+            # -- it is what keeps an enormous name from being searched for, and
+            # therefore also what decides whether this attempt can be attributed
+            # to an account in the history. The PIN bound decides only whether a
+            # hash is verified. Asking for both at once meant an oversized PIN
+            # against a real account was recorded as an attempt on a name that
+            # matches nothing, which is the opposite of what happened.
+            searchable = len(username) <= MAX_USERNAME_CHARS
+            checkable = len(pin) <= MAX_PIN_CHARS
             if locked_until > now:
                 # Named, so the activity page can report an account somebody is
-                # being kept out of rather than only a count of refusals. The
-                # lookup is the same bounded one the credential check uses, and
-                # no hash is verified here -- the attempt was refused before any
-                # PIN was considered.
-                account = conn.execute("SELECT id,username FROM users WHERE username=?", (username,)).fetchone() if valid_input else None
+                # being kept out of rather than only a count of refusals. No hash
+                # is verified here -- the attempt was refused before any PIN was
+                # considered, which is why the PIN's length does not arise.
+                account = conn.execute("SELECT id,username FROM users WHERE username=?", (username,)).fetchone() if searchable else None
                 self._record_login_event(conn, account, LOGIN_BLOCKED, client_digest)
                 return None, max(1, int(locked_until - now + 0.999))
             row = conn.execute(
                 "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
-            ).fetchone() if valid_input else None
-            if row and check_password_hash(row["password_hash"], pin):
+            ).fetchone() if searchable else None
+            if row and checkable and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
                 self._record_login_event(conn, row, LOGIN_SUCCESS, client_digest)
                 return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
@@ -425,7 +482,14 @@ class AccessControl:
         #
         # Within each group the newest rows are kept. A deployment whose own
         # sign-ins fill the cap loses its oldest ones, which is what a cap means.
-        if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP:
+        #
+        # Only once the history has run LOGIN_EVENT_PRUNE_SLACK rows past the
+        # cap, and then back to the cap in one go: this ordering is a full scan
+        # and a temporary sort, and running it on every attempt would hand
+        # anyone who filled the cap a way to slow every later sign-in down. The
+        # count itself is cheap enough to check each time -- it reads an index,
+        # not the table.
+        if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP + LOGIN_EVENT_PRUNE_SLACK:
             conn.execute(
                 f"""DELETE FROM login_events WHERE id IN (
                        SELECT id FROM login_events

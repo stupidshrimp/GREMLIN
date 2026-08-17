@@ -5,12 +5,19 @@ these cover what is written (and deliberately not written) on each kind of
 attempt, what a window counts, and what happens when the file reaches its cap.
 """
 
+import hashlib
 import sqlite3
 
 import pytest
 
 from services import access_control as access_control_module
-from services.access_control import ACTIVITY_MAX_DAYS, LOGIN_FAILURE_LIMIT, AccessControl
+from services.access_control import (
+    ACTIVITY_MAX_DAYS,
+    LOGIN_FAILURE_LIMIT,
+    MAX_PIN_CHARS,
+    MAX_USERNAME_CHARS,
+    AccessControl,
+)
 
 
 def _control(tmp_path):
@@ -76,6 +83,43 @@ def test_an_attempt_refused_by_the_lockout_is_recorded_as_blocked(tmp_path):
     outcomes = [event["outcome"] for event in _events(control)]
     assert outcomes == ["failure"] * LOGIN_FAILURE_LIMIT + ["blocked"]
     assert _events(control)[-1]["username"] == "root"
+
+
+def test_an_oversized_pin_still_names_the_account_it_was_aimed_at(tmp_path):
+    """The two input bounds answer different questions.
+
+    An overlong PIN is refused before any hash is verified, but the account it
+    was aimed at exists and is worth naming -- recording it as an attempt on an
+    unrecognised name would hide somebody being worked on.
+    """
+
+    control = _control(tmp_path)
+    assert control.authenticate_limited("root", "p" * (MAX_PIN_CHARS + 1), "10.0.0.5") == (None, 0)
+    # An overlong *username* is still unattributed: it cannot match an account,
+    # and looking it up is the search the bound exists to prevent.
+    control.authenticate_limited("u" * (MAX_USERNAME_CHARS + 1), "1234", "10.0.0.5")
+
+    events = _events(control)
+    assert [(event["username"], event["outcome"]) for event in events] == [
+        ("root", "failure"),
+        (None, "failure"),
+    ]
+
+
+def test_origins_are_keyed_so_a_stored_digest_cannot_be_looked_up(tmp_path):
+    """An unkeyed digest of an address is the address, for a small enough space."""
+
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    stored = _events(control)[0]["client_digest"]
+
+    assert stored != hashlib.sha256(b"10.0.0.5").hexdigest()
+    assert stored == control._origin_digest("10.0.0.5")
+    # The same address digests differently under another deployment's secret, so
+    # exported history cannot be correlated between installations either.
+    other = AccessControl(tmp_path / "other.db")
+    other.ensure_schema(initial_username="root", initial_pin="secret")
+    assert other._origin_digest("10.0.0.5") != stored
 
 
 def test_the_report_counts_each_account_and_still_lists_the_quiet_ones(tmp_path):
@@ -178,6 +222,7 @@ def test_the_history_is_capped_and_sheds_unrecognised_attempts_first(tmp_path, m
     """A flood of invented names must not push real sign-ins out of the file."""
 
     monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
     control = _control(tmp_path)
     control.authenticate_limited("root", "secret", "10.0.0.5")
     control.authenticate_limited("root", "secret", "10.0.0.5")
@@ -202,6 +247,7 @@ def test_a_flood_against_a_real_account_cannot_evict_its_sign_ins(tmp_path, monk
     """
 
     monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
     control = _control(tmp_path)
     control.authenticate_limited("root", "secret", "10.0.0.5")
     for index in range(20):
