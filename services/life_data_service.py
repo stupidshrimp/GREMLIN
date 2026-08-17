@@ -38,6 +38,35 @@ DB_WRITE_TIMEOUT_SECONDS = 30
 _DEFAULT_DB_PATH_SENTINEL = object()
 _LOCK_WAIT_CONTEXT = threading.local()
 
+# Every column the Weibull data table shows for one observation, including the source
+# CMMS work order fields joined in from the event that closed the life interval: its
+# task id / title / downtime / request description / completion notes describe the
+# observation. Trailing right-censored "current life" rows have no end event, so those
+# columns are NULL there. Recorded downtime below zero is a data-entry artifact, so it
+# is clamped to zero the same way failure_mechanism_pareto() clamps it; a missing value
+# stays NULL and renders blank rather than as a real zero.
+#
+# Shared by perform_weibull_analysis() (fresh fit) and load_saved_weibull_analysis()
+# (read-back of a saved fit) so both describe an observation identically. Callers append
+# their own WHERE and ORDER BY.
+_WEIBULL_OBSERVATION_SELECT = """
+    SELECT wo.weibull_observation_id, wo.observation_type, wo.start_datetime, wo.end_datetime,
+           wo.analysis_cutoff_datetime, wo.life_hours_for_weibull, wo.failure_indicator,
+           wo.is_right_censored, wo.weibull_life_note,
+           m.task_id AS source_task_id,
+           m.task_name AS source_work_title,
+           m.requestor_description AS source_request_description,
+           m.completion_notes AS source_completion_notes,
+           CASE
+               WHEN m.downtime_hours IS NULL THEN NULL
+               WHEN m.downtime_hours < 0 THEN 0
+               ELSE m.downtime_hours
+           END AS source_downtime_hours
+    FROM weibull_observation wo
+    LEFT JOIN event_processing_record ep ON ep.event_processing_id = wo.end_event_processing_id
+    LEFT JOIN mapped_cmms_record m ON m.mapped_record_id = ep.mapped_record_id
+"""
+
 
 @contextmanager
 def database_lock_wait_callback(callback: Any) -> Iterator[None]:
@@ -296,6 +325,29 @@ class LifeDataService:
             if conn is not None:
                 conn.close()
 
+    @contextmanager
+    def read_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection whose every read sees one consistent database snapshot.
+
+        Outside a transaction each SELECT is its own implicit one, so a read built from
+        several queries can straddle another process's write and stitch together rows
+        that never coexisted -- a parent row from before the write beside child rows
+        from after it, or none at all. A deferred ``BEGIN`` takes SQLite's shared read
+        lock on the first query and holds it until the transaction ends, which keeps a
+        concurrent writer from committing mid-read; the writer waits on its own busy
+        timeout, and these reads are short.
+
+        Read-only by contract: nothing is committed, and the rollback on the way out is
+        what releases the shared lock.
+        """
+
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN DEFERRED")
+            yield conn
+        finally:
+            conn.rollback()
+            conn.close()
 
     def _begin_write_transaction(self, conn: sqlite3.Connection) -> None:
         """Start a write transaction and report when SQLite enters busy-timeout waiting."""
@@ -4003,21 +4055,7 @@ class LifeDataService:
                 raise ValueError("No valid life intervals could be built from dispositioned event dates for the selected failure group.")
             observations = conn.execute(
                 f"""
-                SELECT wo.weibull_observation_id, wo.observation_type, wo.start_datetime, wo.end_datetime,
-                       wo.analysis_cutoff_datetime, wo.life_hours_for_weibull, wo.failure_indicator,
-                       wo.is_right_censored, wo.weibull_life_note,
-                       m.task_id AS source_task_id,
-                       m.task_name AS source_work_title,
-                       m.requestor_description AS source_request_description,
-                       m.completion_notes AS source_completion_notes
-                FROM weibull_observation wo
-                -- The closing event (failure or PM reset) of each life interval carries the
-                -- source CMMS work order, so its task id / title / request description /
-                -- completion notes describe the observation shown in the Weibull data table.
-                -- Trailing right-censored "current life" rows have no end event, so these
-                -- columns are NULL there.
-                LEFT JOIN event_processing_record ep ON ep.event_processing_id = wo.end_event_processing_id
-                LEFT JOIN mapped_cmms_record m ON m.mapped_record_id = ep.mapped_record_id
+                {_WEIBULL_OBSERVATION_SELECT}
                 WHERE wo.weibull_observation_id IN ({','.join('?' for _ in observation_ids)}) AND wo.is_usable = 1
                 ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
                 """,
@@ -4133,6 +4171,138 @@ class LifeDataService:
                 mean_time_to_failure,
                 interpretation_summary,
             )
+
+    def load_saved_weibull_analysis(
+        self,
+        asset_number: str,
+        *,
+        grouping_level: str,
+        failure_mode_id: int,
+        failure_mechanism_id: int | None = None,
+    ) -> AnalysisResultView | None:
+        """Read back the latest saved Weibull fit for a failure group, without recomputing.
+
+        :meth:`perform_weibull_analysis` is a write: it rebuilds event processing,
+        observations, a dataset, a run, and a result. This is its read-only twin, so a
+        viewer (or a signed-out visitor) can open the same Weibull view for any group an
+        editor has already run. Returns ``None`` when the group has never been analyzed,
+        which the caller reports as "no saved analysis yet" rather than an error.
+        """
+
+        if grouping_level not in {"FAILURE_MODE", "FAILURE_MECHANISM"}:
+            raise ValueError("Select a failure mode or failure mechanism before viewing a Weibull analysis.")
+        if grouping_level == "FAILURE_MECHANISM" and failure_mechanism_id is None:
+            raise ValueError("Failure-mechanism Weibull analysis requires a selected failure mechanism.")
+        population_mechanism_id = failure_mechanism_id if grouping_level == "FAILURE_MECHANISM" else None
+        # One snapshot for all five reads below. An editor rerunning this same population
+        # deletes its dataset, run, KM points, curve points and observations and inserts
+        # replacements, so reading them in separate implicit transactions could pair the
+        # old result row with the new run's (or no) graph and table data.
+        with self.read_transaction() as conn:
+            population = conn.execute(
+                """
+                SELECT modeled_population_id, population_name, grouping_level_used
+                FROM modeled_population
+                WHERE asset_number = ? AND failure_mode_id = ?
+                  AND ((failure_mechanism_id IS NULL AND ? IS NULL) OR failure_mechanism_id = ?)
+                ORDER BY modeled_population_id LIMIT 1
+                """,
+                (asset_number, failure_mode_id, population_mechanism_id, population_mechanism_id),
+            ).fetchone()
+            if population is None:
+                return None
+            # Newest run for this population wins, matching how the beta rankings pick
+            # "the latest saved Weibull result" for the same populations.
+            result = conn.execute(
+                """
+                SELECT wr.weibull_result_id, wr.weibull_analysis_run_id, war.analysis_dataset_id,
+                       wr.beta_mle, wr.eta_mle, wr.beta_lower_ci, wr.beta_upper_ci,
+                       wr.eta_lower_ci, wr.eta_upper_ci, wr.failure_count, wr.censored_count,
+                       wr.total_observation_count, wr.mean_time_to_failure, wr.engineering_interpretation,
+                       ad.analysis_name
+                FROM weibull_result wr
+                JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+                JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+                WHERE ad.asset_number = ? AND ad.modeled_population_id = ?
+                ORDER BY war.run_datetime DESC, wr.weibull_result_id DESC
+                LIMIT 1
+                """,
+                (asset_number, int(population["modeled_population_id"])),
+            ).fetchone()
+            if result is None:
+                return None
+            run_id = int(result["weibull_analysis_run_id"])
+            km_points = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT ordered_index, life_hours, at_risk_count, failure_count_at_time,
+                           censored_count_at_time, survival_estimate, cdf_estimate, reliability_estimate,
+                           weibull_plot_x, weibull_plot_y
+                    FROM kaplan_meier_point
+                    WHERE weibull_analysis_run_id = ?
+                    ORDER BY ordered_index, kaplan_meier_point_id
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
+            curve_points = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT life_hours, cdf, reliability, pdf, hazard_rate
+                    FROM weibull_curve_point
+                    WHERE weibull_analysis_run_id = ?
+                    ORDER BY life_hours, weibull_curve_point_id
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ]
+            observation_views = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    {_WEIBULL_OBSERVATION_SELECT}
+                    JOIN analysis_dataset_member adm ON adm.weibull_observation_id = wo.weibull_observation_id
+                    WHERE adm.analysis_dataset_id = ? AND wo.is_usable = 1
+                    ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
+                    """,
+                    (int(result["analysis_dataset_id"]),),
+                ).fetchall()
+            ]
+        for index, observation in enumerate(observation_views, start=1):
+            observation["ordered_index"] = index
+
+        try:
+            interpretation_summary = json.loads(result["engineering_interpretation"]) if result["engineering_interpretation"] else []
+        except (ValueError, TypeError):
+            interpretation_summary = []
+        if not isinstance(interpretation_summary, list):
+            interpretation_summary = []
+
+        analysis_name = str(result["analysis_name"] or "")
+        label_prefix = "Weibull Analysis - "
+        analysis_label = analysis_name[len(label_prefix):] if analysis_name.startswith(label_prefix) else analysis_name
+        return AnalysisResultView(
+            run_id,
+            int(result["weibull_result_id"]),
+            result["beta_mle"],
+            result["eta_mle"],
+            int(result["failure_count"] or 0),
+            int(result["censored_count"] or 0),
+            int(result["total_observation_count"] or 0),
+            km_points,
+            curve_points,
+            observation_views,
+            analysis_label or population["population_name"] or f"{asset_number} failure group",
+            population["grouping_level_used"] or grouping_level,
+            result["beta_lower_ci"],
+            result["beta_upper_ci"],
+            result["eta_lower_ci"],
+            result["eta_upper_ci"],
+            result["mean_time_to_failure"],
+            interpretation_summary,
+        )
 
     def _get_or_create_population(self, conn: sqlite3.Connection, asset_number: str) -> int:
         row = conn.execute(

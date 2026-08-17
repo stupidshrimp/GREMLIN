@@ -1058,6 +1058,45 @@ def api_perform_analysis():
     return jsonify({"result": _serialize_analysis_result(result)})
 
 
+@app.route("/life-data-analysis/api/saved-analysis")
+@life_data_api
+def api_saved_analysis():
+    """Read back the Weibull fit already saved for a failure group.
+
+    Performing an analysis rebuilds and stores event processing, observations, a
+    dataset, a run, and a result, so that route stays editor-only. This is the
+    read-only twin: a viewer or a signed-out visitor can open the Weibull view for
+    any group an editor has already run, without writing anything. ``result`` comes
+    back null when the group has never been analyzed.
+    """
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    grouping_level = (request.values.get("grouping_level") or "FAILURE_MECHANISM").strip().upper()
+    if grouping_level not in {"FAILURE_MODE", "FAILURE_MECHANISM"}:
+        raise LifeDataApiError("grouping_level must be FAILURE_MODE or FAILURE_MECHANISM.", status_code=400)
+    mode_raw = request.values.get("failure_mode_id")
+    if mode_raw in (None, ""):
+        raise LifeDataApiError("Select a failure mode or mechanism to view its Weibull analysis.", status_code=400)
+    try:
+        failure_mode_id = int(mode_raw)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
+    mechanism_raw = request.values.get("failure_mechanism_id")
+    failure_mechanism_id = None
+    if mechanism_raw not in (None, ""):
+        try:
+            failure_mechanism_id = int(mechanism_raw)
+        except (TypeError, ValueError):
+            raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
+    result = service.load_saved_weibull_analysis(
+        asset_number,
+        grouping_level=grouping_level,
+        failure_mode_id=failure_mode_id,
+        failure_mechanism_id=failure_mechanism_id,
+    )
+    return jsonify({"result": _serialize_analysis_result(result) if result is not None else None})
+
+
 @app.route("/life-data-analysis/api/calculate-all", methods=["POST"])
 @life_data_api
 @requires_role("editor")

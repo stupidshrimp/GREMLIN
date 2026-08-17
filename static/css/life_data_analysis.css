@@ -423,6 +423,9 @@ table.lda-interpretation td:last-child { color: var(--muted); }
   padding: 0.25rem 0.4rem;
 }
 table.lda-data tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
+/* Each observation row jumps to the graph that plots it, so it reads as a target. */
+table.lda-data tbody tr.is-clickable { cursor: pointer; }
+table.lda-data tbody tr.is-clickable:hover { background: rgba(85, 116, 143, 0.12); }
 /* Free-text columns (work title, request description, completion notes, note)
    can hold long CMMS strings; cap their width and wrap so they don't stretch the
    table off-screen, while the container below still scrolls when needed. */
