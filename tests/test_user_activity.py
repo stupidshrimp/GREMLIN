@@ -605,3 +605,187 @@ def test_a_future_dated_sign_in_is_not_reported_as_the_last_one(tmp_path):
     user = control.activity_report(30)["users"][0]
     assert user["last_login"] == real
     assert user["total_logins"] == 1
+
+
+def test_a_future_dated_sign_in_does_not_make_an_account_count_as_used(tmp_path):
+    """The unused-accounts tile is read against the table under it.
+
+    Both have to stop at the same day. The tile asked "has this account ever
+    signed in", with no bound at all, while the account's own row stops at the
+    end of the window -- so a sign-in dated from a clock that had been put back
+    made the tile say every account had signed in, above a row still reading
+    "Never signed in".
+    """
+
+    control = _control(tmp_path)
+    control.save_user(None, "future", "2468", "editor")
+    account = control.authenticate("future", "2468")
+    control.authenticate_limited("future", "2468", "10.0.0.7")
+    with control._connect() as conn:
+        conn.execute(
+            "UPDATE login_events SET occurred_at = datetime('now', '+3 days') WHERE user_id = ?",
+            (account["id"],),
+        )
+
+    report = control.activity_report(30)
+    row = next(user for user in report["users"] if user["username"] == "future")
+    assert row["last_login"] is None
+    assert report["summary"]["never_signed_in"] == report["summary"]["accounts"]
+
+
+def test_the_recent_lists_are_ordered_by_when_things_happened(tmp_path):
+    """Insertion order and clock order part company after a clock correction.
+
+    These two lists are headed "recent", and an id sort puts a row written
+    later but dated earlier above attempts that really are the newest ones.
+    The cap evicts on timestamp order, so an id sort also disagrees with the
+    history about which attempts are the recent ones.
+    """
+
+    control = _control(tmp_path)
+    root = control.authenticate("root", "secret")
+    with control._connect() as conn:
+        # Written in this order; the last one is dated the oldest, as a row
+        # inserted after the clock went back would be.
+        for stamp in ("2026-06-01 09:00:00", "2026-06-03 09:00:00", "2026-06-02 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (?,'root','success','d',?)""",
+                (root["id"], stamp),
+            )
+            conn.execute(
+                "INSERT INTO audit_log(user_id,username,action,changed_at) VALUES (?,'root','POST /x',?)",
+                (root["id"], stamp),
+            )
+
+    report = control.activity_report(ACTIVITY_MAX_DAYS)
+    assert [event["occurred_at"] for event in report["recent_logins"]] == [
+        "2026-06-03 09:00:00",
+        "2026-06-02 09:00:00",
+        "2026-06-01 09:00:00",
+    ]
+    assert [change["changed_at"] for change in report["recent_changes"]] == [
+        "2026-06-03 09:00:00",
+        "2026-06-02 09:00:00",
+        "2026-06-01 09:00:00",
+    ]
+
+
+def _pruning(control):
+    with control._connect() as conn:
+        return dict(conn.execute("SELECT * FROM login_event_pruning WHERE id = 1").fetchone())
+
+
+def test_a_sign_in_written_after_the_clock_went_back_does_not_re_date_the_history(
+    tmp_path, monkeypatch
+):
+    """Completeness comes from where the trim reached, not from what survives.
+
+    Within a tier the trim takes the oldest first, so the oldest surviving row
+    is normally exactly where the tier becomes complete. Put the clock back and
+    an attempt can be written dated below the trim line: it is a real row and it
+    is kept, but the stretch between it and the line was dropped. Dating the
+    tier from it would call that stretch complete.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 2)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        for stamp in ("2026-03-01 09:00:00", "2026-04-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    # Takes the table past the cap: the two oldest go, so the trim reached
+    # 2026-04-01 and the sign-in history is complete only from after it.
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+
+    # The clock goes back a year and an attempt lands below the trim line.
+    with control._connect() as conn:
+        conn.execute(
+            """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+               VALUES (1,'root','success','d','2026-01-01 09:00:00')"""
+        )
+
+    tier = next(
+        entry
+        for entry in control.activity_report(ACTIVITY_MAX_DAYS)["retention"]["tiers"]
+        if entry["kind"] == "success"
+    )
+    # The oldest row held is still reported as what it is -- it is a real
+    # attempt, and the stored count is spread over it.
+    assert tier["first_kept"] == "2026-01-01 09:00:00"
+    # But the history is only unbroken from the trim line onwards.
+    assert tier["dropped_before"] == "2026-04-01 09:00:00"
+    assert tier["complete_since"] == "2026-04-01 09:00:00"
+
+
+def test_a_later_trim_cannot_move_a_cutoff_backwards(tmp_path, monkeypatch):
+    """A trim that only takes back-dated rows has not un-dropped anything.
+
+    After a clock correction a prune can consist entirely of rows dated before
+    an earlier trim's line. Recording that prune's own newest timestamp would
+    move the line back and re-describe already-dropped history as complete.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 2)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        for stamp in ("2026-03-01 09:00:00", "2026-04-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+
+    # Two rows from before the clock correction, and a cap that leaves room for
+    # exactly one more, so the next trim drops only back-dated rows.
+    with control._connect() as conn:
+        for stamp in ("2026-01-01 09:00:00", "2026-02-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 4)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    kept = [event["occurred_at"] for event in _events(control)]
+    assert "2026-01-01 09:00:00" not in kept
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+
+
+def test_an_access_database_from_before_the_cutoffs_gains_them_empty(tmp_path):
+    """A file that trimmed rows before this column existed cannot say where.
+
+    NULL is how that is said. Guessing a line from the surviving rows would
+    state as fact something the file no longer knows, so until the next trim
+    writes one the tier is described exactly as it was before.
+    """
+
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        conn.execute("DROP TABLE login_event_pruning")
+        conn.execute(
+            """CREATE TABLE login_event_pruning (
+                   id INTEGER PRIMARY KEY CHECK(id = 1),
+                   last_pruned_at TEXT NOT NULL,
+                   rows_dropped INTEGER NOT NULL DEFAULT 0
+               )"""
+        )
+        conn.execute(
+            "INSERT INTO login_event_pruning(id,last_pruned_at,rows_dropped) VALUES (1,'2026-02-02 03:04:05',7)"
+        )
+    control.ensure_schema()
+
+    tiers = control.activity_report(30)["retention"]["tiers"]
+    assert all(tier["dropped_before"] is None for tier in tiers)
+    assert all(tier["complete_since"] == tier["first_kept"] for tier in tiers)
+    # The drop itself is still on the record, just not attributable to a tier.
+    assert control.activity_report(30)["retention"]["dropped_unclassified"] == 7

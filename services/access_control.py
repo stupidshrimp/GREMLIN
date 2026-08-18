@@ -187,7 +187,20 @@ class AccessControl:
                     rows_dropped INTEGER NOT NULL DEFAULT 0,
                     dropped_success INTEGER NOT NULL DEFAULT 0,
                     dropped_attributed INTEGER NOT NULL DEFAULT 0,
-                    dropped_unattributed INTEGER NOT NULL DEFAULT 0
+                    dropped_unattributed INTEGER NOT NULL DEFAULT 0,
+                    -- The newest timestamp trimmed away in each tier. What
+                    -- survives cannot answer this on its own: eviction is
+                    -- newest-first *within* a tier, so the oldest surviving row
+                    -- normally sits just after the newest dropped one -- but
+                    -- put the clock back and a later attempt arrives dated
+                    -- earlier than rows already dropped, and the oldest
+                    -- surviving row moves backwards past the trim line. The
+                    -- panel would then date the history from it and claim a
+                    -- stretch is complete that was trimmed. Recorded while the
+                    -- rows are still here, because afterwards it is unknowable.
+                    cutoff_success TEXT,
+                    cutoff_attributed TEXT,
+                    cutoff_unattributed TEXT
                 )
             """)
             # Split by tier after the fact, for a database created before those
@@ -201,6 +214,13 @@ class AccessControl:
                 if column not in pruning_columns:
                     conn.execute(f"ALTER TABLE login_event_pruning ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
                     added = True
+            # Nullable text, and no backfill: a database that trimmed rows
+            # before this column existed cannot say when they were dated, and
+            # NULL is how that is said. Until the next prune writes one, such a
+            # tier is described by its surviving rows exactly as before.
+            for column in ("cutoff_success", "cutoff_attributed", "cutoff_unattributed"):
+                if column not in pruning_columns:
+                    conn.execute(f"ALTER TABLE login_event_pruning ADD COLUMN {column} TEXT")
             # Rows dropped before the per-tier columns existed cannot be
             # classified after the fact -- the rows are gone. Defaulting their
             # tiers to zero would state as fact that none of them were sign-ins,
@@ -559,31 +579,60 @@ class AccessControl:
             # otherwise be silent -- the page would show "0 attempts on
             # unrecognised names" with nothing to say they had been dropped,
             # which reads as "none happened".
+            # The newest timestamp going in each tier comes out in the same
+            # pass, for the same reason the counts do: once the rows are gone
+            # nothing can say how far the trim reached. The surviving rows are
+            # not a substitute -- a clock put back lets a later attempt land
+            # dated below this line, and then the oldest surviving row is no
+            # longer where the history becomes complete.
             by_tier = conn.execute(
                 f"""SELECT SUM(outcome = '{LOGIN_SUCCESS}') AS success,
                            SUM(outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL) AS attributed,
                            SUM(user_id IS NULL) AS unattributed,
-                           COUNT(*) AS total
+                           COUNT(*) AS total,
+                           MAX(CASE WHEN outcome = '{LOGIN_SUCCESS}'
+                                    THEN occurred_at END) AS cutoff_success,
+                           MAX(CASE WHEN outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL
+                                    THEN occurred_at END) AS cutoff_attributed,
+                           MAX(CASE WHEN user_id IS NULL THEN occurred_at END) AS cutoff_unattributed
                       FROM login_events WHERE id IN ({doomed})"""
             ).fetchone()
             conn.execute(f"DELETE FROM login_events WHERE id IN ({doomed})")
             # Written here, where it is known, rather than inferred later from a
             # row count that cannot tell a trimmed file from a full one.
+            # Each cutoff only ever moves forward. A prune that dropped
+            # nothing in a tier carries NULL for it and must leave the stored
+            # one alone, and a prune that ran after the clock went back can
+            # produce a cutoff earlier than the one already recorded -- the
+            # earlier trim still happened, so the later date is the true one.
+            # '' stands in for "none recorded yet" inside the comparison and
+            # sorts below every timestamp, so a first cutoff always wins over
+            # it; NULLIF puts the NULL back.
             conn.execute(
                 """INSERT INTO login_event_pruning(id, last_pruned_at, rows_dropped,
-                                                   dropped_success, dropped_attributed, dropped_unattributed)
-                   VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                                                   dropped_success, dropped_attributed, dropped_unattributed,
+                                                   cutoff_success, cutoff_attributed, cutoff_unattributed)
+                   VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        last_pruned_at = CURRENT_TIMESTAMP,
                        rows_dropped = rows_dropped + excluded.rows_dropped,
                        dropped_success = dropped_success + excluded.dropped_success,
                        dropped_attributed = dropped_attributed + excluded.dropped_attributed,
-                       dropped_unattributed = dropped_unattributed + excluded.dropped_unattributed""",
+                       dropped_unattributed = dropped_unattributed + excluded.dropped_unattributed,
+                       cutoff_success = NULLIF(MAX(COALESCE(cutoff_success, ''),
+                                                   COALESCE(excluded.cutoff_success, '')), ''),
+                       cutoff_attributed = NULLIF(MAX(COALESCE(cutoff_attributed, ''),
+                                                      COALESCE(excluded.cutoff_attributed, '')), ''),
+                       cutoff_unattributed = NULLIF(MAX(COALESCE(cutoff_unattributed, ''),
+                                                        COALESCE(excluded.cutoff_unattributed, '')), '')""",
                 (
                     self._count(by_tier["total"]),
                     self._count(by_tier["success"]),
                     self._count(by_tier["attributed"]),
                     self._count(by_tier["unattributed"]),
+                    by_tier["cutoff_success"],
+                    by_tier["cutoff_attributed"],
+                    by_tier["cutoff_unattributed"],
                 ),
             )
 
@@ -764,9 +813,19 @@ class AccessControl:
         ).fetchone()
         accounts = conn.execute(
             """SELECT COUNT(*) AS accounts,
+                      -- Bounded at the report's end for the same reason the
+                      -- per-account last_login is, and it has to be the same
+                      -- bound: this tile is read directly against that column.
+                      -- A sign-in dated after the last day of the window comes
+                      -- from a clock that was put back, and counting it here
+                      -- while the account's own row still shows no sign-in
+                      -- would have the page say "every account has signed in"
+                      -- above a row reading "Never signed in".
                       SUM(id NOT IN (SELECT user_id FROM login_events
-                                      WHERE user_id IS NOT NULL AND outcome='success')) AS never_signed_in
+                                      WHERE user_id IS NOT NULL AND outcome='success'
+                                        AND occurred_at < ?)) AS never_signed_in
                  FROM users""",
+            (window_end,),
         ).fetchone()
         # Sign-ins by an account that no longer exists. The history outlives the
         # user row on purpose, and an administrator looking at a window that
@@ -986,8 +1045,15 @@ class AccessControl:
                 "known_account": bool(row["known_account"]),
             }
             for row in conn.execute(
+                # By when the attempt happened, not by the order rows landed.
+                # They agree until the clock is put back, after which a row
+                # written later carries an earlier time -- and then an id sort
+                # puts an older attempt above a newer one in a list whose whole
+                # claim is that it is the latest. The cap evicts on this same
+                # order, so the two agree about which attempts are recent.
                 """SELECT username, outcome, occurred_at, user_id IS NOT NULL AS known_account
-                     FROM login_events WHERE occurred_at >= ? AND occurred_at < ? ORDER BY id DESC LIMIT ?""",
+                     FROM login_events WHERE occurred_at >= ? AND occurred_at < ?
+                    ORDER BY occurred_at DESC, id DESC LIMIT ?""",
 
                 (window_start, window_end, limit),
             )
@@ -999,8 +1065,11 @@ class AccessControl:
         return [
             dict(row)
             for row in conn.execute(
+                # Newest by when the change was made, id as the tie-break, for
+                # the reason given on the sign-in feed above.
                 """SELECT username, action, changed_at FROM audit_log
-                    WHERE changed_at >= ? AND changed_at < ? ORDER BY id DESC LIMIT ?""",
+                    WHERE changed_at >= ? AND changed_at < ?
+                    ORDER BY changed_at DESC, id DESC LIMIT ?""",
 
                 (window_start, window_end, limit),
             )
@@ -1053,10 +1122,41 @@ class AccessControl:
         ).fetchone()
         pruning = conn.execute(
             """SELECT last_pruned_at, rows_dropped, dropped_success,
-                      dropped_attributed, dropped_unattributed, dropped_unclassified
+                      dropped_attributed, dropped_unattributed, dropped_unclassified,
+                      cutoff_success, cutoff_attributed, cutoff_unattributed
                  FROM login_event_pruning WHERE id = 1"""
         ).fetchone()
         events = self._count(row["events"])
+
+        def tier(kind: str, first_kept: str | None, dropped: str, cutoff: str) -> dict:
+            """One tier's oldest surviving attempt, and where it is complete from.
+
+            Usually the same date. They part after the clock is put back: an
+            attempt written then can be dated below the trim line and survive,
+            so the tier holds a row older than a stretch that was dropped.
+            Dating the tier from that row would claim the gap above it is
+            covered, which is the one thing this panel exists to be right
+            about, so completeness is taken from the recorded trim line
+            whenever it reaches further forward. Both are reported -- the
+            oldest row held is still a true statement about the file, and it
+            is what a count of stored attempts is spread over.
+            """
+
+            trimmed = pruning[cutoff] if pruning else None
+            if first_kept and trimmed:
+                complete_since = max(first_kept, trimmed)
+            else:
+                complete_since = first_kept or trimmed
+            return {
+                "kind": kind,
+                "first_kept": first_kept,
+                # None where nothing of this kind was ever dropped, and also
+                # where it was dropped by a version that did not record the
+                # line -- in both cases the surviving rows are all there is.
+                "dropped_before": trimmed,
+                "complete_since": complete_since,
+                "dropped": self._count(pruning[dropped]) if pruning else 0,
+            }
         return {
             "login_events": events,
             "first_event": row["first_event"],
@@ -1067,21 +1167,19 @@ class AccessControl:
             # happened -- and "0 recorded, 1,204 dropped" is a different fact
             # from "0 recorded" on its own.
             "tiers": [
-                {
-                    "kind": "success",
-                    "first_kept": row["first_success"],
-                    "dropped": self._count(pruning["dropped_success"]) if pruning else 0,
-                },
-                {
-                    "kind": "attributed_refusal",
-                    "first_kept": row["first_attributed_refusal"],
-                    "dropped": self._count(pruning["dropped_attributed"]) if pruning else 0,
-                },
-                {
-                    "kind": "unattributed_refusal",
-                    "first_kept": row["first_unattributed_refusal"],
-                    "dropped": self._count(pruning["dropped_unattributed"]) if pruning else 0,
-                },
+                tier("success", row["first_success"], "dropped_success", "cutoff_success"),
+                tier(
+                    "attributed_refusal",
+                    row["first_attributed_refusal"],
+                    "dropped_attributed",
+                    "cutoff_attributed",
+                ),
+                tier(
+                    "unattributed_refusal",
+                    row["first_unattributed_refusal"],
+                    "dropped_unattributed",
+                    "cutoff_unattributed",
+                ),
             ],
             # Full, but not necessarily short of anything: trimming starts once
             # the history runs LOGIN_EVENT_PRUNE_SLACK rows past the cap.

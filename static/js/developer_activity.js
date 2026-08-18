@@ -362,10 +362,23 @@
         .map(function (tier) {
           const name = TIER_NAMES[tier.kind] || tier.kind;
           if (tier.first_kept) {
+            // Where the tier is complete from, which is normally its oldest
+            // surviving attempt but is not the same claim. Put the clock back
+            // and an attempt can be written dated below a stretch already
+            // trimmed away; the row is real and still held, but the history
+            // does not run unbroken from it, and this line is the one thing on
+            // the page somebody reads to decide whether a window can be
+            // trusted. The server takes whichever date reaches further
+            // forward, so what is shown here is never earlier than the point
+            // the tier actually becomes whole.
+            const since = tier.complete_since || tier.first_kept;
             return tier.dropped
-              ? `${name} ${formatDay(tier.first_kept)} (${formatNumber(tier.dropped)} older dropped)`
-              : `${name} ${formatDay(tier.first_kept)}`;
+              ? `${name} ${formatDay(since)} (${formatNumber(tier.dropped)} older dropped)`
+              : `${name} ${formatDay(since)}`;
           }
+          // Nothing survives in this tier, so there is no date to give -- a
+          // trim line without a row behind it would read as history that is
+          // still here.
           return tier.dropped ? `${name} none kept — all ${formatNumber(tier.dropped)} dropped` : null;
         })
         .filter(Boolean);
