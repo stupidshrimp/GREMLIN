@@ -701,7 +701,7 @@ def test_a_sign_in_written_after_the_clock_went_back_does_not_re_date_the_histor
     # Takes the table past the cap: the two oldest go, so the trim reached
     # 2026-04-01 and the sign-in history is complete only from after it.
     control.authenticate_limited("root", "secret", "10.0.0.5")
-    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:01"
 
     # The clock goes back a year and an attempt lands below the trim line.
     with control._connect() as conn:
@@ -718,9 +718,10 @@ def test_a_sign_in_written_after_the_clock_went_back_does_not_re_date_the_histor
     # The oldest row held is still reported as what it is -- it is a real
     # attempt, and the stored count is spread over it.
     assert tier["first_kept"] == "2026-01-01 09:00:00"
-    # But the history is only unbroken from the trim line onwards.
-    assert tier["dropped_before"] == "2026-04-01 09:00:00"
-    assert tier["complete_since"] == "2026-04-01 09:00:00"
+    # But the history is only unbroken from the trim line onwards -- a second
+    # past the newest attempt dropped, since that second is not intact.
+    assert tier["intact_from"] == "2026-04-01 09:00:01"
+    assert tier["complete_since"] == "2026-04-01 09:00:01"
 
 
 def test_a_later_trim_cannot_move_a_cutoff_backwards(tmp_path, monkeypatch):
@@ -742,7 +743,7 @@ def test_a_later_trim_cannot_move_a_cutoff_backwards(tmp_path, monkeypatch):
                 (stamp,),
             )
     control.authenticate_limited("root", "secret", "10.0.0.5")
-    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:01"
 
     # Two rows from before the clock correction, and a cap that leaves room for
     # exactly one more, so the next trim drops only back-dated rows.
@@ -758,7 +759,7 @@ def test_a_later_trim_cannot_move_a_cutoff_backwards(tmp_path, monkeypatch):
 
     kept = [event["occurred_at"] for event in _events(control)]
     assert "2026-01-01 09:00:00" not in kept
-    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:01"
 
 
 def test_an_access_database_from_before_the_cutoffs_gains_them_empty(tmp_path):
@@ -785,7 +786,7 @@ def test_an_access_database_from_before_the_cutoffs_gains_them_empty(tmp_path):
     control.ensure_schema()
 
     tiers = control.activity_report(30)["retention"]["tiers"]
-    assert all(tier["dropped_before"] is None for tier in tiers)
+    assert all(tier["intact_from"] is None for tier in tiers)
     assert all(tier["complete_since"] == tier["first_kept"] for tier in tiers)
     # The drop itself is still on the record, just not attributable to a tier.
     assert control.activity_report(30)["retention"]["dropped_unclassified"] == 7
@@ -814,7 +815,7 @@ def test_a_back_dated_refusal_cannot_vouch_for_sign_ins_that_were_dropped(tmp_pa
                 (stamp,),
             )
     control.authenticate_limited("root", "secret", "10.0.0.5")  # trims up to 2026-04-01
-    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:01"
 
     control.save_user(None, "quiet", "2468", "editor")
     with control._connect() as conn:
@@ -830,7 +831,7 @@ def test_a_back_dated_refusal_cannot_vouch_for_sign_ins_that_were_dropped(tmp_pa
 
     report = control.activity_report(ACTIVITY_MAX_DAYS)
     assert report["retention"]["first_event"] == "2026-01-01 09:00:00"
-    assert report["retention"]["sign_in_history_from"] == "2026-04-01 09:00:00"
+    assert report["retention"]["sign_in_history_from"] == "2026-04-01 09:00:01"
     quiet = next(user for user in report["users"] if user["username"] == "quiet")
     assert quiet["tracked_since_created"] is False
 
@@ -861,3 +862,75 @@ def test_a_quiet_start_to_the_history_still_vouches_for_an_account(tmp_path):
     assert report["retention"]["sign_in_history_from"] == "2026-05-01 09:00:00"
     quiet = next(user for user in report["users"] if user["username"] == "quiet")
     assert quiet["tracked_since_created"] is True
+
+
+def test_a_trim_that_splits_a_second_does_not_claim_that_second(tmp_path, monkeypatch):
+    """The boundary can fall inside one second, and both sides of it are real.
+
+    Timestamps here are whole seconds and the trim splits on id within one, so
+    two sign-ins in the same second can land on opposite sides: one deleted,
+    one kept, both stamped identically. Dating completeness from the deleted
+    row's own timestamp would cover a second an attempt was removed from.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        # Two in the same second, then a later one, so the trim has to cut
+        # between the pair rather than around them.
+        for stamp in ("2026-04-01 09:00:00", "2026-04-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    kept = [event["occurred_at"] for event in _events(control)]
+    # Exactly one of the pair survived: the second really is split.
+    assert kept.count("2026-04-01 09:00:00") == 1
+    tier = next(
+        entry
+        for entry in control.activity_report(ACTIVITY_MAX_DAYS)["retention"]["tiers"]
+        if entry["kind"] == "success"
+    )
+    assert tier["first_kept"] == "2026-04-01 09:00:00"
+    assert tier["complete_since"] == "2026-04-01 09:00:01"
+
+
+def test_an_account_created_in_the_split_second_is_not_vouched_for(tmp_path, monkeypatch):
+    """The equality case, on the claim that matters most.
+
+    An account created in the same second the trim cut through may have signed
+    in during that second and had it deleted. Treating the boundary as covering
+    its own second would report that account as never used.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    control.save_user(None, "borderline", "2468", "editor")
+    with control._connect() as conn:
+        for stamp in ("2026-04-01 09:00:00", "2026-04-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    with control._connect() as conn:
+        conn.execute("UPDATE users SET created_at = '2026-04-01 09:00:00' WHERE username = 'borderline'")
+
+    report = control.activity_report(ACTIVITY_MAX_DAYS)
+    assert report["retention"]["sign_in_history_from"] == "2026-04-01 09:00:01"
+    borderline = next(user for user in report["users"] if user["username"] == "borderline")
+    assert borderline["tracked_since_created"] is False
+    # A second later and the whole of the account's life is covered.
+    with control._connect() as conn:
+        conn.execute("UPDATE users SET created_at = '2026-04-01 09:00:01' WHERE username = 'borderline'")
+    borderline = next(
+        user for user in control.activity_report(ACTIVITY_MAX_DAYS)["users"]
+        if user["username"] == "borderline"
+    )
+    assert borderline["tracked_since_created"] is True

@@ -188,8 +188,10 @@ class AccessControl:
                     dropped_success INTEGER NOT NULL DEFAULT 0,
                     dropped_attributed INTEGER NOT NULL DEFAULT 0,
                     dropped_unattributed INTEGER NOT NULL DEFAULT 0,
-                    -- The newest timestamp trimmed away in each tier. What
-                    -- survives cannot answer this on its own: eviction is
+                    -- The first instant each tier is intact from: a second
+                    -- past the newest attempt the trim removed, since that
+                    -- second is one rows were deleted from. What survives
+                    -- cannot answer this on its own: eviction is
                     -- newest-first *within* a tier, so the oldest surviving row
                     -- normally sits just after the newest dropped one -- but
                     -- put the clock back and a later attempt arrives dated
@@ -590,11 +592,25 @@ class AccessControl:
                            SUM(outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL) AS attributed,
                            SUM(user_id IS NULL) AS unattributed,
                            COUNT(*) AS total,
-                           MAX(CASE WHEN outcome = '{LOGIN_SUCCESS}'
-                                    THEN occurred_at END) AS cutoff_success,
-                           MAX(CASE WHEN outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL
-                                    THEN occurred_at END) AS cutoff_attributed,
-                           MAX(CASE WHEN user_id IS NULL THEN occurred_at END) AS cutoff_unattributed
+                           -- A second later than the newest attempt dropped,
+                           -- because that second is not intact and this value
+                           -- is read as one that is. Timestamps here are whole
+                           -- seconds, and the trim splits on id within one --
+                           -- two sign-ins in the same second land on opposite
+                           -- sides of the boundary -- so the dropped row's own
+                           -- timestamp is also a surviving row's. Reporting
+                           -- history as complete from it would cover a second
+                           -- an attempt was deleted from, and an account
+                           -- created in exactly that second would be called
+                           -- never used on the strength of it. One second on
+                           -- is the tightest boundary this column can express
+                           -- and it errs towards claiming less.
+                           datetime(MAX(CASE WHEN outcome = '{LOGIN_SUCCESS}'
+                                    THEN occurred_at END), '+1 second') AS cutoff_success,
+                           datetime(MAX(CASE WHEN outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL
+                                    THEN occurred_at END), '+1 second') AS cutoff_attributed,
+                           datetime(MAX(CASE WHEN user_id IS NULL
+                                    THEN occurred_at END), '+1 second') AS cutoff_unattributed
                       FROM login_events WHERE id IN ({doomed})"""
             ).fetchone()
             conn.execute(f"DELETE FROM login_events WHERE id IN ({doomed})")
@@ -1151,10 +1167,13 @@ class AccessControl:
             return {
                 "kind": kind,
                 "first_kept": first_kept,
-                # None where nothing of this kind was ever dropped, and also
-                # where it was dropped by a version that did not record the
-                # line -- in both cases the surviving rows are all there is.
-                "dropped_before": trimmed,
+                # The first instant the trim left intact -- inclusive, like
+                # every other date here, so the two compose by taking whichever
+                # is later. None where nothing of this kind was ever dropped,
+                # and also where it was dropped by a version that did not
+                # record the line: in both cases the surviving rows are all
+                # there is to go on.
+                "intact_from": trimmed,
                 "complete_since": complete_since,
                 "dropped": self._count(pruning[dropped]) if pruning else 0,
             }
@@ -1172,7 +1191,10 @@ class AccessControl:
             # row in the file and pull first_event below a trim line that took
             # real sign-ins with it -- and an account created in between would
             # then be called never used on the strength of sign-ins that were
-            # deleted. The success tier's own oldest surviving row is the wrong
+            # deleted. Both halves are inclusive -- the trim line is stored a
+            # second past what it removed, so an account created exactly on it
+            # is covered -- and the later of the two is the answer.
+            # The success tier's own oldest surviving row is the wrong
             # correction for this: with nothing pruned it can sit long after
             # recording began, on a deployment where the first week was all
             # wrong PINs, and an account created in that week has genuinely
