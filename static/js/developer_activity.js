@@ -330,28 +330,47 @@
     // reach back weeks, and a window well inside the history would quietly
     // report too few wrong PINs. Each tier is pruned newest-first, so naming
     // where each one starts says exactly what is missing.
-    if (retention.capped) {
+    if (retention.pruned) {
       factRow(
         list,
         "Retention",
-        `At the ${formatNumber(retention.login_event_cap)}-row cap, so attempts are being dropped — ` +
-          "the ones on unrecognised names first, then failures and lockouts against real accounts. " +
-          "Successful sign-ins are the last to go, so it is the refusal counts that go short first, " +
-          "including inside windows that sit well within the dates above."
+        `${formatNumber(retention.rows_dropped)} attempts dropped to stay within the ` +
+          `${formatNumber(retention.login_event_cap)}-row cap, most recently ` +
+          `${formatTimestamp(retention.last_pruned_at)}. Attempts on unrecognised names go first, ` +
+          "then failures and lockouts against real accounts; successful sign-ins are the last to go. " +
+          "So the counts that go short first are the ones somebody watching for an attack is reading."
       );
+      // Each tier is pruned newest-first, so each has one clean cutoff and
+      // these three dates describe the history exactly. Shown separately
+      // because the tiers do not run out together -- claiming one date for
+      // "refusals" would date the attributed ones and overstate the rest.
+      const tiers = [
+        ["sign-ins", retention.first_success],
+        ["refusals on real accounts", retention.first_attributed_refusal],
+        ["attempts on unrecognised names", retention.first_unattributed_refusal],
+      ].filter(function (tier) {
+        return tier[1];
+      });
       factRow(
         list,
         "Complete since",
-        `sign-ins ${retention.first_success ? formatTimestamp(retention.first_success) : "—"} · ` +
-          `refused attempts ${retention.first_refusal ? formatTimestamp(retention.first_refusal) : "—"}. ` +
-          "A window starting before either date under-counts that kind of attempt."
+        tiers.length
+          ? tiers
+              .map(function (tier) {
+                return `${tier[0]} ${formatDay(tier[1])}`;
+              })
+              .join(" · ") + ". A window starting before one of these under-counts that kind of attempt."
+          : "Nothing is left in the history."
       );
     } else {
       factRow(
         list,
         "Retention",
-        `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been ` +
-          "dropped and every window is counted in full."
+        retention.capped
+          ? `At the ${formatNumber(retention.login_event_cap)}-row cap. Nothing has been dropped yet — ` +
+            "trimming starts once the history runs past the cap — so every window is still counted in full."
+          : `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been ` +
+            "dropped and every window is counted in full."
       );
     }
     factRow(

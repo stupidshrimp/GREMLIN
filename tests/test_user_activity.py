@@ -385,6 +385,63 @@ def test_retention_reports_where_each_kind_of_attempt_still_reaches_back_to(tmp_
         conn.execute("UPDATE login_events SET occurred_at = datetime('now','-300 days') WHERE outcome='success'")
 
     retention = control.activity_report(30)["retention"]
-    assert retention["first_success"] < retention["first_refusal"]
+    assert retention["first_success"] < retention["first_attributed_refusal"]
     assert retention["first_event"] == retention["first_success"]
     assert retention["capped"] is False
+    assert retention["pruned"] is False
+
+
+def test_the_three_eviction_tiers_each_report_their_own_cutoff(tmp_path, monkeypatch):
+    """Refusals are two tiers, not one, and they do not run out together.
+
+    Attempts on unrecognised names are dropped before failures against a real
+    account, so a single "refusals complete since" date would be the attributed
+    one and would overstate how far back the unrecognised-name history reaches
+    -- which is the count somebody watching for an attack is reading.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 6)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    # Attributed refusals, then a flood of unrecognised names to push the table
+    # past the cap. The unattributed tier is evicted first, so it ends up with
+    # the latest cutoff of the three.
+    for index in range(3):
+        control.authenticate_limited("root", "wrong", f"10.0.1.{index}")
+    for index in range(9):
+        control.authenticate_limited(f"ghost-{index}", "x", f"10.9.9.{index}")
+
+    retention = control.activity_report(30)["retention"]
+    assert retention["pruned"] is True
+    assert retention["rows_dropped"] > 0
+    assert retention["last_pruned_at"] is not None
+    assert (
+        retention["first_success"]
+        <= retention["first_attributed_refusal"]
+        <= retention["first_unattributed_refusal"]
+    )
+    # The sign-in survived the flood, and the unrecognised-name history is the
+    # one that has been cut back.
+    assert _events(control)[0]["outcome"] == "success"
+
+
+def test_reaching_the_cap_is_not_reported_as_having_dropped_anything(tmp_path, monkeypatch):
+    """Trimming starts a slack's worth of rows past the cap, not at it.
+
+    In between, the history is full but complete. Saying attempts are being
+    dropped there would tell an administrator their counts are short when every
+    one of them is exact -- and if traffic stopped, it would say so forever.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 3)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 10)
+    control = _control(tmp_path)
+    for index in range(5):
+        control.authenticate_limited("root", "secret", f"10.0.0.{index}")
+
+    retention = control.activity_report(30)["retention"]
+    assert retention["login_events"] == 5
+    assert retention["capped"] is True
+    assert retention["pruned"] is False
+    assert retention["rows_dropped"] == 0

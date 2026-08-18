@@ -175,6 +175,18 @@ class AccessControl:
             """)
             # Every activity query is "since a cutoff", and the per-user panel
             # then groups by account.
+            # Whether the history has ever actually been trimmed, which is the
+            # only thing that makes it incomplete. Row count cannot answer it:
+            # trimming runs at cap + slack and takes the table back to exactly
+            # the cap, so "at the cap" is true both of a file that has never
+            # dropped anything and of one that has just finished dropping.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS login_event_pruning (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    last_pruned_at TEXT NOT NULL,
+                    rows_dropped INTEGER NOT NULL DEFAULT 0
+                )
+            """)
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_occurred_at ON login_events(occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_user ON login_events(user_id, occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS audit_log_changed_at ON audit_log(changed_at)")
@@ -504,13 +516,22 @@ class AccessControl:
         # count itself is cheap enough to check each time -- it reads an index,
         # not the table.
         if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP + LOGIN_EVENT_PRUNE_SLACK:
-            conn.execute(
+            dropped = conn.execute(
                 f"""DELETE FROM login_events WHERE id IN (
                        SELECT id FROM login_events
                         ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC, id DESC
                         LIMIT -1 OFFSET ?
                    )""",
                 (LOGIN_EVENT_ROW_CAP,),
+            ).rowcount
+            # Written here, where it is known, rather than inferred later from a
+            # row count that cannot tell a trimmed file from a full one.
+            conn.execute(
+                """INSERT INTO login_event_pruning(id, last_pruned_at, rows_dropped)
+                   VALUES (1, CURRENT_TIMESTAMP, ?)
+                   ON CONFLICT(id) DO UPDATE SET last_pruned_at = CURRENT_TIMESTAMP,
+                                                rows_dropped = rows_dropped + excluded.rows_dropped""",
+                (max(0, dropped),),
             )
 
     def list_users(self) -> list[dict]:
@@ -903,23 +924,33 @@ class AccessControl:
     def _activity_retention(self, conn: sqlite3.Connection) -> dict:
         """How much history there is, so a window can be read against its limits.
 
-        Reported per tier, because the cap does not drop rows in date order. It
-        keeps successful sign-ins ahead of refusals, so at the cap the sign-in
-        history can still reach back years while the refused attempts only reach
-        back weeks. Within a tier eviction *is* chronological -- each one is
-        pruned newest-first, so what survives is an unbroken run ending at the
-        present -- which is why one date per tier describes the whole of it, and
-        why the page can name where the refusal history actually starts instead
-        of vaguely warning that some of it is missing.
+        Reported per tier, and there are three of them, because that is how many
+        the cap evicts in: successful sign-ins, then failures and lockouts
+        against a real account, then attempts on names matching nothing. One
+        cutoff for "refusals" would span the last two, and those do not run out
+        together -- the anonymous tier goes first, so a single date would date
+        the surviving attributed refusals and quietly claim the unrecognised-name
+        history is complete that far back too, which is the count somebody
+        watching for an attack is reading.
+
+        Within a tier eviction *is* chronological -- each is pruned newest-first,
+        so what survives is an unbroken run ending at the present. That is what
+        makes one date per tier a complete description of it, rather than a
+        warning that something somewhere is missing.
         """
 
         row = conn.execute(
-            """SELECT COUNT(*) AS events,
+            f"""SELECT COUNT(*) AS events,
                       MIN(occurred_at) AS first_event,
                       MAX(occurred_at) AS last_event,
-                      MIN(CASE WHEN outcome='success' THEN occurred_at END) AS first_success,
-                      MIN(CASE WHEN outcome<>'success' THEN occurred_at END) AS first_refusal
+                      MIN(CASE WHEN outcome='{LOGIN_SUCCESS}' THEN occurred_at END) AS first_success,
+                      MIN(CASE WHEN outcome<>'{LOGIN_SUCCESS}' AND user_id IS NOT NULL
+                               THEN occurred_at END) AS first_attributed_refusal,
+                      MIN(CASE WHEN user_id IS NULL THEN occurred_at END) AS first_unattributed_refusal
                  FROM login_events"""
+        ).fetchone()
+        pruning = conn.execute(
+            "SELECT last_pruned_at, rows_dropped FROM login_event_pruning WHERE id = 1"
         ).fetchone()
         events = self._count(row["events"])
         return {
@@ -927,7 +958,14 @@ class AccessControl:
             "first_event": row["first_event"],
             "last_event": row["last_event"],
             "first_success": row["first_success"],
-            "first_refusal": row["first_refusal"],
-            # At the cap, rows are being dropped -- lowest tier first.
+            "first_attributed_refusal": row["first_attributed_refusal"],
+            "first_unattributed_refusal": row["first_unattributed_refusal"],
+            # Full, but not necessarily short of anything: trimming starts once
+            # the history runs LOGIN_EVENT_PRUNE_SLACK rows past the cap.
             "capped": events >= LOGIN_EVENT_ROW_CAP,
+            # Whether anything has actually been dropped, which is the question
+            # "is this history complete?" really asks.
+            "pruned": pruning is not None,
+            "last_pruned_at": pruning["last_pruned_at"] if pruning else None,
+            "rows_dropped": self._count(pruning["rows_dropped"]) if pruning else 0,
         }
