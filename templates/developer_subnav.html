@@ -1,7 +1,7 @@
 {#- Cross-navigation shared by every developer page.
 
-    The hub at /developer is the front door, but moving between the three tools
-    should not mean going back through it, so each page carries the same three
+    The hub at /developer is the front door, but moving between the tools
+    should not mean going back through it, so each page carries the same set of
     links. `dev_section` is set by the view, so the current page is marked
     rather than inferred from the URL. -#}
 <nav class="dev-subnav" aria-label="Developer sections">
@@ -17,4 +17,7 @@
   <a class="dev-subnav-link{% if dev_section == 'access' %} is-active{% endif %}"
      href="{{ url_for('developer_access') }}"
      {% if dev_section == 'access' %}aria-current="page"{% endif %}>Access control</a>
+  <a class="dev-subnav-link{% if dev_section == 'activity' %} is-active{% endif %}"
+     href="{{ url_for('developer_activity') }}"
+     {% if dev_section == 'activity' %}aria-current="page"{% endif %}>User activity</a>
 </nav>

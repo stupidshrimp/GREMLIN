@@ -8,11 +8,12 @@
 <section class="glass-card fade-in-up dev-hero">
   <div class="dev-hero-copy">
     <p class="eyebrow">Developer</p>
-    <h1>Three tools, kept apart.</h1>
+    <h1>Four tools, kept apart.</h1>
     <p>
       Database inspection reads and only reads: every panel behind it opens
       <code>GREMLIN.db</code> <code>mode=ro</code>, so it can neither change the file nor
-      take the writer lock other users depend on. The other two are consequential —
+      take the writer lock other users depend on. User activity reads too, from the
+      access database rather than this one. The other two are consequential —
       Limble sync writes to the database and spends this server's API credentials, and
       access control decides who may sign in — so they each get their own page rather
       than a tab next to something you opened to read.
@@ -59,6 +60,19 @@
       <p>
         Add and remove users, change roles between viewer, editor and administrator, and
         reset PINs. Stored separately from the analysis database, in
+        <code>{{ access_db_path }}</code>.
+      </p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_activity') }}">
+    <h2>User activity</h2>
+    <p>Who is signing in, how often, and what they change once inside.</p>
+    <div class="card-hover-copy">
+      <p>
+        Sign-ins per account over a window you choose, how recently each account was
+        last used, which have never been used at all, refused and locked-out attempts,
+        and the changes recorded in the audit trail. Read from
         <code>{{ access_db_path }}</code>.
       </p>
     </div>

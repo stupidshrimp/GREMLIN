@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include "developer_subnav.html" %}
+
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>User activity</h1>
+    <p>
+      How much GREMLIN is being used, and by whom. Sign-ins come from the login
+      endpoint and changes from the audit trail every protected write already
+      stamps, so this reads what the deployment records anyway — it is a view over
+      the access database, not a second thing collecting data. Read-only, like
+      database inspection.
+    </p>
+    <p class="dev-hero-path">Accounts and history: <code>{{ access_db_path }}</code></p>
+  </div>
+</section>
+
+<div id="dev-status" class="dev-banner" role="status" hidden></div>
+
+<section class="dev-panel is-active" data-panel="activity" aria-label="User activity">
+  <div class="glass-card slide-in">
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-activity-days">Window</label>
+        <select id="dev-activity-days">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="180">Last 180 days</option>
+          <option value="365">Last 365 days</option>
+        </select>
+      </div>
+      <div class="dev-field dev-field-actions">
+        <button type="button" class="btn-secondary" id="dev-activity-refresh">Refresh</button>
+      </div>
+    </div>
+    <p class="dev-muted" id="dev-activity-window">Loading…</p>
+    <div class="dev-stat-grid" id="dev-activity-stats"></div>
+  </div>
+
+  <div class="glass-card slide-in">
+    <h2>Sign-ins per day</h2>
+    <p class="dev-muted">
+      Successful sign-ins each day of the window. Quiet days are shown as gaps rather
+      than skipped, so a week nobody used GREMLIN reads as one.
+    </p>
+    <div class="dev-chart" id="dev-activity-daily"></div>
+  </div>
+
+  <div class="dev-panel-grid">
+    <div class="glass-card slide-in">
+      <h2>Time of day</h2>
+      <p class="dev-muted" id="dev-activity-hourly-note">When sign-ins happen, by hour.</p>
+      <div class="dev-chart is-compact" id="dev-activity-hourly"></div>
+    </div>
+    <div class="glass-card slide-in">
+      <h2>Most-used protected actions</h2>
+      <p class="dev-muted">
+        Endpoints the window's audited writes went through, most used first.
+      </p>
+      <div class="dev-table-scroll" id="dev-activity-actions"></div>
+    </div>
+  </div>
+
+  <div class="glass-card slide-in">
+    <h2>Accounts</h2>
+    <p class="dev-muted">
+      Every account, including ones with nothing in the window — an account that is
+      never used is as much a finding as a busy one. “Per active day” separates somebody
+      who signs in daily from somebody who signed in six times in one afternoon. An
+      account older than the recorded history reads “None recorded since …” rather than
+      “Never signed in”: nothing can reconstruct sign-ins from before this page existed,
+      and an account in daily use must not be reported as unused.
+    </p>
+    <div class="dev-table-scroll" id="dev-activity-users"></div>
+  </div>
+
+  <div class="dev-panel-grid">
+    <div class="glass-card slide-in">
+      <h2>Recent sign-ins</h2>
+      <p class="dev-muted">
+        Latest attempts in the window. An attempt against a name that matches no account
+        is recorded without that name — the commonest way to type one is a PIN in the
+        username box, and this database keeps no credential in the clear.
+      </p>
+      <div class="dev-table-scroll" id="dev-activity-logins"></div>
+    </div>
+    <div class="glass-card slide-in">
+      <h2>Recent changes</h2>
+      <p class="dev-muted">The audit trail: who performed a protected write, and where.</p>
+      <div class="dev-table-scroll" id="dev-activity-changes"></div>
+    </div>
+  </div>
+
+  <div class="glass-card slide-in">
+    <h2>About this history</h2>
+    <dl class="dev-facts" id="dev-activity-retention"><dd class="dev-muted">Loading…</dd></dl>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/developer_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/developer_activity.js') }}"></script>
+{% endblock %}
