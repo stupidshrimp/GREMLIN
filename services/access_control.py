@@ -751,7 +751,7 @@ class AccessControl:
                     "timezone": "UTC",
                 },
                 "summary": self._activity_summary(conn, *window),
-                "users": self._activity_users(conn, *window, retention["first_event"]),
+                "users": self._activity_users(conn, *window, retention["sign_in_history_from"]),
                 "daily": self._activity_daily(conn, *window, first_day, today),
                 "hourly": self._activity_hourly(conn, *window),
                 "recent_logins": self._activity_recent_logins(conn, *window, recent_limit),
@@ -870,10 +870,11 @@ class AccessControl:
         not signed in" is the question this page is most often opened to answer,
         and an account that is absent from the table cannot answer it.
 
-        ``history_start`` is when the recorded sign-in history begins, and it is
-        what separates "never signed in" from "not seen since we started
-        looking". On a deployment upgrading to this feature the history starts
-        empty -- nothing can reconstruct last year's sign-ins -- so every
+        ``history_start`` is the point from which the record of successful
+        sign-ins is complete -- when recording began, or the last trim line if
+        sign-ins have been dropped since -- and it is what separates "never
+        signed in" from "not seen since we started looking". On a deployment
+        upgrading to this feature the history starts empty -- nothing can reconstruct last year's sign-ins -- so every
         existing account has no recorded sign-in on the first day, including the
         ones in use every shift. Calling those "never signed in" would be a
         false statement about real people, and the sort an administrator might
@@ -1161,6 +1162,26 @@ class AccessControl:
             "login_events": events,
             "first_event": row["first_event"],
             "last_event": row["last_event"],
+            # From here on, the record of successful sign-ins is complete, and
+            # it is the only date "never signed in" may rest on. Two facts have
+            # to hold for that claim, and first_event carries only one of them:
+            # that something was being recorded (nothing before the first row
+            # of any kind can be said either way), and that no sign-in from the
+            # period has since been dropped. They agree until a clock is put
+            # back, after which a back-dated *refusal* can become the oldest
+            # row in the file and pull first_event below a trim line that took
+            # real sign-ins with it -- and an account created in between would
+            # then be called never used on the strength of sign-ins that were
+            # deleted. The success tier's own oldest surviving row is the wrong
+            # correction for this: with nothing pruned it can sit long after
+            # recording began, on a deployment where the first week was all
+            # wrong PINs, and an account created in that week has genuinely
+            # never signed in. The trim line is the piece that carries the
+            # pruning, so it is the piece that belongs here.
+            "sign_in_history_from": max(
+                filter(None, (row["first_event"], pruning["cutoff_success"] if pruning else None)),
+                default=None,
+            ),
             # Per tier: the oldest attempt still held, and how many of that kind
             # have been dropped. A tier trimmed away completely has no surviving
             # row to date, so the count is the only thing left that says it

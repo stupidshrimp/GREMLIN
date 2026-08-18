@@ -789,3 +789,75 @@ def test_an_access_database_from_before_the_cutoffs_gains_them_empty(tmp_path):
     assert all(tier["complete_since"] == tier["first_kept"] for tier in tiers)
     # The drop itself is still on the record, just not attributable to a tier.
     assert control.activity_report(30)["retention"]["dropped_unclassified"] == 7
+
+
+def test_a_back_dated_refusal_cannot_vouch_for_sign_ins_that_were_dropped(tmp_path, monkeypatch):
+    """"Never signed in" rests on the sign-in record, not on any row at all.
+
+    Two things have to hold before the page may say an account has never been
+    used: something was being recorded when the account was created, and no
+    sign-in from since then has been dropped. The oldest row in the file
+    carries only the first. Put the clock back and a refusal can be written
+    dated below a trim line that took real sign-ins with it -- and an account
+    created in between would be called unused on the strength of sign-ins that
+    are gone, which is the finding an administrator acts on by deleting it.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 2)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        for stamp in ("2026-03-01 09:00:00", "2026-04-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    control.authenticate_limited("root", "secret", "10.0.0.5")  # trims up to 2026-04-01
+    assert _pruning(control)["cutoff_success"] == "2026-04-01 09:00:00"
+
+    control.save_user(None, "quiet", "2468", "editor")
+    with control._connect() as conn:
+        # The clock goes back: a refusal lands dated before the trim line and
+        # becomes the oldest row in the file.
+        conn.execute(
+            """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+               VALUES (NULL,NULL,'failure','d','2026-01-01 09:00:00')"""
+        )
+        # An account created inside the stretch the trim reached into. Any
+        # sign-in of theirs from before 2026-04-01 is gone.
+        conn.execute("UPDATE users SET created_at = '2026-02-01 09:00:00' WHERE username = 'quiet'")
+
+    report = control.activity_report(ACTIVITY_MAX_DAYS)
+    assert report["retention"]["first_event"] == "2026-01-01 09:00:00"
+    assert report["retention"]["sign_in_history_from"] == "2026-04-01 09:00:00"
+    quiet = next(user for user in report["users"] if user["username"] == "quiet")
+    assert quiet["tracked_since_created"] is False
+
+
+def test_a_quiet_start_to_the_history_still_vouches_for_an_account(tmp_path):
+    """Nothing dropped means nothing missing, whatever the first row was.
+
+    The completeness of the sign-in record is not the same as its first
+    success. A deployment can open with a week of wrong PINs before anybody
+    gets in, and an account created in that week has genuinely never signed in
+    -- dating the guarantee from the first *success* would refuse to say so.
+    """
+
+    control = _control(tmp_path)
+    control.save_user(None, "quiet", "2468", "editor")
+    with control._connect() as conn:
+        conn.execute(
+            """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+               VALUES (1,'root','failure','d','2026-05-01 09:00:00')"""
+        )
+        conn.execute(
+            """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+               VALUES (1,'root','success','d','2026-05-20 09:00:00')"""
+        )
+        conn.execute("UPDATE users SET created_at = '2026-05-10 09:00:00' WHERE username = 'quiet'")
+
+    report = control.activity_report(ACTIVITY_MAX_DAYS)
+    assert report["retention"]["sign_in_history_from"] == "2026-05-01 09:00:00"
+    quiet = next(user for user in report["users"] if user["username"] == "quiet")
+    assert quiet["tracked_since_created"] is True

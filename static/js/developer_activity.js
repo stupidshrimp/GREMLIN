@@ -28,12 +28,26 @@
 
   const state = { days: 30, requestVersion: 0 };
 
-  // "since 17/08/2026" rather than a full timestamp: what matters about the
-  // start of the history is which day it was, not the minute.
-  function formatDay(value) {
+  // Every other timestamp on this page is shown in the reader's own zone,
+  // which is right for "when did this happen". The dates that describe where
+  // the history becomes complete are a different kind of statement and get a
+  // different treatment: shown to the second, and in UTC.
+  //
+  // To the second because a trim ends whenever it ends -- 09:14 on the 1st,
+  // say -- and rendering that as "the 1st" claims the whole of the 1st is
+  // accounted for while that morning's attempts are exactly what was dropped.
+  // In UTC because the window this is read against is a run of UTC days: a
+  // boundary converted to local time would be compared against a start that
+  // was not, and the two can fall on different dates.
+  //
+  // The server sends "YYYY-MM-DD HH:MM:SS" in UTC, so this is a relabelling
+  // rather than a conversion, and nothing is rounded in either direction.
+  function formatUtc(value) {
     if (!value) return "";
-    const text = formatTimestamp(value);
-    return text.split(",")[0];
+    const text = String(value).trim();
+    return /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(text)
+      ? `${text.slice(0, 10)} ${text.slice(11, 19)} UTC`
+      : text;
   }
 
   // Counts here are frequently 1 -- one account never used, one attempt refused
@@ -59,7 +73,7 @@
   }
 
   function render(payload) {
-    state.historyStart = (payload.retention || {}).first_event || null;
+    state.historyStart = (payload.retention || {}).sign_in_history_from || null;
     renderWindow(payload);
     renderStats(payload.summary, payload.users);
     renderDaily(payload.daily);
@@ -90,7 +104,7 @@
     const allWatched = unused.every(function (user) {
       return user.tracked_since_created;
     });
-    const since = formatDay(state.historyStart);
+    const since = formatUtc(state.historyStart);
     const cards = [
       ["Sign-ins", summary.successful_logins, "successful logins in the window"],
       ["Accounts used", `${formatNumber(summary.users_seen)} of ${formatNumber(summary.accounts)}`,
@@ -246,7 +260,7 @@
   function lastSignIn(user) {
     if (user.last_login) return formatTimestamp(user.last_login);
     if (user.tracked_since_created) return "Never signed in";
-    const since = formatDay(state.historyStart);
+    const since = formatUtc(state.historyStart);
     return since ? `None recorded since ${since}` : "No sign-in recorded yet";
   }
 
@@ -373,8 +387,8 @@
             // the tier actually becomes whole.
             const since = tier.complete_since || tier.first_kept;
             return tier.dropped
-              ? `${name} ${formatDay(since)} (${formatNumber(tier.dropped)} older dropped)`
-              : `${name} ${formatDay(since)}`;
+              ? `${name} ${formatUtc(since)} (${formatNumber(tier.dropped)} older dropped)`
+              : `${name} ${formatUtc(since)}`;
           }
           // Nothing survives in this tier, so there is no date to give -- a
           // trim line without a row behind it would read as history that is
