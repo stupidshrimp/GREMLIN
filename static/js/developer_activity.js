@@ -50,6 +50,23 @@
       : text;
   }
 
+  // Whether the window reaches back past the start of the recorded history.
+  // A window is only counted in full if two things hold, and "nothing has been
+  // dropped" is one of them: the other is that something was being recorded for
+  // the whole of it. On a deployment that has just upgraded, neither the daily
+  // chart nor the totals can tell the days before this feature existed from
+  // days nobody signed in -- both are zero -- and that is the reading somebody
+  // acts on by concluding GREMLIN is not being used.
+  //
+  // Both values are UTC "YYYY-MM-DD HH:MM:SS" from the server, so comparing
+  // them as text compares them as instants.
+  function startsBeforeHistory(payload) {
+    const start = (payload.window || {}).start;
+    const first = (payload.retention || {}).first_event;
+    if (!start) return false;
+    return !first || start < first;
+  }
+
   // Counts here are frequently 1 -- one account never used, one attempt refused
   // -- and "1 attempts" is the kind of wrong that makes a page look unfinished.
   function plural(count, singular, pluralForm) {
@@ -76,7 +93,7 @@
     state.historyStart = (payload.retention || {}).sign_in_history_from || null;
     renderWindow(payload);
     renderStats(payload.summary, payload.users);
-    renderDaily(payload.daily);
+    renderDaily(payload);
     renderHourly(payload.hourly);
     renderActions(payload.top_actions);
     renderUsers(payload.users);
@@ -199,8 +216,8 @@
     }
   }
 
-  function renderDaily(daily) {
-    const days = daily || [];
+  function renderDaily(payload) {
+    const days = payload.daily || [];
     // A year of daily labels cannot be read at any width, so label the ends and
     // roughly every twelfth column; the tooltip on each carries the exact date.
     const step = Math.max(1, Math.ceil(days.length / 12));
@@ -222,10 +239,25 @@
       {
         // Columns are scaled against each other, so the busiest day is what
         // gives the rest of them a size.
-        caption: busiest && busiest.logins
-          ? `Busiest day: ${plural(busiest.logins, "sign-in")} on ${busiest.day}. ` +
-            "Hover a column for that day's accounts, refused attempts and changes."
-          : null,
+        //
+        // And a flat run at the start of the window is two different things
+        // drawn identically: days nobody signed in, and days from before
+        // anything was being recorded. The second is the one that misleads --
+        // it looks like evidence GREMLIN is going unused, on a deployment
+        // where it simply was not watching yet -- so where the window reaches
+        // back that far, the chart says which is which.
+        caption: [
+          busiest && busiest.logins
+            ? `Busiest day: ${plural(busiest.logins, "sign-in")} on ${busiest.day}. ` +
+              "Hover a column for that day's accounts, refused attempts and changes."
+            : null,
+          startsBeforeHistory(payload)
+            ? ((payload.retention || {}).first_event
+                ? `Columns before ${formatUtc((payload.retention || {}).first_event)} are days nothing ` +
+                  "was being recorded, not days without a sign-in."
+                : "Nothing has been recorded yet, so every column here is an unwatched day rather than a quiet one.")
+            : null,
+        ].filter(Boolean).join(" ") || null,
         emptyText: "No sign-ins recorded in this window.",
       }
     );
@@ -417,15 +449,27 @@
         );
       }
     } else {
-      factRow(
-        list,
-        "Retention",
-        retention.capped
-          ? `At the ${formatNumber(retention.login_event_cap)}-row cap. Nothing has been dropped yet — ` +
-            "trimming starts once the history runs past the cap — so every window is still counted in full."
-          : `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been ` +
-            "dropped and every window is counted in full."
-      );
+      // Nothing dropped is only half of "counted in full", and on an upgraded
+      // deployment it is the half that is easy to satisfy: no attempt has been
+      // trimmed because there is barely any history to trim, and a 365-day
+      // window over a fortnight-old record is mostly days that were never
+      // watched. Claiming the window is complete there states the one thing
+      // this panel exists to be right about, backwards.
+      const kept = retention.capped
+        ? `At the ${formatNumber(retention.login_event_cap)}-row cap. Nothing has been dropped yet — ` +
+          "trimming starts once the history runs past the cap."
+        : `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been dropped.`;
+      let covered;
+      if (!startsBeforeHistory(payload)) {
+        covered = "Every attempt this window covers is still here, so it is counted in full.";
+      } else if (retention.first_event) {
+        covered =
+          `This window reaches back past ${formatUtc(retention.first_event)}, where the record begins: ` +
+          "the days before that are days nothing was being recorded, not quiet ones.";
+      } else {
+        covered = "No sign-in has been recorded yet, so there is nothing behind this window at all.";
+      }
+      factRow(list, "Retention", `${kept} ${covered}`);
     }
     factRow(
       list,
