@@ -491,3 +491,94 @@ def test_the_pruning_record_gains_its_per_tier_columns_in_place(tmp_path):
     assert retention["pruned"] is True
     assert retention["rows_dropped"] == 7
     assert [tier["dropped"] for tier in retention["tiers"]] == [0, 0, 0]
+
+
+def test_a_future_dated_row_is_outside_the_window_everywhere(tmp_path):
+    """A clock put back leaves rows dated after today.
+
+    Every section has to agree about them. With only a lower bound the summary
+    and the tables counted such a row while the daily series -- which stops at
+    today -- did not, so the page contradicted itself about days the window does
+    not even claim to cover.
+    """
+
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    control.record_change(control.authenticate("root", "secret"), "POST /developer/api/sync")
+    with control._connect() as conn:
+        conn.execute("UPDATE login_events SET occurred_at = datetime('now', '+3 days')")
+        conn.execute("UPDATE audit_log SET changed_at = datetime('now', '+3 days')")
+
+    report = control.activity_report(30)
+    summary = report["summary"]
+    assert summary["successful_logins"] == 0
+    assert summary["changes"] == 0
+    assert summary["users_seen"] == 0
+    assert report["recent_logins"] == []
+    assert report["recent_changes"] == []
+    assert report["hourly"] == []
+    assert report["top_actions"] == []
+    assert sum(day["logins"] for day in report["daily"]) == 0
+    assert sum(user["logins"] + user["changes"] for user in report["users"]) == 0
+
+
+def test_eviction_follows_the_clock_not_the_insertion_order(tmp_path, monkeypatch):
+    """Under a clock correction, row order and time order disagree.
+
+    Retention reports the oldest surviving timestamp as a clean cutoff, so
+    eviction has to remove the oldest *timestamps* -- otherwise an attempt newer
+    than the cutoff could be gone while the page called that period complete.
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 2)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        # Written in this order, but the middle one is the oldest by the clock.
+        for stamp in ("2026-03-01 09:00:00", "2026-01-01 09:00:00", "2026-05-01 09:00:00"):
+            conn.execute(
+                """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+                   VALUES (1,'root','success','d',?)""",
+                (stamp,),
+            )
+    # One more attempt takes the table past the cap and triggers the trim.
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+
+    kept = [event["occurred_at"] for event in _events(control)]
+    assert "2026-01-01 09:00:00" not in kept
+    tiers = {tier["kind"]: tier for tier in control.activity_report(365)["retention"]["tiers"]}
+    # The reported cutoff is now the oldest thing actually kept, with nothing
+    # newer than it missing.
+    assert tiers["success"]["first_kept"] == min(kept)
+
+
+def test_refusals_aimed_at_a_removed_account_are_reported_separately(tmp_path):
+    control = _control(tmp_path)
+    control.save_user(None, "leaver", "2468", "editor")
+    leaver = control.authenticate("leaver", "2468")
+    control.authenticate_limited("leaver", "wrong", "10.0.0.6")
+    control.delete_user(leaver["id"], current_user_id=999)
+
+    summary = control.activity_report(30)["summary"]
+    assert summary["failed_logins"] == 1
+    assert summary["refusals_by_removed_accounts"] == 1
+    # Nothing in the table accounts for it, which is why it is named above.
+    assert sum(user["failed_logins"] for user in control.activity_report(30)["users"]) == 0
+
+
+def test_drops_from_before_per_tier_counting_are_unclassified_not_zero(tmp_path):
+    """Migrating cannot invent a classification for rows already gone."""
+
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        conn.execute("DROP TABLE login_event_pruning")
+        conn.execute("""CREATE TABLE login_event_pruning (
+            id INTEGER PRIMARY KEY CHECK(id = 1), last_pruned_at TEXT NOT NULL,
+            rows_dropped INTEGER NOT NULL DEFAULT 0)""")
+        conn.execute("INSERT INTO login_event_pruning(id,last_pruned_at,rows_dropped) VALUES (1,'2026-01-01 00:00:00',12)")
+
+    control.ensure_schema()
+    retention = control.activity_report(30)["retention"]
+    assert retention["rows_dropped"] == 12
+    assert retention["dropped_unclassified"] == 12
+    assert [tier["dropped"] for tier in retention["tiers"]] == [0, 0, 0]

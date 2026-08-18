@@ -196,9 +196,22 @@ class AccessControl:
             # would report "no attempts on unrecognised names" about a history
             # that dropped thousands of them.
             pruning_columns = {row["name"] for row in conn.execute("PRAGMA table_info(login_event_pruning)")}
-            for column in ("dropped_success", "dropped_attributed", "dropped_unattributed"):
+            added = False
+            for column in ("dropped_success", "dropped_attributed", "dropped_unattributed", "dropped_unclassified"):
                 if column not in pruning_columns:
                     conn.execute(f"ALTER TABLE login_event_pruning ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+                    added = True
+            # Rows dropped before the per-tier columns existed cannot be
+            # classified after the fact -- the rows are gone. Defaulting their
+            # tiers to zero would state as fact that none of them were sign-ins,
+            # so they are carried as unclassified instead and the page says so.
+            if added and pruning_columns:
+                conn.execute(
+                    """UPDATE login_event_pruning
+                          SET dropped_unclassified = rows_dropped
+                                - dropped_success - dropped_attributed - dropped_unattributed
+                        WHERE id = 1"""
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_occurred_at ON login_events(occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_user ON login_events(user_id, occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS audit_log_changed_at ON audit_log(changed_at)")
@@ -528,8 +541,18 @@ class AccessControl:
         # count itself is cheap enough to check each time -- it reads an index,
         # not the table.
         if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP + LOGIN_EVENT_PRUNE_SLACK:
+            # Ordered by when the attempt happened, not by the order rows were
+            # written. They agree until the clock is put back -- an NTP step, a
+            # corrected timezone -- after which a row inserted later carries an
+            # earlier timestamp. Evicting by id would then discard an attempt
+            # newer than ones it kept, while the retention panel reports the
+            # oldest surviving *timestamp* as a clean cutoff: a window starting
+            # after that cutoff would look complete with an event missing from
+            # inside it. Id remains the tie-break, so rows sharing a second keep
+            # their insertion order.
             doomed = f"""SELECT id FROM login_events
-                          ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC, id DESC
+                          ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC,
+                                   occurred_at DESC, id DESC
                           LIMIT -1 OFFSET {int(LOGIN_EVENT_ROW_CAP)}"""
             # Counted per tier before they go, because afterwards there is
             # nothing left to count. A tier trimmed away entirely would
@@ -657,6 +680,15 @@ class AccessControl:
             first_day = conn.execute("SELECT date('now', ?)", (f"-{days - 1} days",)).fetchone()[0]
             window_start = f"{first_day} 00:00:00"
             today = conn.execute("SELECT date('now')").fetchone()[0]
+            # Bounded at both ends, not just the near one. A row can carry a
+            # timestamp past today if the clock was put back after it was
+            # written, and a lower bound alone counts it everywhere except the
+            # daily series -- which only emits buckets up to today. The summary
+            # would then disagree with the chart beneath it, about days the
+            # window does not claim to cover. Exclusive, at the midnight that
+            # ends today.
+            tomorrow = conn.execute("SELECT date('now', '+1 day')").fetchone()[0]
+            window = (window_start, f"{tomorrow} 00:00:00")
             # Read first, because how far back the history reaches decides what
             # the per-account rows are entitled to claim about an account that
             # has no sign-in in it.
@@ -669,13 +701,13 @@ class AccessControl:
                     "last_day": today,
                     "timezone": "UTC",
                 },
-                "summary": self._activity_summary(conn, window_start),
-                "users": self._activity_users(conn, window_start, retention["first_event"]),
-                "daily": self._activity_daily(conn, window_start, first_day, today),
-                "hourly": self._activity_hourly(conn, window_start),
-                "recent_logins": self._activity_recent_logins(conn, window_start, recent_limit),
-                "recent_changes": self._activity_recent_changes(conn, window_start, recent_limit),
-                "top_actions": self._activity_top_actions(conn, window_start),
+                "summary": self._activity_summary(conn, *window),
+                "users": self._activity_users(conn, *window, retention["first_event"]),
+                "daily": self._activity_daily(conn, *window, first_day, today),
+                "hourly": self._activity_hourly(conn, *window),
+                "recent_logins": self._activity_recent_logins(conn, *window, recent_limit),
+                "recent_changes": self._activity_recent_changes(conn, *window, recent_limit),
+                "top_actions": self._activity_top_actions(conn, *window),
                 "retention": {"login_event_cap": LOGIN_EVENT_ROW_CAP, **retention},
             }
 
@@ -697,7 +729,7 @@ class AccessControl:
 
         return int(value or 0)
 
-    def _activity_summary(self, conn: sqlite3.Connection, window_start: str) -> dict:
+    def _activity_summary(self, conn: sqlite3.Connection, window_start: str, window_end: str) -> dict:
         logins = conn.execute(
             """SELECT SUM(outcome='success') AS successes,
                       SUM(outcome='failure') AS failures,
@@ -712,8 +744,8 @@ class AccessControl:
                       COUNT(DISTINCT CASE WHEN outcome='success' THEN client_digest END) AS sources,
                       COUNT(DISTINCT CASE WHEN outcome='success' THEN date(occurred_at) END) AS days_used,
                       SUM(outcome<>'success' AND user_id IS NULL) AS unknown_account_attempts
-                 FROM login_events WHERE occurred_at >= ?""",
-            (window_start,),
+                 FROM login_events WHERE occurred_at >= ? AND occurred_at < ?""",
+            (window_start, window_end),
         ).fetchone()
         changes = conn.execute(
             """SELECT COUNT(*) AS changes,
@@ -727,8 +759,8 @@ class AccessControl:
                       COUNT(DISTINCT CASE WHEN user_id IN (SELECT id FROM users)
                             THEN user_id END) AS authors,
                       SUM(user_id NOT IN (SELECT id FROM users)) AS by_removed
-                 FROM audit_log WHERE changed_at >= ?""",
-            (window_start,),
+                 FROM audit_log WHERE changed_at >= ? AND changed_at < ?""",
+            (window_start, window_end),
         ).fetchone()
         accounts = conn.execute(
             """SELECT COUNT(*) AS accounts,
@@ -740,12 +772,19 @@ class AccessControl:
         # user row on purpose, and an administrator looking at a window that
         # includes somebody's last week should see that the activity was theirs
         # rather than find it missing from every per-account row.
+        # The same treatment for every kind of event a removed account can leave
+        # behind. Sign-ins and changes were already reported this way; refusals
+        # were not, so the Wrong PIN totals counted attempts on an account that
+        # appears in no row of the table below -- and once those attempts fall
+        # out of the recent list, nothing said which account had been targeted.
         departed = conn.execute(
-            """SELECT COUNT(*) FROM login_events e
-                WHERE e.occurred_at >= ? AND e.outcome='success' AND e.user_id IS NOT NULL
-                  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)""",
-            (window_start,),
-        ).fetchone()[0]
+            f"""SELECT SUM(outcome='{LOGIN_SUCCESS}') AS logins,
+                       SUM(outcome<>'{LOGIN_SUCCESS}') AS refusals
+                  FROM login_events e
+                 WHERE e.occurred_at >= ? AND e.occurred_at < ? AND e.user_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)""",
+            (window_start, window_end),
+        ).fetchone()
         return {
             "successful_logins": self._count(logins["successes"]),
             "failed_logins": self._count(logins["failures"]),
@@ -759,11 +798,12 @@ class AccessControl:
             "changes_by_removed_accounts": self._count(changes["by_removed"]),
             "accounts": self._count(accounts["accounts"]),
             "never_signed_in": self._count(accounts["never_signed_in"]),
-            "logins_by_removed_accounts": self._count(departed),
+            "logins_by_removed_accounts": self._count(departed["logins"]),
+            "refusals_by_removed_accounts": self._count(departed["refusals"]),
         }
 
     def _activity_users(
-        self, conn: sqlite3.Connection, window_start: str, history_start: str | None
+        self, conn: sqlite3.Connection, window_start: str, window_end: str, history_start: str | None
     ) -> list[dict]:
         """One row per account: how often, how recently, and what they changed.
 
@@ -782,6 +822,7 @@ class AccessControl:
         history covers the whole life of that account, and the page says only
         what that supports.
         """
+
 
         rows = conn.execute(
             """SELECT u.id, u.username, u.role, u.created_at,
@@ -802,7 +843,7 @@ class AccessControl:
                              SUM(outcome='blocked') AS blocked,
                              COUNT(DISTINCT CASE WHEN outcome='success' THEN date(occurred_at) END) AS active_days,
                              COUNT(DISTINCT CASE WHEN outcome='success' THEN client_digest END) AS sources
-                        FROM login_events WHERE occurred_at >= ? AND user_id IS NOT NULL
+                        FROM login_events WHERE occurred_at >= ? AND occurred_at < ? AND user_id IS NOT NULL
                        GROUP BY user_id
                  ) w ON w.user_id = u.id
                  LEFT JOIN (
@@ -812,10 +853,10 @@ class AccessControl:
                  ) a ON a.user_id = u.id
                  LEFT JOIN (
                       SELECT user_id, COUNT(*) AS changes, MAX(changed_at) AS last_change
-                        FROM audit_log WHERE changed_at >= ? GROUP BY user_id
+                        FROM audit_log WHERE changed_at >= ? AND changed_at < ? GROUP BY user_id
                  ) c ON c.user_id = u.id
                 ORDER BY logins DESC, changes DESC, u.username COLLATE NOCASE""",
-            (window_start, window_start),
+            (window_start, window_end, window_start, window_end),
         ).fetchall()
         users = []
         for row in rows:
@@ -838,7 +879,7 @@ class AccessControl:
         return users
 
     def _activity_daily(
-        self, conn: sqlite3.Connection, window_start: str, first_day: str, last_day: str
+        self, conn: sqlite3.Connection, window_start: str, window_end: str, first_day: str, last_day: str
     ) -> list[dict]:
         """Sign-ins per UTC day, with quiet days present as zeroes.
 
@@ -847,6 +888,7 @@ class AccessControl:
         adjacent bars.
         """
 
+
         counted = {
             row["day"]: row
             for row in conn.execute(
@@ -854,16 +896,16 @@ class AccessControl:
                           SUM(outcome='success') AS logins,
                           SUM(outcome<>'success') AS refused,
                           COUNT(DISTINCT CASE WHEN outcome='success' THEN user_id END) AS users
-                     FROM login_events WHERE occurred_at >= ?
+                     FROM login_events WHERE occurred_at >= ? AND occurred_at < ?
                     GROUP BY day""",
-                (window_start,),
+                (window_start, window_end),
             )
         }
         changes = {
             row["day"]: row["changes"]
             for row in conn.execute(
-                "SELECT date(changed_at) AS day, COUNT(*) AS changes FROM audit_log WHERE changed_at >= ? GROUP BY day",
-                (window_start,),
+                "SELECT date(changed_at) AS day, COUNT(*) AS changes FROM audit_log WHERE changed_at >= ? AND changed_at < ? GROUP BY day",
+                (window_start, window_end),
             )
         }
         series = []
@@ -882,7 +924,7 @@ class AccessControl:
             day += timedelta(days=1)
         return series
 
-    def _activity_hourly(self, conn: sqlite3.Connection, window_start: str) -> list[dict]:
+    def _activity_hourly(self, conn: sqlite3.Connection, window_start: str, window_end: str) -> list[dict]:
         """Successful sign-ins in quarter-hour buckets, each carrying its date.
 
         The page draws these as one 24-hour distribution in the reader's local
@@ -903,6 +945,7 @@ class AccessControl:
         how finely the day is divided.
         """
 
+
         return [
             {
                 "day": row["day"],
@@ -916,14 +959,16 @@ class AccessControl:
                           CAST(strftime('%M', occurred_at) AS INTEGER) / 15 AS quarter,
                           COUNT(*) AS logins
                      FROM login_events
-                    WHERE occurred_at >= ? AND outcome='{LOGIN_SUCCESS}'
+                    WHERE occurred_at >= ? AND occurred_at < ? AND outcome='{LOGIN_SUCCESS}'
                     GROUP BY day, hour, quarter ORDER BY day, hour, quarter""",
-                (window_start,),
+                (window_start, window_end),
             )
             if row["hour"] is not None
         ]
 
-    def _activity_recent_logins(self, conn: sqlite3.Connection, window_start: str, limit: int) -> list[dict]:
+    def _activity_recent_logins(
+        self, conn: sqlite3.Connection, window_start: str, window_end: str, limit: int
+    ) -> list[dict]:
         return [
             {
                 "username": row["username"],
@@ -935,32 +980,39 @@ class AccessControl:
             }
             for row in conn.execute(
                 """SELECT username, outcome, occurred_at, user_id IS NOT NULL AS known_account
-                     FROM login_events WHERE occurred_at >= ? ORDER BY id DESC LIMIT ?""",
-                (window_start, limit),
+                     FROM login_events WHERE occurred_at >= ? AND occurred_at < ? ORDER BY id DESC LIMIT ?""",
+
+                (window_start, window_end, limit),
             )
         ]
 
-    def _activity_recent_changes(self, conn: sqlite3.Connection, window_start: str, limit: int) -> list[dict]:
+    def _activity_recent_changes(
+        self, conn: sqlite3.Connection, window_start: str, window_end: str, limit: int
+    ) -> list[dict]:
         return [
             dict(row)
             for row in conn.execute(
                 """SELECT username, action, changed_at FROM audit_log
-                    WHERE changed_at >= ? ORDER BY id DESC LIMIT ?""",
-                (window_start, limit),
+                    WHERE changed_at >= ? AND changed_at < ? ORDER BY id DESC LIMIT ?""",
+
+                (window_start, window_end, limit),
             )
         ]
 
-    def _activity_top_actions(self, conn: sqlite3.Connection, window_start: str, limit: int = 10) -> list[dict]:
+    def _activity_top_actions(
+        self, conn: sqlite3.Connection, window_start: str, window_end: str, limit: int = 10
+    ) -> list[dict]:
         """Which protected endpoints the window's writes went through."""
+
 
         return [
             dict(row)
             for row in conn.execute(
                 """SELECT action, COUNT(*) AS count, COUNT(DISTINCT user_id) AS users,
                           MAX(changed_at) AS last_used
-                     FROM audit_log WHERE changed_at >= ?
+                     FROM audit_log WHERE changed_at >= ? AND changed_at < ?
                     GROUP BY action ORDER BY count DESC, action LIMIT ?""",
-                (window_start, limit),
+                (window_start, window_end, limit),
             )
         ]
 
@@ -994,7 +1046,7 @@ class AccessControl:
         ).fetchone()
         pruning = conn.execute(
             """SELECT last_pruned_at, rows_dropped, dropped_success,
-                      dropped_attributed, dropped_unattributed
+                      dropped_attributed, dropped_unattributed, dropped_unclassified
                  FROM login_event_pruning WHERE id = 1"""
         ).fetchone()
         events = self._count(row["events"])
@@ -1027,6 +1079,10 @@ class AccessControl:
             # Full, but not necessarily short of anything: trimming starts once
             # the history runs LOGIN_EVENT_PRUNE_SLACK rows past the cap.
             "capped": events >= LOGIN_EVENT_ROW_CAP,
+            # Dropped by a version that did not yet count per tier, so which
+            # kind they were is not knowable. Reported rather than folded into
+            # one of the tiers, because either choice would be a guess.
+            "dropped_unclassified": self._count(pruning["dropped_unclassified"]) if pruning else 0,
             # Whether anything has actually been dropped, which is the question
             # "is this history complete?" really asks.
             "pruned": pruning is not None,

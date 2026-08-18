@@ -801,6 +801,12 @@ body:has(.dev-panel) .content,
    columns rather than overflowing. */
 .dev-chart {
   margin-top: 14px;
+  /* Same rule the wide tables on this page follow: content that cannot fit
+     scrolls inside its own container, and the page body stays at viewport
+     width. A year of daily columns has a floor below which they stop being
+     drawable at all -- on a phone that floor is wider than the card -- so
+     without this the chart pushed the whole page sideways. */
+  overflow-x: auto;
 }
 
 .dev-chart-bars {
@@ -810,10 +816,20 @@ body:has(.dev-panel) .content,
   height: 180px;
 }
 
-/* A year of columns cannot afford a 2px gap between each: the gaps would take
-   more width than the bars. Close them up and let the columns carry the shape. */
+/* A year of columns cannot afford a gap between each. A 1px gap is 364px of
+   width that cannot shrink, so on a phone the chart demanded more room than the
+   card had and pushed the page into horizontal overflow -- before a single bar
+   was allocated any width at all. Closed up entirely, the columns themselves
+   carry the shape, which is what a year of daily bars should look like. */
 .dev-chart-bars.is-dense {
-  gap: 1px;
+  gap: 0;
+  /* Wide enough for every column to be visible; narrower than this and the
+     chart scrolls rather than dissolving into a smear. */
+  min-width: 100%;
+}
+
+.dev-chart-bars.is-dense .dev-chart-col {
+  min-width: 1px;
 }
 
 .dev-chart.is-compact .dev-chart-bars {
