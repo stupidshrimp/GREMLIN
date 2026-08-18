@@ -279,3 +279,64 @@ def test_an_existing_access_database_gains_the_history_table(tmp_path):
     control.authenticate_limited("root", "secret", "10.0.0.5")
 
     assert control.activity_report(30)["summary"]["successful_logins"] == 1
+
+
+def test_an_account_older_than_the_history_is_not_reported_as_never_used(tmp_path):
+    """Upgrading starts the history empty; that is not evidence of disuse.
+
+    Nothing can reconstruct last year's sign-ins, so on the first day after this
+    feature ships every existing account has none recorded -- including the ones
+    in use every shift. Reporting those as "never signed in" would be false
+    about real people, and an administrator might act on it by removing the
+    account.
+    """
+
+    control = _control(tmp_path)
+    control.save_user(None, "veteran", "2468", "editor")
+    with control._connect() as conn:
+        conn.execute("UPDATE users SET created_at = datetime('now','-400 days') WHERE username='veteran'")
+    # The history begins here, after the veteran account already existed.
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    control.save_user(None, "newcomer", "1357", "viewer")
+
+    users = {user["username"]: user for user in control.activity_report(30)["users"]}
+    assert users["veteran"]["last_login"] is None
+    assert users["veteran"]["tracked_since_created"] is False
+    # Created once the history was already running, so an absence of sign-ins in
+    # it really does mean the account has never been used.
+    assert users["newcomer"]["last_login"] is None
+    assert users["newcomer"]["tracked_since_created"] is True
+
+
+def test_with_no_history_at_all_no_account_claims_to_be_unused(tmp_path):
+    control = _control(tmp_path)
+    report = control.activity_report(30)
+    assert report["retention"]["first_event"] is None
+    assert [user["tracked_since_created"] for user in report["users"]] == [False]
+
+
+def test_changes_by_a_removed_account_are_reported_separately(tmp_path):
+    """The audit-trail twin of logins_by_removed_accounts.
+
+    The per-account table is built from the accounts that exist, so an author
+    whose account has since been deleted appears in no row. Counted among the
+    authors as well, the page would report more authors than there are accounts
+    and a Changes column that does not add up to the total above it.
+    """
+
+    control = _control(tmp_path)
+    control.save_user(None, "leaver", "2468", "editor")
+    leaver = control.authenticate("leaver", "2468")
+    control.record_change(leaver, "POST /life-data-analysis/api/dispositions/save")
+    control.record_change(control.authenticate("root", "secret"), "POST /developer/api/sync")
+    control.delete_user(leaver["id"], current_user_id=999)
+
+    report = control.activity_report(30)
+    summary = report["summary"]
+    assert summary["changes"] == 2
+    assert summary["change_authors"] == 1
+    assert summary["changes_by_removed_accounts"] == 1
+    assert summary["change_authors"] <= summary["accounts"]
+    # The table plus what is reported as departed accounts for the total.
+    in_table = sum(user["changes"] for user in report["users"])
+    assert in_table + summary["changes_by_removed_accounts"] == summary["changes"]

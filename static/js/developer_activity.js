@@ -28,6 +28,14 @@
 
   const state = { days: 30, requestVersion: 0 };
 
+  // "since 17/08/2026" rather than a full timestamp: what matters about the
+  // start of the history is which day it was, not the minute.
+  function formatDay(value) {
+    if (!value) return "";
+    const text = formatTimestamp(value);
+    return text.split(",")[0];
+  }
+
   // Counts here are frequently 1 -- one account never used, one attempt refused
   // -- and "1 attempts" is the kind of wrong that makes a page look unfinished.
   function plural(count, singular, pluralForm) {
@@ -49,8 +57,9 @@
   }
 
   function render(payload) {
+    state.historyStart = (payload.retention || {}).first_event || null;
     renderWindow(payload);
-    renderStats(payload.summary);
+    renderStats(payload.summary, payload.users);
     renderDaily(payload.daily);
     renderHourly(payload.hourly);
     renderActions(payload.top_actions);
@@ -68,15 +77,36 @@
       `counted in ${window_.timezone}) · ${formatNumber(summary.accounts)} accounts configured.`;
   }
 
-  function renderStats(summary) {
+  function renderStats(summary, users) {
+    // The same care as the table's last-sign-in cell: an account that existed
+    // before the history did has not been shown to be unused, so the tile says
+    // "no sign-in recorded since <date>" unless every unused account has been
+    // watched from the day it was created.
+    const unused = (users || []).filter(function (user) {
+      return !user.last_login;
+    });
+    const allWatched = unused.every(function (user) {
+      return user.tracked_since_created;
+    });
+    const since = formatDay(state.historyStart);
     const cards = [
       ["Sign-ins", summary.successful_logins, "successful logins in the window"],
       ["Accounts used", `${formatNumber(summary.users_seen)} of ${formatNumber(summary.accounts)}`,
         summary.never_signed_in
-          ? `${plural(summary.never_signed_in, "account has", "accounts have")} never signed in at all`
+          ? allWatched
+            ? `${plural(summary.never_signed_in, "account has", "accounts have")} never signed in at all`
+            : `${plural(summary.never_signed_in, "account has", "accounts have")} no sign-in recorded` +
+              (since ? ` since ${since}` : " yet")
           : "every account has signed in at some point"],
       ["Days with a sign-in", summary.days_with_logins, "days somebody actually used GREMLIN"],
-      ["Changes recorded", summary.changes, `by ${plural(summary.change_authors, "account")}`],
+      ["Changes recorded", summary.changes,
+        !summary.changes
+          ? "nothing was written in this window"
+          : summary.change_authors
+            ? `by ${plural(summary.change_authors, "account")}`
+            // Every change in the window was made by somebody whose account has
+            // since been removed. "by 0 accounts" is true and reads as a bug.
+            : "all by accounts that no longer exist"],
       ["Wrong PINs", summary.failed_logins,
         `${plural(summary.blocked_logins, "attempt")} refused while locked out`],
       ["Unrecognised accounts", summary.unknown_account_attempts, "attempts on names matching no account"],
@@ -92,11 +122,23 @@
     });
     // Activity by an account that has since been removed belongs to nobody in
     // the table below, so it is only visible if it is said out loud.
-    if (summary.logins_by_removed_accounts) {
+    if (summary.logins_by_removed_accounts || summary.changes_by_removed_accounts) {
+      // One number for the tile, with the split in the note: the sign-in half
+      // is often zero while the change half is not, and showing only the first
+      // would put a prominent 0 on a tile that exists to say something happened.
+      const logins = summary.logins_by_removed_accounts || 0;
+      const changes = summary.changes_by_removed_accounts || 0;
       const box = el("div", "dev-stat");
       box.appendChild(el("span", "dev-stat-label", "Removed accounts"));
-      box.appendChild(el("span", "dev-stat-value", formatNumber(summary.logins_by_removed_accounts)));
-      box.appendChild(el("span", "dev-stat-note", "sign-ins by accounts that no longer exist"));
+      box.appendChild(el("span", "dev-stat-value", formatNumber(logins + changes)));
+      box.appendChild(
+        el(
+          "span",
+          "dev-stat-note",
+          `${plural(logins, "sign-in")} and ${plural(changes, "change")} by accounts that no ` +
+            "longer exist — counted in the totals above, but in no row below"
+        )
+      );
       grid.appendChild(box);
     }
   }
@@ -191,6 +233,17 @@
     );
   }
 
+  // An account with no sign-in in a history that started after it did has not
+  // been shown to be unused -- it was in use, or not, before anything was being
+  // recorded. Saying "never" there would be a false statement about a real
+  // person, and the kind an administrator might act on by deleting the account.
+  function lastSignIn(user) {
+    if (user.last_login) return formatTimestamp(user.last_login);
+    if (user.tracked_since_created) return "Never signed in";
+    const since = formatDay(state.historyStart);
+    return since ? `None recorded since ${since}` : "No sign-in recorded yet";
+  }
+
   function renderUsers(users) {
     const rows = (users || []).map(function (user) {
       return [
@@ -204,7 +257,7 @@
           ? `${formatNumber(user.failed_logins)} / ${formatNumber(user.blocked_logins)}`
           : "—",
         formatNumber(user.changes),
-        user.last_login ? formatTimestamp(user.last_login) : "Never signed in",
+        lastSignIn(user),
         user.last_change ? formatTimestamp(user.last_change) : "—",
       ];
     });

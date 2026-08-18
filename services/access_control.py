@@ -592,6 +592,10 @@ class AccessControl:
             first_day = conn.execute("SELECT date('now', ?)", (f"-{days - 1} days",)).fetchone()[0]
             window_start = f"{first_day} 00:00:00"
             today = conn.execute("SELECT date('now')").fetchone()[0]
+            # Read first, because how far back the history reaches decides what
+            # the per-account rows are entitled to claim about an account that
+            # has no sign-in in it.
+            retention = self._activity_retention(conn)
             return {
                 "window": {
                     "days": days,
@@ -601,16 +605,13 @@ class AccessControl:
                     "timezone": "UTC",
                 },
                 "summary": self._activity_summary(conn, window_start),
-                "users": self._activity_users(conn, window_start),
+                "users": self._activity_users(conn, window_start, retention["first_event"]),
                 "daily": self._activity_daily(conn, window_start, first_day, today),
                 "hourly": self._activity_hourly(conn, window_start),
                 "recent_logins": self._activity_recent_logins(conn, window_start, recent_limit),
                 "recent_changes": self._activity_recent_changes(conn, window_start, recent_limit),
                 "top_actions": self._activity_top_actions(conn, window_start),
-                "retention": {
-                    "login_event_cap": LOGIN_EVENT_ROW_CAP,
-                    **self._activity_retention(conn),
-                },
+                "retention": {"login_event_cap": LOGIN_EVENT_ROW_CAP, **retention},
             }
 
     @staticmethod
@@ -650,7 +651,18 @@ class AccessControl:
             (window_start,),
         ).fetchone()
         changes = conn.execute(
-            "SELECT COUNT(*) AS changes, COUNT(DISTINCT user_id) AS authors FROM audit_log WHERE changed_at >= ?",
+            """SELECT COUNT(*) AS changes,
+                      -- Current accounts only, for the same reason as users_seen
+                      -- above: this is shown as "by N accounts" beside a roster
+                      -- of the accounts that exist, and the per-account table
+                      -- below is built from that roster. Counting an author
+                      -- whose account has since been removed would report more
+                      -- authors than there are accounts, and leave the column
+                      -- of change totals not adding up to this number.
+                      COUNT(DISTINCT CASE WHEN user_id IN (SELECT id FROM users)
+                            THEN user_id END) AS authors,
+                      SUM(user_id NOT IN (SELECT id FROM users)) AS by_removed
+                 FROM audit_log WHERE changed_at >= ?""",
             (window_start,),
         ).fetchone()
         accounts = conn.execute(
@@ -679,17 +691,31 @@ class AccessControl:
             "unknown_account_attempts": self._count(logins["unknown_account_attempts"]),
             "changes": self._count(changes["changes"]),
             "change_authors": self._count(changes["authors"]),
+            "changes_by_removed_accounts": self._count(changes["by_removed"]),
             "accounts": self._count(accounts["accounts"]),
             "never_signed_in": self._count(accounts["never_signed_in"]),
             "logins_by_removed_accounts": self._count(departed),
         }
 
-    def _activity_users(self, conn: sqlite3.Connection, window_start: str) -> list[dict]:
+    def _activity_users(
+        self, conn: sqlite3.Connection, window_start: str, history_start: str | None
+    ) -> list[dict]:
         """One row per account: how often, how recently, and what they changed.
 
         Accounts with nothing in the window are still listed, at zero. "Who has
         not signed in" is the question this page is most often opened to answer,
         and an account that is absent from the table cannot answer it.
+
+        ``history_start`` is when the recorded sign-in history begins, and it is
+        what separates "never signed in" from "not seen since we started
+        looking". On a deployment upgrading to this feature the history starts
+        empty -- nothing can reconstruct last year's sign-ins -- so every
+        existing account has no recorded sign-in on the first day, including the
+        ones in use every shift. Calling those "never signed in" would be a
+        false statement about real people, and the sort an administrator might
+        act on by removing the account. Each row therefore carries whether the
+        history covers the whole life of that account, and the page says only
+        what that supports.
         """
 
         rows = conn.execute(
@@ -729,6 +755,15 @@ class AccessControl:
         users = []
         for row in rows:
             entry = dict(row)
+            # True only when the history was already being recorded when this
+            # account was created, so an absence of sign-ins in it really does
+            # mean the account has never been used. Both timestamps are UTC
+            # CURRENT_TIMESTAMP text, so they compare directly; a legacy row
+            # with no created_at is treated as the older of the two, which is
+            # the answer that claims less.
+            entry["tracked_since_created"] = bool(
+                history_start and entry["created_at"] and history_start <= entry["created_at"]
+            )
             # How concentrated the use was: five sign-ins across five days is a
             # daily user, five in one day is somebody who kept being signed out.
             entry["logins_per_active_day"] = (
