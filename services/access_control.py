@@ -847,8 +847,15 @@ class AccessControl:
                        GROUP BY user_id
                  ) w ON w.user_id = u.id
                  LEFT JOIN (
+                      -- Unbounded at the start, because "last signed in" means
+                      -- ever, not within the window. Bounded at the end all the
+                      -- same: a sign-in dated after the report's own last day
+                      -- is one the clock produced by being put back, and a
+                      -- table reporting a sign-in from the future is wrong
+                      -- whatever the window is.
                       SELECT user_id, COUNT(*) AS total_logins, MAX(occurred_at) AS last_login
-                        FROM login_events WHERE outcome='success' AND user_id IS NOT NULL
+                        FROM login_events
+                       WHERE outcome='success' AND user_id IS NOT NULL AND occurred_at < ?
                        GROUP BY user_id
                  ) a ON a.user_id = u.id
                  LEFT JOIN (
@@ -856,7 +863,7 @@ class AccessControl:
                         FROM audit_log WHERE changed_at >= ? AND changed_at < ? GROUP BY user_id
                  ) c ON c.user_id = u.id
                 ORDER BY logins DESC, changes DESC, u.username COLLATE NOCASE""",
-            (window_start, window_end, window_start, window_end),
+            (window_start, window_end, window_end, window_start, window_end),
         ).fetchall()
         users = []
         for row in rows:

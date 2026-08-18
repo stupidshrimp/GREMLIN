@@ -122,23 +122,27 @@
       box.appendChild(el("span", "dev-stat-note", card[2]));
       grid.appendChild(box);
     });
-    // Activity by an account that has since been removed belongs to nobody in
-    // the table below, so it is only visible if it is said out loud.
-    if (summary.logins_by_removed_accounts || summary.changes_by_removed_accounts) {
-      // One number for the tile, with the split in the note: the sign-in half
-      // is often zero while the change half is not, and showing only the first
+    // Every kind of activity a removed account can leave behind, not just the
+    // two that were reported first: an account deleted after somebody spent a
+    // week guessing at it has only refusals, and leaving those out meant the
+    // Wrong PIN total could not be reconciled with any row in the table.
+    const goneLogins = summary.logins_by_removed_accounts || 0;
+    const goneChanges = summary.changes_by_removed_accounts || 0;
+    const goneRefusals = summary.refusals_by_removed_accounts || 0;
+    if (goneLogins || goneChanges || goneRefusals) {
+      // One number for the tile, with the split in the note: any one of the
+      // three is often zero while another is not, and showing only the first
       // would put a prominent 0 on a tile that exists to say something happened.
-      const logins = summary.logins_by_removed_accounts || 0;
-      const changes = summary.changes_by_removed_accounts || 0;
       const box = el("div", "dev-stat");
       box.appendChild(el("span", "dev-stat-label", "Removed accounts"));
-      box.appendChild(el("span", "dev-stat-value", formatNumber(logins + changes)));
+      box.appendChild(el("span", "dev-stat-value", formatNumber(goneLogins + goneChanges + goneRefusals)));
       box.appendChild(
         el(
           "span",
           "dev-stat-note",
-          `${plural(logins, "sign-in")} and ${plural(changes, "change")} by accounts that no ` +
-            "longer exist — counted in the totals above, but in no row below"
+          `${plural(goneLogins, "sign-in")}, ${plural(goneRefusals, "refused attempt")} and ` +
+            `${plural(goneChanges, "change")} by accounts that no longer exist — counted in the ` +
+            "totals above, but in no row below"
         )
       );
       grid.appendChild(box);
@@ -372,6 +376,19 @@
           ? described.join(" · ") + ". A window starting before one of these under-counts that kind of attempt."
           : "Nothing has been recorded yet."
       );
+      // Drops recorded before this version counted them by tier. Which kind
+      // they were is not knowable, so the dates above cannot be read as a
+      // complete account of what is missing, and saying nothing would let them
+      // be read exactly that way.
+      if (retention.dropped_unclassified) {
+        factRow(
+          list,
+          "Not attributable",
+          `${formatNumber(retention.dropped_unclassified)} of those attempts were dropped by an ` +
+            "earlier version that did not record which kind they were, so any of the dates above " +
+            "may reach back further than the history behind them actually does."
+        );
+      }
     } else {
       factRow(
         list,

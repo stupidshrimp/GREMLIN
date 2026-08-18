@@ -582,3 +582,26 @@ def test_drops_from_before_per_tier_counting_are_unclassified_not_zero(tmp_path)
     assert retention["rows_dropped"] == 12
     assert retention["dropped_unclassified"] == 12
     assert [tier["dropped"] for tier in retention["tiers"]] == [0, 0, 0]
+
+
+def test_a_future_dated_sign_in_is_not_reported_as_the_last_one(tmp_path):
+    """"Last signed in" reaches back forever, but not forward.
+
+    The all-time lookup is deliberately unbounded at the start -- the column
+    means "ever", not "in this window". Left unbounded at the end too, a row the
+    clock produced by being put back showed up as a sign-in from the future.
+    """
+
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    real = _events(control)[0]["occurred_at"]
+    with control._connect() as conn:
+        conn.execute(
+            """INSERT INTO login_events(user_id,username,outcome,client_digest,occurred_at)
+               VALUES ((SELECT id FROM users WHERE username='root'),'root','success','d',
+                       datetime('now','+5 days'))"""
+        )
+
+    user = control.activity_report(30)["users"][0]
+    assert user["last_login"] == real
+    assert user["total_logins"] == 1
