@@ -7,6 +7,7 @@ attempt, what a window counts, and what happens when the file reaches its cap.
 
 import hashlib
 import sqlite3
+import time
 
 import pytest
 
@@ -340,3 +341,50 @@ def test_changes_by_a_removed_account_are_reported_separately(tmp_path):
     # The table plus what is reported as departed accounts for the total.
     in_table = sum(user["changes"] for user in report["users"])
     assert in_table + summary["changes_by_removed_accounts"] == summary["changes"]
+
+
+def test_an_existing_client_lockout_survives_the_keyed_digest_upgrade(tmp_path):
+    """The limiter keeps the key it has always used.
+
+    Its rows are filed under a plain digest of the client. Rekeying them when
+    the history moved to a keyed digest would have handed every client already
+    locked out for spraying guesses a fresh budget on the upgrade, and split one
+    client's attempts across two keys for as long as a rolling deployment ran
+    two versions at once.
+    """
+
+    control = _control(tmp_path)
+    client = "10.9.9.9"
+    legacy_scope = "client:" + hashlib.sha256(client.encode("utf-8")).hexdigest()
+    with control._connect() as conn:
+        conn.execute(
+            """INSERT INTO login_attempts(scope_key,failure_count,window_started,locked_until)
+               VALUES (?,?,?,?)""",
+            (legacy_scope, LOGIN_FAILURE_LIMIT, time.time(), time.time() + 600),
+        )
+
+    user, retry_after = control.authenticate_limited("root", "secret", client)
+    assert user is None and retry_after > 0
+    # The history still records that attempt under the keyed digest, which is
+    # what the two digests being separate is for.
+    assert _events(control)[-1]["client_digest"] == control._origin_digest(client)
+
+
+def test_retention_reports_where_each_kind_of_attempt_still_reaches_back_to(tmp_path):
+    """The cap drops refusals before sign-ins, so one date cannot describe both.
+
+    Saying only "history begins X" would tell an administrator that a window
+    inside that range is counted in full, when the refusals in it may have been
+    evicted to keep the sign-ins.
+    """
+
+    control = _control(tmp_path)
+    control.authenticate_limited("root", "secret", "10.0.0.5")
+    control.authenticate_limited("root", "wrong", "10.0.0.5")
+    with control._connect() as conn:
+        conn.execute("UPDATE login_events SET occurred_at = datetime('now','-300 days') WHERE outcome='success'")
+
+    retention = control.activity_report(30)["retention"]
+    assert retention["first_success"] < retention["first_refusal"]
+    assert retention["first_event"] == retention["first_success"]
+    assert retention["capped"] is False

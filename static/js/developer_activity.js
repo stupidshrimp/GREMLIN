@@ -323,14 +323,37 @@
       retention.first_event ? formatTimestamp(retention.first_event) : "No sign-in has been recorded yet"
     );
     factRow(list, "Most recent attempt", retention.last_event ? formatTimestamp(retention.last_event) : "—");
-    factRow(
-      list,
-      "Retention",
-      retention.capped
-        ? `At the ${formatNumber(retention.login_event_cap)}-row cap — the oldest attempts have been dropped, ` +
-          "so a window reaching further back than the start of this history is under-counted."
-        : `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been dropped.`
-    );
+    // The cap does not drop rows in date order -- it keeps sign-ins ahead of
+    // refusals -- so saying "anything older than the start of the history is
+    // under-counted" would be wrong in the direction that matters: at the cap
+    // the sign-in history can still reach back years while the refusals only
+    // reach back weeks, and a window well inside the history would quietly
+    // report too few wrong PINs. Each tier is pruned newest-first, so naming
+    // where each one starts says exactly what is missing.
+    if (retention.capped) {
+      factRow(
+        list,
+        "Retention",
+        `At the ${formatNumber(retention.login_event_cap)}-row cap, so attempts are being dropped — ` +
+          "the ones on unrecognised names first, then failures and lockouts against real accounts. " +
+          "Successful sign-ins are the last to go, so it is the refusal counts that go short first, " +
+          "including inside windows that sit well within the dates above."
+      );
+      factRow(
+        list,
+        "Complete since",
+        `sign-ins ${retention.first_success ? formatTimestamp(retention.first_success) : "—"} · ` +
+          `refused attempts ${retention.first_refusal ? formatTimestamp(retention.first_refusal) : "—"}. ` +
+          "A window starting before either date under-counts that kind of attempt."
+      );
+    } else {
+      factRow(
+        list,
+        "Retention",
+        `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been ` +
+          "dropped and every window is counted in full."
+      );
+    }
     factRow(
       list,
       "What is counted",

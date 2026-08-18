@@ -342,11 +342,25 @@ class AccessControl:
         # parameterized users-table lookup only when it satisfies the account
         # input bound.
         #
-        # Computed before the transaction below is opened: the first call reads
-        # the deployment secret on a connection of its own, which cannot be done
-        # while this one holds the writer slot.
-        client_digest = self._origin_digest(client_key)
-        scopes = (_account_scope(username), f"client:{client_digest}")
+        # Two digests of the same caller, for two jobs that want different
+        # things.
+        #
+        # The limiter's key is the plain digest it has always been. It only has
+        # to be stable and the same on every worker: these rows live for minutes,
+        # are never displayed and never leave the file, so there is nothing here
+        # for a keyed digest to protect. Changing it would have a cost, though --
+        # every existing lockout is filed under the old key, so a client already
+        # locked out for spraying guesses would be handed a fresh budget by the
+        # upgrade, and during a rolling deployment its attempts would split
+        # across two keys and count twice over.
+        #
+        # The history's is keyed, because those rows are kept for years and get
+        # exported; see _origin_digest. Computed before the transaction below is
+        # opened: the first call reads the deployment secret on a connection of
+        # its own, which cannot be done while this one holds the writer slot.
+        limiter_digest = hashlib.sha256(str(client_key).encode("utf-8")).hexdigest()
+        origin_digest = self._origin_digest(client_key)
+        scopes = (_account_scope(username), f"client:{limiter_digest}")
         with self._connect() as conn:
             # Serialize the complete read/check/increment sequence. A deferred
             # transaction would let parallel requests all read the same count
@@ -415,14 +429,14 @@ class AccessControl:
                 # is verified here -- the attempt was refused before any PIN was
                 # considered, which is why the PIN's length does not arise.
                 account = conn.execute("SELECT id,username FROM users WHERE username=?", (username,)).fetchone() if searchable else None
-                self._record_login_event(conn, account, LOGIN_BLOCKED, client_digest)
+                self._record_login_event(conn, account, LOGIN_BLOCKED, origin_digest)
                 return None, max(1, int(locked_until - now + 0.999))
             row = conn.execute(
                 "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
             ).fetchone() if searchable else None
             if row and checkable and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
-                self._record_login_event(conn, row, LOGIN_SUCCESS, client_digest)
+                self._record_login_event(conn, row, LOGIN_SUCCESS, origin_digest)
                 return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
             retry_after = 0
             for scope in scopes:
@@ -440,7 +454,7 @@ class AccessControl:
                        locked_until=excluded.locked_until""",
                     (scope, count, started, lock_until),
                 )
-            self._record_login_event(conn, row, LOGIN_FAILURE, client_digest)
+            self._record_login_event(conn, row, LOGIN_FAILURE, origin_digest)
             return None, retry_after
 
     def _record_login_event(
@@ -887,17 +901,33 @@ class AccessControl:
         ]
 
     def _activity_retention(self, conn: sqlite3.Connection) -> dict:
-        """How much history there is, so a window can be read against its limits."""
+        """How much history there is, so a window can be read against its limits.
+
+        Reported per tier, because the cap does not drop rows in date order. It
+        keeps successful sign-ins ahead of refusals, so at the cap the sign-in
+        history can still reach back years while the refused attempts only reach
+        back weeks. Within a tier eviction *is* chronological -- each one is
+        pruned newest-first, so what survives is an unbroken run ending at the
+        present -- which is why one date per tier describes the whole of it, and
+        why the page can name where the refusal history actually starts instead
+        of vaguely warning that some of it is missing.
+        """
 
         row = conn.execute(
-            "SELECT COUNT(*) AS events, MIN(occurred_at) AS first_event, MAX(occurred_at) AS last_event FROM login_events"
+            """SELECT COUNT(*) AS events,
+                      MIN(occurred_at) AS first_event,
+                      MAX(occurred_at) AS last_event,
+                      MIN(CASE WHEN outcome='success' THEN occurred_at END) AS first_success,
+                      MIN(CASE WHEN outcome<>'success' THEN occurred_at END) AS first_refusal
+                 FROM login_events"""
         ).fetchone()
         events = self._count(row["events"])
         return {
             "login_events": events,
             "first_event": row["first_event"],
             "last_event": row["last_event"],
-            # At the cap the oldest attempts have started being dropped, so a
-            # window reaching further back than first_event is under-counted.
+            "first_success": row["first_success"],
+            "first_refusal": row["first_refusal"],
+            # At the cap, rows are being dropped -- lowest tier first.
             "capped": events >= LOGIN_EVENT_ROW_CAP,
         }
