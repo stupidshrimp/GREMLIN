@@ -47,12 +47,14 @@
   // the year is not a fixed distance from UTC. Converting each bucket through a
   // Date built from its own day applies the daylight-saving rules that were in
   // force *then*, so a winter sign-in read in summer stays in the hour it
-  // happened. Where the local offset is not a whole number of hours (India,
-  // parts of Australia), a UTC hour straddles two local ones and is counted in
-  // the local hour it began in.
-  function localHour(day, hour) {
+  // happened. The server buckets to quarter-hours, and the minutes come across
+  // with them, so a zone offset by half or three-quarters of an hour (India,
+  // Nepal, parts of Australia) lands in the right local hour too.
+  function localHour(day, hour, minute) {
     const parts = String(day).split("-");
-    const at = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), hour));
+    const at = new Date(
+      Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), hour, minute || 0)
+    );
     return isNaN(at.getTime()) ? null : at.getHours();
   }
 
@@ -214,7 +216,7 @@
   function renderHourly(hourly) {
     const values = new Array(24).fill(0);
     (hourly || []).forEach(function (bucket) {
-      const hour = localHour(bucket.day, bucket.hour);
+      const hour = localHour(bucket.day, bucket.hour, bucket.minute);
       if (hour !== null) values[hour] += bucket.logins;
     });
     $("dev-activity-hourly-note").textContent =
@@ -344,23 +346,31 @@
       // these three dates describe the history exactly. Shown separately
       // because the tiers do not run out together -- claiming one date for
       // "refusals" would date the attributed ones and overstate the rest.
-      const tiers = [
-        ["sign-ins", retention.first_success],
-        ["refusals on real accounts", retention.first_attributed_refusal],
-        ["attempts on unrecognised names", retention.first_unattributed_refusal],
-      ].filter(function (tier) {
-        return tier[1];
-      });
+      const TIER_NAMES = {
+        success: "sign-ins",
+        attributed_refusal: "refusals on real accounts",
+        unattributed_refusal: "attempts on unrecognised names",
+      };
+      // A tier with nothing left still says something, and it is the something
+      // most worth saying: "none recorded" and "all of them dropped" look
+      // identical in a count, and only one of them means nothing happened.
+      const described = (retention.tiers || [])
+        .map(function (tier) {
+          const name = TIER_NAMES[tier.kind] || tier.kind;
+          if (tier.first_kept) {
+            return tier.dropped
+              ? `${name} ${formatDay(tier.first_kept)} (${formatNumber(tier.dropped)} older dropped)`
+              : `${name} ${formatDay(tier.first_kept)}`;
+          }
+          return tier.dropped ? `${name} none kept — all ${formatNumber(tier.dropped)} dropped` : null;
+        })
+        .filter(Boolean);
       factRow(
         list,
         "Complete since",
-        tiers.length
-          ? tiers
-              .map(function (tier) {
-                return `${tier[0]} ${formatDay(tier[1])}`;
-              })
-              .join(" · ") + ". A window starting before one of these under-counts that kind of attempt."
-          : "Nothing is left in the history."
+        described.length
+          ? described.join(" · ") + ". A window starting before one of these under-counts that kind of attempt."
+          : "Nothing has been recorded yet."
       );
     } else {
       factRow(

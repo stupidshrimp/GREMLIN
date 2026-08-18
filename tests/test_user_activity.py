@@ -190,6 +190,9 @@ def test_the_daily_series_covers_every_day_including_the_quiet_ones(tmp_path):
     assert [bucket["day"] for bucket in report["hourly"]] == [report["window"]["last_day"]]
     assert sum(bucket["logins"] for bucket in report["hourly"]) == 1
     assert 0 <= report["hourly"][0]["hour"] < 24
+    # Quarter-hour buckets, so a zone offset by part of an hour still converts
+    # into the local hour the sign-in actually happened in.
+    assert report["hourly"][0]["minute"] in (0, 15, 30, 45)
 
 
 @pytest.mark.parametrize("days", [0, -1, ACTIVITY_MAX_DAYS + 1, "soon", None])
@@ -385,8 +388,9 @@ def test_retention_reports_where_each_kind_of_attempt_still_reaches_back_to(tmp_
         conn.execute("UPDATE login_events SET occurred_at = datetime('now','-300 days') WHERE outcome='success'")
 
     retention = control.activity_report(30)["retention"]
-    assert retention["first_success"] < retention["first_attributed_refusal"]
-    assert retention["first_event"] == retention["first_success"]
+    tiers = {tier["kind"]: tier for tier in retention["tiers"]}
+    assert tiers["success"]["first_kept"] < tiers["attributed_refusal"]["first_kept"]
+    assert retention["first_event"] == tiers["success"]["first_kept"]
     assert retention["capped"] is False
     assert retention["pruned"] is False
 
@@ -413,13 +417,14 @@ def test_the_three_eviction_tiers_each_report_their_own_cutoff(tmp_path, monkeyp
         control.authenticate_limited(f"ghost-{index}", "x", f"10.9.9.{index}")
 
     retention = control.activity_report(30)["retention"]
+    tiers = {tier["kind"]: tier for tier in retention["tiers"]}
     assert retention["pruned"] is True
     assert retention["rows_dropped"] > 0
     assert retention["last_pruned_at"] is not None
     assert (
-        retention["first_success"]
-        <= retention["first_attributed_refusal"]
-        <= retention["first_unattributed_refusal"]
+        tiers["success"]["first_kept"]
+        <= tiers["attributed_refusal"]["first_kept"]
+        <= tiers["unattributed_refusal"]["first_kept"]
     )
     # The sign-in survived the flood, and the unrecognised-name history is the
     # one that has been cut back.
@@ -445,3 +450,44 @@ def test_reaching_the_cap_is_not_reported_as_having_dropped_anything(tmp_path, m
     assert retention["capped"] is True
     assert retention["pruned"] is False
     assert retention["rows_dropped"] == 0
+
+
+def test_a_tier_trimmed_away_entirely_still_reports_that_it_was(tmp_path, monkeypatch):
+    """"None recorded" and "all of them dropped" must not look the same.
+
+    Sign-ins are kept ahead of everything else, so a history full of them can
+    evict every unrecognised-name attempt. With only the surviving rows to go
+    on, the page would show that count as zero with nothing to say attempts had
+    been made -- which reads as "nobody tried".
+    """
+
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_ROW_CAP", 4)
+    monkeypatch.setattr(access_control_module, "LOGIN_EVENT_PRUNE_SLACK", 0)
+    control = _control(tmp_path)
+    for index in range(3):
+        control.authenticate_limited(f"ghost-{index}", "x", f"10.9.9.{index}")
+    for index in range(6):
+        control.authenticate_limited("root", "secret", f"10.0.0.{index}")
+
+    tiers = {tier["kind"]: tier for tier in control.activity_report(30)["retention"]["tiers"]}
+    assert tiers["unattributed_refusal"]["first_kept"] is None
+    assert tiers["unattributed_refusal"]["dropped"] == 3
+    assert tiers["success"]["first_kept"] is not None
+
+
+def test_the_pruning_record_gains_its_per_tier_columns_in_place(tmp_path):
+    """A database written by the version before these columns existed."""
+
+    control = _control(tmp_path)
+    with control._connect() as conn:
+        conn.execute("DROP TABLE login_event_pruning")
+        conn.execute("""CREATE TABLE login_event_pruning (
+            id INTEGER PRIMARY KEY CHECK(id = 1), last_pruned_at TEXT NOT NULL,
+            rows_dropped INTEGER NOT NULL DEFAULT 0)""")
+        conn.execute("INSERT INTO login_event_pruning(id, last_pruned_at, rows_dropped) VALUES (1, '2026-01-01 00:00:00', 7)")
+
+    control.ensure_schema()
+    retention = control.activity_report(30)["retention"]
+    assert retention["pruned"] is True
+    assert retention["rows_dropped"] == 7
+    assert [tier["dropped"] for tier in retention["tiers"]] == [0, 0, 0]

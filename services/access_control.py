@@ -184,9 +184,21 @@ class AccessControl:
                 CREATE TABLE IF NOT EXISTS login_event_pruning (
                     id INTEGER PRIMARY KEY CHECK(id = 1),
                     last_pruned_at TEXT NOT NULL,
-                    rows_dropped INTEGER NOT NULL DEFAULT 0
+                    rows_dropped INTEGER NOT NULL DEFAULT 0,
+                    dropped_success INTEGER NOT NULL DEFAULT 0,
+                    dropped_attributed INTEGER NOT NULL DEFAULT 0,
+                    dropped_unattributed INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            # Split by tier after the fact, for a database created before those
+            # columns existed. Without them a tier trimmed away to nothing is
+            # indistinguishable from one that never had a row, and the page
+            # would report "no attempts on unrecognised names" about a history
+            # that dropped thousands of them.
+            pruning_columns = {row["name"] for row in conn.execute("PRAGMA table_info(login_event_pruning)")}
+            for column in ("dropped_success", "dropped_attributed", "dropped_unattributed"):
+                if column not in pruning_columns:
+                    conn.execute(f"ALTER TABLE login_event_pruning ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_occurred_at ON login_events(occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS login_events_user ON login_events(user_id, occurred_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS audit_log_changed_at ON audit_log(changed_at)")
@@ -516,22 +528,40 @@ class AccessControl:
         # count itself is cheap enough to check each time -- it reads an index,
         # not the table.
         if conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] > LOGIN_EVENT_ROW_CAP + LOGIN_EVENT_PRUNE_SLACK:
-            dropped = conn.execute(
-                f"""DELETE FROM login_events WHERE id IN (
-                       SELECT id FROM login_events
-                        ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC, id DESC
-                        LIMIT -1 OFFSET ?
-                   )""",
-                (LOGIN_EVENT_ROW_CAP,),
-            ).rowcount
+            doomed = f"""SELECT id FROM login_events
+                          ORDER BY (outcome = '{LOGIN_SUCCESS}') DESC, (user_id IS NOT NULL) DESC, id DESC
+                          LIMIT -1 OFFSET {int(LOGIN_EVENT_ROW_CAP)}"""
+            # Counted per tier before they go, because afterwards there is
+            # nothing left to count. A tier trimmed away entirely would
+            # otherwise be silent -- the page would show "0 attempts on
+            # unrecognised names" with nothing to say they had been dropped,
+            # which reads as "none happened".
+            by_tier = conn.execute(
+                f"""SELECT SUM(outcome = '{LOGIN_SUCCESS}') AS success,
+                           SUM(outcome <> '{LOGIN_SUCCESS}' AND user_id IS NOT NULL) AS attributed,
+                           SUM(user_id IS NULL) AS unattributed,
+                           COUNT(*) AS total
+                      FROM login_events WHERE id IN ({doomed})"""
+            ).fetchone()
+            conn.execute(f"DELETE FROM login_events WHERE id IN ({doomed})")
             # Written here, where it is known, rather than inferred later from a
             # row count that cannot tell a trimmed file from a full one.
             conn.execute(
-                """INSERT INTO login_event_pruning(id, last_pruned_at, rows_dropped)
-                   VALUES (1, CURRENT_TIMESTAMP, ?)
-                   ON CONFLICT(id) DO UPDATE SET last_pruned_at = CURRENT_TIMESTAMP,
-                                                rows_dropped = rows_dropped + excluded.rows_dropped""",
-                (max(0, dropped),),
+                """INSERT INTO login_event_pruning(id, last_pruned_at, rows_dropped,
+                                                   dropped_success, dropped_attributed, dropped_unattributed)
+                   VALUES (1, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       last_pruned_at = CURRENT_TIMESTAMP,
+                       rows_dropped = rows_dropped + excluded.rows_dropped,
+                       dropped_success = dropped_success + excluded.dropped_success,
+                       dropped_attributed = dropped_attributed + excluded.dropped_attributed,
+                       dropped_unattributed = dropped_unattributed + excluded.dropped_unattributed""",
+                (
+                    self._count(by_tier["total"]),
+                    self._count(by_tier["success"]),
+                    self._count(by_tier["attributed"]),
+                    self._count(by_tier["unattributed"]),
+                ),
             )
 
     def list_users(self) -> list[dict]:
@@ -853,28 +883,41 @@ class AccessControl:
         return series
 
     def _activity_hourly(self, conn: sqlite3.Connection, window_start: str) -> list[dict]:
-        """Successful sign-ins per UTC hour, each still carrying its own date.
+        """Successful sign-ins in quarter-hour buckets, each carrying its date.
 
         The page draws these as one 24-hour distribution in the reader's local
-        time, which is why the date comes with them rather than being summed
-        away here. An hour of the year is not a fixed distance from UTC: a
-        window spanning a daylight-saving change would put half its sign-ins in
-        the wrong local hour if the reader's *current* offset were applied to all
-        of them. With the date attached the browser can convert each bucket under
-        the rules in force on that day.
+        time, and the browser is what converts them -- which is the only way to
+        get the rules right, since an hour of the year is not a fixed distance
+        from UTC and a window spanning a daylight-saving change would otherwise
+        put half its sign-ins in the wrong local hour.
 
-        Bounded by 24 rows per day in the window -- only hours with a sign-in in
-        them are returned, so an ordinary window is a few rows a day.
+        Quarter-hours rather than hours because not every zone is a whole number
+        of hours from UTC. In UTC+05:30 an hour bucket straddles two local
+        hours, so converting the hour's start put 00:45 UTC -- 06:15 there -- in
+        the 05:00 column. Every offset in use is a multiple of fifteen minutes,
+        so bucketing to that makes the conversion exact everywhere rather than
+        for most of the world.
+
+        No larger than before in practice: only buckets with a sign-in in them
+        are returned, so the row count follows how many sign-ins there are, not
+        how finely the day is divided.
         """
 
         return [
-            {"day": row["day"], "hour": int(row["hour"]), "logins": self._count(row["logins"])}
+            {
+                "day": row["day"],
+                "hour": int(row["hour"]),
+                "minute": int(row["quarter"]) * 15,
+                "logins": self._count(row["logins"]),
+            }
             for row in conn.execute(
-                """SELECT date(occurred_at) AS day,
+                f"""SELECT date(occurred_at) AS day,
                           CAST(strftime('%H', occurred_at) AS INTEGER) AS hour,
+                          CAST(strftime('%M', occurred_at) AS INTEGER) / 15 AS quarter,
                           COUNT(*) AS logins
-                     FROM login_events WHERE occurred_at >= ? AND outcome='success'
-                    GROUP BY day, hour ORDER BY day, hour""",
+                     FROM login_events
+                    WHERE occurred_at >= ? AND outcome='{LOGIN_SUCCESS}'
+                    GROUP BY day, hour, quarter ORDER BY day, hour, quarter""",
                 (window_start,),
             )
             if row["hour"] is not None
@@ -950,16 +993,37 @@ class AccessControl:
                  FROM login_events"""
         ).fetchone()
         pruning = conn.execute(
-            "SELECT last_pruned_at, rows_dropped FROM login_event_pruning WHERE id = 1"
+            """SELECT last_pruned_at, rows_dropped, dropped_success,
+                      dropped_attributed, dropped_unattributed
+                 FROM login_event_pruning WHERE id = 1"""
         ).fetchone()
         events = self._count(row["events"])
         return {
             "login_events": events,
             "first_event": row["first_event"],
             "last_event": row["last_event"],
-            "first_success": row["first_success"],
-            "first_attributed_refusal": row["first_attributed_refusal"],
-            "first_unattributed_refusal": row["first_unattributed_refusal"],
+            # Per tier: the oldest attempt still held, and how many of that kind
+            # have been dropped. A tier trimmed away completely has no surviving
+            # row to date, so the count is the only thing left that says it
+            # happened -- and "0 recorded, 1,204 dropped" is a different fact
+            # from "0 recorded" on its own.
+            "tiers": [
+                {
+                    "kind": "success",
+                    "first_kept": row["first_success"],
+                    "dropped": self._count(pruning["dropped_success"]) if pruning else 0,
+                },
+                {
+                    "kind": "attributed_refusal",
+                    "first_kept": row["first_attributed_refusal"],
+                    "dropped": self._count(pruning["dropped_attributed"]) if pruning else 0,
+                },
+                {
+                    "kind": "unattributed_refusal",
+                    "first_kept": row["first_unattributed_refusal"],
+                    "dropped": self._count(pruning["dropped_unattributed"]) if pruning else 0,
+                },
+            ],
             # Full, but not necessarily short of anything: trimming starts once
             # the history runs LOGIN_EVENT_PRUNE_SLACK rows past the cap.
             "capped": events >= LOGIN_EVENT_ROW_CAP,
