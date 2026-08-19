@@ -48,6 +48,7 @@ if __package__ in (None, ""):
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
 from services.ingestion_service import PHASE_ASSETS, PHASE_TASKS, IngestionService
+from services.ingestion_service import DEFAULT_INSTRUCTIONS_LIMIT
 from services.sync_service import (
     SyncOptions,
     load_dotenv_files,
@@ -140,19 +141,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Import Limble template tasks too (excluded by default, matching the legacy export).",
     )
     parser.add_argument(
-        "--instructions",
+        "--no-instructions",
         action="store_true",
         help=(
-            "Also read each completed task's instructions to capture the Area Affected / "
-            "Condition / Cause / Action boxes. Costs one API request per task on top of the "
-            "usual pull, so bound the first run with --instructions-limit; each run picks up "
-            "where the last stopped. Use tools/probe_instructions.py to check one task first."
+            "Skip reading the Area Affected / Condition / Cause / Action boxes. They live in "
+            "each work order's instructions, which Limble serves one task at a time, so this "
+            "is the flag to reach for when a sync needs to be as quick as possible."
         ),
     )
     parser.add_argument(
         "--instructions-limit",
         type=_positive_count,
-        help="Stop after this many instruction fetches; the next run picks up where this one stopped.",
+        default=DEFAULT_INSTRUCTIONS_LIMIT,
+        help=(
+            f"How many work orders to read instructions for (default {DEFAULT_INSTRUCTIONS_LIMIT}). "
+            "The most recently completed are read first and each run picks up where the last "
+            "stopped, so raise this to work through a backlog faster."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and transform, but make no database changes.")
     parser.add_argument("--create", action="store_true", help="Create the database file if it does not exist.")
@@ -182,7 +187,7 @@ def run(args: argparse.Namespace) -> dict:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         exclude_templates=not args.include_templates,
-        fetch_instructions=args.instructions,
+        fetch_instructions=not args.no_instructions,
         instructions_limit=args.instructions_limit,
         progress=_print_progress,
     )
@@ -199,17 +204,19 @@ def run(args: argparse.Namespace) -> dict:
     # here, at night, and never touch the web app. Best effort: a directory that
     # cannot be written to costs an estimate, not this import.
     #
-    # A run that read instructions is left out. It is a rate-limited request per
-    # task, so it can run an order of magnitude longer than an ordinary sync
-    # while covering the same phases; recording it would teach the dashboard that
-    # a normal nightly sync takes hours.
-    if not args.instructions:
-        record_run_timing(
-            db_path,
-            seconds=time.monotonic() - started,
-            share=phase_share(_options_for(args)),
-            counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
-        )
+    # The instructions phase is taken back out rather than the whole run being
+    # skipped. It is paced by the API's rate limit instead of by how much work
+    # the sync did, so leaving it in would put a backfill's hours into the
+    # estimate shown before an ordinary run -- but skipping those runs entirely,
+    # now that reading instructions is what a sync normally does, would leave the
+    # estimate with almost nothing to learn from.
+    elapsed = time.monotonic() - started - float(summary.get("instructions_seconds") or 0.0)
+    record_run_timing(
+        db_path,
+        seconds=max(0.0, elapsed),
+        share=phase_share(_options_for(args)),
+        counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
+    )
     return summary
 
 
@@ -246,7 +253,7 @@ def _options_for(args: argparse.Namespace) -> SyncOptions:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         include_templates=args.include_templates,
-        fetch_instructions=args.instructions,
+        fetch_instructions=not args.no_instructions,
         instructions_limit=args.instructions_limit,
     )
 

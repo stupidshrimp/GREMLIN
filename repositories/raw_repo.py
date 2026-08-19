@@ -277,6 +277,11 @@ class RawRepository:
         question of each payload, not hold them all.
         """
 
+        # Nothing is stored where there is no database, and asking anyway would
+        # answer by creating one: sqlite3.connect makes the file. A dry run
+        # against a path that does not exist has to leave it that way.
+        if not Path(self.db_path).exists():
+            return
         conn = self.connect()
         try:
             for row in conn.execute("SELECT raw_json FROM raw_cmms_record"):

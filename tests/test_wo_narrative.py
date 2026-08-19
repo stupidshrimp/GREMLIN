@@ -439,15 +439,37 @@ class InstructionFetchTests(unittest.TestCase):
         self.assertEqual(tasks[1]["area_affected"], "Infeed")
         self.assertEqual(counts["instructions_found"], 1)
 
-    def test_nothing_is_fetched_unless_asked_for(self):
-        client = self._StubClient({"1": self._acca("x")})
+    def test_it_reads_by_default_and_can_be_turned_off(self):
+        # On by default because the cost is the first walk through the history,
+        # not the nightly run -- a flag nobody remembers would mean tables that
+        # quietly stop being true.
         from services.ingestion_service import IngestionService
 
-        service = IngestionService(
+        client = self._StubClient({"1": self._acca("x")})
+        IngestionService(
             limble_client=client, raw_repo=self._StubRepo([]), log=lambda _m: None
+        )._attach_instructions([{"taskID": 1, "dateCompleted": 1}])
+        self.assertEqual(client.asked, ["1"])
+
+        off = self._StubClient({"1": self._acca("x")})
+        service = IngestionService(
+            limble_client=off, raw_repo=self._StubRepo([]),
+            fetch_instructions=False, log=lambda _m: None,
         )
         self.assertEqual(service._attach_instructions([{"taskID": 1, "dateCompleted": 1}]), {})
-        self.assertEqual(client.asked, [])
+        self.assertEqual(off.asked, [])
+
+    def test_a_client_that_cannot_read_instructions_does_not_lose_the_sync(self):
+        # The narrative is an addition to a sync, never the point of one.
+        from services.ingestion_service import IngestionService
+
+        class ListEndpointsOnly:
+            pass
+
+        service = IngestionService(
+            limble_client=ListEndpointsOnly(), raw_repo=self._StubRepo([]), log=lambda _m: None
+        )
+        self.assertEqual(service._attach_instructions([{"taskID": 1, "dateCompleted": 1}]), {})
 
     def test_a_capped_backfill_advances_instead_of_rereading_its_own_head(self):
         # Plenty of completed work orders legitimately have no boxes filled in.

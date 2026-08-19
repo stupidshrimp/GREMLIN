@@ -26,6 +26,7 @@ Transform decisions (confirmed for this Limble account):
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -51,6 +52,12 @@ PHASE_MAP = "map"
 # travels with it through the same merge.
 INSTRUCTIONS_READ_AT = "instructions_read_at"
 
+# How many work orders one run will read instructions for unless told otherwise.
+# There is deliberately no unlimited default: the first run against a long
+# history would otherwise take days at the client's rate limit, and a bounded run
+# that resumes is the same work done in the same order without a surprise.
+DEFAULT_INSTRUCTIONS_LIMIT = 500
+
 # How often the transform loop reports progress, in records.
 _TRANSFORM_PROGRESS_EVERY = 250
 
@@ -66,8 +73,8 @@ class IngestionService:
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
-        fetch_instructions: bool = False,
-        instructions_limit: int | None = None,
+        fetch_instructions: bool = True,
+        instructions_limit: int | None = DEFAULT_INSTRUCTIONS_LIMIT,
         log: Callable[[str], None] = print,
         progress: Callable[[str, int | None, int | None], None] | None = None,
         on_batch_started: Callable[[int], None] | None = None,
@@ -79,8 +86,11 @@ class IngestionService:
         self.exclude_templates = exclude_templates
         # The Area Affected / Condition / Cause / Action boxes live in a task's
         # *instructions*, which /tasks does not carry -- each one is its own
-        # request. Off by default because that is a real cost (see
-        # _attach_instructions), and bounded by instructions_limit when on.
+        # request. On by default: the cost is the first walk through the history,
+        # not the nightly run, because a task records that it was read and is not
+        # read again. A sync left to itself therefore keeps the narrative current
+        # for a minute a night, where an off-by-default phase would have meant a
+        # flag nobody remembers and tables that quietly stop being true.
         self.fetch_instructions = fetch_instructions
         self.instructions_limit = instructions_limit
         self._log = log
@@ -259,6 +269,12 @@ class IngestionService:
 
         if not self.fetch_instructions:
             return {}
+        if not callable(getattr(self.limble_client, "get_task_instructions", None)):
+            # An older client, or a stand-in that only knows the list endpoints.
+            # The narrative is an addition to a sync, never the point of one, so
+            # losing the whole import over it would be the wrong trade.
+            self._log("This Limble client cannot read task instructions; skipping the failure narrative.")
+            return {}
 
         read_at, errored = self._instructions_read_state()
         candidates = [
@@ -295,9 +311,11 @@ class IngestionService:
                 "instructions_found": 0,
                 "instructions_failed": 0,
                 "instructions_remaining": remaining,
+                "instructions_seconds": 0.0,
             }
 
         self._log(f"Fetching instructions for {len(candidates)} task(s) ...")
+        started = time.monotonic()
         self._emit(PHASE_INSTRUCTIONS, 0, len(candidates))
         by_id = {id(task): task for task in candidates}
         found = 0
@@ -349,6 +367,11 @@ class IngestionService:
             "instructions_found": found,
             "instructions_failed": errors,
             "instructions_remaining": remaining,
+            # Reported so a caller timing the sync can take this phase back out.
+            # It is paced by the API's rate limit rather than by how much work
+            # the sync did, so counting it would put a backfill's hours into the
+            # estimate shown before an ordinary nightly run.
+            "instructions_seconds": round(time.monotonic() - started, 3),
         }
 
     def _instructions_read_state(self) -> tuple[dict[str, float], set[str]]:

@@ -527,3 +527,14 @@ class NarrativeClearingTests(unittest.TestCase):
         merged = _merge_preserved_fields(existing, {"taskID": 1, "completionNotes": ""})
         self.assertEqual(merged["completionNotes"], "Replaced bearing")
         self.assertEqual(merged["cause"], "Aging", "a payload that says nothing about a box leaves it alone")
+
+
+class PayloadIterationTests(unittest.TestCase):
+    def test_asking_a_database_that_does_not_exist_does_not_create_one(self):
+        # sqlite3.connect answers a missing path by making the file, so a dry run
+        # against one would leave a database behind that nobody asked for.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        missing = Path(tmp.name) / "not-there.db"
+        self.assertEqual(list(RawRepository(missing).iter_task_payloads()), [])
+        self.assertFalse(missing.exists())

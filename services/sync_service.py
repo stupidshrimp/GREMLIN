@@ -71,6 +71,7 @@ from typing import Any, Callable
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
 from services.ingestion_service import (
+    DEFAULT_INSTRUCTIONS_LIMIT,
     PHASE_ASSETS,
     PHASE_INSTRUCTIONS,
     PHASE_MAP,
@@ -337,9 +338,11 @@ class SyncOptions:
     include_templates: bool = False
     since: str | None = None
     # Read each task's Area Affected / Condition / Cause / Action boxes. Costs a
-    # request per candidate task, so it is opt-in and can be capped per run.
-    fetch_instructions: bool = False
-    instructions_limit: int | None = None
+    # request per task that has not been read yet, so it is bounded per run --
+    # but on by default, because after the first walk through the history a
+    # nightly sync only has the day's completions left to read.
+    fetch_instructions: bool = True
+    instructions_limit: int | None = DEFAULT_INSTRUCTIONS_LIMIT
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "SyncOptions":
@@ -367,8 +370,15 @@ class SyncOptions:
             refresh_mapping=not _as_bool("no_map", data.get("no_map")),
             include_templates=_as_bool("include_templates", data.get("include_templates")),
             since=(since or "").strip() or None,
-            fetch_instructions=_as_bool("fetch_instructions", data.get("fetch_instructions")),
-            instructions_limit=_instructions_limit(data.get("instructions_limit")),
+            # Absent means "as usual"; only an explicit false turns it off.
+            fetch_instructions=(
+                True if data.get("fetch_instructions") is None
+                else _as_bool("fetch_instructions", data.get("fetch_instructions"))
+            ),
+            instructions_limit=(
+                DEFAULT_INSTRUCTIONS_LIMIT if data.get("instructions_limit") is None
+                else _instructions_limit(data.get("instructions_limit"))
+            ),
         )
         # Validate here, where the caller is still holding the request, so a bad
         # date is a 400 rather than a background job that fails a second later.
@@ -410,9 +420,14 @@ def phase_share(options: SyncOptions) -> float:
     nightly job is comparable with one recorded from the dashboard.
     """
 
-    # Capped at a whole one: a run that also reads instructions has done more
-    # than a full sync, not more than all of one.
-    return min(1.0, sum(phase.weight for phase in options.active_phases()) / _TOTAL_WEIGHT)
+    # The instructions phase is left out of both halves, the same way the timing
+    # that uses this leaves its duration out: it is paced by the API's rate limit
+    # rather than by the size of the sync, so counting it would let a run that
+    # skipped a real phase still claim it had done a whole one.
+    done = sum(
+        phase.weight for phase in options.active_phases() if phase.key != PHASE_INSTRUCTIONS
+    )
+    return done / _TOTAL_WEIGHT
 
 
 # Spellings accepted from a hand-written request. The page sends real JSON
