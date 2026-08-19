@@ -24,6 +24,7 @@ from services.reliability_service import ReliabilityService
 from services.life_data_service import (
     DEFAULT_DB_PATH,
     DISPLAY_COLUMNS,
+    NARRATIVE_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
     WO_DISPOSITION_CATEGORIES,
@@ -880,6 +881,10 @@ def api_dispositions():
             "search": search,
             "rows": rows,
             "display_columns": list(DISPLAY_COLUMNS),
+            # The narrative boxes travel with their labels rather than as bare
+            # column keys: the table renders them as one stacked cell, so it needs
+            # to caption each line it draws.
+            "narrative_columns": [dict(column) for column in NARRATIVE_COLUMNS],
             "mode_options": service.get_asset_failure_mode_options(asset_number),
             "mechanism_options": service.get_asset_failure_mechanism_options(asset_number),
             "categories": list(PM_DISPOSITION_CATEGORIES if kind == "pm" else WO_DISPOSITION_CATEGORIES),
