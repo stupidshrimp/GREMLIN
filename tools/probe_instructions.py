@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from integrations.limble import LimbleClient, LimbleConfig  # noqa: E402
-from services.sync_service import APP_ENV_KEYS, load_dotenv_files  # noqa: E402
+from services.sync_service import _dotenv_candidates, load_dotenv_files  # noqa: E402
 from services.wo_narrative import NARRATIVE_FIELDS, extract_narrative  # noqa: E402
 
 
@@ -102,7 +103,10 @@ def probe(client: LimbleClient, task_id: str, *, raw: bool) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    load_dotenv_files(only_keys=APP_ENV_KEYS)
+    # The whole file, the way the sync CLI reads it. The web app's restricted
+    # load covers its own GREMLIN_* settings and deliberately excludes the
+    # Limble credentials, so borrowing it here found none of them.
+    load_dotenv_files(force=True)
     try:
         config = LimbleConfig.from_env(
             client_id=args.client_id,
@@ -111,6 +115,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ValueError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
+        # Which files were consulted, and which names came through, is the whole
+        # of what a reader needs to fix this -- values are never printed.
+        print("\n  .env files consulted:", file=sys.stderr)
+        for candidate in dict.fromkeys(_dotenv_candidates()):  # cwd and repo root are often one
+            print(f"    {candidate}  {'(found)' if candidate.is_file() else '(not present)'}", file=sys.stderr)
+        print("  credential variables now set:", file=sys.stderr)
+        for name in ("LIMBLE_CLIENT_ID", "LIMBLE_API_CLIENTID", "LIMBLE_CLIENT_SECRET", "LIMBLE_API_KEY"):
+            print(f"    {name}: {'set' if os.environ.get(name) else 'not set'}", file=sys.stderr)
         return 2
 
     client = LimbleClient(config)
