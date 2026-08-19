@@ -144,8 +144,12 @@ class LimbleClient:
 
         Each item pairs the prompt with the tech's answer::
 
-            {"instructionText": "Affected area", "response": "Building 2A PMG",
-             "type": "text box", "order": "1", "instructionID": "48", ...}
+            {"instruction": "Affected area", "response": "Building 2A PMG",
+             "type": "text box", "instructionID": 48, "parentInstructionID": 47,
+             "instructionFiles": [], "options": [], "taskID": 239676}
+
+        Note ``instruction``, not the ``instructionText`` a task export from the
+        Limble site uses for the same field; services.wo_narrative reads both.
 
         A task with no instructions returns an empty list rather than raising.
         """
