@@ -174,12 +174,18 @@ def run(args: argparse.Namespace) -> dict:
     # is answered from the runs that actually happen -- most of which happen
     # here, at night, and never touch the web app. Best effort: a directory that
     # cannot be written to costs an estimate, not this import.
-    record_run_timing(
-        db_path,
-        seconds=time.monotonic() - started,
-        share=phase_share(_options_for(args)),
-        counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
-    )
+    #
+    # A run that read instructions is left out. It is a rate-limited request per
+    # task, so it can run an order of magnitude longer than an ordinary sync
+    # while covering the same phases; recording it would teach the dashboard that
+    # a normal nightly sync takes hours.
+    if not args.instructions:
+        record_run_timing(
+            db_path,
+            seconds=time.monotonic() - started,
+            share=phase_share(_options_for(args)),
+            counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
+        )
     return summary
 
 
@@ -191,6 +197,8 @@ def _options_for(args: argparse.Namespace) -> SyncOptions:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         include_templates=args.include_templates,
+        fetch_instructions=args.instructions,
+        instructions_limit=args.instructions_limit,
     )
 
 
