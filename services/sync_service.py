@@ -72,6 +72,7 @@ from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
 from services.ingestion_service import (
     PHASE_ASSETS,
+    PHASE_INSTRUCTIONS,
     PHASE_MAP,
     PHASE_TASKS,
     PHASE_TRANSFORM,
@@ -122,11 +123,21 @@ class Phase:
 PHASES: tuple[Phase, ...] = (
     Phase(PHASE_TASKS, "Fetching tasks from Limble", 0.40),
     Phase(PHASE_ASSETS, "Fetching assets from Limble", 0.20),
+    # One request per task at the client's rate limit, so when this phase runs at
+    # all it usually dominates the run. It is skipped unless asked for, and
+    # phase_share keeps it out of the baseline a run is measured against.
+    Phase(PHASE_INSTRUCTIONS, "Reading work-order instructions", 0.35),
     Phase(PHASE_TRANSFORM, "Transforming records", 0.03),
     Phase(PHASE_WRITE, "Writing to GREMLIN.db", 0.27),
     Phase(PHASE_MAP, "Refreshing the mapped layer", 0.10),
 )
-_TOTAL_WEIGHT = sum(phase.weight for phase in PHASES)
+# What "a whole sync" weighs, for the share an ordinary run reports and the
+# full-run duration extrapolated from it. The instructions phase is deliberately
+# left out: it is opt-in, and its cost scales with how many tasks still need
+# their boxes read rather than sitting at a fixed fraction of a run. Counting it
+# here would make every ordinary sync -- which does everything a sync normally
+# does -- report that it had covered only two thirds of one.
+_TOTAL_WEIGHT = sum(phase.weight for phase in PHASES if phase.key != PHASE_INSTRUCTIONS)
 
 
 class SyncAlreadyRunningError(RuntimeError):
@@ -310,7 +321,10 @@ def parse_since(value: str | None) -> int | None:
 
 # Every option this endpoint understands. Anything else in a request body is a
 # mistake worth reporting rather than dropping.
-KNOWN_OPTION_KEYS = frozenset({"dry_run", "no_assets", "no_map", "include_templates", "since"})
+KNOWN_OPTION_KEYS = frozenset({
+    "dry_run", "no_assets", "no_map", "include_templates", "since",
+    "fetch_instructions", "instructions_limit",
+})
 
 
 @dataclass(frozen=True)
@@ -322,6 +336,10 @@ class SyncOptions:
     refresh_mapping: bool = True
     include_templates: bool = False
     since: str | None = None
+    # Read each task's Area Affected / Condition / Cause / Action boxes. Costs a
+    # request per candidate task, so it is opt-in and can be capped per run.
+    fetch_instructions: bool = False
+    instructions_limit: int | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "SyncOptions":
@@ -349,6 +367,8 @@ class SyncOptions:
             refresh_mapping=not _as_bool("no_map", data.get("no_map")),
             include_templates=_as_bool("include_templates", data.get("include_templates")),
             since=(since or "").strip() or None,
+            fetch_instructions=_as_bool("fetch_instructions", data.get("fetch_instructions")),
+            instructions_limit=_instructions_limit(data.get("instructions_limit")),
         )
         # Validate here, where the caller is still holding the request, so a bad
         # date is a 400 rather than a background job that fails a second later.
@@ -362,6 +382,8 @@ class SyncOptions:
             "refresh_mapping": self.refresh_mapping,
             "include_templates": self.include_templates,
             "since": self.since,
+            "fetch_instructions": self.fetch_instructions,
+            "instructions_limit": self.instructions_limit,
         }
 
     def active_phases(self) -> tuple[Phase, ...]:
@@ -370,6 +392,8 @@ class SyncOptions:
         skipped: set[str] = set()
         if not self.fetch_assets:
             skipped.add(PHASE_ASSETS)
+        if not self.fetch_instructions:
+            skipped.add(PHASE_INSTRUCTIONS)
         if self.dry_run:
             # A dry run stops after transforming: nothing is written, so nothing
             # can be mapped either.
@@ -386,7 +410,9 @@ def phase_share(options: SyncOptions) -> float:
     nightly job is comparable with one recorded from the dashboard.
     """
 
-    return sum(phase.weight for phase in options.active_phases()) / _TOTAL_WEIGHT
+    # Capped at a whole one: a run that also reads instructions has done more
+    # than a full sync, not more than all of one.
+    return min(1.0, sum(phase.weight for phase in options.active_phases()) / _TOTAL_WEIGHT)
 
 
 # Spellings accepted from a hand-written request. The page sends real JSON
@@ -394,6 +420,22 @@ def phase_share(options: SyncOptions) -> float:
 # expects rather than as Python truthiness would have it.
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def _instructions_limit(value: Any) -> int | None:
+    """Validate the per-run cap on instruction fetches: a count, or unlimited."""
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SyncOptionError("'Instruction fetch limit' must be a whole number of tasks.")
+    try:
+        limit = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise SyncOptionError("'Instruction fetch limit' must be a whole number of tasks.") from None
+    if limit < 0:
+        raise SyncOptionError("'Instruction fetch limit' cannot be negative.")
+    return limit
 
 
 def _as_bool(field: str, value: Any) -> bool:
@@ -952,6 +994,8 @@ class LimbleSyncRunner:
                 fetch_assets=options.fetch_assets,
                 refresh_mapping=options.refresh_mapping,
                 exclude_templates=not options.include_templates,
+                fetch_instructions=options.fetch_instructions,
+                instructions_limit=options.instructions_limit,
                 log=self._make_logger(log),
                 progress=self._on_progress,
                 on_batch_started=self._remember_batch,

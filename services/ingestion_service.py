@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from integrations.limble import LimbleClient
 from repositories.raw_repo import RawRepository
+from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
 
 # The phases a sync moves through, in order. The names are part of the contract
@@ -39,6 +40,7 @@ from repositories.raw_repo import RawRepository
 # means renaming it there.
 PHASE_TASKS = "tasks"
 PHASE_ASSETS = "assets"
+PHASE_INSTRUCTIONS = "instructions"
 PHASE_TRANSFORM = "transform"
 PHASE_WRITE = "write"
 PHASE_MAP = "map"
@@ -58,6 +60,8 @@ class IngestionService:
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
+        fetch_instructions: bool = False,
+        instructions_limit: int | None = None,
         log: Callable[[str], None] = print,
         progress: Callable[[str, int | None, int | None], None] | None = None,
         on_batch_started: Callable[[int], None] | None = None,
@@ -67,6 +71,12 @@ class IngestionService:
         self.fetch_assets = fetch_assets
         self.refresh_mapping = refresh_mapping
         self.exclude_templates = exclude_templates
+        # The Area Affected / Condition / Cause / Action boxes live in a task's
+        # *instructions*, which /tasks does not carry -- each one is its own
+        # request. Off by default because that is a real cost (see
+        # _attach_instructions), and bounded by instructions_limit when on.
+        self.fetch_instructions = fetch_instructions
+        self.instructions_limit = instructions_limit
         self._log = log
         # ``progress(phase, current, total)`` is optional structured reporting
         # for a UI; ``log`` stays the human-readable narration the CLI prints.
@@ -131,6 +141,8 @@ class IngestionService:
             asset_index = AssetIndex.from_assets(assets)
             self._log(f"Fetched {len(assets)} asset(s).")
 
+        instruction_counts = self._attach_instructions(tasks)
+
         self._emit(PHASE_TRANSFORM, 0, len(tasks))
         records = []
         for position, task in enumerate(tasks, start=1):
@@ -144,6 +156,7 @@ class IngestionService:
                 "fetched_tasks": fetched_tasks,
                 "excluded_templates": excluded_templates,
                 "fetched_assets": asset_index.count,
+                **instruction_counts,
                 "records": len(records),
                 "inserted": 0,
                 "updated": 0,
@@ -201,12 +214,105 @@ class IngestionService:
             "fetched_tasks": fetched_tasks,
             "excluded_templates": excluded_templates,
             "fetched_assets": asset_index.count,
+            **instruction_counts,
             "records": len(records),
             "import_batch_id": batch_id,
             **counts,
             **mapping,
             "dry_run": False,
         }
+
+    def _attach_instructions(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        """Fill in each task's four narrative boxes from its instruction items.
+
+        The boxes the maintenance teams fill out -- Area Affected, Condition,
+        Cause, Action -- are task *instructions*, and Limble serves those only as
+        a per-task sub-resource. One request per task at the client's rate limit
+        makes a full history impossible to walk in one run, so this is selective
+        on three counts:
+
+        * **Off unless asked for.** A sync that does not need the narrative
+          should not pay for it.
+        * **Completed tasks only.** The boxes are the closing write-up; a task
+          still open has nothing in them.
+        * **Only what is missing.** A task whose stored payload already carries
+          all four is skipped, so re-syncs cost nothing and a capped backfill
+          resumes where the last one stopped instead of starting over.
+
+        Only the four answers are kept, written onto the task as ordinary
+        top-level fields. The instruction list itself runs to kilobytes of
+        checklist boilerplate per task and would bloat raw_json for nothing --
+        the mapper reads the distilled fields through the same path it reads any
+        other task field.
+        """
+
+        if not self.fetch_instructions:
+            return {}
+
+        already_complete = self._tasks_with_complete_narrative()
+        candidates = [
+            task for task in tasks
+            if self._task_key(task) is not None
+            and self._task_key(task) not in already_complete
+            and task.get("dateCompleted") not in (None, "", 0, "0")
+        ]
+        limit = self.instructions_limit
+        capped = len(candidates)
+        if limit is not None and limit >= 0:
+            candidates = candidates[:limit]
+        remaining = capped - len(candidates)
+
+        if not candidates:
+            self._log("No tasks need their instructions fetched.")
+            return {"instructions_fetched": 0, "instructions_found": 0, "instructions_remaining": remaining}
+
+        self._log(f"Fetching instructions for {len(candidates)} task(s) ...")
+        self._emit(PHASE_INSTRUCTIONS, 0, len(candidates))
+        by_id = {id(task): task for task in candidates}
+        found = 0
+        for position, task in enumerate(candidates, start=1):
+            task_id = self._task_key(task)
+            try:
+                instructions = self.limble_client.get_task_instructions(task_id)
+            except Exception as exc:  # noqa: BLE001 - one bad task must not lose the sync
+                self._log(f"Warning: could not read instructions for task {task_id}: {exc}")
+                self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
+                continue
+            narrative = extract_narrative({"instructions": instructions})
+            if narrative:
+                by_id[id(task)].update(narrative)
+                found += 1
+            self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
+
+        self._log(
+            f"Read instructions for {len(candidates)} task(s); {found} carried a failure narrative."
+            + (f" {remaining} more still to do." if remaining else "")
+        )
+        return {
+            "instructions_fetched": len(candidates),
+            "instructions_found": found,
+            "instructions_remaining": remaining,
+        }
+
+    def _tasks_with_complete_narrative(self) -> set[str]:
+        """Task ids whose stored payload already answers all four boxes."""
+
+        complete: set[str] = set()
+        try:
+            for task_key, payload in self.raw_repo.iter_task_payloads():
+                if len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
+                    complete.add(task_key)
+        except Exception as exc:  # noqa: BLE001 - a database without the table yet
+            self._log(f"Could not check which tasks already have a narrative ({exc}); fetching all candidates.")
+            return set()
+        return complete
+
+    @staticmethod
+    def _task_key(task: dict[str, Any]) -> str | None:
+        value = task.get("taskID")
+        if value in (None, ""):
+            return None
+        return str(value).strip() or None
 
     def _refresh_mapped_records(self) -> dict[str, Any]:
         """Map new/changed raw rows into ``mapped_cmms_record`` via LifeDataService.

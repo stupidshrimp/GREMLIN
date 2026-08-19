@@ -29,6 +29,8 @@ blank narrative cells rather than inventing content.
 
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -93,10 +95,16 @@ _PREFERRED_CONTAINER_KEYS = (
 )
 
 # On an object that carries the prompt and the answer as two separate keys, the
-# prompt is read from the first of these present ...
+# prompt is read from the first of these present. ``instructionText`` leads
+# because it is what Limble task instructions actually use -- the box's prompt is
+# ``instructionText`` and the tech's answer is ``response``:
+#
+#     {"instructionText": "Affected area", "response": "Building 2A PMG",
+#      "type": "text box", "order": "1", "instructionID": "48", ...}
 _LABEL_KEYS = (
-    "name", "label", "title", "fieldName", "field_name", "field",
-    "question", "prompt", "instruction", "description", "text",
+    "instructionText", "instruction_text", "name", "label", "title",
+    "fieldName", "field_name", "field", "question", "prompt", "instruction",
+    "description", "text",
 )
 
 # ... and the answer from the first of these that is not the key already spent on
@@ -239,5 +247,32 @@ def _is_text(value: Any) -> bool:
     return isinstance(value, (str, int, float))
 
 
+# A tag, as distinct from a less-than a tech typed. Requiring a letter, slash or
+# "!" right after the "<" leaves arithmetic ("temp < 50 > 40") alone.
+_TAG = re.compile(r"<[a-zA-Z/!][^>]*>")
+
+
 def _clean(value: Any) -> str:
-    return str(value).strip()
+    """Reduce one answer to the text the tech actually typed.
+
+    Limble's rich-text boxes return the editor's markup rather than plain text,
+    so a Condition can arrive as ``<a class='cursor ...'></a><div><a ...><div>It
+    was leaking which spilled into confined space floor.</div></a></div>`` and a
+    Cause as ``Unknown,&nbsp; dropped it box``. Rendered verbatim in a table cell
+    that is a wall of markup, so strip the tags and decode the entities here --
+    once, on the way in -- rather than in each of the tables that show it.
+
+    Every tag becomes a space rather than nothing: two adjacent ``<div>`` lines
+    would otherwise run their last and first words together, and an over-split
+    phrase is far easier to read than an invented compound word.
+    """
+
+    text = str(value)
+    if "<" in text and ">" in text:
+        text = _TAG.sub(" ", text)
+    # After the tags, so a genuinely escaped "&lt;b&gt;" survives as text rather
+    # than being decoded into a tag and then stripped.
+    text = html.unescape(text)
+    # Collapses the runs the substitution above leaves, and the non-breaking
+    # spaces &nbsp; decodes into.
+    return " ".join(text.split())

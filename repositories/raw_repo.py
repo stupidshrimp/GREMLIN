@@ -262,6 +262,29 @@ class RawRepository:
 
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
+    def iter_task_payloads(self) -> Iterator[tuple[str, dict[str, Any]]]:
+        """Yield ``(taskID, stored raw_json)`` for every raw record, one at a time.
+
+        Streamed rather than returned as a dict because a mature GREMLIN.db holds
+        hundreds of thousands of tasks and the caller only wants to ask a
+        question of each payload, not hold them all.
+        """
+
+        conn = self.connect()
+        try:
+            for row in conn.execute("SELECT raw_json FROM raw_cmms_record"):
+                try:
+                    parsed = json.loads(row["raw_json"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                key = _task_key(parsed)
+                if key:
+                    yield key, parsed
+        finally:
+            conn.close()
+
     def raw_record_count(self) -> int:
         with self.connect() as conn:
             if not self._column_names(conn, "raw_cmms_record"):

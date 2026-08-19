@@ -64,6 +64,57 @@ class ExtractNarrativeTests(unittest.TestCase):
             "action_taken": "Realigned coupling",
         })
 
+    def test_the_shape_limble_task_instructions_actually_use(self):
+        # Verbatim from a Limble export: the prompt is `instructionText` and the
+        # answer is `response`, and the label reads "Affected area" rather than
+        # "Area Affected". The ACCA boxes sit at the end of a long safety
+        # checklist whose other items must not be mistaken for them.
+        found = extract_narrative({"taskID": 239728, "instructions": [
+            {"instructionText": "Does this job require LOTO?", "response": "No", "type": "option list"},
+            {"instructionText": "Test LOTO.", "response": "", "type": "checkbox"},
+            {"instructionText": "Complete work to solve problem", "response": "1", "type": "checkbox"},
+            {"instructionText": "Obtain and record all special tools before starting work.", "response": "", "type": "text box"},
+            {"instructionText": "Affected area", "response": "Timing belt", "type": "text box", "order": "1", "instructionID": "48", "parentID": "47"},
+            {"instructionText": "Condition", "response": "Worn", "type": "text box", "order": "2", "instructionID": "49", "parentID": "47"},
+            {"instructionText": "Cause", "response": "Aging", "type": "text box", "order": "3", "instructionID": "50", "parentID": "47"},
+            {"instructionText": "Action", "response": "Replaced timing belt.", "type": "text box", "order": "4", "instructionID": "51", "parentID": "47"},
+        ]})
+        self.assertEqual(found, {
+            "area_affected": "Timing belt",
+            "condition_found": "Worn",
+            "cause": "Aging",
+            "action_taken": "Replaced timing belt.",
+        })
+
+    def test_the_rich_text_editors_markup_is_stripped(self):
+        # Limble's text boxes return the editor's markup, not plain text. Shown
+        # verbatim these cells are a wall of tags, so the answer is recovered here.
+        found = extract_narrative({"instructions": [
+            {"instructionText": "Condition", "type": "text box", "response": (
+                "<a _ngcontent-ng-c3498802757='' class='cursor ng-star-inserted' "
+                "style='color: rgb(80, 131, 213); word-break: break-word;'></a>"
+                "<div><a _ngcontent-ng-c3498802757='' class='cursor ng-star-inserted'>"
+                "<div>It was leaking which spilled into confined space floor.</div>"
+                "<div><br></div></a></div>"
+            )},
+            {"instructionText": "Cause", "type": "text box",
+             "response": "Unknown,&nbsp; dropped it box, build.10"},
+        ]})
+        self.assertEqual(found["condition_found"], "It was leaking which spilled into confined space floor.")
+        # &nbsp; decodes and the double space it leaves collapses.
+        self.assertEqual(found["cause"], "Unknown, dropped it box, build.10")
+
+    def test_adjacent_blocks_do_not_run_their_words_together(self):
+        found = extract_narrative({"instructions": [
+            {"instructionText": "Action", "type": "text box",
+             "response": "<div>Replaced the seal</div><div>tested for leaks</div>"},
+        ]})
+        self.assertEqual(found["action_taken"], "Replaced the seal tested for leaks")
+
+    def test_arithmetic_is_not_mistaken_for_markup(self):
+        found = extract_narrative({"Condition": "temp < 50 > 40 on the gauge"})
+        self.assertEqual(found["condition_found"], "temp < 50 > 40 on the gauge")
+
     def test_label_spelling_and_punctuation_variants(self):
         # These labels are typed by whoever builds the template, so case, spacing,
         # punctuation and the usual affect/effect slip all have to resolve.
@@ -265,3 +316,119 @@ class NarrativeMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstructionFetchTests(unittest.TestCase):
+    """The instructions phase is selective about which tasks it pays for."""
+
+    class _StubClient:
+        """A Limble client that records which tasks were asked for."""
+
+        def __init__(self, instructions_by_task: dict[str, list]) -> None:
+            self.instructions_by_task = instructions_by_task
+            self.asked: list[str] = []
+
+        def get_task_instructions(self, task_id):
+            self.asked.append(str(task_id))
+            return self.instructions_by_task.get(str(task_id), [])
+
+    class _StubRepo:
+        def __init__(self, stored: list[tuple[str, dict]]) -> None:
+            self._stored = stored
+
+        def iter_task_payloads(self):
+            yield from self._stored
+
+    def _acca(self, area: str) -> list[dict]:
+        return [
+            {"instructionText": "Affected area", "response": area, "type": "text box"},
+            {"instructionText": "Condition", "response": "Worn", "type": "text box"},
+            {"instructionText": "Cause", "response": "Aging", "type": "text box"},
+            {"instructionText": "Action", "response": "Replaced", "type": "text box"},
+        ]
+
+    def _service(self, client, repo, **kwargs):
+        from services.ingestion_service import IngestionService
+
+        return IngestionService(
+            limble_client=client,
+            raw_repo=repo,
+            fetch_instructions=True,
+            log=lambda _message: None,
+            **kwargs,
+        )
+
+    def test_the_four_answers_land_on_the_task(self):
+        client = self._StubClient({"1": self._acca("Timing belt")})
+        service = self._service(client, self._StubRepo([]))
+        task = {"taskID": 1, "dateCompleted": 1750000000}
+        service._attach_instructions([task])
+        self.assertEqual(task["area_affected"], "Timing belt")
+        self.assertEqual(task["action_taken"], "Replaced")
+        # Only the four answers are kept; the checklist itself is not stored.
+        self.assertNotIn("instructions", task)
+
+    def test_an_open_task_is_not_paid_for(self):
+        # The boxes are the closing write-up, so a task still open has nothing.
+        client = self._StubClient({})
+        service = self._service(client, self._StubRepo([]))
+        service._attach_instructions([{"taskID": 1, "dateCompleted": 0}])
+        self.assertEqual(client.asked, [])
+
+    def test_a_task_already_carrying_all_four_is_not_refetched(self):
+        stored = [("1", {
+            "taskID": 1, "area_affected": "a", "condition_found": "b",
+            "cause": "c", "action_taken": "d",
+        })]
+        client = self._StubClient({"1": self._acca("x"), "2": self._acca("y")})
+        service = self._service(client, self._StubRepo(stored))
+        service._attach_instructions([
+            {"taskID": 1, "dateCompleted": 1750000000},
+            {"taskID": 2, "dateCompleted": 1750000000},
+        ])
+        self.assertEqual(client.asked, ["2"])
+
+    def test_a_partial_narrative_is_still_worth_refetching(self):
+        stored = [("1", {"taskID": 1, "cause": "c"})]
+        client = self._StubClient({"1": self._acca("x")})
+        service = self._service(client, self._StubRepo(stored))
+        service._attach_instructions([{"taskID": 1, "dateCompleted": 1750000000}])
+        self.assertEqual(client.asked, ["1"])
+
+    def test_the_cap_bounds_a_run_and_reports_what_is_left(self):
+        client = self._StubClient({str(i): self._acca(str(i)) for i in range(5)})
+        service = self._service(client, self._StubRepo([]), instructions_limit=2)
+        counts = service._attach_instructions(
+            [{"taskID": i, "dateCompleted": 1750000000} for i in range(5)]
+        )
+        self.assertEqual(len(client.asked), 2)
+        self.assertEqual(counts["instructions_fetched"], 2)
+        self.assertEqual(counts["instructions_remaining"], 3)
+
+    def test_one_unreadable_task_does_not_lose_the_rest(self):
+        class Failing(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                if str(task_id) == "1":
+                    raise RuntimeError("500 from Limble")
+                return super().get_task_instructions(task_id)
+
+        client = Failing({"2": self._acca("Infeed")})
+        service = self._service(client, self._StubRepo([]))
+        tasks = [
+            {"taskID": 1, "dateCompleted": 1750000000},
+            {"taskID": 2, "dateCompleted": 1750000000},
+        ]
+        counts = service._attach_instructions(tasks)
+        self.assertNotIn("area_affected", tasks[0])
+        self.assertEqual(tasks[1]["area_affected"], "Infeed")
+        self.assertEqual(counts["instructions_found"], 1)
+
+    def test_nothing_is_fetched_unless_asked_for(self):
+        client = self._StubClient({"1": self._acca("x")})
+        from services.ingestion_service import IngestionService
+
+        service = IngestionService(
+            limble_client=client, raw_repo=self._StubRepo([]), log=lambda _m: None
+        )
+        self.assertEqual(service._attach_instructions([{"taskID": 1, "dateCompleted": 1}]), {})
+        self.assertEqual(client.asked, [])

@@ -117,6 +117,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Import Limble template tasks too (excluded by default, matching the legacy export).",
     )
+    parser.add_argument(
+        "--instructions",
+        action="store_true",
+        help=(
+            "Also read each completed task's instructions to capture the Area Affected / "
+            "Condition / Cause / Action boxes. Costs one API request per task, so pair it "
+            "with --since or --instructions-limit on a large history."
+        ),
+    )
+    parser.add_argument(
+        "--instructions-limit",
+        type=int,
+        help="Stop after this many instruction fetches; the next run picks up where this one stopped.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and transform, but make no database changes.")
     parser.add_argument("--create", action="store_true", help="Create the database file if it does not exist.")
     return parser
@@ -145,6 +159,8 @@ def run(args: argparse.Namespace) -> dict:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         exclude_templates=not args.include_templates,
+        fetch_instructions=args.instructions,
+        instructions_limit=args.instructions_limit,
     )
 
     print(f"Database: {db_path}")

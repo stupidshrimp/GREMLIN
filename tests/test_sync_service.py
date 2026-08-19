@@ -20,6 +20,7 @@ from services.sync_service import (
     SyncOptionError,
     SyncOptions,
     parse_since,
+    phase_share,
     read_import_history,
     read_run_timings,
     record_run_timing,
@@ -293,6 +294,31 @@ class DotenvTests(unittest.TestCase):
 
 
 class SyncOptionsTests(unittest.TestCase):
+    def test_reading_instructions_is_opt_in_and_can_be_capped(self):
+        options = SyncOptions.from_payload({"fetch_instructions": True, "instructions_limit": "250"})
+        self.assertTrue(options.fetch_instructions)
+        self.assertEqual(options.instructions_limit, 250)
+        default = SyncOptions.from_payload({})
+        self.assertFalse(default.fetch_instructions)
+        self.assertIsNone(default.instructions_limit)
+
+    def test_a_bad_instruction_cap_is_refused_while_the_caller_is_still_here(self):
+        for bad in ("many", -1, 1.5):
+            with self.subTest(limit=bad):
+                with self.assertRaises(SyncOptionError):
+                    SyncOptions.from_payload({"instructions_limit": bad})
+
+    def test_the_opt_in_phase_does_not_shrink_an_ordinary_syncs_share(self):
+        # An ordinary sync does everything a sync normally does, so it is a whole
+        # one -- adding an opt-in phase to the roster must not make it report
+        # otherwise, or every full-run estimate extrapolated from it is wrong.
+        self.assertEqual(phase_share(SyncOptions()), 1.0)
+        # And a run that also reads instructions has done more than a full sync,
+        # not more than all of one.
+        self.assertEqual(phase_share(SyncOptions(fetch_instructions=True)), 1.0)
+        # A run that skips a real phase still reports less than a whole sync.
+        self.assertLess(phase_share(SyncOptions(fetch_assets=False)), 1.0)
+
     def test_payload_flags_are_inverted_into_positive_options(self):
         options = SyncOptions.from_payload({"dry_run": True, "no_assets": True, "no_map": True, "since": " 2026-01-01 "})
         self.assertTrue(options.dry_run)

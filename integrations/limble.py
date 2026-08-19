@@ -130,6 +130,27 @@ class LimbleClient:
 
         return list(self._paginate("/assets/", {}, on_page=on_page))
 
+    def get_task_instructions(self, task_id: Any) -> list[dict[str, Any]]:
+        """Return one task's instruction items from ``/tasks/{taskID}/instructions``.
+
+        This is a per-task sub-resource -- the same shape as
+        ``/tasks/{taskID}/parts`` -- so the list endpoint does not carry it and
+        each task costs its own request. Callers are expected to be selective
+        about which tasks they ask for; see ``IngestionService``.
+
+        Each item pairs the prompt with the tech's answer::
+
+            {"instructionText": "Affected area", "response": "Building 2A PMG",
+             "type": "text box", "order": "1", "instructionID": "48", ...}
+
+        A task with no instructions returns an empty list rather than raising.
+        """
+
+        payload = self._request("GET", f"/tasks/{task_id}/instructions/")
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
     # ------------------------------------------------------------------
     # Pagination + transport
     # ------------------------------------------------------------------
