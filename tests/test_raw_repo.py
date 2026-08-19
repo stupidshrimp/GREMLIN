@@ -503,3 +503,27 @@ class RawRepositoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NarrativeClearingTests(unittest.TestCase):
+    """An emptied narrative box clears; everything else still resists blanking."""
+
+    def test_a_cleared_box_overwrites_the_answer_it_replaces(self):
+        # The instructions reader saw the whole task, so a box it returns empty
+        # was cleared in Limble. Preserving the old text would leave a work order
+        # showing failure evidence its own record no longer makes.
+        existing = {"taskID": 1, "area_affected": "Timing belt", "cause": "Aging"}
+        merged = _merge_preserved_fields(existing, {
+            "taskID": 1, "area_affected": "Timing belt",
+            "cause": "", "condition_found": "", "action_taken": "",
+        })
+        self.assertEqual(merged["cause"], "")
+        self.assertEqual(merged["area_affected"], "Timing belt")
+
+    def test_the_narrow_refresh_rule_is_not_weakened_for_anything_else(self):
+        # The reason that rule exists: /tasks omits most of a row, and a sync that
+        # let those omissions blank it gutted the database once already.
+        existing = {"taskID": 1, "completionNotes": "Replaced bearing", "cause": "Aging"}
+        merged = _merge_preserved_fields(existing, {"taskID": 1, "completionNotes": ""})
+        self.assertEqual(merged["completionNotes"], "Replaced bearing")
+        self.assertEqual(merged["cause"], "Aging", "a payload that says nothing about a box leaves it alone")

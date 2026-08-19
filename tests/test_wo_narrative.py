@@ -9,6 +9,7 @@ from services.life_data_service import (
     EXCEL_WO_DISPOSITION_COLUMNS,
     LifeDataService,
 )
+from repositories.raw_repo import INSTRUCTIONS_READ_ERROR
 from services.ingestion_service import INSTRUCTIONS_READ_AT
 from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
@@ -376,18 +377,32 @@ class InstructionFetchTests(unittest.TestCase):
         service._attach_instructions([{"taskID": 1, "dateCompleted": 0}])
         self.assertEqual(client.asked, [])
 
-    def test_a_task_already_carrying_all_four_is_not_refetched(self):
+    def test_a_task_already_read_is_not_read_again(self):
+        stored = [("1", {"taskID": 1, INSTRUCTIONS_READ_AT: 1_780_000_000})]
+        client = self._StubClient({"1": self._acca("x"), "2": self._acca("y")})
+        service = self._service(client, self._StubRepo(stored))
+        service._attach_instructions([
+            {"taskID": 1, "dateCompleted": 1_750_000_000, "lastEdited": 1_750_000_000},
+            {"taskID": 2, "dateCompleted": 1_750_000_000, "lastEdited": 1_750_000_000},
+        ])
+        self.assertEqual(client.asked, ["2"])
+
+    def test_a_legacy_narrative_is_read_once_more_to_earn_a_stamp(self):
+        # Stored by a build that kept answers without recording the attempt.
+        # Treating those as read forever would freeze them: no later edit could
+        # ever exceed that marker, so a correction made in Limble would never
+        # reach the tables. Read once instead, which stamps it, after which the
+        # ordinary rules apply.
         stored = [("1", {
             "taskID": 1, "area_affected": "a", "condition_found": "b",
             "cause": "c", "action_taken": "d",
         })]
-        client = self._StubClient({"1": self._acca("x"), "2": self._acca("y")})
+        client = self._StubClient({"1": self._acca("x")})
+        task = {"taskID": 1, "dateCompleted": 1_750_000_000, "lastEdited": 1_750_000_000}
         service = self._service(client, self._StubRepo(stored))
-        service._attach_instructions([
-            {"taskID": 1, "dateCompleted": 1750000000},
-            {"taskID": 2, "dateCompleted": 1750000000},
-        ])
-        self.assertEqual(client.asked, ["2"])
+        service._attach_instructions([task])
+        self.assertEqual(client.asked, ["1"])
+        self.assertIn(INSTRUCTIONS_READ_AT, task, "the re-read must leave a real stamp behind")
 
     def test_a_partial_narrative_is_still_worth_refetching(self):
         stored = [("1", {"taskID": 1, "cause": "c"})]
@@ -483,6 +498,73 @@ class InstructionFetchTests(unittest.TestCase):
         service = self._service(client, self._StubRepo([]), instructions_limit=-1)
         service._attach_instructions([{"taskID": i, "dateCompleted": 1_750_000_000} for i in range(5)])
         self.assertEqual(client.asked, [])
+
+    def test_a_task_that_always_fails_does_not_block_the_backfill(self):
+        # A deleted task, or one this key cannot see, returns the same error
+        # every time. Left unstamped it stays at the head of a newest-first queue
+        # and a capped run never reaches anything behind it -- the same stall as
+        # a blank narrative, on the path that raises instead of returning.
+        class Failing(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                super().get_task_instructions(task_id)
+                if str(task_id) == "4":
+                    raise RuntimeError("404 Not Found")
+                return []
+
+        client = Failing({})
+        stored: dict[str, dict] = {}
+
+        class Repo:
+            def iter_task_payloads(self):
+                yield from stored.items()
+
+        tasks = [
+            {"taskID": i, "dateCompleted": 1_750_000_000 + i, "lastEdited": 1_750_000_000 + i}
+            for i in range(5)
+        ]
+        rounds = []
+        for _ in range(5):
+            client.asked.clear()
+            self._service(client, Repo(), instructions_limit=1)._attach_instructions(tasks)
+            rounds.append(list(client.asked))
+            for task in tasks:
+                if INSTRUCTIONS_READ_AT in task:
+                    stored[str(task["taskID"])] = dict(task)
+
+        self.assertEqual(rounds, [["4"], ["3"], ["2"], ["1"], ["0"]])
+        self.assertTrue(tasks[4][INSTRUCTIONS_READ_ERROR], "the failure is recorded, not silently forgotten")
+
+    def test_a_failed_read_is_retried_behind_everything_never_tried(self):
+        # Recorded so it stops blocking, not abandoned: a transient outage during
+        # a backfill must not quietly cost those tasks their narrative forever.
+        stored = {"4": {"taskID": 4, INSTRUCTIONS_READ_AT: 1, INSTRUCTIONS_READ_ERROR: "boom"}}
+
+        class Repo:
+            def iter_task_payloads(self):
+                yield from stored.items()
+
+        client = self._StubClient({})
+        self._service(client, Repo(), instructions_limit=2)._attach_instructions([
+            {"taskID": 4, "dateCompleted": 1_780_000_000, "lastEdited": 1},   # newest, but failed before
+            {"taskID": 3, "dateCompleted": 1_750_000_000, "lastEdited": 1},
+            {"taskID": 2, "dateCompleted": 1_740_000_000, "lastEdited": 1},
+        ])
+        self.assertEqual(client.asked, ["3", "2"], "never-tried tasks come first")
+
+    def test_a_box_cleared_in_limble_stops_being_shown(self):
+        # A successful read saw the whole task, so a box it did not return was
+        # cleared. The merge preserves what a payload omits, so the answer has to
+        # be written empty or the tables keep showing evidence the work order no
+        # longer makes.
+        client = self._StubClient({"1": [
+            {"instruction": "Affected area", "response": "Timing belt", "type": "text box"},
+            {"instruction": "Condition", "response": "Worn", "type": "text box"},
+        ]})
+        task = {"taskID": 1, "dateCompleted": 1_750_000_000}
+        self._service(client, self._StubRepo([]))._attach_instructions([task])
+        self.assertEqual(task["area_affected"], "Timing belt")
+        self.assertEqual(task["cause"], "", "a box with no answer is written empty, not left out")
+        self.assertEqual(task["action_taken"], "")
 
     def test_a_capped_run_takes_the_most_recently_completed_first(self):
         # The boxes only exist on work orders closed since the template started

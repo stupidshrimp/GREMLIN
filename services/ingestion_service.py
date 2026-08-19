@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from integrations.limble import LimbleClient, task_touched_at
-from repositories.raw_repo import RawRepository
+from repositories.raw_repo import INSTRUCTIONS_READ_ERROR, RawRepository
 from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
 
@@ -260,7 +260,7 @@ class IngestionService:
         if not self.fetch_instructions:
             return {}
 
-        read_at = self._instructions_read_at()
+        read_at, errored = self._instructions_read_state()
         candidates = [
             task for task in tasks
             if self._task_key(task) is not None
@@ -274,7 +274,11 @@ class IngestionService:
         # the ones an analysis is looking at. Taking them in arrival order would
         # spend a whole run on history that predates the template and return
         # nothing.
-        candidates.sort(key=self._completed_at, reverse=True)
+        # Never tried first, then the ones a previous run could not read, each
+        # newest-completed first. A task that always fails -- deleted, or invisible
+        # to this key -- then costs the tail of a run rather than its head, so it
+        # can never be what stops the backfill reaching older history.
+        candidates.sort(key=lambda task: (self._task_key(task) in errored, -self._completed_at(task)))
         limit = self.instructions_limit
         capped = len(candidates)
         if limit is not None:
@@ -286,18 +290,34 @@ class IngestionService:
 
         if not candidates:
             self._log("No tasks need their instructions fetched.")
-            return {"instructions_fetched": 0, "instructions_found": 0, "instructions_remaining": remaining}
+            return {
+                "instructions_fetched": 0,
+                "instructions_found": 0,
+                "instructions_failed": 0,
+                "instructions_remaining": remaining,
+            }
 
         self._log(f"Fetching instructions for {len(candidates)} task(s) ...")
         self._emit(PHASE_INSTRUCTIONS, 0, len(candidates))
         by_id = {id(task): task for task in candidates}
         found = 0
+        errors = 0
         for position, task in enumerate(candidates, start=1):
             task_id = self._task_key(task)
             try:
                 instructions = self.limble_client.get_task_instructions(task_id)
             except Exception as exc:  # noqa: BLE001 - one bad task must not lose the sync
                 self._log(f"Warning: could not read instructions for task {task_id}: {exc}")
+                # Stamped like a success, and for the same reason: a task that
+                # always fails -- deleted, or one this key cannot see -- would
+                # otherwise stay unread forever at the head of a newest-first
+                # queue and block the backfill exactly as a blank one used to.
+                # The error is recorded alongside so the next run can put it
+                # behind everything never tried, where a permanent failure costs
+                # the tail of a run rather than all of it.
+                by_id[id(task)][INSTRUCTIONS_READ_AT] = _utc_now()
+                by_id[id(task)][INSTRUCTIONS_READ_ERROR] = str(exc)[:500]
+                errors += 1
                 self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
                 continue
             narrative = extract_narrative({"instructions": instructions})
@@ -308,42 +328,56 @@ class IngestionService:
             # backfill would re-read the same head of the queue forever and never
             # reach the rest of the history.
             by_id[id(task)][INSTRUCTIONS_READ_AT] = _utc_now()
+            by_id[id(task)][INSTRUCTIONS_READ_ERROR] = ""
+            # Every box is written, not just the answered ones. This read saw the
+            # whole task, so a box it did not return is one that was cleared in
+            # Limble, and the merge preserves what a payload omits -- leaving the
+            # old text in place would keep a work order showing failure evidence
+            # its own record no longer makes.
+            by_id[id(task)].update({key: narrative.get(key, "") for key in NARRATIVE_KEYS})
             if narrative:
-                by_id[id(task)].update(narrative)
                 found += 1
             self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
 
         self._log(
             f"Read instructions for {len(candidates)} task(s); {found} carried a failure narrative."
+            + (f" {errors} could not be read." if errors else "")
             + (f" {remaining} more still to do." if remaining else "")
         )
         return {
             "instructions_fetched": len(candidates),
             "instructions_found": found,
+            "instructions_failed": errors,
             "instructions_remaining": remaining,
         }
 
-    def _instructions_read_at(self) -> dict[str, float]:
-        """When each stored task last had its instructions read.
+    def _instructions_read_state(self) -> tuple[dict[str, float], set[str]]:
+        """When each stored task was last read, and which reads failed.
 
-        Rows imported before this field existed are absent and so are read once.
+        Rows imported before these fields existed are absent and so are read once.
         """
 
         read_at: dict[str, float] = {}
+        errored: set[str] = set()
         try:
             for task_key, payload in self.raw_repo.iter_task_payloads():
                 stamp = _coerce_number(payload.get(INSTRUCTIONS_READ_AT))
-                if stamp is not None:
-                    read_at[task_key] = stamp
-                elif len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
-                    # Imported by a build that stored answers without stamping
-                    # the attempt. A full narrative is proof enough that it was
-                    # read, so it is not worth paying to read again.
-                    read_at[task_key] = float("inf")
+                if stamp is None and len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
+                    # Stored by a build that kept answers without stamping the
+                    # attempt. A full narrative is proof enough that it was read,
+                    # so treat it as read when the task was last touched -- not as
+                    # read forever, which no later edit could ever exceed and
+                    # which would freeze those answers even after Limble's change.
+                    stamp = float(task_touched_at(payload))
+                if stamp is None:
+                    continue
+                read_at[task_key] = stamp
+                if str(payload.get(INSTRUCTIONS_READ_ERROR) or "").strip():
+                    errored.add(task_key)
         except Exception as exc:  # noqa: BLE001 - a database without the table yet
             self._log(f"Could not check which tasks have been read ({exc}); considering all candidates.")
-            return {}
-        return read_at
+            return {}, set()
+        return read_at, errored
 
     @staticmethod
     def _needs_reading(task: dict[str, Any], read_at: dict[str, float]) -> bool:

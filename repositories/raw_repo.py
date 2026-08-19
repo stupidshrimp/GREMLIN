@@ -27,6 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from services.wo_narrative import NARRATIVE_KEYS
+
+# Set by the instructions phase when a read failed, so a later run can tell a task
+# it could not read from one it read and found nothing in. Defined here rather
+# than imported from services.ingestion_service, which imports this module.
+INSTRUCTIONS_READ_ERROR = "instructions_read_error"
+
 DB_WRITE_TIMEOUT_SECONDS = 30
 
 # How often ``upsert_records`` reports progress, in records. Small enough that a
@@ -480,6 +487,13 @@ _SOURCE_DATE_KEYS = frozenset(_SOURCE_DATE_DERIVED_FIELDS)
 # the new raw seconds value as already-normalised minutes (a 60x inflation).
 _DOWNTIME_PROVENANCE_FIELDS = ("downtime_source_value", "downtime_source_unit")
 
+# Fields whose emptiness is a fact rather than an omission. The rule below exists
+# because a narrow /tasks refresh omits most of a row and must not blank it -- but
+# these are written by a reader that saw the whole answer, so an empty one means
+# the box was cleared in Limble, and keeping the old text would leave a work order
+# displaying failure evidence its own record no longer claims.
+_FIELDS_AN_EMPTY_VALUE_CLEARS = frozenset(NARRATIVE_KEYS) | {INSTRUCTIONS_READ_ERROR}
+
 
 def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     """Merge an incoming Limble payload onto an existing row without dropping data.
@@ -511,7 +525,12 @@ def _merge_preserved_fields(existing: dict[str, Any] | None, incoming: dict[str,
         # date keys are exempt: a refresh that clears a date to None/""/0 must be
         # able to clear the stored source so it stays consistent with the derived
         # date cleanup below (otherwise a stale source timestamp lingers).
-        if value in (None, "") and existing.get(key) not in (None, "") and key not in _SOURCE_DATE_KEYS:
+        if (
+            value in (None, "")
+            and existing.get(key) not in (None, "")
+            and key not in _SOURCE_DATE_KEYS
+            and key not in _FIELDS_AN_EMPTY_VALUE_CLEARS
+        ):
             continue
         merged[key] = value
     # Derived date fields must follow their source. Whenever a refresh carries a
