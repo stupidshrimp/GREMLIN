@@ -250,11 +250,9 @@ class IngestionService:
         The boxes the maintenance teams fill out -- Area Affected, Condition,
         Cause, Action -- are task *instructions*, and Limble serves those only as
         a per-task sub-resource. One request per task at the client's rate limit
-        makes a full history impossible to walk in one run, so this is selective
-        on three counts:
+        makes a whole history impossible to walk in one run, so a run is bounded
+        and selective:
 
-        * **Off unless asked for.** A sync that does not need the narrative
-          should not pay for it.
         * **Completed tasks only.** The boxes are the closing write-up; a task
           still open has nothing in them.
         * **Only what has not been read.** Selection turns on whether the task
@@ -262,9 +260,16 @@ class IngestionService:
           completed work orders legitimately have their boxes blank, and
           selecting on the answer would leave those candidates forever at the
           head of a newest-first queue, so every capped run would re-read the
-          same few and never reach the rest. A task edited since it was read is
-          asked about again, because boxes left blank at closing can be filled in
-          later.
+          same few and never reach the rest.
+        * **Except when there is reason to ask again.** A task edited since it
+          was read, because boxes left blank at closing can be filled in later;
+          and a read that *failed*, once RETRY_A_FAILED_READ_AFTER has passed,
+          because the stamp that stops a dead task blocking the queue would
+          otherwise let one outage cost those work orders their narrative for
+          good.
+
+        It is on by default: the cost is the first walk through the history, not
+        the nightly run, because a task records that it was read.
 
         Only the four answers are kept, written onto the task as ordinary
         top-level fields. The instruction list itself runs to kilobytes of
@@ -290,17 +295,14 @@ class IngestionService:
             and task.get("dateCompleted") not in (None, "", 0, "0")
             and self._needs_reading(task, read_at, errored, now)
         ]
-        # Most recently completed first, because a capped run has to choose and
-        # this is the choice worth making twice over: the boxes only exist on
-        # work orders closed since the template started asking for them, so
-        # recent tasks are the ones that have anything to read, and they are also
-        # the ones an analysis is looking at. Taking them in arrival order would
-        # spend a whole run on history that predates the template and return
-        # nothing.
-        # Never tried first, then the ones a previous run could not read, each
-        # newest-completed first. A task that always fails -- deleted, or invisible
-        # to this key -- then costs the tail of a run rather than its head, so it
-        # can never be what stops the backfill reaching older history.
+        # Never tried first, then the ones due a retry, each newest-completed
+        # first. Two choices in one sort, and a capped run turns on both. Newest
+        # first because the boxes only exist on work orders closed since the
+        # template began asking for them, so recent tasks are both the ones with
+        # anything to read and the ones an analysis is looking at -- arrival
+        # order would spend a whole run on history that predates the template.
+        # Retries last because a task that always fails, deleted or invisible to
+        # this key, must cost the tail of a run rather than its head.
         candidates.sort(key=lambda task: (self._task_key(task) in errored, -self._completed_at(task)))
         limit = self.instructions_limit
         capped = len(candidates)
