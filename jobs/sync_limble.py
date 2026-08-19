@@ -107,7 +107,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", help="Limble API base URL (default https://api.limblecmms.com/v2).")
     parser.add_argument(
         "--since",
-        help="Only import tasks touched on/after this date (YYYY-MM-DD), ISO datetime, or Unix timestamp.",
+        help=(
+            "Only import tasks touched on/after this date (YYYY-MM-DD), ISO datetime, or "
+            "Unix timestamp. Note this narrows what is *imported*, not what is fetched: "
+            "/tasks has no server-side date filter, so the whole history is pulled and "
+            "then filtered here. It does not make the fetch shorter."
+        ),
     )
     parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
     parser.add_argument("--no-assets", action="store_true", help="Skip the /assets fetch used for name/hierarchy enrichment.")
@@ -122,8 +127,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Also read each completed task's instructions to capture the Area Affected / "
-            "Condition / Cause / Action boxes. Costs one API request per task, so pair it "
-            "with --since or --instructions-limit on a large history."
+            "Condition / Cause / Action boxes. Costs one API request per task on top of the "
+            "usual pull, so bound the first run with --instructions-limit; each run picks up "
+            "where the last stopped. Use tools/probe_instructions.py to check one task first."
         ),
     )
     parser.add_argument(
@@ -161,6 +167,7 @@ def run(args: argparse.Namespace) -> dict:
         exclude_templates=not args.include_templates,
         fetch_instructions=args.instructions,
         instructions_limit=args.instructions_limit,
+        progress=_print_progress,
     )
 
     print(f"Database: {db_path}")
@@ -187,6 +194,31 @@ def run(args: argparse.Namespace) -> dict:
             counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
         )
     return summary
+
+
+# How often the fetch phases say something. Limble's list endpoints are paged at
+# 200 and spaced a second apart, so a full task pull is thousands of seconds of
+# silence otherwise -- long enough to look hung and be killed halfway.
+_PROGRESS_EVERY = 1000
+_last_reported: dict[str, int] = {}
+
+
+def _print_progress(phase: str, current: int | None, total: int | None) -> None:
+    """Narrate a long phase, sparsely enough not to bury the summary."""
+
+    if current is None:
+        return
+    previous = _last_reported.get(phase, 0)
+    finished = total is not None and current >= total
+    if not finished and current - previous < _PROGRESS_EVERY:
+        return
+    _last_reported[phase] = current
+    if total:
+        print(f"  {phase}: {current} of {total}", flush=True)
+    else:
+        # The list endpoints do not report a total, so say what is known rather
+        # than inventing a denominator.
+        print(f"  {phase}: {current} so far ...", flush=True)
 
 
 def _options_for(args: argparse.Namespace) -> SyncOptions:
