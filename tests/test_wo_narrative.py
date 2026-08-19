@@ -446,3 +446,116 @@ class InstructionFetchTests(unittest.TestCase):
             {"taskID": 3, "dateCompleted": 1_770_000_000_000},  # newest, in ms
         ])
         self.assertEqual(client.asked, ["1", "3"])
+
+
+class EndToEndTests(unittest.TestCase):
+    """A real sync, from the API payload to what the disposition table reads.
+
+    Everything between is exercised for real: the instructions fetch, the
+    distillation onto the task, the raw upsert, the mapping into
+    mapped_cmms_record, and the query the disposition page runs. Only the browser
+    is absent -- the JS renders whatever these rows carry.
+    """
+
+    class _Client:
+        """A Limble client serving one completed corrective work order."""
+
+        TASK = {
+            "taskID": 239728,
+            "assetID": 2288,
+            "Asset Number": "2288",
+            "type": "6",
+            "name": "Worn magazine timing belt /WIP5F6",
+            "status": "Completed",
+            "dateCompleted": 1753000000,
+            "createdDate": 1750000000,
+            "downtime": 108900,
+            "completionNotes": "Replaced timing belt. RTS.",
+        }
+
+        # The live shape, keys exactly as GET /tasks/{id}/instructions returns
+        # them, with the four boxes at the end of the safety checklist.
+        INSTRUCTIONS = [
+            {"instruction": "Does this job require LOTO?", "response": "No", "type": "option list",
+             "instructionID": 6, "parentInstructionID": 2, "options": [], "instructionFiles": []},
+            {"instruction": "Complete work to solve problem", "response": "1", "type": "checkbox",
+             "instructionID": 3, "parentInstructionID": 0, "options": [], "instructionFiles": []},
+            {"instruction": "Affected area", "response": "Timing belt", "type": "text box",
+             "instructionID": 48, "parentInstructionID": 47, "options": [], "instructionFiles": []},
+            {"instruction": "Condition", "response": "Worn", "type": "text box",
+             "instructionID": 49, "parentInstructionID": 47, "options": [], "instructionFiles": []},
+            {"instruction": "Cause", "response": "Aging", "type": "text box",
+             "instructionID": 50, "parentInstructionID": 47, "options": [], "instructionFiles": []},
+            {"instruction": "Action", "response": "<div>Replaced timing belt.</div>", "type": "text box",
+             "instructionID": 51, "parentInstructionID": 47, "options": [], "instructionFiles": []},
+        ]
+
+        def get_tasks(self, updated_since=None, *, on_page=None):
+            return [dict(self.TASK)]
+
+        def get_assets(self, *, on_page=None):
+            return [{"assetID": 2288, "name": "Mazak CNC Horizontal Machining Center"}]
+
+        def get_task_instructions(self, task_id):
+            return [dict(item) for item in self.INSTRUCTIONS]
+
+    def test_a_sync_puts_the_narrative_where_the_disposition_table_reads_it(self):
+        from repositories.raw_repo import RawRepository
+        from services.ingestion_service import IngestionService
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "gremlin.db"
+        LifeDataService(db_path, refresh_on_startup=False)  # build the schema
+
+        summary = IngestionService(
+            limble_client=self._Client(),
+            raw_repo=RawRepository(db_path),
+            fetch_instructions=True,
+            log=lambda _message: None,
+        ).sync_all()
+
+        self.assertEqual(summary["instructions_fetched"], 1)
+        self.assertEqual(summary["instructions_found"], 1)
+
+        # The stored payload carries the four answers, not the 6-item checklist.
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            stored = json.loads(conn.execute("SELECT raw_json FROM raw_cmms_record").fetchone()["raw_json"])
+        self.assertEqual(stored["cause"], "Aging")
+        self.assertNotIn("instructions", stored)
+
+        # And the disposition page's own query returns them, markup stripped.
+        rows = LifeDataService(db_path, refresh_on_startup=False).disposition_rows("2288", "wo")
+        self.assertEqual(len(rows), 1, "the work order should be eligible for WO disposition")
+        row = rows[0]
+        self.assertEqual(row["area_affected"], "Timing belt")
+        self.assertEqual(row["condition_found"], "Worn")
+        self.assertEqual(row["cause"], "Aging")
+        self.assertEqual(row["action_taken"], "Replaced timing belt.")
+
+    def test_a_second_sync_does_not_pay_to_read_the_same_task_again(self):
+        from repositories.raw_repo import RawRepository
+        from services.ingestion_service import IngestionService
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "gremlin.db"
+        LifeDataService(db_path, refresh_on_startup=False)
+
+        client = self._Client()
+        asked: list = []
+        original = client.get_task_instructions
+        client.get_task_instructions = lambda task_id: (asked.append(task_id), original(task_id))[1]
+
+        for _ in range(2):
+            IngestionService(
+                limble_client=client,
+                raw_repo=RawRepository(db_path),
+                fetch_instructions=True,
+                log=lambda _message: None,
+            ).sync_all()
+
+        self.assertEqual(len(asked), 1, "the second sync should skip a task already answered")
+        rows = LifeDataService(db_path, refresh_on_startup=False).disposition_rows("2288", "wo")
+        self.assertEqual(rows[0]["cause"], "Aging", "a re-sync must not blank what it did not re-fetch")
