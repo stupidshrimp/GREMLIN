@@ -432,3 +432,17 @@ class InstructionFetchTests(unittest.TestCase):
         )
         self.assertEqual(service._attach_instructions([{"taskID": 1, "dateCompleted": 1}]), {})
         self.assertEqual(client.asked, [])
+
+    def test_a_capped_run_takes_the_most_recently_completed_first(self):
+        # The boxes only exist on work orders closed since the template started
+        # asking for them, so a capped run that took tasks in arrival order would
+        # spend itself on history that predates the change and return nothing.
+        client = self._StubClient({str(i): self._acca(str(i)) for i in range(4)})
+        service = self._service(client, self._StubRepo([]), instructions_limit=2)
+        service._attach_instructions([
+            {"taskID": 0, "dateCompleted": 1_700_000_000},   # oldest
+            {"taskID": 1, "dateCompleted": 1_780_000_000},   # newest
+            {"taskID": 2, "dateCompleted": 1_750_000_000},
+            {"taskID": 3, "dateCompleted": 1_770_000_000_000},  # newest, in ms
+        ])
+        self.assertEqual(client.asked, ["1", "3"])

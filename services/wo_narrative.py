@@ -95,15 +95,22 @@ _PREFERRED_CONTAINER_KEYS = (
 )
 
 # On an object that carries the prompt and the answer as two separate keys, the
-# prompt is read from the first of these present. ``instructionText`` leads
-# because it is what Limble task instructions actually use -- the box's prompt is
-# ``instructionText`` and the tech's answer is ``response``:
+# prompt is read from the first of these present. The instruction spellings lead
+# because Limble uses two of them for the same thing, and the difference is not
+# academic -- a task export from the site and the API disagree:
 #
-#     {"instructionText": "Affected area", "response": "Building 2A PMG",
-#      "type": "text box", "order": "1", "instructionID": "48", ...}
+#   site export:  {"instructionText": "Affected area", "response": "...",
+#                  "type": "text box", "order": "1", "parentID": "47", ...}
+#   GET /tasks/{id}/instructions:
+#                 {"instruction": "Affected area", "response": "...",
+#                  "type": "text box", "parentInstructionID": "47",
+#                  "instructionFiles": [], "options": [], ...}
+#
+# Both are confirmed against this account, so both are read. ``response`` carries
+# the answer either way.
 _LABEL_KEYS = (
-    "instructionText", "instruction_text", "name", "label", "title",
-    "fieldName", "field_name", "field", "question", "prompt", "instruction",
+    "instruction", "instructionText", "instruction_text", "name", "label",
+    "title", "fieldName", "field_name", "field", "question", "prompt",
     "description", "text",
 )
 

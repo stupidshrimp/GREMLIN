@@ -256,6 +256,14 @@ class IngestionService:
             and self._task_key(task) not in already_complete
             and task.get("dateCompleted") not in (None, "", 0, "0")
         ]
+        # Most recently completed first, because a capped run has to choose and
+        # this is the choice worth making twice over: the boxes only exist on
+        # work orders closed since the template started asking for them, so
+        # recent tasks are the ones that have anything to read, and they are also
+        # the ones an analysis is looking at. Taking them in arrival order would
+        # spend a whole run on history that predates the template and return
+        # nothing.
+        candidates.sort(key=self._completed_at, reverse=True)
         limit = self.instructions_limit
         capped = len(candidates)
         if limit is not None and limit >= 0:
@@ -306,6 +314,17 @@ class IngestionService:
             self._log(f"Could not check which tasks already have a narrative ({exc}); fetching all candidates.")
             return set()
         return complete
+
+    @staticmethod
+    def _completed_at(task: dict[str, Any]) -> float:
+        """When this task was completed, as a sortable number (0 when unknown)."""
+
+        number = _coerce_number(task.get("dateCompleted"))
+        if number is None or number <= 0:
+            return 0.0
+        # Millisecond timestamps sort above second ones otherwise, putting a
+        # handful of oddly-stored rows in front of everything real.
+        return number / 1000.0 if number > 10_000_000_000 else number
 
     @staticmethod
     def _task_key(task: dict[str, Any]) -> str | None:
