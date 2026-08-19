@@ -854,10 +854,6 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 .availability-detail-flag.is-overlap { background: rgba(214, 167, 0, 0.22); color: #8a6d00; }
 .availability-detail-flag.is-linked { background: rgba(47, 143, 91, 0.14); color: var(--forest-900); }
 .availability-detail-quiet { color: var(--muted); }
-/* One captioned line per Limble narrative box, stacked in a single cell. */
-.availability-narrative-line { margin: 0 0 0.35rem; line-height: 1.35; overflow-wrap: anywhere; }
-.availability-narrative-line:last-child { margin-bottom: 0; }
-.availability-narrative-line .availability-detail-sub { display: block; }
 
 /* The work-order count doubles as the link into the records behind a row, so it
    still has to read as the number it is -- underlined rather than boxed, and

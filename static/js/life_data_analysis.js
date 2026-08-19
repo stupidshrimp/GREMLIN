@@ -133,63 +133,6 @@
     return node;
   }
 
-  // The four structured text boxes the maintenance teams fill out on a Limble
-  // work order, in the order they read: where it happened, what was seen, why,
-  // and what was done about it. Mirrors NARRATIVE_FIELDS in
-  // services/wo_narrative.py -- keep the two in step.
-  const NARRATIVE_FIELDS = [
-    { key: "area_affected", label: "Area Affected" },
-    { key: "condition_found", label: "Condition" },
-    { key: "cause", label: "Cause" },
-    { key: "action_taken", label: "Action" },
-  ];
-
-  // Whichever of the four boxes this record actually filled in, captioned and in
-  // order. `prefix` names the key prefix the caller's rows use (the Weibull
-  // observation rows carry them as source_*), and `fields` lets the disposition
-  // table pass the server's own labels instead of the constant above.
-  function narrativeLines(row, prefix, fields) {
-    return (fields || NARRATIVE_FIELDS)
-      .map((field) => ({ label: field.label, text: row[(prefix || "") + field.key] }))
-      .filter((line) => line.text != null && String(line.text).trim() !== "")
-      .map((line) => ({ label: line.label, text: String(line.text).trim() }));
-  }
-
-  // One cell holding the whole failure narrative, stacked. Four separate columns
-  // would have cost ~900px of horizontal scrolling on tables that are already
-  // wide, and the four boxes read as one story anyway.
-  //
-  // The plain-text form goes on data-column-text so the column header's sort and
-  // filter tools read something sensible rather than the run-together
-  // concatenation of the labels and values.
-  function narrativeCell(row, options) {
-    const settings = options || {};
-    const lines = narrativeLines(row, settings.prefix, settings.fields);
-    const cls = ["lda-narrative-cell", settings.cls || null].filter(Boolean).join(" ");
-    if (!lines.length) {
-      return el("td", { class: cls, "data-column-text": "" }, [
-        el("span", { class: "lda-narrative-empty", text: settings.emptyText || "—" }),
-      ]);
-    }
-    return el(
-      "td",
-      { class: cls, "data-column-text": narrativeText(row, settings.prefix, settings.fields) },
-      lines.map((line) =>
-        el("p", { class: "lda-narrative-line" }, [
-          el("span", { class: "lda-narrative-label", text: line.label }),
-          el("span", { class: "lda-narrative-text", text: line.text }),
-        ])
-      )
-    );
-  }
-
-  // The same narrative on one line, for tooltips, sorting and filtering.
-  function narrativeText(row, prefix, fields) {
-    return narrativeLines(row, prefix, fields)
-      .map((line) => `${line.label}: ${line.text}`)
-      .join(" · ");
-  }
-
   function fmt(value, sig) {
     const num = Number(value);
     if (!isFinite(num)) return "—";
@@ -1415,7 +1358,7 @@
         hint.textContent = "The specific work orders that populate the months plotted above. Click a month/data point to drill in.";
       }
     }
-    const headers = ["WO #", "WO Title", "Month", "Downtime (h)", "Request Description", "Completion Notes", "Failure Narrative"];
+    const headers = ["WO #", "WO Title", "Month", "Downtime (h)", "Request Description", "Completion Notes"];
     const table = el("table", { class: "lda-table" });
     table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
     const tbody = el("tbody");
@@ -1441,7 +1384,6 @@
             el("td", { text: record.downtime_hours != null ? fmtFixed(record.downtime_hours) : "" }),
             el("td", { class: "lda-wo-text", text: record.requestor_description || "" }),
             el("td", { class: "lda-wo-text", text: record.completion_notes || "" }),
-            narrativeCell(record),
           ])
         );
       });
@@ -2169,12 +2111,8 @@
 
     const rowStates = [];
     const table = el("table", { class: "lda-table" });
-    // The narrative reports what the maintenance team recorded, so it belongs with
-    // the other read-only source columns rather than among the editable ones.
-    const narrativeFields = data.narrative_columns || NARRATIVE_FIELDS;
-    const readOnlyHeaders = data.display_columns.concat(["Failure Narrative"]);
     const thead = el("thead", {}, [
-      el("tr", {}, readOnlyHeaders.concat(extraHeaders).map((h) =>
+      el("tr", {}, data.display_columns.concat(extraHeaders).map((h) =>
         el("th", { class: h === "name" ? "lda-col-name" : null, text: h })
       )),
     ]);
@@ -2186,16 +2124,6 @@
         const cls = key === "name" ? "lda-readonly lda-col-name" : "lda-readonly";
         tr.appendChild(el("td", { class: cls, text: row[key] == null ? "" : String(row[key]) }));
       });
-      tr.appendChild(
-        narrativeCell(row, {
-          fields: narrativeFields,
-          cls: "lda-readonly",
-          // Work orders completed before the Limble template asked for these
-          // boxes have nothing to show, and saying so beats an empty cell that
-          // looks like a rendering fault.
-          emptyText: "Not recorded",
-        })
-      );
 
       const notes = el("textarea", { class: "lda-textarea" });
       notes.value = row.disposition_notes || row.disposition_text || "";
@@ -2272,7 +2200,7 @@
     });
 
     if (!data.rows.length) {
-      const colCount = readOnlyHeaders.length + extraHeaders.length;
+      const colCount = data.display_columns.length + extraHeaders.length;
       const emptyText = data.search
         ? `No rows match "${data.search}". Clear or change the search to see more.`
         : "No eligible rows for this selection.";
@@ -2998,7 +2926,7 @@
           ? downtimeEmptyText()
           : "The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).";
     }
-    const headers = ["Date", "Asset", "Location", "Failure Mechanism", "Downtime (h)", "Operator", "WO #", "Description", "Failure Narrative"];
+    const headers = ["Date", "Asset", "Location", "Failure Mechanism", "Downtime (h)", "Operator", "WO #", "Description"];
     const table = el("table", { class: "lda-table" });
     table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
     const tbody = el("tbody");
@@ -3027,7 +2955,6 @@
             el("td", { text: ev.operator || "—" }),
             el("td", { text: ev.task_id != null ? String(ev.task_id) : "—" }),
             el("td", { class: "lda-wo-text", text: description }),
-            narrativeCell(ev),
           ])
         );
       });
@@ -3629,12 +3556,6 @@
       { label: "End/Cutoff Datetime", get: (obs) => obs.end_datetime || obs.analysis_cutoff_datetime || "" },
       { label: "Request Description", cls: "lda-data-text", get: (obs) => obs.source_request_description || "" },
       { label: "Completion Notes", cls: "lda-data-text", get: (obs) => obs.source_completion_notes || "" },
-      {
-        label: "Failure Narrative",
-        cls: "lda-data-text",
-        get: (obs) => narrativeText(obs, "source_"),
-        node: (obs) => narrativeCell(obs, { prefix: "source_", cls: "lda-data-text" }),
-      },
       { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
     ];
     const table = el("table", { class: "lda-data" });
@@ -3645,9 +3566,7 @@
     const rowByObs = new Map();
     const activate = typeof onRowActivate === "function" ? onRowActivate : null;
     (result.observations || []).forEach((obs) => {
-      const tr = el("tr", {}, columns.map((c) =>
-        c.node ? c.node(obs) : el("td", { text: c.get(obs), class: c.cls || null })
-      ));
+      const tr = el("tr", {}, columns.map((c) => el("td", { text: c.get(obs), class: c.cls || null })));
       if (activate) {
         tr.classList.add("is-clickable");
         tr.title = "Show this observation on the graphs above";
@@ -4304,9 +4223,6 @@
   // disposition editor sorts/filters by the chosen value rather than empty markup.
   function columnCellText(td) {
     if (!td) return "";
-    // A cell whose rendered markup does not read back as plain text (the stacked
-    // failure narrative) states its own sortable/filterable form.
-    if (td.dataset && td.dataset.columnText !== undefined) return td.dataset.columnText;
     const select = td.querySelector("select");
     if (select) {
       const opt = select.options[select.selectedIndex];
@@ -4533,7 +4449,6 @@
       ["End / cutoff", obs.end_datetime || obs.analysis_cutoff_datetime || "—"],
       ["Request", truncate(obs.source_request_description, 220) || "—"],
       ["Completion notes", truncate(obs.source_completion_notes, 220) || "—"],
-      ["Failure narrative", truncate(narrativeText(obs, "source_"), 260) || "—"],
     ];
     fields.forEach(([label, value]) => {
       tip.appendChild(
