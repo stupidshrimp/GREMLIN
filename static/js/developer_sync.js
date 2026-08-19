@@ -36,7 +36,10 @@
     ["import_batch_id", "Import batch"],
   ];
 
-  const SYNC_INPUT_IDS = ["dev-sync-since", "dev-sync-dry-run", "dev-sync-no-assets"];
+  const SYNC_INPUT_IDS = [
+    "dev-sync-since", "dev-sync-dry-run", "dev-sync-no-assets",
+    "dev-sync-instructions", "dev-sync-instructions-limit",
+  ];
 
   // `payload` is the last /developer/api/sync response; `polledAt` is when it
   // arrived, so the clock can advance past it between polls.
@@ -101,6 +104,12 @@
     const body = {
       dry_run: $("dev-sync-dry-run").checked,
       no_assets: $("dev-sync-no-assets").checked,
+      fetch_instructions: $("dev-sync-instructions").checked,
+      // Sent only when the phase is on, so a number left in the box from a
+      // previous run cannot cap a sync that is not reading instructions at all.
+      instructions_limit: $("dev-sync-instructions").checked
+        ? ($("dev-sync-instructions-limit").value || "").trim() || null
+        : null,
       since: since || null,
     };
     // Invalidate any status GET already in flight before starting the job. Its
@@ -418,6 +427,14 @@
     $("dev-sync-dry-run").addEventListener("change", () => {
       if (state.payload) renderSync();
     });
+    // The cap only means anything while the phase is on, so it appears with it
+    // rather than sitting there inviting a number that would be ignored.
+    const instructions = $("dev-sync-instructions");
+    const showInstructionsLimit = () => {
+      $("dev-sync-instructions-field").hidden = !instructions.checked;
+    };
+    instructions.addEventListener("change", showInstructionsLimit);
+    showInstructionsLimit();
     document.addEventListener("visibilitychange", function () {
       if (document.hidden) {
         stopSyncTimers();

@@ -48,6 +48,17 @@
         <span class="dev-field-legend">Options</span>
         <label class="dev-check"><input type="checkbox" id="dev-sync-dry-run"> Dry run — fetch and transform, write nothing</label>
         <label class="dev-check"><input type="checkbox" id="dev-sync-no-assets"> Skip asset enrichment</label>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-instructions"> Read failure narrative (Area Affected / Condition / Cause / Action)</label>
+      </div>
+      <div class="dev-field" id="dev-sync-instructions-field" hidden>
+        <label for="dev-sync-instructions-limit">Stop after this many work orders</label>
+        <input type="number" id="dev-sync-instructions-limit" min="0" step="50" value="500" autocomplete="off">
+        <p class="dev-muted">
+          Those four boxes live in each work order's instructions, which Limble serves one
+          task at a time — so this costs a request per work order on top of the usual pull,
+          about a second each. It reads the most recently completed first and remembers
+          what it has read, so run it again to continue rather than start over.
+        </p>
       </div>
       <div class="dev-field dev-field-actions">
         <!-- Disabled until the first status response says otherwise. Whether a
