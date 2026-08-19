@@ -241,9 +241,14 @@ class IngestionService:
           should not pay for it.
         * **Completed tasks only.** The boxes are the closing write-up; a task
           still open has nothing in them.
-        * **Only what is missing.** A task whose stored payload already carries
-          all four is skipped, so re-syncs cost nothing and a capped backfill
-          resumes where the last one stopped instead of starting over.
+        * **Only what has not been read.** Selection turns on whether the task
+          was asked about, not on whether the asking found anything -- plenty of
+          completed work orders legitimately have their boxes blank, and
+          selecting on the answer would leave those candidates forever at the
+          head of a newest-first queue, so every capped run would re-read the
+          same few and never reach the rest. A task edited since it was read is
+          asked about again, because boxes left blank at closing can be filled in
+          later.
 
         Only the four answers are kept, written onto the task as ordinary
         top-level fields. The instruction list itself runs to kilobytes of
