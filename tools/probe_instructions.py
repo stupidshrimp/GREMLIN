@@ -1,10 +1,12 @@
 """Ask Limble for one task's instructions and show what GREMLIN makes of them.
 
 The Area Affected / Condition / Cause / Action boxes live in a task's
-instructions, and the shape those come back in is the whole question: GREMLIN
-reads the prompt from ``instructionText`` and the answer from ``response``,
-which is what a task export from the Limble site shows, but an export is not the
-API. This answers it directly, in one request, without a sync.
+instructions, and the shape those come back in is the whole question. A task
+export from the Limble site names the prompt ``instructionText``; the API names
+it ``instruction``. GREMLIN reads both, and the answer from ``response`` either
+way -- but an export is not the API, and the first attempt at this feature
+shipped believing it was. This asks the API directly, in one request, without a
+sync.
 
 Usage::
 
