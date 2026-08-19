@@ -23,6 +23,8 @@ from typing import Any, Iterable, Iterator
 from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
+from services.wo_narrative import NARRATIVE_FIELDS, NARRATIVE_KEYS, extract_narrative
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 WEEKDAY_24H_ASSET_NUMBERS = {"3101", "3102", "3103", "3104", "3105", "3106", "3107", "3154", "3142", "3023", "3253"}
@@ -57,6 +59,10 @@ _WEIBULL_OBSERVATION_SELECT = """
            m.task_name AS source_work_title,
            m.requestor_description AS source_request_description,
            m.completion_notes AS source_completion_notes,
+           m.area_affected AS source_area_affected,
+           m.condition_found AS source_condition_found,
+           m.cause AS source_cause,
+           m.action_taken AS source_action_taken,
            CASE
                WHEN m.downtime_hours IS NULL THEN NULL
                WHEN m.downtime_hours < 0 THEN 0
@@ -190,8 +196,10 @@ _DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours":
 
 # Version stamp on every mapped row. Bump it whenever _map_raw_record's output
 # changes so already-mapped rows are re-derived from stored raw JSON on the next
-# service construction (see _mapped_records_need_remap). v2 == downtime seconds fix.
-_MAPPING_VERSION = "v2"
+# service construction (see _mapped_records_need_remap). v2 == downtime seconds fix;
+# v3 == the Area Affected / Condition / Cause / Action narrative boxes, which have to
+# be re-read out of raw JSON for every row imported before they were mapped.
+_MAPPING_VERSION = "v3"
 
 DISPLAY_COLUMNS = (
     "name",
@@ -204,7 +212,15 @@ DISPLAY_COLUMNS = (
     "requestorDescription",
 )
 
-EXCEL_BASE_COLUMNS = ("mapped_record_id",) + DISPLAY_COLUMNS
+# The four structured text boxes the maintenance teams fill out on a work order,
+# as the screens address them. They are carried separately from DISPLAY_COLUMNS
+# because the two are consumed differently: the tables render these four as one
+# stacked "Failure Narrative" cell (four more columns on an already-wide
+# disposition table costs about 900px of horizontal scrolling), while Excel keeps
+# them as four columns of their own so each can be sorted and filtered.
+NARRATIVE_COLUMNS = tuple({"key": field.key, "label": field.label} for field in NARRATIVE_FIELDS)
+
+EXCEL_BASE_COLUMNS = ("mapped_record_id",) + DISPLAY_COLUMNS + NARRATIVE_KEYS
 EXCEL_COMMON_DISPOSITION_COLUMNS = (
     "disposition_notes",
     "disposition_category",
@@ -424,6 +440,10 @@ class LifeDataService:
                     requestor_description TEXT,
                     request_title TEXT,
                     description_raw TEXT,
+                    area_affected TEXT,
+                    condition_found TEXT,
+                    cause TEXT,
+                    action_taken TEXT,
                     custom_tags_json TEXT,
                     po_ids_json TEXT,
                     downtime_raw TEXT,
@@ -864,6 +884,14 @@ class LifeDataService:
                 "downtime_minutes": "REAL",
                 "downtime_hours": "REAL",
                 "downtime_backfill_attempted": "INTEGER NOT NULL DEFAULT 0",
+                # The four work-order narrative boxes. Existing rows land NULL and
+                # are filled by the remap the mapping_version bump below forces,
+                # which re-reads them out of raw JSON -- so a database synced before
+                # the Limble template change picks them up without a fresh pull.
+                "area_affected": "TEXT",
+                "condition_found": "TEXT",
+                "cause": "TEXT",
+                "action_taken": "TEXT",
                 # Databases predating this column get 'v1' on every existing row,
                 # so the startup remap gate (_mapped_records_need_remap) treats
                 # them as stale and re-derives them under the current mapper.
@@ -1098,6 +1126,9 @@ class LifeDataService:
         created_date_final = self._get_alias(raw, "createdDate_Final", "createdDateFinal")
         start_date_final = self._get_alias(raw, "startDate_Final", "startDateFinal")
         type_raw = self._get_alias(raw, "type")
+        # The Area Affected / Condition / Cause / Action boxes, wherever this
+        # payload happens to carry them (see services.wo_narrative).
+        narrative = extract_narrative(raw)
         downtime_raw, downtime_minutes = self._downtime_from_raw(raw)
         auto_class, is_pm, is_wo, reason = self._classify_record(type_raw, task_name, request_title, requestor_description, completion_notes, raw)
         status_text = str(self._get_alias(raw, "status", "statusID") or "").lower()
@@ -1134,6 +1165,7 @@ class LifeDataService:
             "requestor_description": requestor_description,
             "request_title": request_title,
             "description_raw": self._get_alias(raw, "description"),
+            **{key: narrative.get(key) for key in NARRATIVE_KEYS},
             "custom_tags_json": self._json_text(self._get_alias(raw, "customTags")),
             "po_ids_json": self._json_text(self._get_alias(raw, "poIDs")),
             "downtime_raw": downtime_raw,
@@ -1709,6 +1741,10 @@ class LifeDataService:
                     m.task_name,
                     m.requestor_description,
                     m.completion_notes,
+                    m.area_affected,
+                    m.condition_found,
+                    m.cause,
+                    m.action_taken,
                     -- NULLIF(TRIM(...), '') so a blank (empty/whitespace) completed
                     -- date doesn't stop COALESCE and hide a record that has a usable
                     -- start/created date — otherwise it would count in the totals but
@@ -1763,6 +1799,7 @@ class LifeDataService:
                     "task_name": row["task_name"],
                     "requestor_description": row["requestor_description"],
                     "completion_notes": row["completion_notes"],
+                    **{key: row[key] for key in NARRATIVE_KEYS},
                     "downtime_hours": round(float(row["downtime_hours"] or 0.0), 4),
                     "month": month_key,
                     "wo_date": parsed.date().isoformat(),
@@ -2125,6 +2162,10 @@ class LifeDataService:
                     m.requestor_description,
                     m.request_title,
                     m.completion_notes,
+                    m.area_affected,
+                    m.condition_found,
+                    m.cause,
+                    m.action_taken,
                     COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
                     COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
                     COALESCE(
@@ -2206,6 +2247,7 @@ class LifeDataService:
                 "requestor_description": row["requestor_description"],
                 "request_title": row["request_title"],
                 "completion_notes": row["completion_notes"],
+                **{key: row[key] for key in NARRATIVE_KEYS},
                 "wo_date": parsed.date().isoformat() if parsed is not None else None,
                 "month": month_key,
             })
@@ -2646,6 +2688,10 @@ class LifeDataService:
             "m.completion_notes",
             "m.request_title",
             "m.requestor_description",
+            "m.area_affected",
+            "m.condition_found",
+            "m.cause",
+            "m.action_taken",
         )
         per_token = " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in searchable)
         clauses: list[str] = []
@@ -2696,6 +2742,10 @@ class LifeDataService:
                        m.completion_notes AS completionNotes,
                        m.request_title AS requestTitle,
                        m.requestor_description AS requestorDescription,
+                       m.area_affected,
+                       m.condition_found,
+                       m.cause,
+                       m.action_taken,
                        COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto) AS effective_record_class,
                        d.disposition_category,
                        d.pm_reset_inclusion_decision,
@@ -2758,6 +2808,10 @@ class LifeDataService:
                 "pm_reset_renewal_rationale": row.get("pm_reset_renewal_rationale"),
             }
             record.update({key: row.get(key) for key in DISPLAY_COLUMNS})
+            # Read-only in the workbook: import_disposition_excel only reads the
+            # disposition columns, so an edit here is discarded rather than
+            # written back over what the maintenance team recorded in Limble.
+            record.update({key: row.get(key) for key in NARRATIVE_KEYS})
             record.update({
                 "failure_mode_id": row.get("failure_mode_id"),
                 "failure_mechanism_id": row.get("failure_mechanism_id"),

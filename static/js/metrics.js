@@ -1877,7 +1877,52 @@
             : el("span", { class: "availability-detail-quiet", text: "—" }),
         ]),
     },
+    {
+      key: "narrative",
+      label: "Failure narrative",
+      sort: (item) => narrativeText(item.wo),
+      cell: (item) => {
+        const lines = narrativeLines(item.wo);
+        if (!lines.length) {
+          return el("td", { class: "availability-detail-notes" }, [
+            el("span", { class: "availability-detail-quiet", text: "—" }),
+          ]);
+        }
+        return el(
+          "td",
+          { class: "availability-detail-notes" },
+          lines.map((line) =>
+            el("p", { class: "availability-narrative-line" }, [
+              el("span", { class: "availability-detail-sub", text: line.label }),
+              el("span", { text: line.text }),
+            ])
+          )
+        );
+      },
+    },
   ];
+
+  // The four structured text boxes the maintenance teams fill out on a Limble
+  // work order. Mirrors NARRATIVE_FIELDS in services/wo_narrative.py.
+  const NARRATIVE_FIELDS = [
+    { key: "area_affected", label: "Area Affected" },
+    { key: "condition_found", label: "Condition" },
+    { key: "cause", label: "Cause" },
+    { key: "action_taken", label: "Action" },
+  ];
+
+  // Whichever boxes this work order filled in, captioned and in order. Orders
+  // completed before the template asked for them yield nothing.
+  function narrativeLines(wo) {
+    return NARRATIVE_FIELDS
+      .map((field) => ({ label: field.label, text: wo[field.key] }))
+      .filter((line) => line.text != null && String(line.text).trim() !== "")
+      .map((line) => ({ label: line.label, text: String(line.text).trim() }));
+  }
+
+  function narrativeText(wo) {
+    return narrativeLines(wo).map((line) => `${line.label}: ${line.text}`).join(" · ");
+  }
 
   // Which bar the work-order view is showing, falling back through the reasons
   // a reader would have opened it. A stored target is re-checked every render
