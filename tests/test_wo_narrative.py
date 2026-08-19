@@ -9,6 +9,7 @@ from services.life_data_service import (
     EXCEL_WO_DISPOSITION_COLUMNS,
     LifeDataService,
 )
+from services.ingestion_service import INSTRUCTIONS_READ_AT
 from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
 
@@ -431,6 +432,56 @@ class InstructionFetchTests(unittest.TestCase):
             limble_client=client, raw_repo=self._StubRepo([]), log=lambda _m: None
         )
         self.assertEqual(service._attach_instructions([{"taskID": 1, "dateCompleted": 1}]), {})
+        self.assertEqual(client.asked, [])
+
+    def test_a_capped_backfill_advances_instead_of_rereading_its_own_head(self):
+        # Plenty of completed work orders legitimately have no boxes filled in.
+        # Selecting on "has a narrative" meant those were never satisfied, and
+        # since the newest are read first they sat at the head of the queue --
+        # so every capped run spent its whole budget on the same tasks and the
+        # rest of the history was never reached.
+        client = self._StubClient({})  # nothing has a narrative
+        stored: dict[str, dict] = {}
+
+        class Repo:
+            def iter_task_payloads(self):
+                yield from stored.items()
+
+        tasks = [
+            {"taskID": i, "dateCompleted": 1_750_000_000 + i, "lastEdited": 1_750_000_000 + i}
+            for i in range(5)
+        ]
+        rounds = []
+        for _ in range(3):
+            client.asked.clear()
+            service = self._service(client, Repo(), instructions_limit=2)
+            service._attach_instructions(tasks)
+            rounds.append(list(client.asked))
+            for task in tasks:  # what the upsert would persist
+                if INSTRUCTIONS_READ_AT in task:
+                    stored[str(task["taskID"])] = dict(task)
+
+        self.assertEqual(rounds, [["4", "3"], ["2", "1"], ["0"]])
+
+    def test_a_task_edited_since_it_was_read_is_worth_asking_about_again(self):
+        # A work order can be closed with its boxes blank and filled in later.
+        read_at = 1_750_000_000
+        stored = [("1", {"taskID": 1, INSTRUCTIONS_READ_AT: read_at})]
+        client = self._StubClient({"1": self._acca("Infeed")})
+        service = self._service(client, self._StubRepo(stored))
+
+        service._attach_instructions([{"taskID": 1, "dateCompleted": 1, "lastEdited": read_at - 60}])
+        self.assertEqual(client.asked, [], "unchanged since it was read")
+
+        service._attach_instructions([{"taskID": 1, "dateCompleted": 1, "lastEdited": read_at + 60}])
+        self.assertEqual(client.asked, ["1"], "edited since it was read")
+
+    def test_a_nonsense_cap_reads_nothing_rather_than_everything(self):
+        # Treating a negative cap as "no cap" would turn a flag whose purpose is
+        # to bound the run into an unbounded walk of the whole history.
+        client = self._StubClient({str(i): self._acca(str(i)) for i in range(5)})
+        service = self._service(client, self._StubRepo([]), instructions_limit=-1)
+        service._attach_instructions([{"taskID": i, "dateCompleted": 1_750_000_000} for i in range(5)])
         self.assertEqual(client.asked, [])
 
     def test_a_capped_run_takes_the_most_recently_completed_first(self):

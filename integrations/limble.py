@@ -123,7 +123,7 @@ class LimbleClient:
         tasks = list(self._paginate("/tasks/", params, on_page=on_page))
         if updated_since is None:
             return tasks
-        return [task for task in tasks if _task_touched_at(task) >= updated_since]
+        return [task for task in tasks if task_touched_at(task) >= updated_since]
 
     def get_assets(self, *, on_page: Callable[[int, int], None] | None = None) -> list[dict[str, Any]]:
         """Return all assets from ``/assets`` (used to enrich task asset info)."""
@@ -236,7 +236,7 @@ def _retry_after_seconds(resp: "requests.Response") -> float | None:
         return None
 
 
-def _task_touched_at(task: dict[str, Any]) -> int:
+def task_touched_at(task: dict[str, Any]) -> int:
     """Best-effort 'most recently touched' Unix time (seconds) for client-side filtering."""
 
     candidates = []

@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from integrations.limble import LimbleClient
+from integrations.limble import LimbleClient, task_touched_at
 from repositories.raw_repo import RawRepository
 from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
@@ -44,6 +44,12 @@ PHASE_INSTRUCTIONS = "instructions"
 PHASE_TRANSFORM = "transform"
 PHASE_WRITE = "write"
 PHASE_MAP = "map"
+
+# Stamped onto a task's stored payload when its instructions were last read, so
+# a run can tell "asked and there was nothing" from "never asked". Kept in
+# raw_json rather than a table of its own because it describes that payload and
+# travels with it through the same merge.
+INSTRUCTIONS_READ_AT = "instructions_read_at"
 
 # How often the transform loop reports progress, in records.
 _TRANSFORM_PROGRESS_EVERY = 250
@@ -249,12 +255,12 @@ class IngestionService:
         if not self.fetch_instructions:
             return {}
 
-        already_complete = self._tasks_with_complete_narrative()
+        read_at = self._instructions_read_at()
         candidates = [
             task for task in tasks
             if self._task_key(task) is not None
-            and self._task_key(task) not in already_complete
             and task.get("dateCompleted") not in (None, "", 0, "0")
+            and self._needs_reading(task, read_at)
         ]
         # Most recently completed first, because a capped run has to choose and
         # this is the choice worth making twice over: the boxes only exist on
@@ -266,8 +272,11 @@ class IngestionService:
         candidates.sort(key=self._completed_at, reverse=True)
         limit = self.instructions_limit
         capped = len(candidates)
-        if limit is not None and limit >= 0:
-            candidates = candidates[:limit]
+        if limit is not None:
+            # Clamped rather than ignored. Reading nothing is a wasted run;
+            # treating a negative cap as "no cap" would instead start an
+            # unbounded rate-limited walk of the whole history.
+            candidates = candidates[:max(0, limit)]
         remaining = capped - len(candidates)
 
         if not candidates:
@@ -287,6 +296,13 @@ class IngestionService:
                 self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
                 continue
             narrative = extract_narrative({"instructions": instructions})
+            # Stamped whether or not anything was found. Plenty of completed work
+            # orders legitimately have no boxes filled in, and without a record of
+            # having asked they would be selected again on every run -- ahead of
+            # everything older, since the newest are read first -- so a capped
+            # backfill would re-read the same head of the queue forever and never
+            # reach the rest of the history.
+            by_id[id(task)][INSTRUCTIONS_READ_AT] = _utc_now()
             if narrative:
                 by_id[id(task)].update(narrative)
                 found += 1
@@ -302,18 +318,42 @@ class IngestionService:
             "instructions_remaining": remaining,
         }
 
-    def _tasks_with_complete_narrative(self) -> set[str]:
-        """Task ids whose stored payload already answers all four boxes."""
+    def _instructions_read_at(self) -> dict[str, float]:
+        """When each stored task last had its instructions read.
 
-        complete: set[str] = set()
+        Rows imported before this field existed are absent and so are read once.
+        """
+
+        read_at: dict[str, float] = {}
         try:
             for task_key, payload in self.raw_repo.iter_task_payloads():
-                if len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
-                    complete.add(task_key)
+                stamp = _coerce_number(payload.get(INSTRUCTIONS_READ_AT))
+                if stamp is not None:
+                    read_at[task_key] = stamp
+                elif len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
+                    # Imported by a build that stored answers without stamping
+                    # the attempt. A full narrative is proof enough that it was
+                    # read, so it is not worth paying to read again.
+                    read_at[task_key] = float("inf")
         except Exception as exc:  # noqa: BLE001 - a database without the table yet
-            self._log(f"Could not check which tasks already have a narrative ({exc}); fetching all candidates.")
-            return set()
-        return complete
+            self._log(f"Could not check which tasks have been read ({exc}); considering all candidates.")
+            return {}
+        return read_at
+
+    @staticmethod
+    def _needs_reading(task: dict[str, Any], read_at: dict[str, float]) -> bool:
+        """True when this task has not been read, or has changed since it was.
+
+        A work order can be completed with its boxes blank and filled in later,
+        so a task edited since the last read is worth asking about again. One
+        that has not changed is not.
+        """
+
+        key = IngestionService._task_key(task)
+        previous = read_at.get(key) if key is not None else None
+        if previous is None:
+            return True
+        return task_touched_at(task) > previous
 
     @staticmethod
     def _completed_at(task: dict[str, Any]) -> float:
@@ -516,6 +556,10 @@ def _asset_parent_id(asset: dict[str, Any]) -> str | None:
         if value not in (None, "", 0, "0"):
             return str(value)
     return None
+
+
+def _utc_now() -> float:
+    return datetime.now(tz=timezone.utc).timestamp()
 
 
 def _coerce_number(value: Any) -> float | None:

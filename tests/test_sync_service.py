@@ -980,3 +980,17 @@ class ScheduledJobTimingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstructionLimitCliTests(unittest.TestCase):
+    """The CLI cap is validated where the message can still reach a person."""
+
+    def test_a_negative_cap_is_refused_rather_than_read_as_no_cap(self):
+        from jobs.sync_limble import build_arg_parser
+
+        parser = build_arg_parser()
+        self.assertEqual(parser.parse_args(["--instructions-limit", "250"]).instructions_limit, 250)
+        for bad in ("-1", "many", "1.5"):
+            with self.subTest(value=bad):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(["--instructions-limit", bad])

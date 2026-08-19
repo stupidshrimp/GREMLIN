@@ -99,6 +99,23 @@ def _resolve_db_path(explicit: str | None, *, must_exist: bool, create: bool) ->
     return path
 
 
+def _positive_count(value: str) -> int:
+    """A count of tasks, for --instructions-limit.
+
+    argparse would take ``-1`` happily, and a cap that is not a cap is the worst
+    reading of it: an unbounded request-per-task walk of the whole history, hours
+    long, from a flag whose whole purpose was to bound the run.
+    """
+
+    try:
+        count = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number of tasks, got {value!r}") from None
+    if count < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative, got {count}")
+    return count
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync Limble CMMS data into GREMLIN.db.")
     parser.add_argument("--db", help="Path to GREMLIN.db (overrides GREMLIN_DB_PATH).")
@@ -134,7 +151,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--instructions-limit",
-        type=int,
+        type=_positive_count,
         help="Stop after this many instruction fetches; the next run picks up where this one stopped.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and transform, but make no database changes.")
