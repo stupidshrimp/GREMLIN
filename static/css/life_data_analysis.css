@@ -310,36 +310,6 @@ table.lda-table td.lda-wo-text {
   overflow-wrap: anywhere;
   max-width: 28ch;
 }
-/* The four Limble text boxes (Area Affected / Condition / Cause / Action) stacked
-   into one cell. Four columns of their own would have added roughly 900px of
-   horizontal scrolling to a disposition table that is already 15 columns wide,
-   and the boxes read as a single account of the failure anyway: where, what, why,
-   what was done. Each line captions itself so a reader never has to count
-   positions to know which box they are looking at. */
-.lda-narrative-cell {
-  min-width: 20ch;
-  max-width: 34ch;
-  white-space: normal;
-  vertical-align: top;
-}
-.lda-narrative-line {
-  margin: 0 0 0.35rem;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-.lda-narrative-line:last-child { margin-bottom: 0; }
-.lda-narrative-label {
-  display: block;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--forest-800, #2f4f4f);
-  opacity: 0.75;
-}
-.lda-narrative-text { display: block; }
-.lda-narrative-empty { color: var(--muted); font-style: italic; }
-
 table.lda-table thead th {
   position: sticky;
   top: 0;

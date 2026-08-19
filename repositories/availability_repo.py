@@ -569,10 +569,6 @@ class AvailabilityRepository:
                         row, "description_raw", "requestor_description", "request_title"
                     ),
                     completion_notes=self._text(row, "completion_notes"),
-                    area_affected=self._text(row, "area_affected"),
-                    condition_found=self._text(row, "condition_found"),
-                    cause=self._text(row, "cause"),
-                    action_taken=self._text(row, "action_taken"),
                 )
             )
         return details
@@ -714,7 +710,6 @@ class AvailabilityRepository:
         "task_name", "status_raw", "type_raw", "asset_name",
         "description_raw", "requestor_description", "request_title",
         "completion_notes", "record_class_final", "record_class_auto",
-        "area_affected", "condition_found", "cause", "action_taken",
     )
 
     def _mapped_columns(self, conn: sqlite3.Connection) -> set[str]:

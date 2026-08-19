@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.life_data_service import _MAPPING_VERSION, LifeDataService
+from services.life_data_service import LifeDataService
 
 
 class DowntimeConversionTests(unittest.TestCase):
@@ -100,7 +100,7 @@ class DowntimeConversionTests(unittest.TestCase):
             row = conn.execute(
                 "SELECT downtime_hours, mapping_version FROM mapped_cmms_record WHERE raw_record_id = 1"
             ).fetchone()
-        self.assertEqual(row["mapping_version"], _MAPPING_VERSION)
+        self.assertEqual(row["mapping_version"], "v2")
         self.assertAlmostEqual(row["downtime_hours"], 3.5)
 
     def test_missing_mapping_version_column_is_migrated_as_stale(self):
