@@ -131,7 +131,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n{complete} of {len(args.task_ids)} task(s) returned all four boxes.")
     if complete:
-        print("The reader works against the live API. A sync with --instructions will populate the tables.")
+        print("The reader works against the live API. An ordinary sync will populate the tables:")
+        print("    python jobs/sync_limble.py")
     return 0
 
 

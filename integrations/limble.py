@@ -88,6 +88,10 @@ class LimbleClient:
         # instead of a bar that appears to have stalled.
         self._log = log
         self._session = requests.Session()
+        # When the last request went out, so pacing holds across every endpoint
+        # rather than only between pages of one. Monotonic: a clock correction
+        # mid-sync must not turn the next wait into a long sleep or none at all.
+        self._last_request_at = 0.0
         credentials = f"{config.client_id}:{config.client_secret}"
         encoded = base64.b64encode(credentials.encode()).decode()
         self._session.headers.update(
@@ -181,8 +185,6 @@ class LimbleClient:
             if len(payload) < self.config.page_limit:
                 break
             page += 1
-            # Space out page requests to stay under the rate limit.
-            time.sleep(self.config.seconds_per_request)
 
     def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None) -> Any:
         """Perform one request with 429 handling and exponential backoff."""
@@ -190,6 +192,7 @@ class LimbleClient:
         url = f"{self.config.base_url.rstrip('/')}/{path.lstrip('/')}"
         attempt = 0
         while True:
+            self._pace()
             try:
                 resp = self._session.request(method, url, params=params, timeout=self.config.timeout_seconds)
             except requests.exceptions.RequestException as exc:
@@ -218,6 +221,21 @@ class LimbleClient:
             if not resp.content:
                 return []
             return resp.json()
+
+    def _pace(self) -> None:
+        """Hold off until this request is allowed to go out.
+
+        Applied to every request rather than only between pages. Reading task
+        instructions is one call per work order, and a run reads hundreds of
+        them; unpaced, a backfill bursts through the rate limit, collects 429s
+        and then sleeps a minute at a time -- slower than waiting would have
+        been, and rude to an API that publishes a modest budget.
+        """
+
+        wait = self.config.seconds_per_request - (time.monotonic() - self._last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request_at = time.monotonic()
 
     def _sleep_backoff(self, attempt: int, *, reason: str) -> None:
         # 2s, 4s, 8s, 16s ...
