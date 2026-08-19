@@ -101,9 +101,42 @@ class ExtractNarrativeTests(unittest.TestCase):
         found = extract_narrative({"Cause": "   ", "Action": True, "Condition": None})
         self.assertEqual(found, {})
 
+    def test_a_blank_slot_does_not_hide_the_answer_beside_it(self):
+        # An object can serialise several supported keys with only one filled in.
+        # Settling on the empty `value` would drop a narrative the tech did
+        # record, and only one pair is read per object, so there is no second
+        # chance to recover from that choice.
+        self.assertEqual(
+            extract_narrative({"instructions": [
+                {"description": "Cause", "value": "", "answer": "Bearing wear"},
+            ]}),
+            {"cause": "Bearing wear"},
+        )
+        # Same on the label side: a blank `name` must not mask the real prompt.
+        self.assertEqual(
+            extract_narrative({"instructions": [
+                {"name": "", "description": "Cause", "answer": "Bearing wear"},
+            ]}),
+            {"cause": "Bearing wear"},
+        )
+        # A numeric answer still counts; only genuinely blank text is stepped over.
+        self.assertEqual(
+            extract_narrative({"instructions": [
+                {"description": "Condition", "value": "", "answer": 0},
+            ]}),
+            {"condition_found": "0"},
+        )
+
     def test_a_label_with_no_answer_is_skipped(self):
         found = extract_narrative({"instructions": [{"description": "Cause"}]})
         self.assertEqual(found, {})
+        # Every candidate blank is the same as no answer at all.
+        self.assertEqual(
+            extract_narrative({"instructions": [
+                {"description": "Cause", "value": "", "answer": "   "},
+            ]}),
+            {},
+        )
 
     def test_unrelated_area_field_is_not_read_as_the_affected_area(self):
         # "area" on its own is a plant location on plenty of CMMS payloads.

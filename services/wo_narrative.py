@@ -197,16 +197,34 @@ def _labelled_pair(item: Mapping[str, Any]) -> tuple[str, Any] | None:
     answer is a box the tech left blank, and there is nothing to record.
     """
 
-    label_key = next((key for key in _LABEL_KEYS if _is_text(item.get(key))), None)
+    label_key = _first_answered(item, _LABEL_KEYS)
     if label_key is None:
         return None
-    value_key = next(
-        (key for key in _VALUE_KEYS if key != label_key and _is_text(item.get(key))),
-        None,
-    )
+    value_key = _first_answered(item, _VALUE_KEYS, skip=label_key)
     if value_key is None:
         return None
     return str(item[label_key]), item[value_key]
+
+
+def _first_answered(item: Mapping[str, Any], keys: tuple[str, ...], *, skip: str | None = None) -> str | None:
+    """The first of ``keys`` this object answers with non-blank text.
+
+    Blank candidates are stepped over rather than settled on. An object can carry
+    several of the supported keys with only one of them filled in -- Limble sends
+    ``{"description": "Cause", "value": "", "answer": "Bearing wear"}`` when the
+    box is answered but the unused ``value`` slot is still serialised -- and
+    stopping at the empty ``value`` would drop a narrative the tech did record.
+    Only one pair is read per object, so there is no second chance to correct for
+    a blank candidate chosen here.
+    """
+
+    for key in keys:
+        if key == skip:
+            continue
+        value = item.get(key)
+        if _is_text(value) and _clean(value):
+            return key
+    return None
 
 
 def _is_text(value: Any) -> bool:
