@@ -124,9 +124,10 @@ class Phase:
 PHASES: tuple[Phase, ...] = (
     Phase(PHASE_TASKS, "Fetching tasks from Limble", 0.40),
     Phase(PHASE_ASSETS, "Fetching assets from Limble", 0.20),
-    # One request per task at the client's rate limit, so when this phase runs at
-    # all it usually dominates the run. It is skipped unless asked for, and
-    # phase_share keeps it out of the baseline a run is measured against.
+    # One request per task at the client's rate limit, so while a backlog lasts
+    # this phase dominates the run -- and once it is worked through, costs almost
+    # nothing. phase_share and the recorded duration both leave it out for that
+    # reason: what it takes says nothing about how long a sync takes.
     Phase(PHASE_INSTRUCTIONS, "Reading work-order instructions", 0.35),
     Phase(PHASE_TRANSFORM, "Transforming records", 0.03),
     Phase(PHASE_WRITE, "Writing to GREMLIN.db", 0.27),
@@ -134,10 +135,9 @@ PHASES: tuple[Phase, ...] = (
 )
 # What "a whole sync" weighs, for the share an ordinary run reports and the
 # full-run duration extrapolated from it. The instructions phase is deliberately
-# left out: it is opt-in, and its cost scales with how many tasks still need
-# their boxes read rather than sitting at a fixed fraction of a run. Counting it
-# here would make every ordinary sync -- which does everything a sync normally
-# does -- report that it had covered only two thirds of one.
+# left out: its cost scales with how many work orders still need their boxes
+# read, not with the size of the sync, so a run that skipped a real phase could
+# otherwise still claim to have done a whole one.
 _TOTAL_WEIGHT = sum(phase.weight for phase in PHASES if phase.key != PHASE_INSTRUCTIONS)
 
 
