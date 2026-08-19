@@ -55,6 +55,7 @@ from services.sync_service import (
     parse_since,
     phase_share,
     record_run_timing,
+    sync_seconds_worth_recording,
 )
 
 
@@ -210,10 +211,9 @@ def run(args: argparse.Namespace) -> dict:
     # estimate shown before an ordinary run -- but skipping those runs entirely,
     # now that reading instructions is what a sync normally does, would leave the
     # estimate with almost nothing to learn from.
-    elapsed = time.monotonic() - started - float(summary.get("instructions_seconds") or 0.0)
     record_run_timing(
         db_path,
-        seconds=max(0.0, elapsed),
+        seconds=sync_seconds_worth_recording(time.monotonic() - started, summary),
         share=phase_share(_options_for(args)),
         counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
     )

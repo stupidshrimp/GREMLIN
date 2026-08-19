@@ -58,6 +58,12 @@ INSTRUCTIONS_READ_AT = "instructions_read_at"
 # that resumes is the same work done in the same order without a surprise.
 DEFAULT_INSTRUCTIONS_LIMIT = 500
 
+# How long a read that failed waits before it is worth trying again. Long enough
+# that a task Limble will never serve costs one request a day rather than one per
+# run, short enough that an outage during a backfill is made good by the next
+# night's sync instead of leaving those work orders blank for good.
+RETRY_A_FAILED_READ_AFTER = 6 * 60 * 60
+
 # How often the transform loop reports progress, in records.
 _TRANSFORM_PROGRESS_EVERY = 250
 
@@ -277,11 +283,12 @@ class IngestionService:
             return {}
 
         read_at, errored = self._instructions_read_state()
+        now = _utc_now()
         candidates = [
             task for task in tasks
             if self._task_key(task) is not None
             and task.get("dateCompleted") not in (None, "", 0, "0")
-            and self._needs_reading(task, read_at)
+            and self._needs_reading(task, read_at, errored, now)
         ]
         # Most recently completed first, because a capped run has to choose and
         # this is the choice worth making twice over: the boxes only exist on
@@ -403,19 +410,32 @@ class IngestionService:
         return read_at, errored
 
     @staticmethod
-    def _needs_reading(task: dict[str, Any], read_at: dict[str, float]) -> bool:
-        """True when this task has not been read, or has changed since it was.
+    def _needs_reading(
+        task: dict[str, Any], read_at: dict[str, float], errored: set[str], now: float
+    ) -> bool:
+        """True when this task has not been read, has changed, or is due a retry.
 
         A work order can be completed with its boxes blank and filled in later,
         so a task edited since the last read is worth asking about again. One
         that has not changed is not.
+
+        A read that *failed* is different from one that found nothing. The
+        client has already exhausted its own retries by then, so the failure is
+        usually the permanent kind -- but not always, and an outage during a
+        backfill must not quietly cost those work orders their narrative
+        forever. So a failed read is stamped, which is what stops it blocking
+        the queue, and becomes eligible again once RETRY_A_FAILED_READ_AFTER has
+        passed. Sorting puts it behind everything never tried, so the retry
+        costs the tail of a run rather than its head.
         """
 
         key = IngestionService._task_key(task)
         previous = read_at.get(key) if key is not None else None
         if previous is None:
             return True
-        return task_touched_at(task) > previous
+        if task_touched_at(task) > previous:
+            return True
+        return key in errored and (now - previous) >= RETRY_A_FAILED_READ_AFTER
 
     @staticmethod
     def _completed_at(task: dict[str, Any]) -> float:

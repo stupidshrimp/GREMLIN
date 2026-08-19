@@ -710,6 +710,26 @@ def read_run_timings(db_path: str | Path) -> list[dict[str, Any]]:
     return [run for run in runs if isinstance(run, dict) and isinstance(run.get("full_seconds"), (int, float))]
 
 
+def sync_seconds_worth_recording(elapsed: float, summary: dict[str, Any] | None) -> float:
+    """``elapsed`` with the instructions phase taken back out.
+
+    That phase is paced by the API's rate limit rather than by how much work the
+    sync did, so a run that walked five hundred work orders would otherwise teach
+    the estimate that an ordinary sync takes an extra ten minutes. Both entry
+    points weigh a run through here for the same reason they share phase_share:
+    the CLI subtracted it and the dashboard did not, and one on-demand backfill
+    was enough to skew every ETA the page went on to show.
+    """
+
+    instructions = 0.0
+    if isinstance(summary, dict):
+        try:
+            instructions = float(summary.get("instructions_seconds") or 0.0)
+        except (TypeError, ValueError):
+            instructions = 0.0
+    return max(0.0, elapsed - instructions)
+
+
 def record_run_timing(
     db_path: str | Path,
     *,
@@ -1050,7 +1070,12 @@ class LimbleSyncRunner:
         # this work.
         if state == STATE_SUCCEEDED:
             if db_path:
-                record_run_timing(db_path, seconds=duration, share=share, counts=counts)
+                record_run_timing(
+                    db_path,
+                    seconds=sync_seconds_worth_recording(duration, summary),
+                    share=share,
+                    counts=counts,
+                )
             if not dry_run:
                 self._announce_success()
 

@@ -25,6 +25,7 @@ from services.sync_service import (
     read_import_history,
     read_run_timings,
     record_run_timing,
+    sync_seconds_worth_recording,
     run_timings_path,
     summarise_run_timings,
 )
@@ -1017,3 +1018,21 @@ class InstructionLimitCliTests(unittest.TestCase):
             with self.subTest(value=bad):
                 with self.assertRaises(SystemExit):
                     parser.parse_args(["--instructions-limit", bad])
+
+
+class RecordedDurationTests(unittest.TestCase):
+    """Both entry points take the instructions phase back out of the timing."""
+
+    def test_the_instructions_phase_is_not_charged_to_an_ordinary_sync(self):
+        # It is paced by the API's rate limit rather than by the size of the
+        # sync, so one on-demand backfill would otherwise skew every ETA the
+        # dashboard went on to show.
+        self.assertEqual(sync_seconds_worth_recording(600.0, {"instructions_seconds": 540.0}), 60.0)
+
+    def test_a_summary_without_the_phase_is_charged_in_full(self):
+        for summary in (None, {}, {"instructions_seconds": None}, {"instructions_seconds": "nonsense"}):
+            with self.subTest(summary=summary):
+                self.assertEqual(sync_seconds_worth_recording(60.0, summary), 60.0)
+
+    def test_a_duration_can_never_come_out_negative(self):
+        self.assertEqual(sync_seconds_worth_recording(10.0, {"instructions_seconds": 99.0}), 0.0)

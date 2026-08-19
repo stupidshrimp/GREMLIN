@@ -556,6 +556,52 @@ class InstructionFetchTests(unittest.TestCase):
         self.assertEqual(rounds, [["4"], ["3"], ["2"], ["1"], ["0"]])
         self.assertTrue(tasks[4][INSTRUCTIONS_READ_ERROR], "the failure is recorded, not silently forgotten")
 
+    def test_a_failed_read_is_eventually_tried_again(self):
+        # Stamping is what stops a dead task blocking the queue, but stamping
+        # alone would have meant an outage during a backfill quietly costing
+        # those work orders their narrative for good -- the client has already
+        # exhausted its own retries, yet "usually permanent" is not "always".
+        from services.ingestion_service import RETRY_A_FAILED_READ_AFTER, _utc_now
+
+        def asked_after(age: float) -> list:
+            stored = {"1": {
+                "taskID": 1,
+                INSTRUCTIONS_READ_AT: _utc_now() - age,
+                INSTRUCTIONS_READ_ERROR: "timed out",
+            }}
+
+            class Repo:
+                def iter_task_payloads(self):
+                    yield from stored.items()
+
+            client = self._StubClient({"1": self._acca("Infeed")})
+            self._service(client, Repo())._attach_instructions(
+                [{"taskID": 1, "dateCompleted": 1_750_000_000, "lastEdited": 1_750_000_000}]
+            )
+            return client.asked
+
+        self.assertEqual(asked_after(RETRY_A_FAILED_READ_AFTER / 2), [], "too soon to be worth a request")
+        self.assertEqual(asked_after(RETRY_A_FAILED_READ_AFTER + 60), ["1"], "the outage is made good")
+
+    def test_a_read_that_found_nothing_is_not_retried(self):
+        # Only failures come back around. A work order whose boxes are genuinely
+        # blank was read correctly, and asking again would cost a request a day
+        # forever for an answer that is not going to change.
+        from services.ingestion_service import RETRY_A_FAILED_READ_AFTER, _utc_now
+
+        # Read long enough ago to be past the retry window, and untouched since.
+        stored = {"1": {"taskID": 1, INSTRUCTIONS_READ_AT: _utc_now() - RETRY_A_FAILED_READ_AFTER * 10}}
+
+        class Repo:
+            def iter_task_payloads(self):
+                yield from stored.items()
+
+        client = self._StubClient({})
+        self._service(client, Repo())._attach_instructions(
+            [{"taskID": 1, "dateCompleted": 1_750_000_000, "lastEdited": 1_750_000_000}]
+        )
+        self.assertEqual(client.asked, [])
+
     def test_a_failed_read_is_retried_behind_everything_never_tried(self):
         # Recorded so it stops blocking, not abandoned: a transient outage during
         # a backfill must not quietly cost those tasks their narrative forever.
@@ -566,8 +612,10 @@ class InstructionFetchTests(unittest.TestCase):
                 yield from stored.items()
 
         client = self._StubClient({})
+        # Task 4 is both the newest and long overdue a retry, so it is eligible --
+        # the point is that being eligible does not put it in front.
         self._service(client, Repo(), instructions_limit=2)._attach_instructions([
-            {"taskID": 4, "dateCompleted": 1_780_000_000, "lastEdited": 1},   # newest, but failed before
+            {"taskID": 4, "dateCompleted": 1_780_000_000, "lastEdited": 1},
             {"taskID": 3, "dateCompleted": 1_750_000_000, "lastEdited": 1},
             {"taskID": 2, "dateCompleted": 1_740_000_000, "lastEdited": 1},
         ])
