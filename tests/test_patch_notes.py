@@ -1,0 +1,682 @@
+"""The patch notes page reads a Word document off the engineering share.
+
+Nobody can commit a broken release note here -- the document is edited in Word by
+whoever cuts the release -- so these tests are mostly about what the reader does
+with a document that was written by hand: versions in either order, bullets Word
+never made into a list, a heading followed by prose, and a share that is simply
+not there.
+"""
+
+import importlib
+import os
+import re
+import zipfile
+from xml.sax.saxutils import escape
+
+import pytest
+
+from services.patch_notes_service import PatchNotesReader, PatchNotesError, parse_document
+
+CONTENT_TYPES = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    '<Default Extension="xml" ContentType="application/xml"/>'
+    '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-'
+    'officedocument.wordprocessingml.document.main+xml"/></Types>'
+)
+RELS = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId1" Target="word/document.xml" Type="http://schemas.openxmlformats.org'
+    '/officeDocument/2006/relationships/officeDocument"/></Relationships>'
+)
+
+
+def _document_xml(paragraphs) -> str:
+    """The body of a .docx.
+
+    A paragraph is written as ``"text"`` for a plain line, ``("text", level)``
+    for a bullet Word numbered itself, or ``{"text": ..., "style": ...}`` for one
+    that carries a style name and nothing else -- which is what Word writes when
+    the item came from a list *style* rather than the toolbar button.
+    """
+
+    parts = []
+    for paragraph in paragraphs:
+        if isinstance(paragraph, dict):
+            text = paragraph["text"]
+            properties = f'<w:pPr><w:pStyle w:val="{paragraph["style"]}"/></w:pPr>'
+        elif isinstance(paragraph, tuple):
+            text, level = paragraph
+            properties = (
+                '<w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr>'
+                f'<w:ilvl w:val="{level}"/><w:numId w:val="2"/></w:numPr></w:pPr>'
+            )
+        else:
+            text, properties = paragraph, ""
+        parts.append(
+            f"<w:p>{properties}<w:r>"
+            f'<w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p>'
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body>{"".join(parts)}</w:body></w:document>'
+    )
+
+
+# A style that is numbered but names no w:ilvl. Word's own List Bullet N styles
+# are written this way: each points at a numbering definition of its own, and the
+# depth is in that definition's indents rather than in the style.
+NUMBERED_WITHOUT_LEVEL = "no-ilvl"
+
+# A style that turns numbering off: what Word writes for a style built from a
+# list style with the bullets switched back off.
+NUMBERING_TURNED_OFF = "numid-0"
+
+
+def _styles_xml(styles) -> str:
+    """A styles part, from ``(styleId, ilvl or None, basedOn or None)`` triples.
+
+    ``ilvl`` of None is a style that defines no numbering -- the case that has to
+    reach its basedOn parent before it counts as a list. NUMBERED_WITHOUT_LEVEL
+    is numbering with no level named.
+    """
+
+    definitions = []
+    for style_id, level, based_on in styles:
+        if level is None:
+            properties = ""
+        elif level == NUMBERED_WITHOUT_LEVEL:
+            properties = '<w:numPr><w:numId w:val="3"/></w:numPr>'
+        elif level == NUMBERING_TURNED_OFF:
+            properties = '<w:numPr><w:numId w:val="0"/></w:numPr>'
+        else:
+            properties = (
+                f'<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="3"/></w:numPr>'
+            )
+        parent = "" if based_on is None else f'<w:basedOn w:val="{based_on}"/>'
+        definitions.append(
+            f'<w:style w:type="paragraph" w:styleId="{style_id}">{parent}'
+            f"<w:pPr>{properties}</w:pPr></w:style>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'{"".join(definitions)}</w:styles>'
+    )
+
+
+def _write_docx(path, paragraphs, styles=None):
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", CONTENT_TYPES)
+        archive.writestr("_rels/.rels", RELS)
+        archive.writestr("word/document.xml", _document_xml(paragraphs))
+        if styles is not None:
+            archive.writestr("word/styles.xml", _styles_xml(styles))
+    return path
+
+
+# The document as the sample on the share is written: version, date, a heading,
+# its bullets, then the fix list.
+SAMPLE = [
+    "GREMLIN 0.1.0",
+    "8/18/2026",
+    "Initial release:",
+    ("The GREMLIN site brings CMMS data preparation into one web workspace.", 0),
+    "Bug Fixes:",
+    ("Clear all filter selection for metrics page", 0),
+    ("Show downtime hours for all analysis", 0),
+]
+
+
+def _read(tmp_path, paragraphs, name="GREMLIN_patchnotes.docx", styles=None):
+    return PatchNotesReader(_write_docx(tmp_path / name, paragraphs, styles)).read()
+
+
+def test_reads_a_release_the_way_the_document_is_written(tmp_path):
+    notes = _read(tmp_path, SAMPLE)
+
+    assert notes.error is None
+    release = notes.latest
+    assert release.version == "0.1.0"
+    assert release.date_display == "August 18, 2026"
+    assert release.released_on.isoformat() == "2026-08-18"
+    assert [(s.title, s.kind, s.item_count) for s in release.sections] == [
+        ("Initial release", "features", 1),
+        ("Bug Fixes", "fixes", 2),
+    ]
+    assert release.fix_count == 2
+    assert release.anchor == "v0-1-0"
+
+
+def test_a_version_split_across_runs_is_still_one_version():
+    """Word stores an edited line as several runs -- the sample's own 0.1.0 is
+    "GREMLIN 0." + "1" + ".0" -- and none of them is a version on its own."""
+
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p>"
+        "<w:r><w:t>GREMLIN 0.</w:t></w:r><w:r><w:t>1</w:t></w:r><w:r><w:t>.0</w:t></w:r>"
+        "</w:p><w:body></w:body></w:body></w:document>"
+    ).encode()
+
+    assert parse_document(xml)[0].version == "0.1.0"
+
+
+def test_releases_are_ordered_newest_first_however_the_document_grew(tmp_path):
+    """The author may add a release at either end, and 0.10.0 is not 0.1.0."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 0.9.1", "1/5/2026", "Bug Fixes:", ("An older fix", 0),
+            "GREMLIN 0.10.0", "3/2/2026", "What's New:", ("A newer feature", 0),
+            "GREMLIN 0.2.0", "12/1/2025", "What's New:", ("The oldest feature", 0),
+        ],
+    )
+
+    assert [release.version for release in notes.releases] == ["0.10.0", "0.9.1", "0.2.0"]
+    assert notes.latest.version == "0.10.0"
+
+
+def test_a_hotfix_under_the_version_it_patches_is_the_newer_one(tmp_path):
+    """Both entries claim 1.2.0, so version alone cannot order them and the
+    entry written first would keep the top of the page and the Latest chip."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "1/1/2026", "Bug Fixes:", ("The original fix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "2/1/2026", "Bug Fixes:", ("The hotfix", 0),
+        ],
+    )
+
+    assert [release.date_display for release in notes.releases] == [
+        "February 1, 2026",
+        "January 1, 2026",
+    ]
+    assert notes.latest.label == "Hotfix"
+
+
+def test_a_release_with_no_date_sorts_under_one_that_has_it(tmp_path):
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "Bug Fixes:", ("Dateless", 0),
+            "GREMLIN 1.2.0", "2/1/2026", "Bug Fixes:", ("Dated", 0),
+        ],
+    )
+
+    assert [release.date_display for release in notes.releases] == ["February 1, 2026", ""]
+
+
+def test_two_entries_for_one_version_get_anchors_of_their_own(tmp_path):
+    """The anchor is a DOM id and the jump list's target. Repeat it and every
+    link lands on the first entry, and two articles name one heading."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "1/1/2026", "Bug Fixes:", ("The original fix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "2/1/2026", "Bug Fixes:", ("The hotfix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "3/1/2026", "Bug Fixes:", ("The second hotfix", 0),
+        ],
+    )
+
+    # Newest first within the version, so the two hotfixes lead: the anchor a
+    # release takes follows the order the page draws.
+    anchors = [release.anchor for release in notes.releases]
+    assert anchors == ["v1-2-0-hotfix", "v1-2-0-hotfix-2", "v1-2-0"]
+    assert len(set(anchors)) == len(anchors)
+
+
+def test_indented_bullets_are_nested_under_the_one_above(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.0.0", "5/1/2026", "What's New", ("Parent", 0), ("Child", 1), ("Sibling", 0)],
+    )
+
+    items = notes.latest.sections[0].items
+    assert [item.text for item in items] == ["Parent", "Sibling"]
+    assert [child.text for child in items[0].children] == ["Child"]
+    # Sub-bullets are part of what the release changed, so the chip counts them.
+    assert notes.latest.feature_count == 3
+
+
+def test_word_s_own_list_styles_are_bullets_at_the_level_they_name(tmp_path):
+    """"List Bullet 2" carries a style and no numbering of its own. Read as a
+    heading, the item would be set in heading type above the list it belongs to."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "Parent", "style": "ListBullet"},
+            {"text": "Child", "style": "ListBullet2"},
+            {"text": "Numbered", "style": "ListNumber"},
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert [item.text for item in section.items] == ["Parent", "Numbered"]
+    assert [child.text for child in section.items[0].children] == ["Child"]
+
+
+def test_a_built_in_list_style_keeps_the_level_its_name_states(tmp_path):
+    """Word writes ListBullet2 with a numbering definition of its own and no
+    w:ilvl, which reads as level 0. Believing that makes the sub-bullet a
+    sibling of the item it belongs under."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "Parent", "style": "ListBullet"},
+            {"text": "Child", "style": "ListBullet2"},
+        ],
+        styles=[
+            ("ListBullet", NUMBERED_WITHOUT_LEVEL, None),
+            ("ListBullet2", NUMBERED_WITHOUT_LEVEL, None),
+        ],
+    )
+
+    items = notes.latest.sections[0].items
+    assert [item.text for item in items] == ["Parent"]
+    assert [child.text for child in items[0].children] == ["Child"]
+
+
+def test_a_template_style_that_defines_its_own_numbering_is_a_bullet(tmp_path):
+    """A style out of a department template is named whatever its author called
+    it, so only styles.xml says whether it is a list."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "A plant bullet", "style": "PlantBullet"},
+            {"text": "Its sub-bullet", "style": "PlantSubBullet"},
+            {"text": "Not a list at all", "style": "Emphasis"},
+        ],
+        styles=[
+            ("PlantBullet", 0, None),
+            # Defines no numbering of its own: it has to reach PlantBullet first.
+            ("PlantSubBullet", 1, "PlantBullet"),
+            ("Emphasis", None, None),
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert [item.text for item in section.items] == ["A plant bullet"]
+    assert [child.text for child in section.items[0].children] == ["Its sub-bullet"]
+    # The style that is not a list stays a line of the document.
+    assert [s.title for s in notes.latest.sections] == ["What's New", "Not a list at all"]
+
+
+def test_a_style_that_turns_numbering_off_is_not_a_bullet(tmp_path):
+    """Based on a list style, with the bullets switched off. Word draws it as
+    plain text, and inheriting the parent's list would bullet a heading."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            {"text": "What's New", "style": "PlantHeading"},
+            {"text": "A real bullet", "style": "PlantBullet"},
+        ],
+        styles=[
+            ("PlantBullet", 0, None),
+            ("PlantHeading", NUMBERING_TURNED_OFF, "PlantBullet"),
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert section.title == "What's New"
+    assert [item.text for item in section.items] == ["A real bullet"]
+
+
+def test_numbering_turned_off_partway_up_the_chain_stays_off(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.0.0", "5/1/2026", "What's New", {"text": "Plain text", "style": "PlantChild"}],
+        styles=[
+            ("PlantBullet", 0, None),
+            ("PlantNote", NUMBERING_TURNED_OFF, "PlantBullet"),
+            ("PlantChild", None, "PlantNote"),
+        ],
+    )
+
+    assert notes.latest.sections[0].items == ()
+    assert [section.title for section in notes.latest.sections] == ["What's New", "Plain text"]
+
+
+def test_a_style_inheriting_its_numbering_is_still_a_bullet(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.0.0", "5/1/2026", "What's New", {"text": "Inherited", "style": "PlantChild"}],
+        styles=[("PlantParent", 0, None), ("PlantChild", None, "PlantParent")],
+    )
+
+    assert [item.text for item in notes.latest.sections[0].items] == ["Inherited"]
+
+
+def test_a_bullet_starting_deeper_than_the_list_does_is_kept(tmp_path):
+    """Word can leave the first item of a list at level 1. It has nothing to nest
+    under, and dropping it would lose a line of the release."""
+
+    notes = _read(tmp_path, ["GREMLIN 1.0.0", "5/1/2026", "Notes", ("Orphan", 2)])
+
+    assert [item.text for item in notes.latest.sections[0].items] == ["Orphan"]
+
+
+def test_a_bullet_typed_as_a_dash_is_still_a_bullet(tmp_path):
+    """Not everyone uses Word's list button; the page should look the same."""
+
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.1.0", "6/1/2026", "Bug Fixes:", "- Fixed the export", "• Fixed the filter"],
+    )
+
+    section = notes.latest.sections[0]
+    assert [item.text for item in section.items] == ["Fixed the export", "Fixed the filter"]
+
+
+def test_a_dash_glued_to_a_word_is_not_a_bullet(tmp_path):
+    """The glyph only counts with a space after it. "-40% downtime" is a line of
+    the document, and stripping its sign would change what the release claims."""
+
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.1.0", "6/1/2026", "Bug Fixes:", "-40% downtime after the PM change", ("Real", 0)],
+    )
+
+    written = [section.title for section in notes.latest.sections]
+    written += [text for section in notes.latest.sections for text in section.paragraphs]
+    written += [item.text for section in notes.latest.sections for item in section.items]
+    assert "-40% downtime after the PM change" in written
+
+
+def test_prose_under_a_heading_is_not_read_as_another_heading(tmp_path):
+    """A sentence set in heading type, with the list hanging under it, is the
+    ugliest way this can go wrong -- and the easiest to write by accident."""
+
+    sentence = (
+        "This release establishes the complete data path from Limble records to "
+        "dispositioned events, reliability metrics and downloadable reports."
+    )
+    notes = _read(tmp_path, ["GREMLIN 1.2.0", "7/1/2026", "What's New", sentence, ("A feature", 0)])
+
+    section = notes.latest.sections[0]
+    assert section.title == "What's New"
+    assert section.paragraphs == (sentence,)
+    assert [item.text for item in section.items] == ["A feature"]
+
+
+def test_a_paragraph_written_after_the_bullets_stays_after_them(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.2.0", "7/1/2026", "What's New", ("A feature", 0), "Ask Reliability for access."],
+    )
+
+    sections = notes.latest.sections
+    assert [(s.title, [i.text for i in s.items], s.paragraphs) for s in sections] == [
+        ("What's New", ["A feature"], ()),
+        ("", [], ("Ask Reliability for access.",)),
+    ]
+
+
+def test_the_date_may_sit_on_the_version_line(tmp_path):
+    notes = _read(tmp_path, ["GREMLIN 1.3.0 - 9/9/2026", "What's New", ("A feature", 0)])
+
+    assert notes.latest.date_display == "September 9, 2026"
+    assert notes.latest.label is None
+    assert notes.latest.sections[0].title == "What's New"
+
+
+def test_a_release_with_no_date_keeps_its_first_heading(tmp_path):
+    notes = _read(tmp_path, ["GREMLIN 1.4.0", "Bug Fixes:", ("A fix", 0)])
+
+    assert notes.latest.date_display == ""
+    assert notes.latest.released_on is None
+    assert [section.title for section in notes.latest.sections] == ["Bug Fixes"]
+
+
+@pytest.mark.parametrize(
+    "heading, kind",
+    [
+        ("Bug Fixes:", "fixes"),
+        ("Fixes and improvements", "fixes"),
+        ("What's New", "features"),
+        ("New Features", "features"),
+        ("Initial release:", "features"),
+        ("Known limitations", "notes"),
+    ],
+)
+def test_headings_are_recognised_however_they_are_worded(tmp_path, heading, kind):
+    notes = _read(tmp_path, ["GREMLIN 2.0.0", "1/1/2026", heading, ("An item", 0)])
+
+    assert notes.latest.sections[0].kind == kind
+
+
+@pytest.mark.parametrize(
+    "line, version, label",
+    [
+        ("GREMLIN 0.1.0", "0.1.0", None),
+        ("GREMLIN v1.2.0", "1.2.0", None),
+        ("1.2.0", "1.2.0", None),
+        ("Release 1.2.0", "1.2.0", None),
+        ("GREMLIN 1.2.0 (Beta)", "1.2.0", "Beta"),
+        ("GREMLIN 1.2.0 - Hotfix", "1.2.0", "Hotfix"),
+    ],
+)
+def test_a_version_line_is_recognised_however_it_is_written(tmp_path, line, version, label):
+    notes = _read(tmp_path, [line, "1/1/2026", "Bug Fixes:", ("A fix", 0)])
+
+    assert notes.latest.version == version
+    assert notes.latest.label == label
+
+
+def test_a_sentence_beginning_with_a_number_does_not_start_a_release(tmp_path):
+    """A version line takes everything under it, so a false one would move the
+    rest of the document into a release that does not exist."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "1/1/2026",
+            "Known limitations",
+            "1.5 hours of downtime were recorded before the meter was replaced.",
+            "Bug Fixes:",
+            ("A fix", 0),
+        ],
+    )
+
+    assert [release.version for release in notes.releases] == ["1.0.0"]
+    assert [section.title for section in notes.latest.sections] == [
+        "Known limitations",
+        "Bug Fixes",
+    ]
+
+
+def test_a_document_with_no_version_line_says_so(tmp_path):
+    """Rendering it as an empty page would look like a history nobody has written."""
+
+    notes = _read(tmp_path, ["Patch notes", "Some notes about the notes."])
+
+    assert not notes.is_available
+    assert "version" in notes.error
+
+
+def test_a_missing_document_is_reported_rather_than_raised(tmp_path):
+    notes = PatchNotesReader(tmp_path / "not-mapped" / "GREMLIN_patchnotes.docx").read()
+
+    assert not notes.is_available
+    assert "not found" in notes.error
+    assert "shared drive" in notes.error
+
+
+def test_a_file_that_is_not_a_word_document_is_reported(tmp_path):
+    path = tmp_path / "GREMLIN_patchnotes.docx"
+    path.write_bytes(b"this is a .doc saved under the wrong extension")
+
+    notes = PatchNotesReader(path).read()
+
+    assert not notes.is_available
+    assert ".docx" in notes.error
+
+
+def test_a_damaged_document_is_reported(tmp_path):
+    path = tmp_path / "GREMLIN_patchnotes.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("word/document.xml", "<w:document><w:body>")
+
+    notes = PatchNotesReader(path).read()
+
+    assert not notes.is_available
+    assert "damaged" in notes.error
+
+
+def test_the_document_is_parsed_again_only_once_it_changes(tmp_path):
+    """Every visit to the page asks for the notes, and the file is on a network
+    share. Re-reading it per request is the cost this cache exists to avoid."""
+
+    path = _write_docx(tmp_path / "GREMLIN_patchnotes.docx", SAMPLE)
+    reader = PatchNotesReader(path)
+    first = reader.read()
+
+    assert reader.read() is first
+
+    _write_docx(path, ["GREMLIN 0.2.0", "9/1/2026", "What's New", ("Something else", 0)])
+    # The cache is keyed on the file's timestamp and size, and a test can rewrite
+    # a file inside one filesystem tick.
+    stamp = path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(path, ns=(stamp, stamp))
+
+    assert reader.read().latest.version == "0.2.0"
+
+
+def test_a_share_that_drops_between_the_stat_and_the_open_is_tried_again(tmp_path):
+    """The file was there a line earlier, so the failure is of the moment. Cached
+    against a stamp that will not change, it would outlast the outage."""
+
+    from services import patch_notes_service
+
+    path = _write_docx(tmp_path / "GREMLIN_patchnotes.docx", SAMPLE)
+    reader = PatchNotesReader(path)
+    opened = []
+    real = patch_notes_service._document_parts
+
+    def flaky(target):
+        opened.append(target)
+        if len(opened) == 1:
+            raise PatchNotesError(
+                "The patch notes document could not be opened (network path not found).",
+                transient=True,
+            )
+        return real(target)
+
+    patch_notes_service._document_parts = flaky
+    try:
+        assert "network path not found" in reader.read().error
+        assert reader.read().latest.version == "0.1.0"
+    finally:
+        patch_notes_service._document_parts = real
+
+    assert len(opened) == 2
+
+
+def test_a_document_that_cannot_be_read_is_not_opened_again_every_visit(tmp_path):
+    """The other half of it: a file that is not a .docx says the same thing on
+    the next request, and re-reading the share to hear it is what the cache is
+    for."""
+
+    from services import patch_notes_service
+
+    path = tmp_path / "GREMLIN_patchnotes.docx"
+    path.write_bytes(b"this is a .doc saved under the wrong extension")
+    reader = PatchNotesReader(path)
+    opened = []
+    real = patch_notes_service._document_parts
+
+    def counted(target):
+        opened.append(target)
+        return real(target)
+
+    patch_notes_service._document_parts = counted
+    try:
+        assert ".docx" in reader.read().error
+        assert ".docx" in reader.read().error
+    finally:
+        patch_notes_service._document_parts = real
+
+    assert len(opened) == 1
+
+
+def test_parse_document_rejects_a_document_it_cannot_read():
+    with pytest.raises(PatchNotesError):
+        parse_document(b"not xml at all")
+
+
+# ---------------------------------------------------------------------------
+# The page itself
+# ---------------------------------------------------------------------------
+
+
+def _client(monkeypatch, tmp_path, notes_path):
+    monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
+    monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
+    monkeypatch.setenv("GREMLIN_PATCH_NOTES_PATH", str(notes_path))
+    import app
+
+    return importlib.reload(app).app.test_client()
+
+
+def test_the_page_gives_every_release_an_id_of_its_own(monkeypatch, tmp_path):
+    """Two entries for one version is the case that used to collide: the ids are
+    what the jump list points at and what aria-labelledby names."""
+
+    document = _write_docx(
+        tmp_path / "GREMLIN_patchnotes.docx",
+        [
+            "GREMLIN 2.0.0", "1/1/2026", "Bug Fixes:", ("A fix", 0),
+            "GREMLIN 2.0.0", "2/1/2026", "Bug Fixes:", ("Another fix", 0),
+        ],
+    )
+    body = _client(monkeypatch, tmp_path, document).get("/patch-notes").get_data(as_text=True)
+
+    ids = re.findall(r'id="([^"]+)"', body)
+    assert sorted(ids) == sorted(set(ids))
+    assert 'href="#v2-0-0-2"' in body
+
+
+def test_the_page_draws_what_the_document_says(monkeypatch, tmp_path):
+    document = _write_docx(tmp_path / "GREMLIN_patchnotes.docx", SAMPLE)
+    body = _client(monkeypatch, tmp_path, document).get("/patch-notes").get_data(as_text=True)
+
+    assert "0.1.0" in body
+    assert "August 18, 2026" in body
+    assert "Clear all filter selection for metrics page" in body
+    assert 'id="v0-1-0"' in body
+    assert "Bug Fixes" in body
+
+
+def test_an_unreachable_share_still_renders_the_page(monkeypatch, tmp_path):
+    """A page that explains itself is worth more here than a 500: the visitor is
+    told which document is missing, which is the thing that gets it fixed."""
+
+    response = _client(monkeypatch, tmp_path, tmp_path / "Z" / "GREMLIN_patchnotes.docx").get(
+        "/patch-notes"
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "not available right now" in body
+    assert "shared drive" in body

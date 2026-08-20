@@ -188,6 +188,10 @@ APP_ENV_KEYS = frozenset({
     "GREMLIN_ADMIN_USERNAME",
     "GREMLIN_ADMIN_PIN",
     "GREMLIN_TRUSTED_PROXY_HOPS",
+    # Where the patch notes Word document is. Safe here for the same reason as
+    # the rest: it is read once at import, and unlike GREMLIN_DB_PATH it is the
+    # web app's own setting -- no scheduled job shares it.
+    "GREMLIN_PATCH_NOTES_PATH",
 })
 
 
