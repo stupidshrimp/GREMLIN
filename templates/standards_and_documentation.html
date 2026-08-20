@@ -298,6 +298,23 @@
         }
       });
     });
+
+    /* Open the tab a fragment names, so /standards-and-documentation#weibull-panel
+       arrives on the Weibull formulas rather than on whichever tab happens to be
+       first. The topbar's global search links here that way, and so does anyone
+       who copied the address out of it. An unknown fragment is ignored and the
+       default tab stands. */
+    function activateTabFromHash() {
+      const target = window.location.hash.slice(1);
+      if (!target) return;
+      const tab = tabs.find((candidate) => candidate.dataset.tabTarget === target);
+      if (tab) activateTab(tab);
+    }
+
+    activateTabFromHash();
+    // Following a second link to this page changes only the fragment, which
+    // navigates nothing and would otherwise leave the old tab showing.
+    window.addEventListener('hashchange', activateTabFromHash);
   })();
 </script>
 {% endblock %}

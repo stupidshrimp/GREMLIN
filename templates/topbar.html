@@ -6,4 +6,69 @@
       <span>Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</span>
     </div>
   </div>
+
+  {#- Global search. It sits in the middle column of the topbar's three-column
+      grid, with an empty column on the right, so it is centred on the window
+      rather than on whatever is left over beside the brand.
+
+      The catalog is embedded rather than fetched: it is a few kilobytes of
+      static configuration, and a round trip on the first keystroke is the one
+      thing that would make the box feel slower than the sidebar it replaces.
+      `tojson` escapes for a <script> context, so nothing here can close the tag.
+      It is role-filtered server-side -- see _search_index in app.py.
+
+      With scripting off the form still works as a plain GET to /search-results,
+      which is why this is a <form> and not a bare <input>. -#}
+  <div class="global-search" id="globalSearch">
+    <form class="global-search-form" role="search" action="{{ url_for('search_results') }}" method="get">
+      <span class="global-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M10.5 3a7.5 7.5 0 1 0 4.55 13.46l4.24 4.25a1 1 0 0 0 1.42-1.42l-4.25-4.24A7.5 7.5 0 0 0 10.5 3Zm0 2a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11Z"/></svg>
+      </span>
+      <input
+        type="search"
+        id="globalSearchInput"
+        name="q"
+        class="global-search-input"
+        placeholder="Search pages and functions…"
+        aria-label="Search pages and functions"
+        autocomplete="off"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="globalSearchResults"
+        aria-autocomplete="list"
+        aria-describedby="globalSearchHelp"
+      >
+      {#- The shortcut badge. Hidden while the box is focused or holding text, so
+          it never sits under what is being typed. layout-independent label: the
+          script rewrites it to ⌘K on a Mac. -#}
+      <kbd class="global-search-kbd" id="globalSearchKbd" aria-hidden="true">Ctrl K</kbd>
+    </form>
+
+    <p id="globalSearchHelp" class="visually-hidden">
+      Results appear below as you type. Use the up and down arrow keys to review them and Enter to open one.
+    </p>
+
+    <div class="global-search-panel" id="globalSearchPanel" hidden>
+      <div id="globalSearchResults" class="global-search-results" role="listbox" aria-label="Search results"></div>
+      <p class="global-search-empty" id="globalSearchEmpty" hidden></p>
+      {#- The keys are already described to assistive tech by #globalSearchHelp,
+          so this repeat of them is for the eye only. -#}
+      <div class="global-search-footer" id="globalSearchFooter" aria-hidden="true">
+        <span><kbd>↑</kbd><kbd>↓</kbd> to move</span>
+        <span><kbd>Enter</kbd> to open</span>
+        <span><kbd>Esc</kbd> to close</span>
+      </div>
+    </div>
+
+    {#- Announced separately from the listbox: a screen reader is told how many
+        results there are without the whole list being read out on every
+        keystroke. -#}
+    <p class="visually-hidden" id="globalSearchStatus" role="status" aria-live="polite"></p>
+
+    <script type="application/json" id="globalSearchIndex">{{ search_index | tojson }}</script>
+  </div>
+
+  {#- Balances the brand column so the search box lands in the middle of the
+      window. Purely structural, and gone once the topbar stacks. -#}
+  <div class="topbar-spacer" aria-hidden="true"></div>
 </header>

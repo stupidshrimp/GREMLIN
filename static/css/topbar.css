@@ -1,7 +1,15 @@
+/* Three columns rather than a flex row with space-between: the search box is
+   asked to sit in the middle of the *window*, and space-between would only
+   centre it in whatever the brand left over. Two equal `1fr` columns flanking a
+   fixed-width middle put it on the window's centre line no matter how long the
+   brand's tagline runs. `minmax(0, …)` on all three is what lets them shrink --
+   a grid track's default minimum is its content, which the tagline would
+   otherwise hold open until the topbar overflowed. */
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 30rem) minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
+  gap: 1rem;
   padding: 0.75rem 1.25rem;
   background: linear-gradient(90deg, #041f14 0%, #0a3a27 45%, #115337 100%);
   color: #fff;
@@ -49,4 +57,349 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: min(70vw, 980px);
+}
+
+/* ---------------------------------------------------------------------------
+   Global search
+
+   The box lives in the topbar's middle column and the dropdown hangs off it.
+   Everything here is sized so the whole control fits inside a 74px topbar,
+   because .sidebar pins itself at `top: 74px` and would part company with the
+   header the moment this row grew.
+   --------------------------------------------------------------------------- */
+.global-search {
+  position: relative;
+  width: 100%;
+}
+
+.global-search-form {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Translucent rather than a flat colour: the topbar runs a gradient behind it,
+   and a solid fill would read as a rectangle pasted on top of one. */
+.global-search-input {
+  width: 100%;
+  height: 2.5rem;
+  font: inherit;
+  font-size: 0.92rem;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 999px;
+  padding: 0 3.6rem 0 2.65rem;
+  outline: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.global-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.global-search-input:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.38);
+}
+
+/* The focus ring is the border plus a soft halo rather than the UA outline: an
+   outline on a pill this thin sits a pixel off the curve on every engine. It is
+   bright enough to stand on its own against the gradient. */
+.global-search-input:focus {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16);
+}
+
+/* Chrome and Safari draw their own clear button inside type="search", which
+   lands on top of the shortcut badge and does not match anything else here. */
+.global-search-input::-webkit-search-decoration,
+.global-search-input::-webkit-search-cancel-button,
+.global-search-input::-webkit-search-results-button,
+.global-search-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Above the input, not behind it. The input's `backdrop-filter` makes it a
+   stacking context that paints over everything earlier in the DOM and blurs it
+   as backdrop -- which turned the magnifier into a smudge until these two were
+   lifted out from under it. */
+.global-search-icon,
+.global-search-kbd {
+  z-index: 1;
+}
+
+.global-search-icon {
+  position: absolute;
+  left: 0.95rem;
+  display: flex;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.global-search-icon svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: currentColor;
+}
+
+.global-search-kbd {
+  position: absolute;
+  right: 0.5rem;
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 7px;
+  padding: 0.2rem 0.45rem;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+/* Out of the way as soon as the box is in use, so it never sits under the
+   caret or the end of a long query. */
+.global-search.is-active .global-search-kbd {
+  opacity: 0;
+}
+
+.global-search-panel {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(6, 43, 28, 0.28);
+  overflow: hidden;
+  animation: globalSearchIn 140ms ease-out both;
+}
+
+@keyframes globalSearchIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-search-panel { animation: none; }
+}
+
+/* Capped in viewport units so a long result list scrolls inside the panel
+   instead of running off the bottom of a short window. */
+.global-search-results {
+  max-height: min(60vh, 26rem);
+  overflow-y: auto;
+  padding: 0.4rem;
+}
+
+/* With no options to inset, the padding is just a blank band above the "nothing
+   matches" line. */
+.global-search-results:empty {
+  padding: 0;
+}
+
+.global-search-group {
+  padding: 0.6rem 0.75rem 0.3rem;
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.global-search-option {
+  display: grid;
+  grid-template-columns: 1.9rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: 11px;
+  text-decoration: none;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+/* Hover and keyboard share one appearance. The class is what the arrow keys
+   move, and `:hover` is bound to it so the pointer cannot light up a second row
+   while the keyboard already has one. */
+.global-search-option.is-active,
+.global-search-option:hover {
+  background: var(--forest-100);
+}
+
+.global-search-option-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 9px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+  color: var(--forest-700);
+}
+
+.global-search-option.is-active .global-search-option-icon,
+.global-search-option:hover .global-search-option-icon {
+  background: var(--surface);
+  border-color: var(--forest-500);
+}
+
+.global-search-option-icon svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+.global-search-option-text {
+  min-width: 0;
+}
+
+.global-search-option-label {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--forest-900);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The matched run of characters, marked up as <mark> so it is what it looks
+   like. The UA's yellow highlight is replaced outright -- it belongs to a
+   different palette entirely. */
+.global-search-option-label mark {
+  background: none;
+  color: var(--forest-700);
+  font-weight: 800;
+}
+
+.global-search-option-context {
+  display: block;
+  font-size: 0.76rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-search-option-kind {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--forest-700);
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  white-space: nowrap;
+}
+
+.global-search-option.is-active .global-search-option-kind,
+.global-search-option:hover .global-search-option-kind {
+  background: var(--surface);
+}
+
+.global-search-empty {
+  margin: 0;
+  padding: 1.15rem 1rem;
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+/* An explicit `display` beats the UA's `[hidden] { display: none }`, so the
+   attribute has to be honoured here or the hint bar never actually hides. */
+.global-search-footer[hidden] {
+  display: none;
+}
+
+.global-search-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.5rem 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--forest-100);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.global-search-footer kbd {
+  font-family: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--forest-800);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.08rem 0.32rem;
+  margin-right: 0.25rem;
+}
+
+/* Left in the page for assistive technology and taken out of the visual layout.
+   Used by the search box's help text and its live result count. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The middle column stops being worth 30rem before the brand stops fitting, so
+   the box narrows first and the tagline goes second. */
+@media (max-width: 1180px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .brand-copy span {
+    display: none;
+  }
+}
+
+/* Stacked: brand on one row, search full-width on the next. The spacer only
+   existed to centre the middle column and has nothing to balance now.
+
+   theme.css relaxes the topbar's grid row from 74px to `auto` at this same
+   width, and .sidebar drops out of `position: sticky` there, so the taller
+   header does not leave the sidebar pinned to a line the topbar no longer
+   ends on. */
+@media (max-width: 900px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.65rem;
+  }
+
+  .topbar-spacer {
+    display: none;
+  }
+
+  .brand-copy span {
+    display: block;
+  }
+
+  .global-search-panel {
+    max-height: none;
+  }
 }

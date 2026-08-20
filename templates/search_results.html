@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{#- Where the topbar's search box lands when it is submitted rather than clicked:
+    a browser running no script, or Enter pressed before a result was
+    highlighted. It searches the same catalog by the same rules as the dropdown,
+    so the answer here is the one the dropdown would have given. -#}
+
+{% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Search</p>
+  {% if query %}
+    <h1>{{ results | length }} result{{ '' if results | length == 1 else 's' }} for “{{ query }}”</h1>
+    {% if not results %}
+      <p class="hero-copy">Nothing in GREMLIN matches that. Try an asset workflow, a metric, or the name of a page.</p>
+    {% endif %}
+  {% else %}
+    <h1>Search GREMLIN</h1>
+    <p class="hero-copy">Use the search box at the top of the page to find a page or a function by name.</p>
+  {% endif %}
+</section>
+
+{% if results %}
+<section class="glass-card slide-in links-section" aria-label="Search results">
+  <div class="link-grid">
+  {% for result in results %}
+    <a class="link-card" href="{{ result.url }}">
+      <span class="link-title">{{ result.label }}</span>
+      <span class="link-description">{{ result.kind | capitalize }} · {{ result.context }}</span>
+    </a>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}
