@@ -117,7 +117,17 @@ _MAX_LIST_DEPTH = 4
 
 
 class PatchNotesError(Exception):
-    """The document could not be read. The message is shown to the visitor."""
+    """The document could not be read. The message is shown to the visitor.
+
+    ``transient`` separates a failure of the document from a failure of the
+    moment. A file that is not a .docx, or holds no releases, will say the same
+    thing on the next request; a share that dropped or a file Word had open for
+    a second will not, and must not be remembered as though it had.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass
@@ -244,12 +254,14 @@ def _document_parts(path: Path) -> tuple[bytes, bytes | None]:
     except FileNotFoundError:
         raise PatchNotesError(
             "The patch notes document was not found. Check that the shared drive "
-            "is mapped and that the file has not been renamed or moved."
+            "is mapped and that the file has not been renamed or moved.",
+            transient=True,
         ) from None
     except PermissionError:
         raise PatchNotesError(
             "GREMLIN is not allowed to read the patch notes document. Its account "
-            "needs read access to the folder on the shared drive."
+            "needs read access to the folder on the shared drive.",
+            transient=True,
         ) from None
     except (KeyError, zipfile.BadZipFile):
         raise PatchNotesError(
@@ -262,7 +274,8 @@ def _document_parts(path: Path) -> tuple[bytes, bytes | None]:
         # takes an exclusive handle. Worth naming the reason -- it is usually
         # the whole diagnosis.
         raise PatchNotesError(
-            f"The patch notes document could not be opened ({exc.strerror or exc})."
+            f"The patch notes document could not be opened ({exc.strerror or exc}).",
+            transient=True,
         ) from None
 
 
@@ -380,14 +393,24 @@ def _list_level(paragraph: ET.Element, numbered_styles: dict[str, int]) -> int |
     if style is None:
         return None
     style_id = (style.get(W + "val") or "").strip().lower()
+    match = _LIST_STYLE_RE.match(style_id)
+
+    # A name that states its level is believed over the style's own numbering.
+    # Word gives each List Bullet N style a numbering definition of its own, and
+    # the depth lives in that definition's indents rather than in w:ilvl -- which
+    # is commonly absent, and reads as level 0. Taking the definition's word for
+    # it would make "List Bullet 2" a sibling of "List Bullet", flattening the
+    # nesting the author can see in the document.
+    if match is not None and match.group(1):
+        return _clamp_level(int(match.group(1)) - 1)
+
+    # No level in the name, so the definition is all there is to go on. This is
+    # the case a template style falls into, whatever its author named it.
     if style_id in numbered_styles:
         return numbered_styles[style_id]
-    match = _LIST_STYLE_RE.match(style_id)
-    if match is None:
-        return None
-    # "List Bullet" is the first level and names no digit; "List Bullet 2" is the
-    # second. ListParagraph carries no level of its own either way.
-    return _clamp_level(int(match.group(1)) - 1 if match.group(1) else 0)
+
+    # "List Bullet" and "ListParagraph" name no digit: the first level.
+    return 0 if match is not None else None
 
 
 def _clamp_level(raw: str | int | None) -> int:
@@ -754,14 +777,25 @@ class PatchNotesReader:
                 notes = PatchNotes(
                     source_path=str(self.path), updated_at=updated_at, error=str(exc)
                 )
+                if exc.transient:
+                    # The share dropped, or Word had the file open, between the
+                    # stat above and the open below it. Neither is a fact about
+                    # the document, and remembering it against a stamp that will
+                    # not change would leave the page unavailable long after
+                    # access came back -- until somebody saved the file again or
+                    # GREMLIN was restarted. Forget it and read again next time.
+                    self._stamp = None
+                    self._cached = None
+                    return notes
             else:
                 notes = PatchNotes(
                     releases=releases, source_path=str(self.path), updated_at=updated_at
                 )
 
-            # Cached either way. A document that is there but unreadable does not
-            # become readable by being unzipped again a second later, and the
-            # stamp means the next save is still picked up immediately.
+            # Cached either way now: what is left is the document itself being
+            # unreadable, and it does not become readable by being unzipped again
+            # a second later. The stamp means the next save is still picked up
+            # immediately.
             self._stamp = stamp
             self._cached = notes
             return notes

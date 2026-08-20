@@ -65,18 +65,30 @@ def _document_xml(paragraphs) -> str:
     )
 
 
+# A style that is numbered but names no w:ilvl. Word's own List Bullet N styles
+# are written this way: each points at a numbering definition of its own, and the
+# depth is in that definition's indents rather than in the style.
+NUMBERED_WITHOUT_LEVEL = "no-ilvl"
+
+
 def _styles_xml(styles) -> str:
     """A styles part, from ``(styleId, ilvl or None, basedOn or None)`` triples.
 
     ``ilvl`` of None is a style that defines no numbering -- the case that has to
-    reach its basedOn parent before it counts as a list.
+    reach its basedOn parent before it counts as a list. NUMBERED_WITHOUT_LEVEL
+    is numbering with no level named.
     """
 
     definitions = []
     for style_id, level, based_on in styles:
-        properties = "" if level is None else (
-            f'<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="3"/></w:numPr>'
-        )
+        if level is None:
+            properties = ""
+        elif level == NUMBERED_WITHOUT_LEVEL:
+            properties = '<w:numPr><w:numId w:val="3"/></w:numPr>'
+        else:
+            properties = (
+                f'<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="3"/></w:numPr>'
+            )
         parent = "" if based_on is None else f'<w:basedOn w:val="{based_on}"/>'
         definitions.append(
             f'<w:style w:type="paragraph" w:styleId="{style_id}">{parent}'
@@ -245,6 +257,31 @@ def test_word_s_own_list_styles_are_bullets_at_the_level_they_name(tmp_path):
     section = notes.latest.sections[0]
     assert [item.text for item in section.items] == ["Parent", "Numbered"]
     assert [child.text for child in section.items[0].children] == ["Child"]
+
+
+def test_a_built_in_list_style_keeps_the_level_its_name_states(tmp_path):
+    """Word writes ListBullet2 with a numbering definition of its own and no
+    w:ilvl, which reads as level 0. Believing that makes the sub-bullet a
+    sibling of the item it belongs under."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "Parent", "style": "ListBullet"},
+            {"text": "Child", "style": "ListBullet2"},
+        ],
+        styles=[
+            ("ListBullet", NUMBERED_WITHOUT_LEVEL, None),
+            ("ListBullet2", NUMBERED_WITHOUT_LEVEL, None),
+        ],
+    )
+
+    items = notes.latest.sections[0].items
+    assert [item.text for item in items] == ["Parent"]
+    assert [child.text for child in items[0].children] == ["Child"]
 
 
 def test_a_template_style_that_defines_its_own_numbering_is_a_bullet(tmp_path):
@@ -480,6 +517,63 @@ def test_the_document_is_parsed_again_only_once_it_changes(tmp_path):
     os.utime(path, ns=(stamp, stamp))
 
     assert reader.read().latest.version == "0.2.0"
+
+
+def test_a_share_that_drops_between_the_stat_and_the_open_is_tried_again(tmp_path):
+    """The file was there a line earlier, so the failure is of the moment. Cached
+    against a stamp that will not change, it would outlast the outage."""
+
+    from services import patch_notes_service
+
+    path = _write_docx(tmp_path / "GREMLIN_patchnotes.docx", SAMPLE)
+    reader = PatchNotesReader(path)
+    opened = []
+    real = patch_notes_service._document_parts
+
+    def flaky(target):
+        opened.append(target)
+        if len(opened) == 1:
+            raise PatchNotesError(
+                "The patch notes document could not be opened (network path not found).",
+                transient=True,
+            )
+        return real(target)
+
+    patch_notes_service._document_parts = flaky
+    try:
+        assert "network path not found" in reader.read().error
+        assert reader.read().latest.version == "0.1.0"
+    finally:
+        patch_notes_service._document_parts = real
+
+    assert len(opened) == 2
+
+
+def test_a_document_that_cannot_be_read_is_not_opened_again_every_visit(tmp_path):
+    """The other half of it: a file that is not a .docx says the same thing on
+    the next request, and re-reading the share to hear it is what the cache is
+    for."""
+
+    from services import patch_notes_service
+
+    path = tmp_path / "GREMLIN_patchnotes.docx"
+    path.write_bytes(b"this is a .doc saved under the wrong extension")
+    reader = PatchNotesReader(path)
+    opened = []
+    real = patch_notes_service._document_parts
+
+    def counted(target):
+        opened.append(target)
+        return real(target)
+
+    patch_notes_service._document_parts = counted
+    try:
+        assert ".docx" in reader.read().error
+        assert ".docx" in reader.read().error
+    finally:
+        patch_notes_service._document_parts = real
+
+    assert len(opened) == 1
 
 
 def test_parse_document_rejects_a_document_it_cannot_read():
