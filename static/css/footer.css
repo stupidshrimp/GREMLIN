@@ -1,61 +1,69 @@
 /* The footer occupies the content column rather than the full page width, so the
    sidebar stays an unbroken rail from the topbar to the bottom of the window.
    Its horizontal padding matches .content's for that reason: the copy inside it
-   has to line up with the cards above it, or the seam shows. */
+   has to line up with the cards above it, or the seam shows.
+
+   One hairline, no panel. The footer used to sit on a translucent white wash
+   with a rule above it and a second rule between the links and the copyright,
+   which read as a third surface stacked under the cards. A single hairline and
+   the page's own background let it end quietly instead: the rule says the page
+   is over, and everything below it is small print. The top padding is generous
+   on purpose -- the whitespace, not a border, is what separates this from the
+   last card. */
 .site-footer {
   grid-area: footer;
-  padding: 1.75rem 2rem 1.25rem;
+  padding: 2.25rem 2rem 2rem;
   border-top: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.66);
-  display: grid;
-  gap: 1.1rem;
+  /* Named so the query below cannot be answered by some other ancestor that
+     happens to be a container. */
+  container: site-footer / inline-size;
   transition: padding 220ms ease;
 }
 
-/* Brand on the left, links on the right, and they drop onto separate rows once
-   there is no longer width for both. The brand block carries the min-width that
-   decides when that happens; the link list is left to its natural width so the
-   sentence absorbs the slack rather than the navigation. */
+/* Stacked by default, side by side once there is room. Which of those applies
+   is a container query rather than a media query because the footer sits in the
+   content column: its width is the viewport minus a sidebar that is 290px, 72px
+   when collapsed, or gone entirely below the app's own breakpoint. A viewport
+   width therefore does not tell you whether the two blocks fit beside each
+   other, and pinning the alignment to one leaves a band of widths where the
+   copyright is right-aligned against a block that has already wrapped to the
+   left -- which is what it looked like. Asking the footer's own width settles
+   both at the same moment. A browser without container queries keeps the
+   stacked layout, which is the one that reads correctly at any width. */
 .site-footer-inner {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: flex-start;
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
 .site-footer-brand {
   display: grid;
-  gap: 0.3rem;
-  max-width: 46ch;
+  gap: 0.4rem;
+  max-width: 52ch;
   min-width: min(260px, 100%);
 }
 
-.site-footer-brand strong {
+/* Small, tracked, and only just darker than the copy beneath it. The wordmark
+   is a signature rather than a heading -- nothing here needs to compete with
+   the page above -- so it gets its weight from letter-spacing instead of size. */
+.site-footer-wordmark {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   color: var(--forest-900);
-  font-size: 1rem;
-  letter-spacing: 0.02em;
 }
 
-.site-footer-brand p {
-  font-size: 0.82rem;
-  line-height: 1.5;
+.site-footer-tagline {
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--muted);
 }
 
-.site-footer-nav {
+.site-footer-aside {
   display: grid;
-  gap: 0.55rem;
-}
-
-/* Same treatment as .sidebar-heading, so the two navigation blocks read as the
-   same kind of thing at opposite ends of the page. */
-.site-footer-heading {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--forest-700);
+  justify-items: start;
+  gap: 0.65rem;
 }
 
 .site-footer-nav ul {
@@ -64,55 +72,95 @@
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem 1.4rem;
+  gap: 0.4rem 1.75rem;
 }
 
+/* Medium weight, and the underline held back until the link is pointed
+   at -- three links spaced this far apart do not need bold type or a permanent
+   rule under each to be found. The underline is a real text-decoration now
+   rather than a bottom border: `text-underline-offset` is what the border was
+   standing in for, since it clears the descenders without the underline having
+   to sit at the bottom of a padded box, and it fades in because
+   `text-decoration-color` animates where the shorthand does not. */
 .site-footer-nav a {
-  display: inline-block;
   color: var(--forest-800);
-  font-size: 0.88rem;
-  font-weight: 600;
-  text-decoration: none;
-  border-radius: 6px;
-  padding: 0.15rem 0;
-  /* The underline is drawn as a border so it can be given its own colour and
-     sit clear of the descenders, which text-decoration cannot do consistently
-     across browsers without extra properties. */
-  border-bottom: 1px solid transparent;
-  transition: color 180ms ease, border-color 180ms ease;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.3em;
+  border-radius: 4px;
+  transition: color 200ms ease, text-decoration-color 200ms ease;
 }
 
 .site-footer-nav a:hover,
 .site-footer-nav a:focus-visible {
   color: var(--forest-950);
-  border-bottom-color: var(--forest-700);
+  text-decoration-color: currentColor;
 }
 
 .site-footer-nav a:focus-visible {
   outline: 2px solid var(--forest-700);
-  outline-offset: 3px;
+  outline-offset: 4px;
 }
 
-/* The page you are already on is named but not offered as somewhere to go. */
+/* The page you are already on is named but not offered as somewhere to go: it
+   keeps the underline the others only borrow on hover, drawn in a lighter tone
+   so it marks the link rather than highlighting it. */
 .site-footer-nav a[aria-current="page"] {
   color: var(--forest-950);
-  border-bottom-color: var(--forest-500);
+  text-decoration-color: var(--forest-200);
 }
 
+/* Quieter than the tagline it shares a baseline with -- it is the least
+   important line on the page, and the size difference is what says so. Size
+   rather than a fade: at this size, thinning --muted with opacity blends it
+   towards the page background and takes it under AA, where the plain token
+   clears it. */
 .site-footer-legal {
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--border);
-}
-
-.site-footer-legal p {
-  font-size: 0.78rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+  color: var(--muted);
 }
 
 @media (max-width: 900px) {
   /* Stacked layout: the footer spans the single column and lines up with
-     .content's narrower padding. */
+     .content's narrower padding. Padding only: whether the blocks inside sit
+     side by side is a question about the footer's width, not the viewport's,
+     and the container query above answers it. Narrowing the padding here does
+     feed into that -- the query reads the content box -- so the two stay in
+     step rather than fighting. */
   .site-footer {
-    padding: 1.5rem 1rem 1rem;
+    padding: 1.75rem 1rem 1.5rem;
+  }
+}
+
+/* The two blocks side by side, with the links and the copyright hung off the
+   right edge. 680px is sized off the row it has to hold: a 260px brand block,
+   the 2.5rem gap, and the links at their natural width, with enough left over
+   that the row does not have to wrap at the width it is granted.
+
+   `flex-end` is what makes the two blocks read as one line rather than two
+   columns: the copyright and the tagline are both the last line of their block,
+   so hanging them off the bottom puts them on the same baseline whatever height
+   the tagline wraps to. */
+@container site-footer (min-width: 680px) {
+  .site-footer-inner {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 1rem 2.5rem;
+  }
+
+  .site-footer-aside {
+    justify-items: end;
+    text-align: right;
+  }
+
+  .site-footer-nav ul {
+    justify-content: flex-end;
   }
 }
 

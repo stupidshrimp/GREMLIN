@@ -1,29 +1,32 @@
 {#- The site footer, drawn on every page from base.html. Its links are the ones
     that have no place in the sidebar: they are about GREMLIN itself rather than
     a part of the reliability workflow, so they live down here the way an
-    About/Contact block does on an ordinary website. -#}
+    About/Contact block does on an ordinary website.
+
+    Two blocks on one line, not three stacked bands. The old markup gave the
+    three links their own uppercase "About this site" heading and put the
+    copyright below a second hairline, which is a lot of furniture for a row
+    that only ever holds three words. The nav's aria-label carries the label a
+    screen reader needs, so dropping the visible heading costs nothing. -#}
 <footer class="site-footer" role="contentinfo">
   <div class="site-footer-inner">
     <div class="site-footer-brand">
-      <strong>GREMLIN</strong>
-      <p>Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</p>
+      <span class="site-footer-wordmark">GREMLIN</span>
+      <p class="site-footer-tagline">Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</p>
     </div>
 
-    <nav class="site-footer-nav" aria-label="Footer">
-      <p class="site-footer-heading">About this site</p>
-      <ul>
-      {% for link in footer_links %}
-        <li>
+    <div class="site-footer-aside">
+      <nav class="site-footer-nav" aria-label="Footer">
+        <ul>
+        {% for link in footer_links %}
           {# aria-current is the footer's equivalent of the sidebar's .active class:
              the styling is shared, but this is what a screen reader announces. #}
-          <a href="{{ link.url }}"{% if request.path == link.url %} aria-current="page"{% endif %}>{{ link.label }}</a>
-        </li>
-      {% endfor %}
-      </ul>
-    </nav>
-  </div>
+          <li><a href="{{ link.url }}"{% if request.path == link.url %} aria-current="page"{% endif %}>{{ link.label }}</a></li>
+        {% endfor %}
+        </ul>
+      </nav>
 
-  <div class="site-footer-legal">
-    <p>&copy; {{ current_year }} GREMLIN</p>
+      <p class="site-footer-legal">&copy; {{ current_year }} GREMLIN</p>
+    </div>
   </div>
 </footer>
