@@ -14,6 +14,33 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/sidebar.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/footer.css') }}">
   {% block head_extra %}{% endblock %}
+  <script>
+    // Stamped on <html> before the first paint, and before the stylesheets have
+    // even finished arriving, so the light theme never flashes past on the way
+    // to the dark one. Doing it from topbar_tools.js instead would mean the page
+    // rendering light and then repainting, which on a slow connection is a
+    // visible white flash on every single navigation.
+    //
+    // Inline and in <head> is the only place this works, so it cannot be shared
+    // with topbar_tools.js -- the storage key and the default below are
+    // deliberately duplicated there. Change one and change the other.
+    //
+    // Light unless dark was chosen here before. The machine's own
+    // prefers-color-scheme is deliberately not consulted: GREMLIN is light, and
+    // dark is somewhere you go rather than somewhere an OS setting puts you.
+    // Which also means the attribute is always present and always one of the two
+    // -- theme.css can rely on `[data-theme="dark"]` being the whole story.
+    (function () {
+      var stored = null;
+      try {
+        stored = localStorage.getItem("gremlin.theme");
+      } catch (e) {}
+      document.documentElement.setAttribute(
+        "data-theme",
+        stored === "dark" ? "dark" : "light"
+      );
+    })();
+  </script>
 </head>
 <body>
   <script>
@@ -39,6 +66,10 @@
   {# After layout.js: the global search can open the account dialog, and that
      dialog's own buttons are wired up there. #}
   <script src="{{ url_for('static', filename='js/global_search.js') }}"></script>
+  {# The topbar's tool rail: the theme toggle and the quick links dropdown. The
+     theme itself is already applied by the inline script in <head> above; this
+     is what makes the button able to change it. #}
+  <script src="{{ url_for('static', filename='js/topbar_tools.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

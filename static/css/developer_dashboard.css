@@ -52,9 +52,9 @@
 }
 
 .dev-subnav-link.is-active {
-  background: var(--forest-700);
-  border-color: var(--forest-700);
-  color: #fff;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
 }
 
 /* --- Hub cards ----------------------------------------------------------- */
@@ -146,9 +146,9 @@
   margin-top: 16px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: rgba(192, 57, 43, 0.1);
-  border: 1px solid rgba(192, 57, 43, 0.3);
-  color: #96261a;
+  background: var(--danger-tint-soft);
+  border: 1px solid var(--danger-tint-border);
+  color: var(--danger-strong);
   font-weight: 600;
 }
 
@@ -194,9 +194,9 @@
 }
 
 .dev-banner.is-error {
-  background: rgba(192, 57, 43, 0.1);
-  border-color: rgba(192, 57, 43, 0.3);
-  color: #96261a;
+  background: var(--danger-tint-soft);
+  border-color: var(--danger-tint-border);
+  color: var(--danger-strong);
 }
 
 /* --- Tabs ---------------------------------------------------------------- */
@@ -227,9 +227,9 @@
 }
 
 .dev-tab.is-active {
-  background: var(--forest-700);
-  border-color: var(--forest-700);
-  color: #fff;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
 }
 
 .dev-panel {
@@ -284,7 +284,7 @@ body:has(.dev-panel) .content,
 }
 
 .dev-error {
-  color: #96261a;
+  color: var(--danger-strong);
   font-weight: 600;
 }
 
@@ -416,13 +416,13 @@ body:has(.dev-panel) .content,
 }
 
 .dev-pill-ok {
-  background: rgba(47, 143, 91, 0.14);
-  color: #1f6b41;
+  background: var(--brand-tint);
+  color: var(--brand-ink);
 }
 
 .dev-pill-warn {
-  background: rgba(192, 57, 43, 0.12);
-  color: #96261a;
+  background: var(--danger-tint);
+  color: var(--danger-strong);
 }
 
 .dev-pill-muted {
@@ -514,8 +514,8 @@ body:has(.dev-panel) .content,
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--forest-950);
-  color: #e6eef5;
+  background: var(--code-bg);
+  color: var(--code-ink);
   font-size: 0.8rem;
   line-height: 1.55;
   overflow-x: auto;
@@ -525,8 +525,8 @@ body:has(.dev-panel) .content,
   margin-top: 14px;
   padding: 12px 16px;
   border-radius: 10px;
-  border: 1px solid rgba(192, 57, 43, 0.3);
-  background: rgba(192, 57, 43, 0.08);
+  border: 1px solid var(--danger-tint-border);
+  background: var(--danger-tint-soft);
   font-size: 0.88rem;
 }
 
@@ -643,16 +643,16 @@ body:has(.dev-panel) .content,
    itself: an empty bar next to "Sync failed" otherwise looks like a bar that is
    still waiting to start. */
 .dev-progress.is-error {
-  background: rgba(192, 57, 43, 0.12);
-  border-color: rgba(192, 57, 43, 0.3);
+  background: var(--danger-tint);
+  border-color: var(--danger-tint-border);
 }
 
 .dev-progress.is-error .dev-progress-fill {
-  background: linear-gradient(90deg, #96261a, #c0392b);
+  background: linear-gradient(90deg, var(--danger-strong), var(--danger-strong));
 }
 
 .dev-progress-phase.is-error {
-  color: #96261a;
+  color: var(--danger-strong);
 }
 
 /* No fraction to show yet (a phase whose size the API does not report): sweep a
@@ -714,8 +714,8 @@ body:has(.dev-panel) .content,
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--forest-950);
-  color: #e6eef5;
+  background: var(--code-bg);
+  color: var(--code-ink);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.8rem;
   line-height: 1.6;
@@ -728,7 +728,7 @@ body:has(.dev-panel) .content,
 
 .dev-log-time {
   flex-shrink: 0;
-  color: #8fa6b8;
+  color: var(--code-muted);
 }
 
 .dev-log-text {
@@ -743,8 +743,8 @@ body:has(.dev-panel) .content,
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--forest-950);
-  color: #e6eef5;
+  background: var(--code-bg);
+  color: var(--code-ink);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.88rem;
   line-height: 1.6;
