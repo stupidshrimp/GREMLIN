@@ -80,14 +80,38 @@ def test_quick_links_stay_out_of_the_sidebar_and_the_search_catalog(monkeypatch,
     assert quick_urls.isdisjoint({entry["url"] for entry in catalog})
 
 
+def _theme_bootstrap(body):
+    """The code of the inline <head> script that stamps data-theme before paint.
+
+    Comments are stripped: what the script says about prefers-color-scheme and
+    what it does with it are different things, and only the second one is what
+    these tests are about.
+    """
+    head = body[: body.index("</head>")]
+    start = head.rindex("<script>", 0, head.index("gremlin.theme"))
+    script = head[start : head.index("</script>", start)]
+    return "\n".join(re.sub(r"//.*", "", line) for line in script.splitlines())
+
+
 def test_the_theme_is_resolved_before_the_page_is_painted(monkeypatch, tmp_path):
     """The bootstrap has to run in <head>. Deferring it to topbar_tools.js at the
     end of <body> means the page renders light and then repaints, which is a
     white flash on every navigation for anyone using the dark theme."""
     body = _app(monkeypatch, tmp_path).app.test_client().get("/").get_data(as_text=True)
-    head = body.index("</head>")
-    bootstrap = body.index("gremlin.theme")
-    assert bootstrap < head
+    assert body.index("gremlin.theme") < body.index("</head>")
+
+
+def test_the_theme_is_light_unless_dark_was_chosen(monkeypatch, tmp_path):
+    """Light is the default and the machine's own setting does not override it:
+    dark is somewhere you go, not somewhere an OS preference puts you. The only
+    thing that selects it is the saved value from a press of the toggle."""
+    body = _app(monkeypatch, tmp_path).app.test_client().get("/").get_data(as_text=True)
+    bootstrap = _theme_bootstrap(body)
+
+    assert "prefers-color-scheme" not in bootstrap
+    # The whole rule, as one expression: dark only on a stored "dark".
+    assert '"data-theme",' in bootstrap
+    assert 'stored === "dark" ? "dark" : "light"' in bootstrap
 
 
 def test_the_notifications_button_does_not_claim_a_panel_it_has_not_got(monkeypatch, tmp_path):

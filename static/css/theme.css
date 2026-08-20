@@ -118,19 +118,17 @@
 
 /* The dark theme.
    ---------------------------------------------------------------------------
-   Reached only through an explicit `data-theme="dark"` on <html>. There is no
-   companion `@media (prefers-color-scheme: dark)` block, and that is on purpose:
-   the two would have to carry identical copies of every value below -- CSS has
-   no way to share one set of declarations across a media-query boundary -- and a
-   palette kept in two places is a palette that drifts the first time somebody
-   edits one of them.
+   Reached only through an explicit `data-theme="dark"` on <html>, which
+   base.html stamps before first paint and the toggle in topbar_tools.js changes.
+   Light is the default: there is no companion
+   `@media (prefers-color-scheme: dark)` block, so a machine set to dark does not
+   put anybody here. GREMLIN is a light application and dark is somewhere you
+   choose to go.
 
-   The system preference is honoured all the same; it is just resolved in one
-   place instead of two. base.html stamps the attribute before first paint from
-   the saved choice, falling back to the machine's setting when there is no saved
-   choice, and topbar_tools.js keeps it in step from there. So a visitor whose
-   machine is set to dark still lands on the dark theme, and one who has chosen
-   light keeps it on a machine set to dark. */
+   Which also settles the other reason not to write that block. It would have to
+   carry an identical copy of every value below -- CSS has no way to share one set
+   of declarations across a media-query boundary -- and a palette kept in two
+   places is a palette that drifts the first time somebody edits one of them. */
 :root[data-theme="dark"] {
   color-scheme: dark;
 
@@ -203,6 +201,81 @@
   --success-bg: rgba(60, 160, 100, 0.16);
   --success-border: rgba(143, 191, 159, 0.45);
   --warning-ink: #e9c65a;
+}
+
+/* Getting from one theme to the other.
+   ---------------------------------------------------------------------------
+   Two paths, and topbar_tools.js picks between them.
+
+   The good one is the View Transitions API. The browser photographs the page
+   before and after the attribute changes, and the new photograph is then wiped
+   in over the old as a circle growing out of the button that was pressed. Not one
+   element animates its own colour -- the whole window is a single image being
+   uncovered -- which is what makes it read as a light being switched on rather
+   than as a thousand things changing at once. The default cross-fade between the
+   two snapshots is turned off here so the clip-path animation is the only thing
+   happening, and the new snapshot is put on top so there is something to uncover.
+
+   The other is the class below, for browsers without view transitions and for a
+   change arriving from another tab, where there is no button for a circle to
+   grow out of. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) { z-index: 0; }
+::view-transition-new(root) { z-index: 1; }
+
+/* Turned on for the length of the switch and taken off again -- left in the
+   stylesheet it would put a 320ms lag on every hover in the application, since
+   these are the properties hover states are made of.
+
+   `*` and `!important` together are doing something blunt on purpose: this has
+   to beat the transitions elements declare for themselves, and the set of
+   elements that change colour with the theme is "all of them". `background-image`
+   is in the list for the topbar and the cards, whose fills are gradients;
+   browsers interpolate between two gradients of the same shape, and these are. */
+:root.is-theme-switching,
+:root.is-theme-switching *,
+:root.is-theme-switching *::before,
+:root.is-theme-switching *::after {
+  transition:
+    background-color 320ms ease,
+    background-image 320ms ease,
+    border-color 320ms ease,
+    color 320ms ease,
+    fill 320ms ease,
+    stroke 320ms ease,
+    box-shadow 320ms ease !important;
+  transition-delay: 0s !important;
+}
+
+/* The exception to the blanket rule above, which would otherwise take away the
+   only animation on the page that is *about* the theme: the sun and moon trading
+   places inside the button. More specific, so it wins between two !importants. */
+:root.is-theme-switching .topbar-theme-icon svg {
+  transition: opacity 220ms ease, transform 220ms ease !important;
+}
+
+/* Somebody who has asked for less motion gets the theme applied and nothing
+   else. topbar_tools.js checks the same preference and neither starts a view
+   transition nor adds the class, so this is the belt to that braces -- it also
+   covers the preference being turned on mid-switch. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+
+  :root.is-theme-switching,
+  :root.is-theme-switching *,
+  :root.is-theme-switching *::before,
+  :root.is-theme-switching *::after {
+    transition: none !important;
+  }
 }
 
 * { box-sizing: border-box; }
