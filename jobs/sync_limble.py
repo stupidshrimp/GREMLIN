@@ -48,12 +48,14 @@ if __package__ in (None, ""):
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
 from services.ingestion_service import PHASE_ASSETS, PHASE_TASKS, IngestionService
+from services.ingestion_service import DEFAULT_INSTRUCTIONS_LIMIT
 from services.sync_service import (
     SyncOptions,
     load_dotenv_files,
     parse_since,
     phase_share,
     record_run_timing,
+    sync_seconds_worth_recording,
 )
 
 
@@ -99,6 +101,23 @@ def _resolve_db_path(explicit: str | None, *, must_exist: bool, create: bool) ->
     return path
 
 
+def _positive_count(value: str) -> int:
+    """A count of tasks, for --instructions-limit.
+
+    argparse would take ``-1`` happily, and a cap that is not a cap is the worst
+    reading of it: an unbounded request-per-task walk of the whole history, hours
+    long, from a flag whose whole purpose was to bound the run.
+    """
+
+    try:
+        count = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number of tasks, got {value!r}") from None
+    if count < 0:
+        raise argparse.ArgumentTypeError(f"cannot be negative, got {count}")
+    return count
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync Limble CMMS data into GREMLIN.db.")
     parser.add_argument("--db", help="Path to GREMLIN.db (overrides GREMLIN_DB_PATH).")
@@ -107,7 +126,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", help="Limble API base URL (default https://api.limblecmms.com/v2).")
     parser.add_argument(
         "--since",
-        help="Only import tasks touched on/after this date (YYYY-MM-DD), ISO datetime, or Unix timestamp.",
+        help=(
+            "Only import tasks touched on/after this date (YYYY-MM-DD), ISO datetime, or "
+            "Unix timestamp. Note this narrows what is *imported*, not what is fetched: "
+            "/tasks has no server-side date filter, so the whole history is pulled and "
+            "then filtered here. It does not make the fetch shorter."
+        ),
     )
     parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
     parser.add_argument("--no-assets", action="store_true", help="Skip the /assets fetch used for name/hierarchy enrichment.")
@@ -116,6 +140,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--include-templates",
         action="store_true",
         help="Import Limble template tasks too (excluded by default, matching the legacy export).",
+    )
+    parser.add_argument(
+        "--no-instructions",
+        action="store_true",
+        help=(
+            "Skip reading the Area Affected / Condition / Cause / Action boxes. They live in "
+            "each work order's instructions, which Limble serves one task at a time, so this "
+            "is the flag to reach for when a sync needs to be as quick as possible."
+        ),
+    )
+    parser.add_argument(
+        "--instructions-limit",
+        type=_positive_count,
+        default=DEFAULT_INSTRUCTIONS_LIMIT,
+        help=(
+            f"How many work orders to read instructions for (default {DEFAULT_INSTRUCTIONS_LIMIT}). "
+            "The most recently completed are read first and each run picks up where the last "
+            "stopped, so raise this to work through a backlog faster."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and transform, but make no database changes.")
     parser.add_argument("--create", action="store_true", help="Create the database file if it does not exist.")
@@ -145,6 +188,9 @@ def run(args: argparse.Namespace) -> dict:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         exclude_templates=not args.include_templates,
+        fetch_instructions=not args.no_instructions,
+        instructions_limit=args.instructions_limit,
+        progress=_print_progress,
     )
 
     print(f"Database: {db_path}")
@@ -158,13 +204,45 @@ def run(args: argparse.Namespace) -> dict:
     # is answered from the runs that actually happen -- most of which happen
     # here, at night, and never touch the web app. Best effort: a directory that
     # cannot be written to costs an estimate, not this import.
+    #
+    # The instructions phase is taken back out rather than the whole run being
+    # skipped. It is paced by the API's rate limit instead of by how much work
+    # the sync did, so leaving it in would put a backfill's hours into the
+    # estimate shown before an ordinary run -- but skipping those runs entirely,
+    # now that reading instructions is what a sync normally does, would leave the
+    # estimate with almost nothing to learn from.
     record_run_timing(
         db_path,
-        seconds=time.monotonic() - started,
+        seconds=sync_seconds_worth_recording(time.monotonic() - started, summary),
         share=phase_share(_options_for(args)),
         counts={PHASE_TASKS: summary.get("fetched_tasks"), PHASE_ASSETS: summary.get("fetched_assets")},
     )
     return summary
+
+
+# How often the fetch phases say something. Limble's list endpoints are paged at
+# 200 and spaced a second apart, so a full task pull is thousands of seconds of
+# silence otherwise -- long enough to look hung and be killed halfway.
+_PROGRESS_EVERY = 1000
+_last_reported: dict[str, int] = {}
+
+
+def _print_progress(phase: str, current: int | None, total: int | None) -> None:
+    """Narrate a long phase, sparsely enough not to bury the summary."""
+
+    if current is None:
+        return
+    previous = _last_reported.get(phase, 0)
+    finished = total is not None and current >= total
+    if not finished and current - previous < _PROGRESS_EVERY:
+        return
+    _last_reported[phase] = current
+    if total:
+        print(f"  {phase}: {current} of {total}", flush=True)
+    else:
+        # The list endpoints do not report a total, so say what is known rather
+        # than inventing a denominator.
+        print(f"  {phase}: {current} so far ...", flush=True)
 
 
 def _options_for(args: argparse.Namespace) -> SyncOptions:
@@ -175,6 +253,8 @@ def _options_for(args: argparse.Namespace) -> SyncOptions:
         fetch_assets=not args.no_assets,
         refresh_mapping=not args.no_map,
         include_templates=args.include_templates,
+        fetch_instructions=not args.no_instructions,
+        instructions_limit=args.instructions_limit,
     )
 
 

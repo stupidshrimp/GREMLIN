@@ -118,6 +118,12 @@ class WorkOrderDetail:
     asset_name: str = ""
     description: str = ""
     completion_notes: str = ""
+    # The four structured boxes the maintenance team fills out on a work order.
+    # Blank on any order completed before the Limble template asked for them.
+    area_affected: str = ""
+    condition_found: str = ""
+    cause: str = ""
+    action_taken: str = ""
 
 
 @dataclass(frozen=True)

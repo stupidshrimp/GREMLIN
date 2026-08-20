@@ -26,11 +26,13 @@ Transform decisions (confirmed for this Limble account):
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from integrations.limble import LimbleClient
-from repositories.raw_repo import RawRepository
+from integrations.limble import LimbleClient, task_touched_at
+from repositories.raw_repo import INSTRUCTIONS_READ_ERROR, RawRepository
+from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
 
 
 # The phases a sync moves through, in order. The names are part of the contract
@@ -39,9 +41,34 @@ from repositories.raw_repo import RawRepository
 # means renaming it there.
 PHASE_TASKS = "tasks"
 PHASE_ASSETS = "assets"
+PHASE_INSTRUCTIONS = "instructions"
 PHASE_TRANSFORM = "transform"
 PHASE_WRITE = "write"
 PHASE_MAP = "map"
+
+# Stamped onto a task's stored payload when its instructions were last read, so
+# a run can tell "asked and there was nothing" from "never asked". Kept in
+# raw_json rather than a table of its own because it describes that payload and
+# travels with it through the same merge.
+INSTRUCTIONS_READ_AT = "instructions_read_at"
+
+# How many work orders one run will read instructions for unless told otherwise.
+# There is deliberately no unlimited default: the first run against a long
+# history would otherwise take days at the client's rate limit, and a bounded run
+# that resumes is the same work done in the same order without a surprise.
+DEFAULT_INSTRUCTIONS_LIMIT = 500
+
+# How long a read that failed waits before it is worth trying again. Long enough
+# that a task Limble will never serve costs one request a day rather than one per
+# run, short enough that an outage during a backfill is made good by the next
+# night's sync instead of leaving those work orders blank for good.
+RETRY_A_FAILED_READ_AFTER = 6 * 60 * 60
+
+# How many instruction reads to hold before writing them down. Small enough that
+# an interrupted run loses seconds of requests rather than minutes, large enough
+# that the phase is not one database write per task -- at the client's pacing this
+# is roughly half a minute of work in flight.
+_INSTRUCTIONS_CHECKPOINT_EVERY = 25
 
 # How often the transform loop reports progress, in records.
 _TRANSFORM_PROGRESS_EVERY = 250
@@ -58,6 +85,8 @@ class IngestionService:
         fetch_assets: bool = True,
         refresh_mapping: bool = True,
         exclude_templates: bool = True,
+        fetch_instructions: bool = True,
+        instructions_limit: int | None = DEFAULT_INSTRUCTIONS_LIMIT,
         log: Callable[[str], None] = print,
         progress: Callable[[str, int | None, int | None], None] | None = None,
         on_batch_started: Callable[[int], None] | None = None,
@@ -67,6 +96,15 @@ class IngestionService:
         self.fetch_assets = fetch_assets
         self.refresh_mapping = refresh_mapping
         self.exclude_templates = exclude_templates
+        # The Area Affected / Condition / Cause / Action boxes live in a task's
+        # *instructions*, which /tasks does not carry -- each one is its own
+        # request. On by default: the cost is the first walk through the history,
+        # not the nightly run, because a task records that it was read and is not
+        # read again. A sync left to itself therefore keeps the narrative current
+        # for a minute a night, where an off-by-default phase would have meant a
+        # flag nobody remembers and tables that quietly stop being true.
+        self.fetch_instructions = fetch_instructions
+        self.instructions_limit = instructions_limit
         self._log = log
         # ``progress(phase, current, total)`` is optional structured reporting
         # for a UI; ``log`` stays the human-readable narration the CLI prints.
@@ -131,6 +169,8 @@ class IngestionService:
             asset_index = AssetIndex.from_assets(assets)
             self._log(f"Fetched {len(assets)} asset(s).")
 
+        instruction_counts = self._attach_instructions(tasks, checkpoint=not dry_run)
+
         self._emit(PHASE_TRANSFORM, 0, len(tasks))
         records = []
         for position, task in enumerate(tasks, start=1):
@@ -144,6 +184,7 @@ class IngestionService:
                 "fetched_tasks": fetched_tasks,
                 "excluded_templates": excluded_templates,
                 "fetched_assets": asset_index.count,
+                **instruction_counts,
                 "records": len(records),
                 "inserted": 0,
                 "updated": 0,
@@ -201,12 +242,279 @@ class IngestionService:
             "fetched_tasks": fetched_tasks,
             "excluded_templates": excluded_templates,
             "fetched_assets": asset_index.count,
+            **instruction_counts,
             "records": len(records),
             "import_batch_id": batch_id,
             **counts,
             **mapping,
             "dry_run": False,
         }
+
+    def _attach_instructions(self, tasks: list[dict[str, Any]], *, checkpoint: bool = True) -> dict[str, Any]:
+        """Fill in each task's four narrative boxes from its instruction items.
+
+        The boxes the maintenance teams fill out -- Area Affected, Condition,
+        Cause, Action -- are task *instructions*, and Limble serves those only as
+        a per-task sub-resource. One request per task at the client's rate limit
+        makes a whole history impossible to walk in one run, so a run is bounded
+        and selective:
+
+        * **Completed tasks only.** The boxes are the closing write-up; a task
+          still open has nothing in them.
+        * **Only what has not been read.** Selection turns on whether the task
+          was asked about, not on whether the asking found anything -- plenty of
+          completed work orders legitimately have their boxes blank, and
+          selecting on the answer would leave those candidates forever at the
+          head of a newest-first queue, so every capped run would re-read the
+          same few and never reach the rest.
+        * **Except when there is reason to ask again.** A task edited since it
+          was read, because boxes left blank at closing can be filled in later;
+          and a read that *failed*, once RETRY_A_FAILED_READ_AFTER has passed,
+          because the stamp that stops a dead task blocking the queue would
+          otherwise let one outage cost those work orders their narrative for
+          good.
+
+        It is on by default: the cost is the first walk through the history, not
+        the nightly run, because a task records that it was read.
+
+        Those records are written down as the phase goes rather than held until
+        the sync reaches its upsert. A run reads at the API's pacing, so a capped
+        backfill is minutes of requests that would otherwise exist only in memory
+        -- and a worker killed before the write loses every one of them and
+        begins the next run on the same tasks, which for a worker that always
+        dies at the same point means never advancing at all.
+
+        Only the four answers are kept, written onto the task as ordinary
+        top-level fields. The instruction list itself runs to kilobytes of
+        checklist boilerplate per task and would bloat raw_json for nothing --
+        the mapper reads the distilled fields through the same path it reads any
+        other task field.
+        """
+
+        if not self.fetch_instructions:
+            return {}
+        if not callable(getattr(self.limble_client, "get_task_instructions", None)):
+            # An older client, or a stand-in that only knows the list endpoints.
+            # The narrative is an addition to a sync, never the point of one, so
+            # losing the whole import over it would be the wrong trade.
+            self._log("This Limble client cannot read task instructions; skipping the failure narrative.")
+            return {}
+
+        read_at, errored = self._instructions_read_state()
+        now = _utc_now()
+        candidates = [
+            task for task in tasks
+            if self._task_key(task) is not None
+            and task.get("dateCompleted") not in (None, "", 0, "0")
+            and self._needs_reading(task, read_at, errored, now)
+        ]
+        # Never tried first, then the ones due a retry, each newest-completed
+        # first. Two choices in one sort, and a capped run turns on both. Newest
+        # first because the boxes only exist on work orders closed since the
+        # template began asking for them, so recent tasks are both the ones with
+        # anything to read and the ones an analysis is looking at -- arrival
+        # order would spend a whole run on history that predates the template.
+        # Retries last because a task that always fails, deleted or invisible to
+        # this key, must cost the tail of a run rather than its head.
+        candidates.sort(key=lambda task: (self._task_key(task) in errored, -self._completed_at(task)))
+        limit = self.instructions_limit
+        capped = len(candidates)
+        if limit is not None:
+            # Clamped rather than ignored. Reading nothing is a wasted run;
+            # treating a negative cap as "no cap" would instead start an
+            # unbounded rate-limited walk of the whole history.
+            candidates = candidates[:max(0, limit)]
+        remaining = capped - len(candidates)
+
+        if not candidates:
+            self._log("No tasks need their instructions fetched.")
+            return {
+                "instructions_fetched": 0,
+                "instructions_found": 0,
+                "instructions_failed": 0,
+                "instructions_remaining": remaining,
+                "instructions_seconds": 0.0,
+            }
+
+        self._log(f"Fetching instructions for {len(candidates)} task(s) ...")
+        started = time.monotonic()
+        self._emit(PHASE_INSTRUCTIONS, 0, len(candidates))
+        found = 0
+        errors = 0
+        # Results read but not yet written. This is the only phase of a sync
+        # where minutes of paid-for work sit in memory -- one paced request per
+        # work order -- so it is flushed in chunks rather than held until the
+        # run reaches its upsert. See _checkpoint_instruction_reads.
+        pending: dict[str, dict[str, Any]] = {}
+        for position, task in enumerate(candidates, start=1):
+            task_id = self._task_key(task)
+            try:
+                instructions = self.limble_client.get_task_instructions(task_id)
+            except Exception as exc:  # noqa: BLE001 - one bad task must not lose the sync
+                self._log(f"Warning: could not read instructions for task {task_id}: {exc}")
+                # Stamped like a success, and for the same reason: a task that
+                # always fails -- deleted, or one this key cannot see -- would
+                # otherwise stay unread forever at the head of a newest-first
+                # queue and block the backfill exactly as a blank one used to.
+                # The error is recorded alongside so the next run can put it
+                # behind everything never tried, where a permanent failure costs
+                # the tail of a run rather than all of it, and so that the read is
+                # tried again once RETRY_A_FAILED_READ_AFTER has passed.
+                #
+                # The narrative keys are pointedly *not* written here: this read
+                # answered nothing, so it has no standing to clear boxes a
+                # previous read recorded.
+                fields = {
+                    INSTRUCTIONS_READ_AT: _utc_now(),
+                    INSTRUCTIONS_READ_ERROR: str(exc)[:500],
+                }
+                errors += 1
+            else:
+                narrative = extract_narrative({"instructions": instructions})
+                # Stamped whether or not anything was found. Plenty of completed
+                # work orders legitimately have no boxes filled in, and without a
+                # record of having asked they would be selected again on every run
+                # -- ahead of everything older, since the newest are read first --
+                # so a capped backfill would re-read the same head of the queue
+                # forever and never reach the rest of the history.
+                #
+                # Every box is written, not just the answered ones. This read saw
+                # the whole task, so a box it did not return is one that was
+                # cleared in Limble, and the merge preserves what a payload omits
+                # -- leaving the old text in place would keep a work order showing
+                # failure evidence its own record no longer makes. That clearing
+                # is only sound because an unreadable response raises rather than
+                # arriving here as an empty one; see LimbleResponseError.
+                fields = {
+                    INSTRUCTIONS_READ_AT: _utc_now(),
+                    INSTRUCTIONS_READ_ERROR: "",
+                    **{key: narrative.get(key, "") for key in NARRATIVE_KEYS},
+                }
+                if narrative:
+                    found += 1
+            # The task dict is what this run's own transform reads; ``pending`` is
+            # what survives the run being killed before it gets there.
+            task.update(fields)
+            pending[task_id] = fields
+            if checkpoint and len(pending) >= _INSTRUCTIONS_CHECKPOINT_EVERY:
+                self._checkpoint_instruction_reads(pending)
+                pending = {}
+            self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
+
+        if checkpoint:
+            self._checkpoint_instruction_reads(pending)
+
+        self._log(
+            f"Read instructions for {len(candidates)} task(s); {found} carried a failure narrative."
+            + (f" {errors} could not be read." if errors else "")
+            + (f" {remaining} more still to do." if remaining else "")
+        )
+        return {
+            "instructions_fetched": len(candidates),
+            "instructions_found": found,
+            "instructions_failed": errors,
+            "instructions_remaining": remaining,
+            # Reported so a caller timing the sync can take this phase back out.
+            # It is paced by the API's rate limit rather than by how much work
+            # the sync did, so counting it would put a backfill's hours into the
+            # estimate shown before an ordinary nightly run.
+            "instructions_seconds": round(time.monotonic() - started, 3),
+        }
+
+    def _checkpoint_instruction_reads(self, pending: dict[str, dict[str, Any]]) -> None:
+        """Write the reads done so far, and never lose a sync over failing to.
+
+        A checkpoint is insurance, not the authoritative write -- the run's own
+        upsert stores these same fields at the end. So a database locked by
+        another writer, or a repository that predates this method, costs repeated
+        requests on the next run and nothing else; letting it raise here would
+        throw away the whole import, including the tasks and assets already
+        fetched, to protect against having to re-read some instructions.
+        """
+
+        if not pending:
+            return
+        try:
+            self.raw_repo.record_instruction_read(pending)
+        except Exception as exc:  # noqa: BLE001 - insurance must not become the risk
+            self._log(
+                f"Warning: could not save instruction progress ({exc}); "
+                "it will be re-read if this run does not finish."
+            )
+
+    def _instructions_read_state(self) -> tuple[dict[str, float], set[str]]:
+        """When each stored task was last read, and which reads failed.
+
+        Rows imported before these fields existed are absent and so are read once.
+        """
+
+        read_at: dict[str, float] = {}
+        errored: set[str] = set()
+        try:
+            for task_key, payload in self.raw_repo.iter_task_payloads():
+                stamp = _coerce_number(payload.get(INSTRUCTIONS_READ_AT))
+                if stamp is None and len(extract_narrative(payload)) == len(NARRATIVE_KEYS):
+                    # Stored by a build that kept answers without stamping the
+                    # attempt. A full narrative is proof enough that it was read,
+                    # so treat it as read when the task was last touched -- not as
+                    # read forever, which no later edit could ever exceed and
+                    # which would freeze those answers even after Limble's change.
+                    stamp = float(task_touched_at(payload))
+                if stamp is None:
+                    continue
+                read_at[task_key] = stamp
+                if str(payload.get(INSTRUCTIONS_READ_ERROR) or "").strip():
+                    errored.add(task_key)
+        except Exception as exc:  # noqa: BLE001 - a database without the table yet
+            self._log(f"Could not check which tasks have been read ({exc}); considering all candidates.")
+            return {}, set()
+        return read_at, errored
+
+    @staticmethod
+    def _needs_reading(
+        task: dict[str, Any], read_at: dict[str, float], errored: set[str], now: float
+    ) -> bool:
+        """True when this task has not been read, has changed, or is due a retry.
+
+        A work order can be completed with its boxes blank and filled in later,
+        so a task edited since the last read is worth asking about again. One
+        that has not changed is not.
+
+        A read that *failed* is different from one that found nothing. The
+        client has already exhausted its own retries by then, so the failure is
+        usually the permanent kind -- but not always, and an outage during a
+        backfill must not quietly cost those work orders their narrative
+        forever. So a failed read is stamped, which is what stops it blocking
+        the queue, and becomes eligible again once RETRY_A_FAILED_READ_AFTER has
+        passed. Sorting puts it behind everything never tried, so the retry
+        costs the tail of a run rather than its head.
+        """
+
+        key = IngestionService._task_key(task)
+        previous = read_at.get(key) if key is not None else None
+        if previous is None:
+            return True
+        if task_touched_at(task) > previous:
+            return True
+        return key in errored and (now - previous) >= RETRY_A_FAILED_READ_AFTER
+
+    @staticmethod
+    def _completed_at(task: dict[str, Any]) -> float:
+        """When this task was completed, as a sortable number (0 when unknown)."""
+
+        number = _coerce_number(task.get("dateCompleted"))
+        if number is None or number <= 0:
+            return 0.0
+        # Millisecond timestamps sort above second ones otherwise, putting a
+        # handful of oddly-stored rows in front of everything real.
+        return number / 1000.0 if number > 10_000_000_000 else number
+
+    @staticmethod
+    def _task_key(task: dict[str, Any]) -> str | None:
+        value = task.get("taskID")
+        if value in (None, ""):
+            return None
+        return str(value).strip() or None
 
     def _refresh_mapped_records(self) -> dict[str, Any]:
         """Map new/changed raw rows into ``mapped_cmms_record`` via LifeDataService.
@@ -391,6 +699,10 @@ def _asset_parent_id(asset: dict[str, Any]) -> str | None:
         if value not in (None, "", 0, "0"):
             return str(value)
     return None
+
+
+def _utc_now() -> float:
+    return datetime.now(tz=timezone.utc).timestamp()
 
 
 def _coerce_number(value: Any) -> float | None:

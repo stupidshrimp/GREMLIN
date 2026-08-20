@@ -71,7 +71,9 @@ from typing import Any, Callable
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.raw_repo import RawRepository
 from services.ingestion_service import (
+    DEFAULT_INSTRUCTIONS_LIMIT,
     PHASE_ASSETS,
+    PHASE_INSTRUCTIONS,
     PHASE_MAP,
     PHASE_TASKS,
     PHASE_TRANSFORM,
@@ -122,11 +124,21 @@ class Phase:
 PHASES: tuple[Phase, ...] = (
     Phase(PHASE_TASKS, "Fetching tasks from Limble", 0.40),
     Phase(PHASE_ASSETS, "Fetching assets from Limble", 0.20),
+    # One request per task at the client's rate limit, so while a backlog lasts
+    # this phase dominates the run -- and once it is worked through, costs almost
+    # nothing. phase_share and the recorded duration both leave it out for that
+    # reason: what it takes says nothing about how long a sync takes.
+    Phase(PHASE_INSTRUCTIONS, "Reading work-order instructions", 0.35),
     Phase(PHASE_TRANSFORM, "Transforming records", 0.03),
     Phase(PHASE_WRITE, "Writing to GREMLIN.db", 0.27),
     Phase(PHASE_MAP, "Refreshing the mapped layer", 0.10),
 )
-_TOTAL_WEIGHT = sum(phase.weight for phase in PHASES)
+# What "a whole sync" weighs, for the share an ordinary run reports and the
+# full-run duration extrapolated from it. The instructions phase is deliberately
+# left out: its cost scales with how many work orders still need their boxes
+# read, not with the size of the sync, so a run that skipped a real phase could
+# otherwise still claim to have done a whole one.
+_TOTAL_WEIGHT = sum(phase.weight for phase in PHASES if phase.key != PHASE_INSTRUCTIONS)
 
 
 class SyncAlreadyRunningError(RuntimeError):
@@ -310,7 +322,10 @@ def parse_since(value: str | None) -> int | None:
 
 # Every option this endpoint understands. Anything else in a request body is a
 # mistake worth reporting rather than dropping.
-KNOWN_OPTION_KEYS = frozenset({"dry_run", "no_assets", "no_map", "include_templates", "since"})
+KNOWN_OPTION_KEYS = frozenset({
+    "dry_run", "no_assets", "no_map", "include_templates", "since",
+    "fetch_instructions", "instructions_limit",
+})
 
 
 @dataclass(frozen=True)
@@ -322,6 +337,12 @@ class SyncOptions:
     refresh_mapping: bool = True
     include_templates: bool = False
     since: str | None = None
+    # Read each task's Area Affected / Condition / Cause / Action boxes. Costs a
+    # request per task that has not been read yet, so it is bounded per run --
+    # but on by default, because after the first walk through the history a
+    # nightly sync only has the day's completions left to read.
+    fetch_instructions: bool = True
+    instructions_limit: int | None = DEFAULT_INSTRUCTIONS_LIMIT
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "SyncOptions":
@@ -349,6 +370,15 @@ class SyncOptions:
             refresh_mapping=not _as_bool("no_map", data.get("no_map")),
             include_templates=_as_bool("include_templates", data.get("include_templates")),
             since=(since or "").strip() or None,
+            # Absent means "as usual"; only an explicit false turns it off.
+            fetch_instructions=(
+                True if data.get("fetch_instructions") is None
+                else _as_bool("fetch_instructions", data.get("fetch_instructions"))
+            ),
+            instructions_limit=(
+                DEFAULT_INSTRUCTIONS_LIMIT if data.get("instructions_limit") is None
+                else _instructions_limit(data.get("instructions_limit"))
+            ),
         )
         # Validate here, where the caller is still holding the request, so a bad
         # date is a 400 rather than a background job that fails a second later.
@@ -362,6 +392,8 @@ class SyncOptions:
             "refresh_mapping": self.refresh_mapping,
             "include_templates": self.include_templates,
             "since": self.since,
+            "fetch_instructions": self.fetch_instructions,
+            "instructions_limit": self.instructions_limit,
         }
 
     def active_phases(self) -> tuple[Phase, ...]:
@@ -370,6 +402,8 @@ class SyncOptions:
         skipped: set[str] = set()
         if not self.fetch_assets:
             skipped.add(PHASE_ASSETS)
+        if not self.fetch_instructions:
+            skipped.add(PHASE_INSTRUCTIONS)
         if self.dry_run:
             # A dry run stops after transforming: nothing is written, so nothing
             # can be mapped either.
@@ -386,7 +420,14 @@ def phase_share(options: SyncOptions) -> float:
     nightly job is comparable with one recorded from the dashboard.
     """
 
-    return sum(phase.weight for phase in options.active_phases()) / _TOTAL_WEIGHT
+    # The instructions phase is left out of both halves, the same way the timing
+    # that uses this leaves its duration out: it is paced by the API's rate limit
+    # rather than by the size of the sync, so counting it would let a run that
+    # skipped a real phase still claim it had done a whole one.
+    done = sum(
+        phase.weight for phase in options.active_phases() if phase.key != PHASE_INSTRUCTIONS
+    )
+    return done / _TOTAL_WEIGHT
 
 
 # Spellings accepted from a hand-written request. The page sends real JSON
@@ -394,6 +435,22 @@ def phase_share(options: SyncOptions) -> float:
 # expects rather than as Python truthiness would have it.
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def _instructions_limit(value: Any) -> int | None:
+    """Validate the per-run cap on instruction fetches: a count, or unlimited."""
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SyncOptionError("'Instruction fetch limit' must be a whole number of tasks.")
+    try:
+        limit = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise SyncOptionError("'Instruction fetch limit' must be a whole number of tasks.") from None
+    if limit < 0:
+        raise SyncOptionError("'Instruction fetch limit' cannot be negative.")
+    return limit
 
 
 def _as_bool(field: str, value: Any) -> bool:
@@ -651,6 +708,26 @@ def read_run_timings(db_path: str | Path) -> list[dict[str, Any]]:
     if not isinstance(runs, list):
         return []
     return [run for run in runs if isinstance(run, dict) and isinstance(run.get("full_seconds"), (int, float))]
+
+
+def sync_seconds_worth_recording(elapsed: float, summary: dict[str, Any] | None) -> float:
+    """``elapsed`` with the instructions phase taken back out.
+
+    That phase is paced by the API's rate limit rather than by how much work the
+    sync did, so a run that walked five hundred work orders would otherwise teach
+    the estimate that an ordinary sync takes an extra ten minutes. Both entry
+    points weigh a run through here for the same reason they share phase_share:
+    the CLI subtracted it and the dashboard did not, and one on-demand backfill
+    was enough to skew every ETA the page went on to show.
+    """
+
+    instructions = 0.0
+    if isinstance(summary, dict):
+        try:
+            instructions = float(summary.get("instructions_seconds") or 0.0)
+        except (TypeError, ValueError):
+            instructions = 0.0
+    return max(0.0, elapsed - instructions)
 
 
 def record_run_timing(
@@ -952,6 +1029,8 @@ class LimbleSyncRunner:
                 fetch_assets=options.fetch_assets,
                 refresh_mapping=options.refresh_mapping,
                 exclude_templates=not options.include_templates,
+                fetch_instructions=options.fetch_instructions,
+                instructions_limit=options.instructions_limit,
                 log=self._make_logger(log),
                 progress=self._on_progress,
                 on_batch_started=self._remember_batch,
@@ -991,7 +1070,12 @@ class LimbleSyncRunner:
         # this work.
         if state == STATE_SUCCEEDED:
             if db_path:
-                record_run_timing(db_path, seconds=duration, share=share, counts=counts)
+                record_run_timing(
+                    db_path,
+                    seconds=sync_seconds_worth_recording(duration, summary),
+                    share=share,
+                    counts=counts,
+                )
             if not dry_run:
                 self._announce_success()
 

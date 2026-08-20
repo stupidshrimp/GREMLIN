@@ -10,6 +10,7 @@ from unittest import mock
 from repositories.raw_repo import RawRepository
 from services import sync_service
 from services.ingestion_service import PHASE_ASSETS, PHASE_MAP, PHASE_TASKS, PHASE_TRANSFORM, PHASE_WRITE
+from services.ingestion_service import DEFAULT_INSTRUCTIONS_LIMIT, PHASE_INSTRUCTIONS
 from services.sync_service import (
     STATE_FAILED,
     STATE_IDLE,
@@ -20,9 +21,11 @@ from services.sync_service import (
     SyncOptionError,
     SyncOptions,
     parse_since,
+    phase_share,
     read_import_history,
     read_run_timings,
     record_run_timing,
+    sync_seconds_worth_recording,
     run_timings_path,
     summarise_run_timings,
 )
@@ -39,6 +42,10 @@ class FakeLimbleClient:
         self.error = error
         self.delay = delay
         self.seen_updated_since = None
+        self.instructions = {}
+
+    def get_task_instructions(self, task_id):
+        return self.instructions.get(str(task_id), [])
 
     def get_tasks(self, updated_since=None, *, on_page=None):
         self.seen_updated_since = updated_since
@@ -293,6 +300,41 @@ class DotenvTests(unittest.TestCase):
 
 
 class SyncOptionsTests(unittest.TestCase):
+    def test_instructions_are_read_by_default_bounded_and_can_be_turned_off(self):
+        # On by default because the cost is the first walk through the history,
+        # not the nightly run: a task records that it was read and is not read
+        # again, so a sync left to itself keeps the narrative current. Bounded
+        # by default because that first walk would otherwise take days.
+        default = SyncOptions.from_payload({})
+        self.assertTrue(default.fetch_instructions)
+        self.assertEqual(default.instructions_limit, DEFAULT_INSTRUCTIONS_LIMIT)
+
+        capped = SyncOptions.from_payload({"instructions_limit": "250"})
+        self.assertEqual(capped.instructions_limit, 250)
+
+        off = SyncOptions.from_payload({"fetch_instructions": False})
+        self.assertFalse(off.fetch_instructions)
+
+    def test_a_bad_instruction_cap_is_refused_while_the_caller_is_still_here(self):
+        for bad in ("many", -1, 1.5):
+            with self.subTest(limit=bad):
+                with self.assertRaises(SyncOptionError):
+                    SyncOptions.from_payload({"instructions_limit": bad})
+
+    def test_the_opt_in_phase_does_not_shrink_an_ordinary_syncs_share(self):
+        # An ordinary sync does everything a sync normally does, so it is a whole
+        # one -- adding an opt-in phase to the roster must not make it report
+        # otherwise, or every full-run estimate extrapolated from it is wrong.
+        self.assertEqual(phase_share(SyncOptions()), 1.0)
+        # Reading instructions or not makes no difference to the share: that
+        # phase is paced by the API's rate limit rather than by the size of the
+        # sync, and the timing recorded alongside subtracts its duration for the
+        # same reason.
+        self.assertEqual(phase_share(SyncOptions(fetch_instructions=False)), 1.0)
+        # A run that skips a real phase still reports less than a whole sync --
+        # including when it read instructions, which must not paper over the gap.
+        self.assertLess(phase_share(SyncOptions(fetch_assets=False)), 1.0)
+
     def test_payload_flags_are_inverted_into_positive_options(self):
         options = SyncOptions.from_payload({"dry_run": True, "no_assets": True, "no_map": True, "since": " 2026-01-01 "})
         self.assertTrue(options.dry_run)
@@ -354,13 +396,21 @@ class SyncOptionsTests(unittest.TestCase):
 
     def test_skipped_phases_drop_out_of_the_plan(self):
         full = [phase.key for phase in SyncOptions().active_phases()]
-        self.assertEqual(full, [PHASE_TASKS, PHASE_ASSETS, PHASE_TRANSFORM, PHASE_WRITE, PHASE_MAP])
+        self.assertEqual(
+            full,
+            [PHASE_TASKS, PHASE_ASSETS, PHASE_INSTRUCTIONS, PHASE_TRANSFORM, PHASE_WRITE, PHASE_MAP],
+        )
+        without = [phase.key for phase in SyncOptions(fetch_instructions=False).active_phases()]
+        self.assertEqual(without, [PHASE_TASKS, PHASE_ASSETS, PHASE_TRANSFORM, PHASE_WRITE, PHASE_MAP])
 
-        dry = [phase.key for phase in SyncOptions(dry_run=True).active_phases()]
+        dry = [phase.key for phase in SyncOptions(dry_run=True, fetch_instructions=False).active_phases()]
         # A dry run writes nothing, so it cannot map anything either.
         self.assertEqual(dry, [PHASE_TASKS, PHASE_ASSETS, PHASE_TRANSFORM])
 
-        lean = [phase.key for phase in SyncOptions(fetch_assets=False, refresh_mapping=False).active_phases()]
+        lean = [
+            phase.key for phase in
+            SyncOptions(fetch_assets=False, refresh_mapping=False, fetch_instructions=False).active_phases()
+        ]
         self.assertEqual(lean, [PHASE_TASKS, PHASE_TRANSFORM, PHASE_WRITE])
 
 
@@ -954,3 +1004,35 @@ class ScheduledJobTimingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstructionLimitCliTests(unittest.TestCase):
+    """The CLI cap is validated where the message can still reach a person."""
+
+    def test_a_negative_cap_is_refused_rather_than_read_as_no_cap(self):
+        from jobs.sync_limble import build_arg_parser
+
+        parser = build_arg_parser()
+        self.assertEqual(parser.parse_args(["--instructions-limit", "250"]).instructions_limit, 250)
+        for bad in ("-1", "many", "1.5"):
+            with self.subTest(value=bad):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(["--instructions-limit", bad])
+
+
+class RecordedDurationTests(unittest.TestCase):
+    """Both entry points take the instructions phase back out of the timing."""
+
+    def test_the_instructions_phase_is_not_charged_to_an_ordinary_sync(self):
+        # It is paced by the API's rate limit rather than by the size of the
+        # sync, so one on-demand backfill would otherwise skew every ETA the
+        # dashboard went on to show.
+        self.assertEqual(sync_seconds_worth_recording(600.0, {"instructions_seconds": 540.0}), 60.0)
+
+    def test_a_summary_without_the_phase_is_charged_in_full(self):
+        for summary in (None, {}, {"instructions_seconds": None}, {"instructions_seconds": "nonsense"}):
+            with self.subTest(summary=summary):
+                self.assertEqual(sync_seconds_worth_recording(60.0, summary), 60.0)
+
+    def test_a_duration_can_never_come_out_negative(self):
+        self.assertEqual(sync_seconds_worth_recording(10.0, {"instructions_seconds": 99.0}), 0.0)
