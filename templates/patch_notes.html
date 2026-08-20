@@ -1,12 +1,144 @@
 {% extends "base.html" %}
 
-{#- Placeholder. The footer links here already so the shell can be reviewed; the
-    release history is still to be written. -#}
+{#- The release history is not written here. It is a Word document on the
+    engineering share that a team member edits; services/patch_notes_service.py
+    reads it on request and hands this template `notes`. So everything below is
+    drawn from whatever that document says today, and the only copy written into
+    the page is the framing around it. -#}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/patch_notes.css') }}">
+{% endblock %}
+
+{#- Bullets, with Word's own indenting kept as real nesting. The macro calls
+    itself for a sub-list, which is what turns an arbitrarily deep tree into
+    properly nested <ul>s rather than one flat list with margins faked on. -#}
+{% macro note_list(items, nested=false) %}
+<ul class="patch-list{% if nested %} patch-sublist{% endif %}">
+  {%- for item in items %}
+  <li>
+    <span class="patch-item-text">{{ item.text }}</span>
+    {%- if item.children %}{{ note_list(item.children, true) }}{% endif %}
+  </li>
+  {%- endfor %}
+</ul>
+{% endmacro %}
+
+{#- Filled 24x24 paths, matching the sidebar icons in app.py's ICONS. Decorative
+    only: the heading beside each one already says what the section is. -#}
+{% macro section_icon(kind) %}
+{%- if kind == "fixes" -%}
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8Zm4.4 6.9-5.2 5.7a1 1 0 0 1-1.4.1l-2.6-2.3a1 1 0 1 1 1.3-1.5l1.9 1.7 4.5-5a1 1 0 1 1 1.5 1.3Z"/></svg>
+{%- elif kind == "features" -%}
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 2.6a1 1 0 0 1 1.9 0l1.4 3.9 3.9 1.4a1 1 0 0 1 0 1.9l-3.9 1.4-1.4 3.9a1 1 0 0 1-1.9 0L9.1 11.2 5.2 9.8a1 1 0 0 1 0-1.9l3.9-1.4 1.4-3.9Z"/><path d="M17.7 14.2a.9.9 0 0 1 1.7 0l.6 1.7 1.7.6a.9.9 0 0 1 0 1.7l-1.7.6-.6 1.7a.9.9 0 0 1-1.7 0l-.6-1.7-1.7-.6a.9.9 0 0 1 0-1.7l1.7-.6.6-1.7Z"/></svg>
+{%- else -%}
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8Zm0 3.5a1.3 1.3 0 1 1 0 2.7 1.3 1.3 0 0 1 0-2.7Zm1 11.3h-2v-6.7h2v6.7Z"/></svg>
+{%- endif -%}
+{% endmacro %}
 
 {% block content %}
-<section class="glass-card fade-in-up">
-  <p class="eyebrow">Patch Notes</p>
-  <h1>What changed, and when.</h1>
-  <p class="hero-copy">This page is not written yet.</p>
+<section class="glass-card fade-in-up patch-hero">
+  <div class="patch-hero-copy">
+    <p class="eyebrow">Patch Notes</p>
+    <h1>What changed, and when.</h1>
+    <p class="hero-copy">
+      Every GREMLIN release, newest first: what was added, and what was fixed.
+      The reliability team keeps the list in the patch notes document on the
+      engineering share, and this page shows it as soon as the document is saved.
+    </p>
+  </div>
+
+  {%- if notes.latest %}
+  <aside class="patch-current" aria-label="Current release">
+    <p class="patch-current-label">Current version</p>
+    <p class="patch-current-version">{{ notes.latest.version }}</p>
+    {%- if notes.latest.date_display %}
+    <p class="patch-current-date">Released {{ notes.latest.date_display }}</p>
+    {%- endif %}
+  </aside>
+  {%- endif %}
 </section>
+
+{%- if notes.releases | length > 1 %}
+<nav class="glass-card patch-jump" aria-label="Jump to a release">
+  <p class="patch-jump-label">Releases</p>
+  <ul class="patch-jump-list">
+    {%- for release in notes.releases %}
+    <li><a class="patch-jump-link" href="#{{ release.anchor }}">{{ release.version }}</a></li>
+    {%- endfor %}
+  </ul>
+</nav>
+{%- endif %}
+
+{%- if notes.is_available %}
+<div class="patch-timeline">
+  {%- for release in notes.releases %}
+  <article class="glass-card slide-in patch-release" id="{{ release.anchor }}"
+           aria-labelledby="{{ release.anchor }}-heading">
+    <header class="patch-release-meta">
+      <h2 class="patch-version" id="{{ release.anchor }}-heading">{{ release.version }}</h2>
+
+      {%- if release.date_display %}
+      <p class="patch-date">
+        {%- if release.released_on %}
+        <time datetime="{{ release.released_on.isoformat() }}">{{ release.date_display }}</time>
+        {%- else %}{{ release.date_display }}{% endif %}
+      </p>
+      {%- endif %}
+
+      {%- if release.label %}
+      <p class="patch-label">{{ release.label }}</p>
+      {%- endif %}
+
+      <p class="patch-chips">
+        {%- if loop.first %}<span class="patch-chip is-latest">Latest</span>{% endif %}
+        {%- if release.feature_count %}
+        <span class="patch-chip is-features">
+          {{ release.feature_count }} update{{ "" if release.feature_count == 1 else "s" }}
+        </span>
+        {%- endif %}
+        {%- if release.fix_count %}
+        <span class="patch-chip is-fixes">
+          {{ release.fix_count }} fix{{ "" if release.fix_count == 1 else "es" }}
+        </span>
+        {%- endif %}
+      </p>
+    </header>
+
+    <div class="patch-release-body">
+      {%- for section in release.sections %}
+      <section class="patch-section is-{{ section.kind }}">
+        {%- if section.title %}
+        <h3 class="patch-section-title">
+          <span class="patch-section-icon" aria-hidden="true">{{ section_icon(section.kind) }}</span>
+          {{ section.title }}
+        </h3>
+        {%- endif %}
+
+        {%- for paragraph in section.paragraphs %}
+        <p class="patch-section-copy">{{ paragraph }}</p>
+        {%- endfor %}
+
+        {%- if section.items %}{{ note_list(section.items) }}{% endif %}
+      </section>
+      {%- endfor %}
+    </div>
+  </article>
+  {%- endfor %}
+</div>
+{%- else %}
+{#- The document could not be read, or holds nothing this page recognises as a
+    release. Either way the reason is the useful part: it names the one thing
+    somebody has to go and fix. -#}
+<section class="glass-card slide-in patch-unavailable" role="status">
+  <h2>Release notes are not available right now.</h2>
+  <p>{{ notes.error or "The patch notes document could not be read." }}</p>
+  <p class="patch-unavailable-path">GREMLIN is reading: <code>{{ notes.source_path }}</code></p>
+</section>
+{%- endif %}
+
+<p class="patch-source">
+  Maintained by the Reliability team in <code>GREMLIN_patchnotes.docx</code> on the
+  engineering share{% if notes.updated_display %}, last saved {{ notes.updated_display }}{% endif %}.
+</p>
 {% endblock %}

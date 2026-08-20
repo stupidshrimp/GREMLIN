@@ -32,6 +32,7 @@ from services.life_data_service import (
     DatabaseWriteError,
     LifeDataService,
 )
+from services.patch_notes_service import build_reader as build_patch_notes_reader
 from services.schema_service import SchemaService, SchemaServiceError
 from services.access_control import ACTIVITY_DEFAULT_DAYS, ACTIVITY_MAX_DAYS, AccessControl, ROLES
 from services.sync_service import (
@@ -303,6 +304,12 @@ def _on_sync_succeeded() -> None:
 # is visible (and un-duplicatable) from every other. The nightly Task Scheduler
 # job is a separate process and is not covered by it; see services/sync_service.py.
 sync_runner = LimbleSyncRunner(on_success=_on_sync_succeeded)
+
+# The release history lives in a Word document on the engineering share, not in
+# this repository: a team member edits it and the change is live on the next page
+# load. One reader for the whole process, because it caches the parse against the
+# file's own timestamp -- see services/patch_notes_service.py.
+patch_notes_reader = build_patch_notes_reader()
 
 
 def _configured_db_path() -> Path:
@@ -1241,7 +1248,15 @@ def about():
 
 @app.route("/patch-notes")
 def patch_notes():
-    return render_template("patch_notes.html", page_title="Patch Notes", nav_links=NAV_LINKS)
+    # A share that cannot be reached is reported by the page rather than by a
+    # 500: the visitor is told which document is missing, which is the one thing
+    # that gets it fixed. So this view has nothing to catch.
+    return render_template(
+        "patch_notes.html",
+        page_title="Patch Notes",
+        nav_links=NAV_LINKS,
+        notes=patch_notes_reader.read(),
+    )
 
 
 @app.route("/report-a-bug")

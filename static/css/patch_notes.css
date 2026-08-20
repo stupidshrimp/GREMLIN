@@ -1,0 +1,401 @@
+/* Patch notes page. Builds on the shared GREMLIN theme (theme.css): the same
+   glass cards, forest palette and entrance animations as the rest of the site,
+   arranged as a changelog -- one card per release, its version and date held in
+   a column beside the lists they describe. */
+
+/* Anchoring is the point of the jump list at the top, and a jump that lands the
+   card hard against the top of the viewport reads as a page reload. */
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
+/* ---- hero ---------------------------------------------------------------- */
+/* Copy on the left, the current version on the right. The badge column is
+   capped rather than fluid so the sentence beside it keeps a readable measure. */
+.patch-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+  gap: 1.6rem;
+  align-items: center;
+}
+
+.patch-hero-copy { min-width: 0; }
+
+/* The one dark surface on the page, because the version somebody came here to
+   check should be the first thing they find. Its own colours are restated for
+   that reason: the shared heading and body colours are picked for light cards
+   and would not survive this background. */
+.patch-current {
+  border-radius: 16px;
+  padding: 1rem 1.2rem;
+  background: linear-gradient(150deg, var(--forest-800), var(--forest-950));
+  box-shadow: 0 16px 32px rgba(6, 43, 28, 0.18);
+  display: grid;
+  gap: 0.15rem;
+}
+
+.patch-current-label {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.patch-current-version {
+  font-size: clamp(1.8rem, 1.4rem + 1vw, 2.3rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: #fff;
+  /* Lining figures of one width, so 0.10.0 and 0.11.0 do not shift the number
+     around as releases go by. */
+  font-variant-numeric: tabular-nums;
+}
+
+.patch-current-date {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ---- jump list ----------------------------------------------------------- */
+/* Only drawn once there is more than one release to jump between. */
+.patch-jump {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  padding: 0.75rem 1.1rem;
+}
+
+/* Same treatment as .site-footer-heading and .sidebar-heading: the three
+   navigation blocks on a page should read as the same kind of thing. */
+.patch-jump-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--forest-700);
+}
+
+.patch-jump-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.patch-jump-link {
+  display: inline-block;
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--forest-800);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  transition: transform 180ms ease, background 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+
+.patch-jump-link:hover,
+.patch-jump-link:focus-visible {
+  transform: translateY(-1px);
+  background: var(--forest-800);
+  border-color: var(--forest-800);
+  color: #fff;
+}
+
+.patch-jump-link:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
+}
+
+/* ---- the releases -------------------------------------------------------- */
+/* The gap matches .content's, so the cards inside this wrapper sit on the same
+   rhythm as the cards outside it. */
+.patch-timeline {
+  display: grid;
+  gap: 1.2rem;
+}
+
+/* The accent stripe is painted as a background layer rather than a border or an
+   absolutely positioned bar: a background is clipped by the card's own radius
+   for free, and it leaves the card free of `overflow: hidden`, which would
+   otherwise stop the meta column below from sticking. The second layer restates
+   .glass-card's gradient, since declaring `background` at all replaces it. */
+.patch-release {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  column-gap: 1.5rem;
+  padding: 1.5rem 1.5rem 1.5rem 1.75rem;
+  background:
+    linear-gradient(90deg, var(--forest-500) 0 4px, transparent 4px),
+    linear-gradient(140deg, rgba(255, 255, 255, 0.93), rgba(229, 245, 236, 0.85));
+  /* Room above a release the jump list has just scrolled to. */
+  scroll-margin-top: 1.5rem;
+}
+
+/* The newest release wears the full-strength accent; older ones step back. */
+.patch-timeline > .patch-release:first-child {
+  background:
+    linear-gradient(90deg, var(--forest-800) 0 4px, transparent 4px),
+    linear-gradient(140deg, rgba(255, 255, 255, 0.93), rgba(229, 245, 236, 0.85));
+}
+
+/* Staggered the way .card-grid staggers its own cards. */
+.patch-timeline > .patch-release:nth-child(2) { animation-delay: 80ms; }
+.patch-timeline > .patch-release:nth-child(3) { animation-delay: 150ms; }
+.patch-timeline > .patch-release:nth-child(n+4) { animation-delay: 210ms; }
+
+/* Version and date stay beside the list they describe while it scrolls past --
+   a release with thirty bullets is otherwise a page of items belonging to a
+   heading that left the screen. `start` rather than `stretch` is what gives the
+   column a height to stick within. */
+.patch-release-meta {
+  display: grid;
+  gap: 0.4rem;
+  align-content: start;
+  align-self: start;
+  position: sticky;
+  top: 1.25rem;
+}
+
+.patch-version {
+  margin: 0;
+  font-size: clamp(1.4rem, 1.2rem + 0.6vw, 1.85rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--forest-900);
+  font-variant-numeric: tabular-nums;
+}
+
+.patch-date {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.patch-label {
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--forest-700);
+}
+
+.patch-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+}
+
+.patch-chip {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.patch-chip.is-latest {
+  background: var(--forest-800);
+  color: #fff;
+}
+
+.patch-chip.is-features {
+  background: var(--forest-100);
+  border-color: var(--forest-200);
+  color: var(--forest-800);
+}
+
+/* Warm rather than green, so "what was fixed" and "what is new" can be told
+   apart at a glance instead of by reading both. Dark enough on its own tint to
+   clear AA at this size. */
+.patch-chip.is-fixes {
+  background: #fdf3e6;
+  border-color: #f0dcbb;
+  color: #8a5a12;
+}
+
+/* The rule between the two columns belongs to this one, not to the meta column
+   beside it. The meta column is the short one and is pinned to the top of the
+   card, so a border of its own would stop a few lines down and leave the
+   release looking half-divided; on the body it runs the full height of whatever
+   the release actually says. */
+.patch-release-body {
+  display: grid;
+  gap: 1.3rem;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 1.5rem;
+}
+
+.patch-section {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.patch-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--forest-900);
+}
+
+.patch-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--forest-100);
+  color: var(--forest-700);
+}
+
+.patch-section-icon svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.patch-section.is-fixes .patch-section-icon {
+  background: #fdf3e6;
+  color: #a3661a;
+}
+
+.patch-section-copy {
+  max-width: 78ch;
+  font-size: 0.95rem;
+}
+
+/* ---- the bullets --------------------------------------------------------- */
+/* The marker is drawn rather than left to list-style so it can take the
+   section's colour and sit on the first line of a wrapped item. `top` is in em
+   so it tracks the line height instead of drifting as the text size changes. */
+.patch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.patch-list li {
+  position: relative;
+  padding-left: 1.35rem;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.patch-list li::before {
+  content: "";
+  position: absolute;
+  left: 0.3rem;
+  top: 0.62em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--forest-500);
+}
+
+.patch-section.is-fixes .patch-list li::before { background: #c9871f; }
+.patch-section.is-notes .patch-list li::before { background: var(--muted); }
+
+/* Sub-bullets carry Word's own indenting. A dash instead of a dot says which
+   level an item is on without the reader having to measure the indent. */
+.patch-sublist {
+  margin-top: 0.45rem;
+  gap: 0.35rem;
+}
+
+.patch-sublist li {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.patch-sublist li::before {
+  top: 0.75em;
+  width: 7px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* ---- nothing to show ----------------------------------------------------- */
+/* Same palette as the metrics dashboard's error banner, so a page that cannot
+   reach its source looks the same wherever it happens in GREMLIN. */
+.patch-unavailable {
+  display: grid;
+  gap: 0.6rem;
+  border-color: rgba(217, 138, 138, 0.5);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.95), rgba(251, 236, 236, 0.9));
+}
+
+.patch-unavailable h2 { color: #7d2b2b; }
+.patch-unavailable-path { font-size: 0.85rem; }
+
+.patch-source {
+  padding: 0 0.3rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.patch-source code,
+.patch-unavailable-path code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 0.85em;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.75);
+  /* The share path is long and has no spaces to break on; without this it
+     pushes the card into a horizontal scroll on a narrow window. */
+  overflow-wrap: anywhere;
+}
+
+/* ---- narrow windows ------------------------------------------------------ */
+/* 900px is where the whole layout stacks (theme.css), so the release cards drop
+   to one column at the same point rather than at a width of their own. */
+@media (max-width: 900px) {
+  .patch-hero { grid-template-columns: 1fr; }
+
+  .patch-release {
+    grid-template-columns: 1fr;
+    row-gap: 1rem;
+  }
+
+  /* Stacked, the meta block is a header above the lists rather than a column
+     beside them: the rule moves to the bottom edge of it, and there is no
+     longer a tall neighbour to stick alongside. */
+  .patch-release-meta {
+    position: static;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.9rem;
+  }
+
+  .patch-release-body {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+
+/* The cards fly in on arrival, which is exactly the motion this preference asks
+   us not to start. They are still drawn -- `both` on the shared animation would
+   otherwise hold them at their opening frame. */
+@media (prefers-reduced-motion: reduce) {
+  .patch-release {
+    animation: none;
+    animation-delay: 0s;
+  }
+}
