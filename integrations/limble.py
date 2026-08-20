@@ -40,6 +40,48 @@ class LimbleResponseError(RuntimeError):
     """
 
 
+# Keys that mark an object as a Limble *instruction record*, rather than some
+# other object that happened to arrive in an array. Every entry is taken from a
+# payload confirmed against this account -- the live endpoint on the left, the
+# site's task export on the right:
+#
+#   instruction          instructionText     the box's prompt
+#   instructionID        instructionID       the record's own id
+#   parentInstructionID  parentID            the section it belongs to
+#   instructionFiles     itemID
+#
+# Recognising the *record* is deliberately not the same as recognising an
+# answer: a work order whose template never asked for the four boxes returns
+# forty-odd of these carrying nothing this application wants, and it is still a
+# real instruction list. See ``get_task_instructions``.
+_INSTRUCTION_MARKER_KEYS = frozenset({
+    "instruction", "instructionText", "instruction_text",
+    "instructionID", "instructionId", "instruction_id",
+    "parentInstructionID", "parentID", "instructionFiles", "itemID",
+})
+
+
+def _describe(item: Any) -> str:
+    """Name an unusable item well enough to diagnose it from a log line.
+
+    An object gets its keys listed rather than just "dict": what makes an error
+    document distinguishable from an instruction is precisely which keys it
+    carries, so that is what an operator needs to see.
+    """
+
+    if isinstance(item, dict):
+        keys = sorted(str(key) for key in item)
+        shown = ", ".join(keys[:6]) + (", ..." if len(keys) > 6 else "")
+        return f"an object with keys [{shown}]" if keys else "an empty object"
+    return f"a {type(item).__name__}"
+
+
+def _is_instruction_record(item: Any) -> bool:
+    """True for an object carrying at least one key only an instruction carries."""
+
+    return isinstance(item, dict) and not _INSTRUCTION_MARKER_KEYS.isdisjoint(item)
+
+
 @dataclass
 class LimbleConfig:
     """Runtime configuration required for Limble API access."""
@@ -163,28 +205,46 @@ class LimbleClient:
         Note ``instruction``, not the ``instructionText`` a task export from the
         Limble site uses for the same field; services.wo_narrative reads both.
 
-        The response's *shape* is validated here, because only here can a
-        malformed answer still be told apart from a real one. Downstream, an
-        empty instruction list is taken as fact -- the reader concludes the four
-        boxes are blank, writes that over whatever it had stored, and records the
-        task as read so it stops asking. So anything that cannot be an
-        instruction list has to raise rather than flatten to ``[]``, which puts
-        it on the retry path instead and leaves the stored answers alone.
+        This method answers exactly one question: **is this response a usable
+        answer about this task's instructions?** It matters because of what the
+        caller does with each outcome, and the two are not symmetric:
 
-        Two things are checked, and nothing else:
+        * A usable answer -- including an empty one -- is taken as fact. The
+          reader concludes the four boxes are blank, writes that over whatever it
+          had stored, and stamps the task as read so it stops asking. A blank
+          read is deliberately never retried.
+        * An unusable one raises, which preserves the stored answers and brings
+          the task back after ``RETRY_A_FAILED_READ_AFTER``.
 
-        * The payload is a list. An API gateway's wrapper object, a maintenance
-          notice, or an error document served with a 200 is not.
-        * If it has any items at all, at least one is an object. ``[null]`` and
-          ``["scheduled maintenance"]`` are arrays that cannot be instructions;
-          junk mixed in *alongside* real items is just dropped, since the read
-          plainly succeeded.
+        So mistaking the second for the first destroys evidence permanently and
+        silently, while mistaking the first for the second costs one request every
+        few hours. The check is drawn accordingly.
 
-        Shape only -- never content. An empty list is a task with no
-        instructions, and a list of perfectly good instruction objects that
-        happen to carry no Area/Condition/Cause/Action labels is a task whose
-        template never asked for them. Both are legitimately blank, both return
-        normally, and neither is this method's business to judge.
+        A response is usable when it is a list, and -- if it carries any items at
+        all -- at least one of them is a recognisable instruction record (see
+        :data:`_INSTRUCTION_MARKER_KEYS`). Everything else raises: a wrapper
+        object, ``["scheduled maintenance"]``, ``[{"message": "..."}]``, ``[{}]``.
+        Junk *alongside* real records is passed through untouched, because that
+        read plainly succeeded and the extractor already ignores what it cannot
+        read.
+
+        **Where this stops, and why it stops there.** The question is about the
+        *record*, never about the *answers* it carries. Both of these return
+        normally and must:
+
+        * ``[]`` -- a task with no instructions.
+        * forty instruction records carrying no Area/Condition/Cause/Action --
+          a work order whose template never asked for the boxes, which on this
+          account is most of the history.
+
+        That is the end of the ladder rather than a place to stop for now. Each
+        earlier rung asked a strictly structural question and the next rung asked
+        a sharper one: is it a list, are its items objects, are those objects
+        instructions. Past this point the only thing left to test is which labels
+        the records carry, and that cannot distinguish a failure from a blank
+        task -- the pre-template work orders are indistinguishable from an
+        imagined "empty response" by content alone. Tightening further would
+        turn most of the history into permanently retried failed reads.
         """
 
         payload = self._request("GET", f"/tasks/{task_id}/instructions/")
@@ -193,14 +253,13 @@ class LimbleClient:
                 f"GET /tasks/{task_id}/instructions returned "
                 f"{type(payload).__name__}, expected a list of instruction items"
             )
-        items = [item for item in payload if isinstance(item, dict)]
-        if payload and not items:
+        if payload and not any(_is_instruction_record(item) for item in payload):
             raise LimbleResponseError(
                 f"GET /tasks/{task_id}/instructions returned {len(payload)} item(s), "
-                f"none of them instruction objects (first was "
-                f"{type(payload[0]).__name__})"
+                f"none of them instruction records (first was "
+                f"{_describe(payload[0])})"
             )
-        return items
+        return [item for item in payload if isinstance(item, dict)]
 
     # ------------------------------------------------------------------
     # Pagination + transport

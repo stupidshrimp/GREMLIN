@@ -723,18 +723,94 @@ class InstructionResponseShapeTests(unittest.TestCase):
         self.assertIn("1 item(s)", message)
         self.assertIn("str", message)
 
-    def test_only_the_shape_is_judged_here_never_the_content(self):
+    def test_a_records_answers_are_never_judged_here_only_the_record(self):
         # A template that never asked for the four boxes returns perfectly good
-        # instruction objects carrying none of them. That is a blank narrative,
-        # not a failed read, and it must come back normally.
-        items = self._client_returning(
-            [{"instruction": "Does this job require LOTO?", "response": "No"},
-             {"instruction": "Complete work to solve problem", "response": "1"}]
-        ).get_task_instructions("4")
+        # instruction records carrying none of them. That is a blank narrative,
+        # not a failed read, and it must come back normally -- this is most of
+        # the history on this account, so raising here would be catastrophic.
+        items = self._client_returning([
+            {"instruction": "Does this job require LOTO?", "response": "No", "type": "option list",
+             "instructionID": 6, "parentInstructionID": 2, "instructionFiles": []},
+            {"instruction": "Complete work to solve problem", "response": "1", "type": "checkbox",
+             "instructionID": 3, "parentInstructionID": 0, "instructionFiles": []},
+        ]).get_task_instructions("4")
         self.assertEqual(len(items), 2)
         self.assertEqual(extract_narrative({"instructions": items}), {})
-        # Nor is an empty object judged: indistinguishable from the above.
-        self.assertEqual(self._client_returning([{}]).get_task_instructions("4"), [{}])
+
+    def test_an_object_that_is_not_an_instruction_record_is_an_error(self):
+        # The distinction the previous round got wrong: an error document and a
+        # boilerplate instruction are both objects, but only one of them carries
+        # the keys that make it an instruction.
+        from integrations.limble import LimbleResponseError
+
+        for payload in (
+            [{"message": "scheduled maintenance"}],
+            [{"error": "unavailable", "code": 503}],
+            [{}],
+            [{"detail": "not found"}, {"detail": "not found"}],
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(LimbleResponseError):
+                    self._client_returning(payload).get_task_instructions("4")
+
+    def test_one_recognisable_record_is_enough(self):
+        # A real list runs to forty-odd records; the check asks whether this is
+        # an instruction list at all, not whether every entry is well formed.
+        items = self._client_returning(
+            [{"message": "odd"}, {"instruction": "Cause", "response": "Wear"}]
+        ).get_task_instructions("4")
+        self.assertEqual(len(items), 2, "the unrecognised entry is passed through, not dropped")
+        self.assertEqual(extract_narrative({"instructions": items})["cause"], "Wear")
+
+    def test_the_export_spelling_is_recognised_too(self):
+        # The site export names the same field instructionText/parentID, and a
+        # marker set that only knew the live API would reject it wholesale.
+        items = self._client_returning([
+            {"instructionText": "Affected area", "response": "Timing belt", "type": "text box",
+             "order": "1", "instructionID": "48", "parentID": "47", "itemID": "5054906"},
+        ]).get_task_instructions("4")
+        self.assertEqual(extract_narrative({"instructions": items})["area_affected"], "Timing belt")
+
+    def test_that_error_names_the_keys_it_did_see(self):
+        # Which keys arrived is exactly what tells an operator whether this was
+        # an outage, an auth problem, or a real change to the endpoint.
+        from integrations.limble import LimbleResponseError
+
+        with self.assertRaises(LimbleResponseError) as caught:
+            self._client_returning([{"message": "down"}]).get_task_instructions("4")
+        self.assertIn("keys [message]", str(caught.exception))
+
+        with self.assertRaises(LimbleResponseError) as caught:
+            self._client_returning([{}]).get_task_instructions("4")
+        self.assertIn("empty object", str(caught.exception))
+
+    def test_an_object_shaped_error_does_not_clear_what_was_already_read(self):
+        from services.ingestion_service import INSTRUCTIONS_READ_AT
+        from repositories.raw_repo import INSTRUCTIONS_READ_ERROR
+
+        outer = self
+
+        class Wrapped(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                self.asked.append(str(task_id))
+                return outer._client_returning(
+                    [{"message": "scheduled maintenance"}]
+                ).get_task_instructions(task_id)
+
+        task = {
+            "taskID": 1,
+            "dateCompleted": 1_750_000_000,
+            "area_affected": "Timing belt",
+            "cause": "Aging",
+        }
+        service = InstructionFetchTests()._service(Wrapped({}), InstructionFetchTests._StubRepo([]))
+        counts = service._attach_instructions([task])
+
+        self.assertEqual(task["area_affected"], "Timing belt")
+        self.assertEqual(task["cause"], "Aging")
+        self.assertIn("none of them instruction records", task[INSTRUCTIONS_READ_ERROR])
+        self.assertIn(INSTRUCTIONS_READ_AT, task, "still stamped, so it cannot block the queue")
+        self.assertEqual(counts["instructions_failed"], 1)
 
     def test_an_all_junk_array_does_not_clear_what_was_already_read(self):
         from services.ingestion_service import INSTRUCTIONS_READ_AT
@@ -758,7 +834,7 @@ class InstructionResponseShapeTests(unittest.TestCase):
 
         self.assertEqual(task["area_affected"], "Timing belt")
         self.assertEqual(task["cause"], "Aging")
-        self.assertIn("none of them instruction objects", task[INSTRUCTIONS_READ_ERROR])
+        self.assertIn("none of them instruction records", task[INSTRUCTIONS_READ_ERROR])
         self.assertIn(INSTRUCTIONS_READ_AT, task, "still stamped, so it cannot block the queue")
         self.assertEqual(counts["instructions_failed"], 1)
 
