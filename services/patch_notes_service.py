@@ -317,15 +317,27 @@ def _numbering_level(properties: ET.Element | None) -> int | None:
     """
 
     numbering = properties.find(W + "numPr") if properties is not None else None
-    if numbering is None:
-        return None
-    # numId 0 is Word's way of saying this paragraph left the list it inherited
-    # from its style. Reading it as an item would bullet a heading.
-    num_id = numbering.find(W + "numId")
-    if num_id is not None and (num_id.get(W + "val") or "").strip() == "0":
+    if numbering is None or _numbering_cancelled(properties):
         return None
     level = numbering.find(W + "ilvl")
     return _clamp_level(level.get(W + "val") if level is not None else "0")
+
+
+def _numbering_cancelled(properties: ET.Element | None) -> bool:
+    """Whether w:numPr here turns numbering off rather than asking for it.
+
+    numId 0 is how Word says "no list", on a paragraph that left the list its
+    style puts it in, and on a style built from a list style with the bullets
+    switched off. Saying nothing at all is a different thing, and the difference
+    matters one level up: silence is inherited from the style this is based on,
+    a cancellation is not.
+    """
+
+    numbering = properties.find(W + "numPr") if properties is not None else None
+    if numbering is None:
+        return False
+    num_id = numbering.find(W + "numId")
+    return num_id is not None and (num_id.get(W + "val") or "").strip() == "0"
 
 
 def _numbered_styles(styles_xml: bytes | None) -> dict[str, int]:
@@ -340,8 +352,11 @@ def _numbered_styles(styles_xml: bytes | None) -> dict[str, int]:
     it belongs to.
 
     A style that defines no numbering may still be based on one that does, so
-    the basedOn chain is walked. A styles part that is missing or unreadable
-    costs nothing here -- the reader falls back to the names it recognises.
+    the basedOn chain is walked -- until a style on it cancels the numbering
+    outright, which Word draws as plain text and which therefore ends the
+    inheritance rather than passing the parent's list down. A styles part that is
+    missing or unreadable costs nothing here -- the reader falls back to the
+    names it recognises.
     """
 
     if not styles_xml:
@@ -352,12 +367,16 @@ def _numbered_styles(styles_xml: bytes | None) -> dict[str, int]:
         return {}
 
     own: dict[str, int | None] = {}
+    cancelled: set[str] = set()
     based_on: dict[str, str] = {}
     for style in root.iter(W + "style"):
         style_id = (style.get(W + "styleId") or "").strip().lower()
         if not style_id:
             continue
-        own[style_id] = _numbering_level(style.find(W + "pPr"))
+        properties = style.find(W + "pPr")
+        if _numbering_cancelled(properties):
+            cancelled.add(style_id)
+        own[style_id] = _numbering_level(properties)
         parent = style.find(W + "basedOn")
         parent_id = (parent.get(W + "val") or "").strip().lower() if parent is not None else ""
         if parent_id:
@@ -371,6 +390,12 @@ def _numbered_styles(styles_xml: bytes | None) -> dict[str, int]:
         current: str | None = style_id
         while current is not None and current not in seen:
             seen.add(current)
+            if current in cancelled:
+                # Numbering was turned off here. Walking past it would hand the
+                # style the list its parent has, and bullet paragraphs Word draws
+                # as plain text -- a heading among them, which would take the
+                # bullets under it into a section of its own.
+                break
             level = own.get(current)
             if level is not None:
                 resolved[style_id] = level

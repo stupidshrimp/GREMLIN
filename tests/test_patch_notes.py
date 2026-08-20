@@ -70,6 +70,10 @@ def _document_xml(paragraphs) -> str:
 # depth is in that definition's indents rather than in the style.
 NUMBERED_WITHOUT_LEVEL = "no-ilvl"
 
+# A style that turns numbering off: what Word writes for a style built from a
+# list style with the bullets switched back off.
+NUMBERING_TURNED_OFF = "numid-0"
+
 
 def _styles_xml(styles) -> str:
     """A styles part, from ``(styleId, ilvl or None, basedOn or None)`` triples.
@@ -85,6 +89,8 @@ def _styles_xml(styles) -> str:
             properties = ""
         elif level == NUMBERED_WITHOUT_LEVEL:
             properties = '<w:numPr><w:numId w:val="3"/></w:numPr>'
+        elif level == NUMBERING_TURNED_OFF:
+            properties = '<w:numPr><w:numId w:val="0"/></w:numPr>'
         else:
             properties = (
                 f'<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="3"/></w:numPr>'
@@ -311,6 +317,44 @@ def test_a_template_style_that_defines_its_own_numbering_is_a_bullet(tmp_path):
     assert [child.text for child in section.items[0].children] == ["Its sub-bullet"]
     # The style that is not a list stays a line of the document.
     assert [s.title for s in notes.latest.sections] == ["What's New", "Not a list at all"]
+
+
+def test_a_style_that_turns_numbering_off_is_not_a_bullet(tmp_path):
+    """Based on a list style, with the bullets switched off. Word draws it as
+    plain text, and inheriting the parent's list would bullet a heading."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            {"text": "What's New", "style": "PlantHeading"},
+            {"text": "A real bullet", "style": "PlantBullet"},
+        ],
+        styles=[
+            ("PlantBullet", 0, None),
+            ("PlantHeading", NUMBERING_TURNED_OFF, "PlantBullet"),
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert section.title == "What's New"
+    assert [item.text for item in section.items] == ["A real bullet"]
+
+
+def test_numbering_turned_off_partway_up_the_chain_stays_off(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.0.0", "5/1/2026", "What's New", {"text": "Plain text", "style": "PlantChild"}],
+        styles=[
+            ("PlantBullet", 0, None),
+            ("PlantNote", NUMBERING_TURNED_OFF, "PlantBullet"),
+            ("PlantChild", None, "PlantNote"),
+        ],
+    )
+
+    assert notes.latest.sections[0].items == ()
+    assert [section.title for section in notes.latest.sections] == ["What's New", "Plain text"]
 
 
 def test_a_style_inheriting_its_numbering_is_still_a_bullet(tmp_path):
