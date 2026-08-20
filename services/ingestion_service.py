@@ -64,6 +64,12 @@ DEFAULT_INSTRUCTIONS_LIMIT = 500
 # night's sync instead of leaving those work orders blank for good.
 RETRY_A_FAILED_READ_AFTER = 6 * 60 * 60
 
+# How many instruction reads to hold before writing them down. Small enough that
+# an interrupted run loses seconds of requests rather than minutes, large enough
+# that the phase is not one database write per task -- at the client's pacing this
+# is roughly half a minute of work in flight.
+_INSTRUCTIONS_CHECKPOINT_EVERY = 25
+
 # How often the transform loop reports progress, in records.
 _TRANSFORM_PROGRESS_EVERY = 250
 
@@ -163,7 +169,7 @@ class IngestionService:
             asset_index = AssetIndex.from_assets(assets)
             self._log(f"Fetched {len(assets)} asset(s).")
 
-        instruction_counts = self._attach_instructions(tasks)
+        instruction_counts = self._attach_instructions(tasks, checkpoint=not dry_run)
 
         self._emit(PHASE_TRANSFORM, 0, len(tasks))
         records = []
@@ -244,7 +250,7 @@ class IngestionService:
             "dry_run": False,
         }
 
-    def _attach_instructions(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    def _attach_instructions(self, tasks: list[dict[str, Any]], *, checkpoint: bool = True) -> dict[str, Any]:
         """Fill in each task's four narrative boxes from its instruction items.
 
         The boxes the maintenance teams fill out -- Area Affected, Condition,
@@ -270,6 +276,13 @@ class IngestionService:
 
         It is on by default: the cost is the first walk through the history, not
         the nightly run, because a task records that it was read.
+
+        Those records are written down as the phase goes rather than held until
+        the sync reaches its upsert. A run reads at the API's pacing, so a capped
+        backfill is minutes of requests that would otherwise exist only in memory
+        -- and a worker killed before the write loses every one of them and
+        begins the next run on the same tasks, which for a worker that always
+        dies at the same point means never advancing at all.
 
         Only the four answers are kept, written onto the task as ordinary
         top-level fields. The instruction list itself runs to kilobytes of
@@ -326,9 +339,13 @@ class IngestionService:
         self._log(f"Fetching instructions for {len(candidates)} task(s) ...")
         started = time.monotonic()
         self._emit(PHASE_INSTRUCTIONS, 0, len(candidates))
-        by_id = {id(task): task for task in candidates}
         found = 0
         errors = 0
+        # Results read but not yet written. This is the only phase of a sync
+        # where minutes of paid-for work sit in memory -- one paced request per
+        # work order -- so it is flushed in chunks rather than held until the
+        # run reaches its upsert. See _checkpoint_instruction_reads.
+        pending: dict[str, dict[str, Any]] = {}
         for position, task in enumerate(candidates, start=1):
             task_id = self._task_key(task)
             try:
@@ -341,30 +358,51 @@ class IngestionService:
                 # queue and block the backfill exactly as a blank one used to.
                 # The error is recorded alongside so the next run can put it
                 # behind everything never tried, where a permanent failure costs
-                # the tail of a run rather than all of it.
-                by_id[id(task)][INSTRUCTIONS_READ_AT] = _utc_now()
-                by_id[id(task)][INSTRUCTIONS_READ_ERROR] = str(exc)[:500]
+                # the tail of a run rather than all of it, and so that the read is
+                # tried again once RETRY_A_FAILED_READ_AFTER has passed.
+                #
+                # The narrative keys are pointedly *not* written here: this read
+                # answered nothing, so it has no standing to clear boxes a
+                # previous read recorded.
+                fields = {
+                    INSTRUCTIONS_READ_AT: _utc_now(),
+                    INSTRUCTIONS_READ_ERROR: str(exc)[:500],
+                }
                 errors += 1
-                self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
-                continue
-            narrative = extract_narrative({"instructions": instructions})
-            # Stamped whether or not anything was found. Plenty of completed work
-            # orders legitimately have no boxes filled in, and without a record of
-            # having asked they would be selected again on every run -- ahead of
-            # everything older, since the newest are read first -- so a capped
-            # backfill would re-read the same head of the queue forever and never
-            # reach the rest of the history.
-            by_id[id(task)][INSTRUCTIONS_READ_AT] = _utc_now()
-            by_id[id(task)][INSTRUCTIONS_READ_ERROR] = ""
-            # Every box is written, not just the answered ones. This read saw the
-            # whole task, so a box it did not return is one that was cleared in
-            # Limble, and the merge preserves what a payload omits -- leaving the
-            # old text in place would keep a work order showing failure evidence
-            # its own record no longer makes.
-            by_id[id(task)].update({key: narrative.get(key, "") for key in NARRATIVE_KEYS})
-            if narrative:
-                found += 1
+            else:
+                narrative = extract_narrative({"instructions": instructions})
+                # Stamped whether or not anything was found. Plenty of completed
+                # work orders legitimately have no boxes filled in, and without a
+                # record of having asked they would be selected again on every run
+                # -- ahead of everything older, since the newest are read first --
+                # so a capped backfill would re-read the same head of the queue
+                # forever and never reach the rest of the history.
+                #
+                # Every box is written, not just the answered ones. This read saw
+                # the whole task, so a box it did not return is one that was
+                # cleared in Limble, and the merge preserves what a payload omits
+                # -- leaving the old text in place would keep a work order showing
+                # failure evidence its own record no longer makes. That clearing
+                # is only sound because an unreadable response raises rather than
+                # arriving here as an empty one; see LimbleResponseError.
+                fields = {
+                    INSTRUCTIONS_READ_AT: _utc_now(),
+                    INSTRUCTIONS_READ_ERROR: "",
+                    **{key: narrative.get(key, "") for key in NARRATIVE_KEYS},
+                }
+                if narrative:
+                    found += 1
+            # The task dict is what this run's own transform reads; ``pending`` is
+            # what survives the run being killed before it gets there.
+            task.update(fields)
+            pending[task_id] = fields
+            if checkpoint and len(pending) >= _INSTRUCTIONS_CHECKPOINT_EVERY:
+                self._checkpoint_instruction_reads(pending)
+                pending = {}
             self._emit(PHASE_INSTRUCTIONS, position, len(candidates))
+
+        if checkpoint:
+            self._checkpoint_instruction_reads(pending)
 
         self._log(
             f"Read instructions for {len(candidates)} task(s); {found} carried a failure narrative."
@@ -382,6 +420,27 @@ class IngestionService:
             # estimate shown before an ordinary nightly run.
             "instructions_seconds": round(time.monotonic() - started, 3),
         }
+
+    def _checkpoint_instruction_reads(self, pending: dict[str, dict[str, Any]]) -> None:
+        """Write the reads done so far, and never lose a sync over failing to.
+
+        A checkpoint is insurance, not the authoritative write -- the run's own
+        upsert stores these same fields at the end. So a database locked by
+        another writer, or a repository that predates this method, costs repeated
+        requests on the next run and nothing else; letting it raise here would
+        throw away the whole import, including the tasks and assets already
+        fetched, to protect against having to re-read some instructions.
+        """
+
+        if not pending:
+            return
+        try:
+            self.raw_repo.record_instruction_read(pending)
+        except Exception as exc:  # noqa: BLE001 - insurance must not become the risk
+            self._log(
+                f"Warning: could not save instruction progress ({exc}); "
+                "it will be re-read if this run does not finish."
+            )
 
     def _instructions_read_state(self) -> tuple[dict[str, float], set[str]]:
         """When each stored task was last read, and which reads failed.

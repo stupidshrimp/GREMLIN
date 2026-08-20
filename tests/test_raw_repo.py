@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -527,6 +528,115 @@ class NarrativeClearingTests(unittest.TestCase):
         merged = _merge_preserved_fields(existing, {"taskID": 1, "completionNotes": ""})
         self.assertEqual(merged["completionNotes"], "Replaced bearing")
         self.assertEqual(merged["cause"], "Aging", "a payload that says nothing about a box leaves it alone")
+
+
+class InstructionCheckpointTests(unittest.TestCase):
+    """Writing instruction reads down as they happen, outside a batch."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.db = Path(tmp.name) / "GREMLIN.db"
+        self.repo = RawRepository(self.db)
+
+    def _store(self, records):
+        self.repo.ensure_schema()
+        batch = self.repo.start_batch(notes="test")
+        self.repo.upsert_records(batch, records)
+
+    def _payloads(self):
+        conn = sqlite3.connect(self.db)
+        rows = conn.execute("SELECT raw_json FROM raw_cmms_record").fetchall()
+        conn.close()
+        return [json.loads(row[0]) for row in rows]
+
+    def test_it_merges_the_fields_into_the_stored_payload(self):
+        self._store([{"taskID": 1, "name": "Pump seal", "completionNotes": "Replaced"}])
+        written = self.repo.record_instruction_read(
+            {"1": {"area_affected": "North conveyor", "instructions_read_at": 1_750_000_000}}
+        )
+
+        self.assertEqual(written, 1)
+        payload = self._payloads()[0]
+        self.assertEqual(payload["area_affected"], "North conveyor")
+        self.assertEqual(payload["instructions_read_at"], 1_750_000_000)
+        self.assertEqual(payload["completionNotes"], "Replaced", "nothing else is disturbed")
+
+    def test_an_empty_answer_is_applied_rather_than_skipped(self):
+        # The caller has seen the whole task, so a field it sets to "" is a box
+        # that was cleared in Limble. This is the same judgement the merge makes.
+        self._store([{"taskID": 1, "cause": "Aging"}])
+        self.repo.record_instruction_read({"1": {"cause": ""}})
+        self.assertEqual(self._payloads()[0]["cause"], "")
+
+    def test_it_keeps_the_content_hash_honest(self):
+        # An upsert compares against a hash recomputed from the payload, so a
+        # stored hash left describing the pre-checkpoint text would be a lie.
+        self._store([{"taskID": 1, "name": "Pump seal"}])
+        self.repo.record_instruction_read({"1": {"cause": "Aging"}})
+
+        conn = sqlite3.connect(self.db)
+        raw, stored_hash = conn.execute(
+            "SELECT raw_json, raw_content_hash FROM raw_cmms_record"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(
+            stored_hash,
+            hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest(),
+        )
+
+    def test_a_duplicated_task_is_left_to_the_upsert(self):
+        # upsert_records deliberately preserves duplicate-keyed rows as history
+        # rather than writing one current payload over all of them. A checkpoint
+        # that ignored that would reintroduce exactly the loss it guards against.
+        self._store([{"taskID": 1, "name": "First"}])
+        # Duplicates are legacy/historical rows, not something an upsert makes:
+        # copy the row the way an older importer left one behind.
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "INSERT INTO raw_cmms_record (import_batch_id, source_system, source_record_id,"
+            " raw_json, raw_content_hash) SELECT import_batch_id, source_system,"
+            " source_record_id, raw_json, raw_content_hash FROM raw_cmms_record"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(len(self._payloads()), 2, "the fixture really does hold duplicates")
+
+        written = self.repo.record_instruction_read({"1": {"cause": "Aging"}})
+        self.assertEqual(written, 0)
+        self.assertTrue(all("cause" not in payload for payload in self._payloads()))
+
+    def test_a_task_not_stored_yet_is_simply_not_written(self):
+        # The first sync reads instructions before its own rows exist. There is
+        # nothing to check point into, and the run's upsert writes them anyway.
+        self._store([{"taskID": 1, "name": "Pump seal"}])
+        self.assertEqual(self.repo.record_instruction_read({"99": {"cause": "Aging"}}), 0)
+
+    def test_asking_a_database_that_does_not_exist_does_not_create_one(self):
+        # Same reason iter_task_payloads guards: sqlite3.connect makes the file,
+        # and a dry run against a missing path has to leave it missing.
+        self.assertEqual(self.repo.record_instruction_read({"1": {"cause": "Aging"}}), 0)
+        self.assertFalse(self.db.exists())
+
+    def test_a_database_without_the_raw_table_yet_is_not_an_error(self):
+        # The real first-sync shape: LifeDataService has created the file for the
+        # mapped tables, but the instructions phase runs before ensure_schema().
+        sqlite3.connect(self.db).close()
+        self.assertTrue(self.db.exists())
+        self.assertEqual(self.repo.record_instruction_read({"1": {"cause": "Aging"}}), 0)
+
+    def test_nothing_to_write_touches_nothing(self):
+        self.assertEqual(self.repo.record_instruction_read({}), 0)
+        self.assertFalse(self.db.exists())
+
+    def test_a_checkpoint_survives_into_the_next_run(self):
+        # The point of the whole method: a payload patched outside a batch is
+        # what the next run reads back when it decides whom to ask about.
+        self._store([{"taskID": 1, "name": "Pump seal"}])
+        self.repo.record_instruction_read({"1": {"instructions_read_at": 1_750_000_000}})
+
+        seen = dict(RawRepository(self.db).iter_task_payloads())
+        self.assertEqual(seen["1"]["instructions_read_at"], 1_750_000_000)
 
 
 class PayloadIterationTests(unittest.TestCase):

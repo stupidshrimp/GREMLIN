@@ -297,6 +297,106 @@ class RawRepository:
         finally:
             conn.close()
 
+    def record_instruction_read(self, reads: dict[str, dict[str, Any]]) -> int:
+        """Merge instruction-read results into stored payloads immediately.
+
+        The counterpart to :meth:`iter_task_payloads`: that reads the state the
+        instructions phase keeps in ``raw_json``, this writes it back. It exists
+        so a phase can survive being interrupted. Reading instructions costs one
+        rate-limited request per work order, so a backfill spends minutes on
+        results that otherwise live only in memory until the whole sync reaches
+        :meth:`upsert_records` -- and a worker killed before then loses all of
+        it and starts the next run on the same tasks. A run that is always
+        killed at the same point therefore never advances at all.
+
+        ``reads`` is ``{taskID: {field: value}}`` and is applied literally,
+        empty strings included: the caller has seen the whole answer for that
+        task, so a field it sets to ``""`` is one that was cleared in Limble.
+        This is the same judgement :data:`_FIELDS_AN_EMPTY_VALUE_CLEARS` encodes
+        for the merge, which is what makes a checkpoint and the eventual upsert
+        agree rather than fight.
+
+        Deliberately narrow. It writes no batch, touches no other field, creates
+        nothing that is missing, and returns the number of rows it patched:
+
+        * A database or table that does not exist yet is not an error -- on a
+          first sync there is nothing to checkpoint *into*, and the run's own
+          upsert will write these tasks from scratch. Connecting would create
+          the file, which a dry run against a fresh path must not do.
+        * A taskID carried by more than one row is skipped, for the reason
+          :meth:`upsert_records` gives: duplicates are preserved history, and
+          writing one current payload over all of them looks like data loss.
+          Those tasks fall back to the upsert's own duplicate handling.
+
+        Losing a checkpoint therefore costs repeated requests, never data.
+        """
+
+        if not reads:
+            return 0
+        # Nothing to patch where there is no database, and asking anyway would
+        # answer by creating one (sqlite3.connect makes the file).
+        if not Path(self.db_path).exists():
+            return 0
+        with self.write_connection() as conn:
+            columns = self._column_names(conn, "raw_cmms_record")
+            if not columns or "source_record_id" not in columns:
+                return 0
+            pk_expr = "raw_record_id" if "raw_record_id" in columns else "rowid AS raw_record_id"
+            keys = list(reads)
+            # One statement for the whole chunk rather than one per task: the
+            # index on raw_cmms_record leads with source_system, so this scans,
+            # and a checkpoint per task would scan once per task.
+            placeholders = ", ".join("?" * len(keys))
+            rows = conn.execute(
+                f"SELECT {pk_expr}, raw_json, source_record_id FROM raw_cmms_record "
+                f"WHERE source_record_id IN ({placeholders})",
+                keys,
+            ).fetchall()
+
+            # Group first, so a task that turns out to be duplicated is skipped
+            # rather than half-written.
+            by_key: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+            for row in rows:
+                try:
+                    payload = json.loads(row["raw_json"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                # The payload's own taskID is the natural key, with the column as
+                # the fallback -- the same order _index_existing resolves in.
+                key = _task_key(payload) or str(row["source_record_id"] or "").strip()
+                if key in reads:
+                    by_key.setdefault(key, []).append((row["raw_record_id"], payload))
+
+            written = 0
+            for key, matches in by_key.items():
+                if len(matches) != 1:
+                    continue
+                raw_record_id, payload = matches[0]
+                payload.update(reads[key])
+                raw_text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                raw_hash = hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest()
+                sets = ["raw_json = ?"]
+                params: list[Any] = [raw_text]
+                # No import_batch_id: this runs before the run opens its batch,
+                # and inventing one would misattribute the row's provenance.
+                for column, value in (
+                    ("raw_content_hash", raw_hash),
+                    ("row_hash", raw_hash),
+                    ("updated_at", _utc_now_text()),
+                ):
+                    if column in columns:
+                        sets.append(f"{column} = ?")
+                        params.append(value)
+                pk_column = "raw_record_id" if "raw_record_id" in columns else "rowid"
+                conn.execute(
+                    f"UPDATE raw_cmms_record SET {', '.join(sets)} WHERE {pk_column} = ?",
+                    [*params, raw_record_id],
+                )
+                written += 1
+        return written
+
     def raw_record_count(self) -> int:
         with self.connect() as conn:
             if not self._column_names(conn, "raw_cmms_record"):

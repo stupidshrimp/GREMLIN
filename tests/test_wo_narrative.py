@@ -337,9 +337,15 @@ class InstructionFetchTests(unittest.TestCase):
     class _StubRepo:
         def __init__(self, stored: list[tuple[str, dict]]) -> None:
             self._stored = stored
+            # Every chunk the phase asked to have written down, in order.
+            self.checkpoints: list[dict[str, dict]] = []
 
         def iter_task_payloads(self):
             yield from self._stored
+
+        def record_instruction_read(self, reads):
+            self.checkpoints.append({key: dict(fields) for key, fields in reads.items()})
+            return len(reads)
 
     def _acca(self, area: str) -> list[dict]:
         return [
@@ -651,6 +657,182 @@ class InstructionFetchTests(unittest.TestCase):
         self.assertEqual(client.asked, ["1", "3"])
 
 
+class InstructionResponseShapeTests(unittest.TestCase):
+    """What the client does with an answer that is not the promised list.
+
+    The endpoint documents an array of instruction items. A successful call that
+    returns something else is not an empty task, and the difference matters more
+    here than it usually would: the reader treats an empty answer as proof the
+    boxes were cleared, writes that over what it had, and records the task as
+    read so it stops asking.
+    """
+
+    def _client_returning(self, payload):
+        from integrations.limble import LimbleClient
+
+        client = LimbleClient.__new__(LimbleClient)
+        client._request = lambda *_args, **_kwargs: payload
+        return client
+
+    def test_an_unexpected_shape_is_an_error_rather_than_an_empty_task(self):
+        from integrations.limble import LimbleResponseError
+
+        for payload in ({"message": "scheduled maintenance"}, "down for maintenance", 503, None):
+            with self.subTest(payload=type(payload).__name__):
+                client = self._client_returning(payload)
+                with self.assertRaises(LimbleResponseError):
+                    client.get_task_instructions("4")
+
+    def test_the_error_says_which_task_and_what_came_back(self):
+        from integrations.limble import LimbleResponseError
+
+        with self.assertRaises(LimbleResponseError) as caught:
+            self._client_returning({"message": "nope"}).get_task_instructions("4")
+        message = str(caught.exception)
+        self.assertIn("4", message)
+        self.assertIn("dict", message)
+
+    def test_a_task_with_no_instructions_is_still_an_ordinary_empty_read(self):
+        # _request answers an empty body with [], and a task that genuinely has
+        # no instructions answers with []. Neither is an error.
+        self.assertEqual(self._client_returning([]).get_task_instructions("4"), [])
+
+    def test_junk_among_real_items_is_dropped_rather_than_raised(self):
+        items = self._client_returning(
+            [{"instruction": "Cause", "response": "Wear"}, None, "?", 7]
+        ).get_task_instructions("4")
+        self.assertEqual(items, [{"instruction": "Cause", "response": "Wear"}])
+
+    def test_an_unreadable_response_does_not_clear_what_was_already_read(self):
+        # The whole point of raising: an unreadable answer has to reach the phase
+        # as a failure, so the narrative survives and the read is tried again.
+        from services.ingestion_service import INSTRUCTIONS_READ_AT
+        from repositories.raw_repo import INSTRUCTIONS_READ_ERROR
+
+        class Wrapped(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                self.asked.append(str(task_id))
+                from integrations.limble import LimbleClient
+
+                client = LimbleClient.__new__(LimbleClient)
+                client._request = lambda *_a, **_k: {"message": "scheduled maintenance"}
+                return LimbleClient.get_task_instructions(client, task_id)
+
+        task = {
+            "taskID": 1,
+            "dateCompleted": 1_750_000_000,
+            "area_affected": "Timing belt",
+            "cause": "Aging",
+        }
+        service = InstructionFetchTests()._service(Wrapped({}), InstructionFetchTests._StubRepo([]))
+        counts = service._attach_instructions([task])
+
+        self.assertEqual(task["area_affected"], "Timing belt", "an unread task keeps its narrative")
+        self.assertEqual(task["cause"], "Aging")
+        self.assertIn("expected a list", task[INSTRUCTIONS_READ_ERROR])
+        self.assertIn(INSTRUCTIONS_READ_AT, task, "still stamped, so it cannot block the queue")
+        self.assertEqual(counts["instructions_failed"], 1)
+
+
+class InstructionCheckpointTests(unittest.TestCase):
+    """Reads are written down as the phase goes, not only when it finishes."""
+
+    def _service(self, client, repo, **kwargs):
+        return InstructionFetchTests()._service(client, repo, **kwargs)
+
+    def _completed_tasks(self, count):
+        return [{"taskID": n, "dateCompleted": 1_750_000_000 - n} for n in range(count)]
+
+    def test_a_long_phase_writes_as_it_goes(self):
+        from services.ingestion_service import _INSTRUCTIONS_CHECKPOINT_EVERY
+
+        every = _INSTRUCTIONS_CHECKPOINT_EVERY
+        client = InstructionFetchTests._StubClient({})
+        repo = InstructionFetchTests._StubRepo([])
+        self._service(client, repo)._attach_instructions(self._completed_tasks(every * 2 + 3))
+
+        sizes = [len(chunk) for chunk in repo.checkpoints]
+        self.assertEqual(sizes, [every, every, 3], "two full chunks, then the remainder")
+
+    def test_a_short_phase_still_writes_once_at_the_end(self):
+        client = InstructionFetchTests._StubClient({"1": self._acca()})
+        repo = InstructionFetchTests._StubRepo([])
+        self._service(client, repo)._attach_instructions([{"taskID": 1, "dateCompleted": 1_750_000_000}])
+
+        self.assertEqual(len(repo.checkpoints), 1)
+        self.assertEqual(list(repo.checkpoints[0]), ["1"])
+
+    def test_a_checkpoint_carries_the_answers_and_the_stamp(self):
+        from services.ingestion_service import INSTRUCTIONS_READ_AT
+
+        client = InstructionFetchTests._StubClient({"1": self._acca()})
+        repo = InstructionFetchTests._StubRepo([])
+        self._service(client, repo)._attach_instructions([{"taskID": 1, "dateCompleted": 1_750_000_000}])
+
+        written = repo.checkpoints[0]["1"]
+        self.assertEqual(written["area_affected"], "Timing belt")
+        self.assertIn(INSTRUCTIONS_READ_AT, written)
+
+    def test_an_interrupted_phase_keeps_what_it_had_already_written(self):
+        from services.ingestion_service import _INSTRUCTIONS_CHECKPOINT_EVERY
+
+        every = _INSTRUCTIONS_CHECKPOINT_EVERY
+
+        class Dies(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                if len(self.asked) >= every + 2:
+                    raise KeyboardInterrupt("worker timed out")
+                return super().get_task_instructions(task_id)
+
+        repo = InstructionFetchTests._StubRepo([])
+        with self.assertRaises(KeyboardInterrupt):
+            self._service(Dies({}), repo)._attach_instructions(self._completed_tasks(every * 2))
+
+        self.assertEqual([len(chunk) for chunk in repo.checkpoints], [every])
+
+    def test_a_dry_run_reads_but_writes_nothing(self):
+        client = InstructionFetchTests._StubClient({"1": self._acca()})
+        repo = InstructionFetchTests._StubRepo([])
+        task = {"taskID": 1, "dateCompleted": 1_750_000_000}
+        self._service(client, repo)._attach_instructions([task], checkpoint=False)
+
+        self.assertEqual(client.asked, ["1"], "the phase still runs")
+        self.assertEqual(task["area_affected"], "Timing belt", "and still reports what it read")
+        self.assertEqual(repo.checkpoints, [], "but a dry run must not touch the database")
+
+    def test_a_checkpoint_that_fails_does_not_lose_the_sync(self):
+        # Insurance must not become the risk: the run's own upsert writes these
+        # same fields, so a locked database costs repeated requests, not a sync.
+        class Refuses(InstructionFetchTests._StubRepo):
+            def record_instruction_read(self, reads):
+                raise RuntimeError("database is locked")
+
+        logged: list[str] = []
+        client = InstructionFetchTests._StubClient({"1": self._acca()})
+        service = self._service(client, Refuses([]))
+        service._log = logged.append
+        task = {"taskID": 1, "dateCompleted": 1_750_000_000}
+        counts = service._attach_instructions([task])
+
+        self.assertEqual(task["area_affected"], "Timing belt")
+        self.assertEqual(counts["instructions_found"], 1)
+        self.assertTrue(any("database is locked" in line for line in logged), logged)
+
+    def test_a_repository_without_the_checkpoint_still_syncs(self):
+        # An older repository, or a stand-in that only knows the read side.
+        class Older:
+            def iter_task_payloads(self):
+                return iter(())
+
+        client = InstructionFetchTests._StubClient({"1": self._acca()})
+        task = {"taskID": 1, "dateCompleted": 1_750_000_000}
+        counts = self._service(client, Older())._attach_instructions([task])
+        self.assertEqual(counts["instructions_found"], 1)
+
+    def _acca(self):
+        return InstructionFetchTests()._acca("Timing belt")
+
+
 class EndToEndTests(unittest.TestCase):
     """A real sync, from the API payload to what the disposition table reads.
 
@@ -736,6 +918,81 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(row["condition_found"], "Worn")
         self.assertEqual(row["cause"], "Aging")
         self.assertEqual(row["action_taken"], "Replaced timing belt.")
+
+    def test_an_interrupted_sync_keeps_the_instructions_it_had_already_read(self):
+        # The checkpoint's only job, through the real repository rather than a
+        # stand-in: reads survive a run that never reaches its own upsert. A
+        # stubbed repo cannot show this, because a checkpoint that quietly wrote
+        # nothing would look identical -- the end-of-run upsert stores the same
+        # fields, so the loss is only visible when the run does not get there.
+        from repositories.raw_repo import RawRepository
+        from services.ingestion_service import (
+            INSTRUCTIONS_READ_AT,
+            _INSTRUCTIONS_CHECKPOINT_EVERY,
+            IngestionService,
+        )
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "gremlin.db"
+        LifeDataService(db_path, refresh_on_startup=False)
+
+        every = _INSTRUCTIONS_CHECKPOINT_EVERY
+        instructions = self._Client.INSTRUCTIONS
+
+        class ManyTasks(EndToEndTests._Client):
+            """Enough completed work orders to cross a checkpoint, then dies."""
+
+            def __init__(self):
+                self.asked: list = []
+
+            def get_tasks(self, updated_since=None, *, on_page=None):
+                return [
+                    dict(self.TASK, taskID=239728 + n, dateCompleted=1753000000 - n)
+                    for n in range(every * 2)
+                ]
+
+            def get_task_instructions(self, task_id):
+                if len(self.asked) >= every + 2:
+                    raise KeyboardInterrupt("worker timed out")
+                self.asked.append(task_id)
+                return [dict(item) for item in instructions]
+
+        # A first sync writes the task rows, without reading any instructions.
+        IngestionService(
+            limble_client=ManyTasks(), raw_repo=RawRepository(db_path),
+            fetch_instructions=False, log=lambda _m: None,
+        ).sync_all()
+
+        killed = ManyTasks()
+        with self.assertRaises(KeyboardInterrupt):
+            IngestionService(
+                limble_client=killed, raw_repo=RawRepository(db_path),
+                fetch_instructions=True, log=lambda _m: None,
+            ).sync_all()
+
+        stored = dict(RawRepository(db_path).iter_task_payloads())
+        kept = [key for key, payload in stored.items() if payload.get("cause")]
+        self.assertEqual(
+            len(kept), every,
+            f"the {every} reads written down before the kill should have survived it",
+        )
+        for key in kept:
+            self.assertIn(INSTRUCTIONS_READ_AT, stored[key], "and be marked read, so nobody pays twice")
+
+        # Which is the point: the next run picks up where this one stopped. With
+        # the checkpointed tasks behind it there are few enough left that this
+        # one finishes rather than being killed.
+        resumed = ManyTasks()
+        IngestionService(
+            limble_client=resumed, raw_repo=RawRepository(db_path),
+            fetch_instructions=True, log=lambda _m: None,
+        ).sync_all()
+        self.assertFalse(
+            set(resumed.asked) & {int(key) for key in kept},
+            "a resumed run must not re-read what the killed one already stored",
+        )
+        self.assertEqual(len(resumed.asked), every, "it reads exactly the ones still outstanding")
 
     def test_a_second_sync_does_not_pay_to_read_the_same_task_again(self):
         from repositories.raw_repo import RawRepository

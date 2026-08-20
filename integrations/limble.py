@@ -28,6 +28,18 @@ import requests
 DEFAULT_BASE_URL = "https://api.limblecmms.com/v2"
 
 
+class LimbleResponseError(RuntimeError):
+    """Limble answered successfully, but not with the shape the endpoint promises.
+
+    Distinct from a transport failure on purpose. ``requests`` raises for a bad
+    status, and the retries above handle that; this is the case where the call
+    *succeeded* and the body is still not usable -- an API gateway's wrapper
+    object, a maintenance notice, an error document served with a 200. Left
+    untyped, those bodies coerce to "the resource is empty", which reads to a
+    caller as fact rather than as a failed read.
+    """
+
+
 @dataclass
 class LimbleConfig:
     """Runtime configuration required for Limble API access."""
@@ -152,11 +164,20 @@ class LimbleClient:
         Limble site uses for the same field; services.wo_narrative reads both.
 
         A task with no instructions returns an empty list rather than raising.
+        Anything that is not a list raises ``LimbleResponseError``: the caller
+        cannot tell a wrapper object or a maintenance notice from a genuinely
+        empty task, and treating one as the other means believing a work order's
+        boxes are blank when they were never read. That belief is durable --
+        the reader records the task as read and stops asking -- so the ambiguity
+        has to be resolved here, where the response is still in hand.
         """
 
         payload = self._request("GET", f"/tasks/{task_id}/instructions/")
         if not isinstance(payload, list):
-            return []
+            raise LimbleResponseError(
+                f"GET /tasks/{task_id}/instructions returned "
+                f"{type(payload).__name__}, expected a list of instruction items"
+            )
         return [item for item in payload if isinstance(item, dict)]
 
     # ------------------------------------------------------------------
