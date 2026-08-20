@@ -37,26 +37,15 @@
 {% endmacro %}
 
 {% block content %}
-<section class="glass-card fade-in-up patch-hero">
-  <div class="patch-hero-copy">
-    <p class="eyebrow">Patch Notes</p>
-    <h1>What changed, and when.</h1>
-    <p class="hero-copy">
-      Every GREMLIN release, newest first: what was added, and what was fixed.
-      The reliability team keeps the list in the patch notes document on the
-      engineering share, and this page shows it as soon as the document is saved.
-    </p>
-  </div>
-
-  {%- if notes.latest %}
-  <aside class="patch-current" aria-label="Current release">
-    <p class="patch-current-label">Current version</p>
-    <p class="patch-current-version">{{ notes.latest.version }}</p>
-    {%- if notes.latest.date_display %}
-    <p class="patch-current-date">Released {{ notes.latest.date_display }}</p>
-    {%- endif %}
-  </aside>
-  {%- endif %}
+<section class="glass-card fade-in-up">
+  {#- The page's only h1, and the reason it is not shown: the card is meant to
+      carry one sentence, but without a heading here the outline would start at
+      a release's version number -- or, when the document cannot be read, at the
+      apology -- and neither of those names the page. -#}
+  <h1 class="visually-hidden">Patch Notes</h1>
+  <p class="hero-copy">
+    Every GREMLIN release, newest first: what was added, and what was fixed.
+  </p>
 </section>
 
 {%- if notes.releases | length > 1 %}
