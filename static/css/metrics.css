@@ -16,7 +16,7 @@
   background: var(--forest-100);
   color: var(--forest-800);
 }
-.metrics-banner.is-error { border-color: #d98a8a; background: #fbecec; color: #7d2b2b; }
+.metrics-banner.is-error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-ink); }
 .metrics-banner.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
 
 /* ---- filter bar ---------------------------------------------------------- */
@@ -61,7 +61,7 @@
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-veil);
   color: var(--text);
 }
 .metrics-field input:focus {
@@ -85,7 +85,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 18px 40px rgba(6, 43, 28, 0.16);
+  box-shadow: 0 18px 40px rgba(var(--shadow-ink), 0.16);
   padding: 0.3rem;
 }
 
@@ -116,8 +116,8 @@
   gap: 0.4rem;
   padding: 0.28rem 0.5rem 0.28rem 0.7rem;
   border-radius: 999px;
-  background: rgba(47, 143, 91, 0.14);
-  border: 1px solid rgba(47, 143, 91, 0.3);
+  background: var(--brand-tint);
+  border: 1px solid var(--brand-tint-strong);
   color: var(--forest-900);
   font-size: 0.8rem;
   font-weight: 600;
@@ -131,7 +131,7 @@
   line-height: 1;
   padding: 0;
 }
-.metrics-chip button:hover { color: #7d2b2b; }
+.metrics-chip button:hover { color: var(--danger-ink); }
 
 /* ---- card stack ---------------------------------------------------------- */
 .metrics-card-stack { display: grid; gap: 1.2rem; }
@@ -139,11 +139,11 @@
 .metrics-card {
   cursor: pointer;
   transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
-  border: 1px solid rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--glass-border);
 }
 .metrics-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 26px 52px rgba(6, 43, 28, 0.18);
+  box-shadow: 0 26px 52px rgba(var(--shadow-ink), 0.18);
   border-color: rgba(47, 143, 91, 0.45);
 }
 .metrics-card:focus-visible {
@@ -153,7 +153,7 @@
 .metrics-card.is-expanded {
   cursor: default;
   border-color: rgba(47, 143, 91, 0.5);
-  box-shadow: 0 26px 52px rgba(6, 43, 28, 0.18);
+  box-shadow: 0 26px 52px rgba(var(--shadow-ink), 0.18);
   transform: none;
 }
 
@@ -185,10 +185,10 @@
   align-items: center;
   gap: 0.35rem;
   padding: 0.28rem 0.6rem;
-  border: 1px solid rgba(174, 112, 0, 0.42);
+  border: 1px solid var(--warning-tint);
   border-radius: 999px;
-  background: rgba(255, 193, 7, 0.16);
-  color: #735000;
+  background: var(--warning-tint);
+  color: var(--warning-ink);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.025em;
@@ -200,7 +200,7 @@
   width: 1.1rem;
   height: 1.1rem;
   fill: #f6b900;
-  stroke: #735000;
+  stroke: var(--warning-ink);
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -314,7 +314,7 @@
 }
 
 .metrics-panel {
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--surface-veil-soft);
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 1rem;
@@ -384,7 +384,7 @@ table.metrics-table thead th {
      away with it, so the rule under the header is drawn as an inset shadow. */
   box-shadow: inset 0 -1px 0 var(--border);
 }
-table.metrics-table tbody tr:nth-child(even) { background: rgba(237, 242, 246, 0.5); }
+table.metrics-table tbody tr:nth-child(even) { background: var(--forest-100); }
 table.metrics-table td.metrics-empty-row { text-align: center; color: var(--muted); padding: 1rem 0.55rem; }
 
 /* status / trend pills */
@@ -395,11 +395,11 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
   font-size: 0.76rem;
   font-weight: 700;
 }
-.metrics-pill.is-high { background: rgba(192, 57, 43, 0.16); color: #a5281b; }
-.metrics-pill.is-medium { background: rgba(214, 167, 0, 0.2); color: #8a6d00; }
+.metrics-pill.is-high { background: var(--danger-tint); color: var(--danger-strong); }
+.metrics-pill.is-medium { background: var(--warning-tint); color: var(--warning-ink); }
 .metrics-pill.is-low { background: rgba(47, 143, 91, 0.16); color: var(--forest-900); }
 
-.metrics-trend-up { color: #a5281b; font-weight: 700; }
+.metrics-trend-up { color: var(--danger-strong); font-weight: 700; }
 .metrics-trend-down { color: var(--forest-700); font-weight: 700; }
 .metrics-trend-flat { color: var(--muted); font-weight: 700; }
 
@@ -419,7 +419,7 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
   padding: 0.55rem 0.7rem;
   font-size: 0.78rem;
   line-height: 1.45;
-  box-shadow: 0 16px 36px rgba(6, 43, 28, 0.34);
+  box-shadow: 0 16px 36px rgba(var(--shadow-ink), 0.34);
 }
 .metrics-tooltip-title { color: #fff; font-weight: 700; font-size: 0.82rem; }
 .metrics-tooltip-sub { color: #b6c6d2; font-size: 0.72rem; margin-bottom: 0.3rem; }
@@ -459,7 +459,7 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
   align-items: center;
   justify-content: center;
   gap: 0.8rem;
-  background: rgba(247, 249, 252, 0.55);
+  background: var(--surface-veil-soft);
   backdrop-filter: blur(2px);
   z-index: 60;
   color: var(--forest-800);
@@ -533,7 +533,7 @@ table.availability-table td:first-child,
 table.availability-table th:first-child {
   position: sticky;
   left: 0;
-  background: var(--surface, #fff);
+  background: var(--surface);
   font-weight: 600;
   z-index: 1;
 }
@@ -545,7 +545,7 @@ table.availability-table thead th:first-child { background: var(--forest-100); z
 /* A flagged month means downtime exceeded scheduled hours, so the value is
    clamped to 0% -- it needs to read as a problem, not as a normal low score. */
 .availability-cell.is-flagged {
-  color: #c0392b;
+  color: var(--danger-strong);
   font-weight: 700;
 }
 /* No work orders logged at all reports 100%, which is indistinguishable from a
@@ -566,7 +566,7 @@ table.availability-table thead th:first-child { background: var(--forest-100); z
   font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  background: #fff;
+  background: var(--surface);
 }
 .availability-input:focus {
   outline: 2px solid var(--forest-400, #2f8f5b);
@@ -605,10 +605,10 @@ body.metrics-modal-open { overflow: hidden; }
      horizontal scroll on a typical office display. */
   width: min(1340px, 100%);
   max-height: min(88vh, 60rem);
-  background: var(--surface, #fff);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 28px 70px rgba(6, 43, 28, 0.34);
+  box-shadow: 0 28px 70px rgba(var(--shadow-ink), 0.34);
   /* Flex rather than a fixed grid template: the dialog holds a different number
      of bands depending on which view is showing -- the work-order view adds a
      picker row and a summary strip -- so the flexible band has to be named by
@@ -639,9 +639,9 @@ body.metrics-modal-open { overflow: hidden; }
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 18px;
-  background: var(--surface, #fff);
+  background: var(--surface);
   color: var(--text);
-  box-shadow: 0 28px 70px rgba(6, 43, 28, 0.34);
+  box-shadow: 0 28px 70px rgba(var(--shadow-ink), 0.34);
 }
 .availability-info-dialog[open] { animation: metricsModalIn 200ms ease-out both; }
 .availability-info-dialog::backdrop {
@@ -657,7 +657,7 @@ body.metrics-modal-open { overflow: hidden; }
   gap: 1rem;
   padding: 1.2rem 1.3rem 1rem;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(135deg, var(--forest-100), #fff);
+  background: linear-gradient(135deg, var(--forest-100), var(--surface));
 }
 .availability-info-head h2 { margin: 0.1rem 0 0; color: var(--forest-900); font-size: 1.25rem; }
 .availability-info-body { display: grid; gap: 1.1rem; padding: 1.2rem 1.3rem 1.35rem; }
@@ -688,7 +688,7 @@ body.metrics-modal-open { overflow: hidden; }
   background: rgba(47, 143, 91, 0.09);
 }
 .availability-info-note p { margin: 0.3rem 0 0; font-size: 0.88rem; line-height: 1.55; }
-.availability-info-warning { color: #b42318; }
+.availability-info-warning { color: var(--danger-strong); }
 
 /* Keep this override after every dialog animation declaration. In particular,
    the explainer's [open] selector is more specific than its base class, so an
@@ -711,7 +711,7 @@ body.metrics-modal-open { overflow: hidden; }
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.2rem 0.85rem;
-  background: var(--surface, #fff);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   /* The grid already pins this row. Sticky is what keeps it pinned if the
      dialog ever has to scroll as a whole -- a very short viewport, or a future
@@ -739,7 +739,7 @@ body.metrics-modal-open { overflow: hidden; }
   height: 2rem;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   color: var(--forest-800);
   font-size: 1.3rem;
   line-height: 1;
@@ -808,12 +808,12 @@ th.is-numeric .metrics-sort { justify-content: flex-end; }
 /* ---- drill-down table ---------------------------------------------------- */
 /* Row backgrounds are opaque, not tinted: the asset column is sticky, and a
    semi-transparent cell would show the cells sliding underneath it. */
-table.availability-detail-table tbody tr { background: #fff; }
-table.availability-detail-table tbody tr:nth-child(even) { background: #f6f8fa; }
-table.availability-detail-table tbody tr.is-attention { background: #fdf8e7; }
-table.availability-detail-table tbody tr.is-attention:nth-child(even) { background: #f6f0dc; }
+table.availability-detail-table tbody tr { background: var(--surface); }
+table.availability-detail-table tbody tr:nth-child(even) { background: var(--row-zebra); }
+table.availability-detail-table tbody tr.is-attention { background: var(--row-attention); }
+table.availability-detail-table tbody tr.is-attention:nth-child(even) { background: var(--row-attention-zebra); }
 table.availability-detail-table tbody tr.is-focused,
-table.availability-detail-table tbody tr.is-focused:nth-child(even) { background: #dceee4; }
+table.availability-detail-table tbody tr.is-focused:nth-child(even) { background: var(--row-focus); }
 
 table.availability-detail-table td:first-child,
 table.availability-detail-table th:first-child {
@@ -837,7 +837,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   color: var(--muted);
 }
 
-.availability-detail-delta.is-below { color: #a5281b; font-weight: 700; }
+.availability-detail-delta.is-below { color: var(--danger-strong); font-weight: 700; }
 .availability-detail-delta.is-above { color: var(--forest-700); }
 
 .availability-detail-notes { white-space: normal; min-width: 15rem; max-width: 26rem; }
@@ -849,9 +849,9 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   font-size: 0.72rem;
   font-weight: 600;
 }
-.availability-detail-flag.is-flagged { background: rgba(192, 57, 43, 0.14); color: #a5281b; }
-.availability-detail-flag.is-no-data { background: rgba(94, 112, 130, 0.16); color: #4a5b6b; }
-.availability-detail-flag.is-overlap { background: rgba(214, 167, 0, 0.22); color: #8a6d00; }
+.availability-detail-flag.is-flagged { background: var(--danger-tint); color: var(--danger-strong); }
+.availability-detail-flag.is-no-data { background: rgba(94, 112, 130, 0.16); color: var(--muted); }
+.availability-detail-flag.is-overlap { background: var(--warning-tint); color: var(--warning-ink); }
 .availability-detail-flag.is-linked { background: rgba(47, 143, 91, 0.14); color: var(--forest-900); }
 .availability-detail-quiet { color: var(--muted); }
 /* One captioned line per Limble narrative box, stacked in a single cell. */
@@ -899,7 +899,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 .metrics-modal-view:hover { color: var(--forest-900); background: var(--forest-100); }
 .metrics-modal-view:focus-visible { outline: 2px solid var(--forest-700); outline-offset: -2px; }
 .metrics-modal-view.is-active {
-  background: var(--surface, #fff);
+  background: var(--surface);
   border-color: var(--border);
   color: var(--forest-900);
 }
@@ -919,7 +919,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface, #fff);
+  background: var(--surface);
   font: inherit;
   font-size: 0.85rem;
 }
@@ -935,7 +935,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   font-variant-numeric: tabular-nums;
 }
 .availability-wo-stat.is-total .availability-wo-stat-value { color: var(--forest-700); }
-.availability-wo-stat.is-flagged .availability-wo-stat-value { color: #a5281b; }
+.availability-wo-stat.is-flagged .availability-wo-stat-value { color: var(--danger-strong); }
 .availability-wo-caveat {
   margin: 0.55rem 0 0;
   font-size: 0.8rem;
@@ -944,7 +944,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 }
 /* The one caveat that is about the numbers being unreconcilable rather than
    about how they were derived, so it reads as a caution and not as a footnote. */
-.availability-wo-caveat.is-warn { color: #8a6d00; font-weight: 600; }
+.availability-wo-caveat.is-warn { color: var(--warning-ink); font-weight: 600; }
 
 .availability-wo-id { font-variant-numeric: tabular-nums; color: var(--muted); }
 .availability-wo-name { white-space: normal; min-width: 16rem; max-width: 28rem; font-weight: 600; }
@@ -956,7 +956,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
    Tinting them keeps that visible while scrolling, once the badge in the asset
    column has scrolled out of the reader's attention. */
 table.availability-wo-table tbody tr.is-linked,
-table.availability-wo-table tbody tr.is-linked:nth-child(even) { background: #f2f8f4; }
+table.availability-wo-table tbody tr.is-linked:nth-child(even) { background: var(--row-linked); }
 
 /* Sticks to the bottom for the same reason the heading sticks to the top: the
    total is what the rows are being read against, so it has to stay in view
@@ -1002,7 +1002,7 @@ table.availability-wo-table tfoot td:first-child {
 .availability-config-group {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--surface-veil-soft);
 }
 .availability-config-group > summary {
   cursor: pointer;
@@ -1044,9 +1044,9 @@ table.availability-wo-table tfoot td:first-child {
 /* Schedule edits recompute every month, so the warning has to read as one. */
 .lda-warning {
   font-size: 0.85rem;
-  color: #8a3b2f;
-  background: rgba(192, 57, 43, 0.08);
-  border: 1px solid rgba(192, 57, 43, 0.25);
+  color: var(--danger-ink);
+  background: var(--danger-tint-soft);
+  border: 1px solid var(--danger-tint-border);
   border-radius: 10px;
   padding: 0.6rem 0.8rem;
 }
@@ -1069,7 +1069,7 @@ table.availability-wo-table tfoot td:first-child {
   border: 1px solid var(--border);
   border-radius: 8px;
   font-size: 0.82rem;
-  background: #fff;
+  background: var(--surface);
 }
 .availability-config-name-input:focus {
   outline: 2px solid var(--forest-400, #2f8f5b);

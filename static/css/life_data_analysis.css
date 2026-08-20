@@ -14,11 +14,11 @@
   padding: 0.85rem 1.1rem;
   font-weight: 600;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-veil);
   color: var(--text);
 }
-.lda-banner.is-error { border-color: #d98a8a; background: #fbecec; color: #7d2b2b; }
-.lda-banner.is-success { border-color: #8fbf9f; background: #eaf6ee; color: #234d33; }
+.lda-banner.is-error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-ink); }
+.lda-banner.is-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-ink); }
 .lda-banner.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
 
 /* Toast notifications (top-right) — used for disposition save outcomes. */
@@ -38,9 +38,9 @@
   padding: 0.85rem 1.1rem;
   font-weight: 600;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--surface-veil-strong);
   color: var(--text);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 8px 24px rgba(var(--shadow-ink), 0.18);
   cursor: pointer;
   pointer-events: auto;
   opacity: 0;
@@ -48,8 +48,8 @@
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .lda-toast.is-visible { opacity: 1; transform: translateX(0); }
-.lda-toast.is-error { border-color: #d98a8a; background: #fbecec; color: #7d2b2b; }
-.lda-toast.is-success { border-color: #8fbf9f; background: #eaf6ee; color: #234d33; }
+.lda-toast.is-error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-ink); }
+.lda-toast.is-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-ink); }
 .lda-toast.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
 
 /* Step 1 selectors */
@@ -73,7 +73,7 @@
   z-index: 15;
   gap: 0.4rem;
   padding: 0.9rem 1.1rem;
-  background: linear-gradient(140deg, rgba(255, 255, 255, 0.99), rgba(229, 245, 236, 0.98));
+  background: var(--glass-bg-strong);
 }
 
 .lda-step1-sticky .eyebrow { line-height: 1.1; }
@@ -96,7 +96,7 @@
 .lda-textarea {
   font: inherit;
   color: var(--text);
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.55rem 0.7rem;
@@ -128,10 +128,10 @@
   margin: 0;
   padding: 0.25rem;
   list-style: none;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 14px 34px rgba(6, 43, 28, 0.2);
+  box-shadow: 0 14px 34px rgba(var(--shadow-ink), 0.2);
   max-height: 300px;
   overflow-y: auto;
   z-index: 50;
@@ -173,7 +173,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 }
 .lda-metric {
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--surface-veil);
   border-radius: 14px;
   padding: 0.85rem 0.95rem;
   display: grid;
@@ -217,7 +217,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 }
 .lda-panel {
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-veil-soft);
   border-radius: 14px;
   padding: 1rem;
   display: grid;
@@ -273,7 +273,7 @@ table.lda-table td.lda-empty-row { text-align: center; color: var(--muted); padd
   max-height: 65vh;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--surface);
 }
 table.lda-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 table.lda-table th,
@@ -343,13 +343,13 @@ table.lda-table td.lda-wo-text {
 table.lda-table thead th {
   position: sticky;
   top: 0;
-  background: var(--forest-800);
-  color: #fff;
+  background: var(--accent-solid);
+  color: var(--accent-solid-ink);
   font-weight: 600;
   white-space: nowrap;
   z-index: 1;
 }
-table.lda-table tbody tr:nth-child(even) { background: rgba(237, 242, 246, 0.5); }
+table.lda-table tbody tr:nth-child(even) { background: var(--forest-100); }
 table.lda-table tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
 table.lda-table td.lda-readonly { color: var(--muted); max-width: 220px; white-space: pre-wrap; word-break: break-word; }
 /* The first read-only column ("name" — the task/WO title) carries the longest
@@ -398,7 +398,7 @@ table.lda-table tbody tr:nth-child(even) td.lda-days-red { background: rgba(192,
 .lda-chart-card {
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--surface);
   padding: 0.75rem;
   display: grid;
   gap: 0.4rem;
@@ -408,8 +408,8 @@ table.lda-table tbody tr:nth-child(even) td.lda-days-red { background: rgba(192,
 .lda-legend { display: flex; flex-wrap: wrap; gap: 0.9rem; font-size: 0.8rem; color: var(--muted); }
 .lda-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
 .lda-swatch { width: 16px; height: 0; border-top-width: 3px; border-top-style: solid; display: inline-block; }
-.lda-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; border: 1px solid #33455a; }
-.lda-vline { width: 0; height: 14px; border-left: 3px solid #c0392b; display: inline-block; }
+.lda-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; border: 1px solid var(--border); }
+.lda-vline { width: 0; height: 14px; border-left: 3px solid var(--danger-strong); display: inline-block; }
 
 table.lda-interpretation,
 table.lda-data { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
@@ -496,10 +496,10 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
   position: fixed;
   z-index: 90;
   width: 244px;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(6, 43, 28, 0.22);
+  box-shadow: 0 16px 40px rgba(var(--shadow-ink), 0.22);
   padding: 0.6rem;
   display: grid;
   gap: 0.5rem;
@@ -585,10 +585,10 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
   z-index: 70; padding: 1rem;
 }
 .lda-modal {
-  background: #fff;
+  background: var(--surface);
   border-radius: 16px;
   border: 1px solid var(--border);
-  box-shadow: 0 24px 60px rgba(6, 43, 28, 0.28);
+  box-shadow: 0 24px 60px rgba(var(--shadow-ink), 0.28);
   width: min(560px, 100%);
   max-height: 86vh;
   overflow: auto;

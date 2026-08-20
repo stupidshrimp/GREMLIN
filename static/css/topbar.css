@@ -11,10 +11,10 @@
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1.25rem;
-  background: linear-gradient(90deg, #041f14 0%, #0a3a27 45%, #115337 100%);
+  background: var(--topbar-bg);
   color: #fff;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.24);
-  box-shadow: 0 8px 24px rgba(6, 43, 28, 0.25);
+  border-bottom: 1px solid var(--topbar-border);
+  box-shadow: var(--topbar-shadow);
   /* Pin the topbar so it stays visible while the page scrolls; the sticky sidebar
      pins directly below it. */
   position: sticky;
@@ -34,8 +34,8 @@
   height: 2.25rem;
   border-radius: 9px;
   object-fit: cover;
-  box-shadow: 0 8px 20px rgba(6, 43, 28, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 8px 20px rgba(var(--shadow-ink), 0.35);
+  border: 1px solid var(--topbar-border);
 }
 
 .brand-copy {
@@ -178,7 +178,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 24px 60px rgba(6, 43, 28, 0.28);
+  box-shadow: var(--shadow-xl);
   overflow: hidden;
   animation: globalSearchIn 140ms ease-out both;
 }
@@ -349,6 +349,245 @@
   margin-right: 0.25rem;
 }
 
+/* ---------------------------------------------------------------------------
+   Tool rail
+
+   Three buttons at the end of the topbar: quick links, the theme toggle, and
+   notifications. They sit on the header's gradient, which is dark in both
+   themes, so everything here is white-on-dark in both -- these are the one part
+   of the app that does not follow the palette, for the same reason the search
+   box beside them does not.
+   --------------------------------------------------------------------------- */
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
+}
+
+/* The positioning context the dropdown hangs off. */
+.topbar-tool {
+  position: relative;
+  display: flex;
+}
+
+/* Square, and sized against the search input rather than against its own icon:
+   the two controls share a row and a 2.5rem box next to a 2.5rem pill is what
+   makes them read as one set. The whole rail still has to clear 74px, which is
+   where .sidebar pins itself. */
+.topbar-tool-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  font: inherit;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.09);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease,
+    transform 180ms ease;
+}
+
+.topbar-tool-button svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: currentColor;
+}
+
+.topbar-tool-button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.34);
+  transform: translateY(-1px);
+}
+
+.topbar-tool-button:active {
+  transform: translateY(0);
+}
+
+/* Matched to the search box's focus treatment rather than the UA outline, for
+   the same reason: a ring drawn on the gradient reads better than an outline
+   that follows the rounding a pixel off. */
+.topbar-tool-button:focus-visible {
+  outline: none;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.16);
+}
+
+/* Held open: the button keeps the pressed appearance while its menu is showing,
+   so it is obvious which button the panel belongs to. */
+.topbar-tool-button[aria-expanded="true"] {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* ---- theme toggle --------------------------------------------------------- */
+
+/* Both icons occupy the same box and are cross-faded, so the button never
+   reflows and never blinks empty mid-switch. The one on show is the theme the
+   click will move you *to*, which is what the button's label says as well. */
+.topbar-theme-icon {
+  position: relative;
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.topbar-theme-icon svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.topbar-theme-sun {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.55);
+}
+
+.topbar-theme-moon {
+  opacity: 1;
+  transform: none;
+}
+
+:root[data-theme="dark"] .topbar-theme-sun {
+  opacity: 1;
+  transform: none;
+}
+
+:root[data-theme="dark"] .topbar-theme-moon {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.55);
+}
+
+/* ---- dropdown ------------------------------------------------------------- */
+
+/* Anchored to the button's right edge rather than its left: the rail is at the
+   end of the header, and a panel that grew rightwards from the button would run
+   off the window. */
+.topbar-menu {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 40;
+  min-width: 16.5rem;
+  padding: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-xl);
+  animation: topbarMenuIn 140ms ease-out both;
+}
+
+/* An explicit `display` on the rule above would beat the UA's
+   `[hidden] { display: none }`, so the attribute is honoured here instead --
+   the same trap .global-search-footer documents. */
+.topbar-menu[hidden] {
+  display: none;
+}
+
+@keyframes topbarMenuIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.topbar-menu-heading {
+  padding: 0.6rem 0.75rem 0.4rem;
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.topbar-menu-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 11px;
+  text-decoration: none;
+  color: var(--text);
+  transition: background 120ms ease;
+}
+
+/* Hover and keyboard share one appearance, as they do in the search dropdown:
+   the pointer must not be able to light up a second row while the arrow keys
+   already have one. */
+.topbar-menu-item:hover,
+.topbar-menu-item:focus-visible {
+  background: var(--forest-100);
+  outline: none;
+}
+
+.topbar-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--forest-500);
+}
+
+.topbar-menu-item-text {
+  min-width: 0;
+}
+
+.topbar-menu-item-label {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--forest-900);
+}
+
+/* The destination, spelled out. A link that leaves the app is worth being able
+   to read before you follow it, and the status bar only appears on hover. */
+.topbar-menu-item-host {
+  display: block;
+  font-size: 0.76rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-menu-item-mark {
+  display: flex;
+  color: var(--muted);
+  transition: color 120ms ease, transform 120ms ease;
+}
+
+.topbar-menu-item-mark svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  fill: currentColor;
+}
+
+.topbar-menu-item:hover .topbar-menu-item-mark,
+.topbar-menu-item:focus-visible .topbar-menu-item-mark {
+  color: var(--forest-700);
+  transform: translate(1px, -1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-menu { animation: none; }
+
+  .topbar-tool-button,
+  .topbar-theme-icon svg,
+  .topbar-menu-item-mark {
+    transition: none;
+  }
+
+  .topbar-tool-button:hover {
+    transform: none;
+  }
+}
+
 /* Left in the page for assistive technology and taken out of the visual layout.
    Used by the search box's help text and its live result count. */
 .visually-hidden {
@@ -378,8 +617,15 @@
   }
 }
 
-/* Stacked: brand on one row, search full-width on the next. The spacer only
-   existed to centre the middle column and has nothing to balance now.
+/* Stacked: brand and the tool rail share the first row, and the search box gets
+   the whole of the second. The three columns that centred the search box on the
+   window have nothing left to centre once it spans the header, so the middle
+   track goes and the two that remain are the brand and the rail.
+
+   Every item is placed explicitly. Auto-placement follows document order, which
+   would put the search box beside the brand and drop the rail onto the second
+   row -- the opposite of what is wanted, since the rail is three small buttons
+   and the search box is the one control that needs the width.
 
    theme.css relaxes the topbar's grid row from 74px to `auto` at this same
    width, and .sidebar drops out of `position: sticky` there, so the taller
@@ -387,12 +633,23 @@
    ends on. */
 @media (max-width: 900px) {
   .topbar {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 0.65rem;
   }
 
-  .topbar-spacer {
-    display: none;
+  .brand-group {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .topbar-tools {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .global-search {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .brand-copy span {
@@ -401,5 +658,29 @@
 
   .global-search-panel {
     max-height: none;
+  }
+}
+
+/* A phone in portrait: the rail is the first thing that has to give, since the
+   brand still has to be readable and the buttons all have tooltips and labels.
+   Tightening the gap and the button box keeps all three on the row rather than
+   dropping one of them, which would leave the theme somewhere it cannot be
+   changed back from. */
+@media (max-width: 420px) {
+  .topbar-tools {
+    gap: 0.2rem;
+  }
+
+  .topbar-tool-button {
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 10px;
+  }
+
+  /* Anchored to the window's edge instead of the button's, so a 16.5rem panel
+     hanging off the last button in the rail cannot overhang the viewport. */
+  .topbar-menu {
+    right: -0.5rem;
+    min-width: min(16.5rem, calc(100vw - 2rem));
   }
 }

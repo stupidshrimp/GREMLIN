@@ -420,6 +420,26 @@ FOOTER_LINKS = [
 ]
 
 
+# The topbar's quick links: the systems people leave GREMLIN for, rather than
+# anywhere inside it. They are deliberately not in NAV_LINKS or the search
+# catalog -- both of those are about pages this app serves, and an entry that
+# silently takes you off-site does not belong in either. "host" is what the
+# dropdown prints under the title, so the destination is legible before the
+# click rather than only in the status bar.
+QUICK_LINKS = [
+    {
+        "label": "S&C SourceOne",
+        "url": "https://sandc4.sharepoint.com/sites/SourceOne",
+        "host": "sandc4.sharepoint.com",
+    },
+    {
+        "label": "M.O.M",
+        "url": "https://mom.sandc.ws/",
+        "host": "mom.sandc.ws",
+    },
+]
+
+
 @app.context_processor
 def footer_context():
     """Give every template the footer's links without threading them through each view.
@@ -428,7 +448,12 @@ def footer_context():
     keyword arguments to all thirty-odd render_template calls and breaking the footer
     on whichever one gets missed.
     """
-    return {"footer_links": FOOTER_LINKS, "current_year": date.today().year}
+    return {
+        "footer_links": FOOTER_LINKS,
+        "current_year": date.today().year,
+        # Same reasoning, for the topbar: it is drawn on every page too.
+        "quick_links": QUICK_LINKS,
+    }
 
 
 # The catalog behind the topbar's global search. Two kinds of entry: a "page" is
