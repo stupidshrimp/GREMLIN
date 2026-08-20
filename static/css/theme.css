@@ -313,7 +313,11 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 @media (max-width: 900px) {
   .app-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: 74px auto 1fr auto;
+    /* `auto` rather than the desktop 74px: below this width the topbar stacks
+       the brand above the global search box and needs two rows' worth of
+       height. The sidebar leaves `position: sticky` at the same breakpoint, so
+       nothing is still pinned to the 74px line the header used to end on. */
+    grid-template-rows: auto auto 1fr auto;
     grid-template-areas:
       "topbar"
       "sidebar"

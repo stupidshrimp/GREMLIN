@@ -4610,6 +4610,17 @@
     });
     const typeSelect = $("lda-analysis-type");
     if (typeSelect) {
+      // ?analysis= preselects the Analysis Type, which is what the topbar's
+      // global search links to for each of them. Matched against the option
+      // values themselves so the four names live in one place -- the markup --
+      // and an unrecognised value simply leaves the default selected.
+      const requested = (new URLSearchParams(window.location.search).get("analysis") || "").trim().toLowerCase();
+      if (requested) {
+        const match = Array.from(typeSelect.options).find(
+          (option) => option.value.toLowerCase() === requested
+        );
+        if (match) typeSelect.value = match.value;
+      }
       state.analysisType = typeSelect.value || ANALYSIS_TYPES.WEIBULL;
       typeSelect.addEventListener("change", () => setAnalysisType(typeSelect.value));
     }

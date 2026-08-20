@@ -183,12 +183,26 @@ def requires_csrf(view):
     return wrapped
 
 
+def _resolved_account() -> dict | None:
+    """The signed-in account as the accounts table has it now, or None.
+
+    The session carries a snapshot taken at login. This reloads the account
+    behind it and refuses the snapshot when the two disagree, which is what makes
+    a changed PIN or a revoked account take effect on the next page load rather
+    than whenever the browser is next closed.
+    """
+    snapshot = current_user()
+    if not snapshot or not snapshot.get("id"):
+        return None
+    user = access_control.get_user(snapshot["id"])
+    if not user or snapshot.get("credential_version") != user.get("credential_version"):
+        return None
+    return user
+
+
 @app.context_processor
 def auth_context():
-    snapshot = current_user()
-    user = access_control.get_user(snapshot["id"]) if snapshot and snapshot.get("id") else None
-    valid = bool(user and snapshot.get("credential_version") == user.get("credential_version"))
-    user = user if valid else None
+    user = _resolved_account()
     can_edit = bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL["editor"])
     # The account dialog is the only entrance to the developer area, so every
     # page needs to know whether to draw that door. Derived from the reloaded
@@ -200,6 +214,11 @@ def auth_context():
         "auth_can_edit": can_edit,
         "auth_is_admin": is_admin,
         "auth_csrf_token": csrf_token() if user else None,
+        # The topbar's global search is drawn on every page and its catalog is
+        # role-filtered, so it is built here rather than in a second context
+        # processor: the account has already been reloaded and checked, and
+        # doing it again would mean a second lookup on every single render.
+        "search_index": _search_index(is_admin=is_admin, can_edit=can_edit, has_account=bool(user)),
     }
 
 ICONS = {
@@ -410,6 +429,378 @@ def footer_context():
     on whichever one gets missed.
     """
     return {"footer_links": FOOTER_LINKS, "current_year": date.today().year}
+
+
+# The catalog behind the topbar's global search. Two kinds of entry: a "page" is
+# somewhere the sidebar or the footer could have taken you, and a "function" is a
+# single thing GREMLIN does, deep-linked to the control that does it. Keeping both
+# in one list is the point -- somebody who wants to disposition a work order
+# should not first have to work out whether that is a page of its own or a button
+# on one.
+#
+# `role` gates an entry exactly the way the route behind it is gated, so the
+# dropdown never offers a door that answers with a 403. Entries anyone may open
+# leave it out. `keywords` are never displayed: they exist so a search for the
+# word somebody actually has in mind ("uptime", "changelog", "sql") reaches the
+# entry whose visible label uses a different one.
+#
+# Every URL here is opened by a click in the dropdown, so a deep link has to
+# survive a cold page load: query strings are read by the page's own script, and
+# fragments must name an element that is present and visible before any data
+# arrives. That rules out the Life Data Analysis panels, which stay hidden until
+# an asset is picked -- those entries preselect the analysis type instead.
+SEARCH_ENTRIES = [
+    # -- Pages ---------------------------------------------------------------
+    {
+        "label": "Home",
+        "url": "/",
+        "kind": "page",
+        "context": "GREMLIN",
+        "keywords": ["dashboard", "start", "overview", "landing", "workflows", "main"],
+    },
+    {
+        "label": "Perform an Analysis",
+        "url": "/life-data-analysis/perform-analysis",
+        "kind": "page",
+        "context": "Life Data Analysis",
+        "keywords": ["weibull", "life data", "lda", "curve fitting", "reliability", "run analysis"],
+    },
+    {
+        "label": "Disposition",
+        "url": "/life-data-analysis/disposition",
+        "kind": "page",
+        "context": "Life Data Analysis",
+        "role": "editor",
+        "keywords": ["work order", "wo", "pm reset", "failure mode", "failure mechanism", "classify"],
+    },
+    {
+        "label": "Metrics",
+        "url": "/metrics",
+        "kind": "page",
+        "context": "Dashboards",
+        "keywords": ["kpi", "mtbf", "mttr", "downtime", "availability", "risk", "charts"],
+    },
+    {
+        "label": "Standards and Documentation",
+        "url": "/standards-and-documentation",
+        "kind": "page",
+        "context": "Reference",
+        "keywords": ["formula", "calculation", "method", "definition", "how it works", "docs"],
+    },
+    {
+        "label": "Reliability Links",
+        "url": "/reliability-links",
+        "kind": "page",
+        "context": "Reference",
+        "keywords": ["limble", "power bi", "sharepoint", "bookmarks", "resources", "cmms"],
+    },
+    {
+        "label": "Failure Classification",
+        "url": "/life-data-analysis/failure-classification",
+        "kind": "page",
+        "context": "Life Data Analysis",
+        "keywords": ["mode", "subsystem", "severity", "corrective action", "taxonomy"],
+    },
+    {
+        "label": "PM Calendar",
+        "url": "/pm-calendar",
+        "kind": "page",
+        "context": "Maintenance",
+        "keywords": ["preventive maintenance", "schedule", "upcoming", "due date", "frequency"],
+    },
+    {
+        "label": "Settings",
+        "url": "/settings",
+        "kind": "page",
+        "context": "GREMLIN",
+        "keywords": ["preferences", "configuration", "options", "workspace"],
+    },
+    {
+        "label": "About",
+        "url": "/about",
+        "kind": "page",
+        "context": "About this site",
+        "keywords": ["what is gremlin", "information"],
+    },
+    {
+        "label": "Patch Notes",
+        "url": "/patch-notes",
+        "kind": "page",
+        "context": "About this site",
+        "keywords": ["changelog", "release", "version", "whats new", "updates"],
+    },
+    {
+        "label": "Report a Bug",
+        "url": "/report-a-bug",
+        "kind": "page",
+        "context": "About this site",
+        "keywords": ["issue", "feedback", "support", "broken", "problem"],
+    },
+    {
+        "label": "Developer",
+        "url": "/developer",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["admin", "internals", "tools"],
+    },
+    {
+        "label": "Database inspection",
+        "url": "/developer/database",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["table", "row", "sql", "schema", "drift", "gremlin.db"],
+    },
+    {
+        "label": "Limble sync",
+        "url": "/developer/limble-sync",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["cmms", "import", "pipeline", "refresh", "api", "pull data"],
+    },
+    {
+        "label": "Access control",
+        "url": "/developer/access",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["user", "role", "pin", "account", "permission", "editor", "admin"],
+    },
+    {
+        "label": "User activity",
+        "url": "/developer/activity",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["audit", "log", "history", "who changed what"],
+    },
+
+    # -- Functions -----------------------------------------------------------
+    {
+        "label": "Weibull Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Weibull+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["beta", "eta", "b10", "b50", "mttf", "reliability curve", "distribution"],
+    },
+    {
+        "label": "Failure Mode Trend Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Failure+Mode+Trend+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["monthly trend", "fastest growing", "recurring", "failure mode"],
+    },
+    {
+        "label": "Downtime Driver Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Downtime+Driver+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["downtime hours", "distribution", "top events", "by location"],
+    },
+    {
+        "label": "PM Effectiveness Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=PM+Effectiveness+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["failures following pm", "preventive maintenance", "pm to failure"],
+    },
+    {
+        "label": "Disposition Work Orders",
+        "url": "/life-data-analysis/disposition?kind=wo",
+        "kind": "function",
+        "context": "Disposition",
+        "role": "editor",
+        "keywords": ["wo", "corrective", "assign failure mode", "record class"],
+    },
+    {
+        "label": "Disposition PM Resets",
+        "url": "/life-data-analysis/disposition?kind=pm",
+        "kind": "function",
+        "context": "Disposition",
+        "role": "editor",
+        "keywords": ["pm", "reset decision", "preventive maintenance"],
+    },
+    {
+        "label": "Reliability performance by asset",
+        "url": "/metrics#card-kpis",
+        "kind": "function",
+        "context": "Metrics",
+        "keywords": ["mtbf", "mttr", "work order count", "total downtime", "kpi summary"],
+    },
+    {
+        "label": "Reliability risk by asset",
+        "url": "/metrics#card-alerts",
+        "kind": "function",
+        "context": "Metrics",
+        "keywords": ["risk score", "downtime spike", "alert", "threshold", "baseline"],
+    },
+    {
+        "label": "Asset availability by month",
+        "url": "/metrics#card-availability",
+        "kind": "function",
+        "context": "Metrics",
+        "keywords": ["uptime", "goal", "overtime", "ot", "scheduled hours"],
+    },
+    # The three editing sections of Settings. They are drawn for an editor and
+    # left out of the page entirely for anyone else, so they are gated here to
+    # match: pointing a viewer at a fragment naming an element their copy of the
+    # page does not contain would land them at the top of it with no explanation.
+    {
+        "label": "Asset group schedules",
+        "url": "/settings#settings-availability-heading",
+        "kind": "function",
+        "context": "Settings",
+        "role": "editor",
+        "keywords": ["shift", "operating hours", "availability basis", "calendar"],
+    },
+    {
+        "label": "Linked downtime rules",
+        "url": "/settings#settings-linked-heading",
+        "kind": "function",
+        "context": "Settings",
+        "role": "editor",
+        "keywords": ["linked work order", "double count", "downtime rule"],
+    },
+    {
+        "label": "Refresh CMMS mapping",
+        "url": "/settings#settings-cmms-heading",
+        "kind": "function",
+        "context": "Settings",
+        "role": "editor",
+        "keywords": ["limble", "asset mapping", "remap", "reimport"],
+    },
+    {
+        "label": "Metrics Dashboard formulas",
+        "url": "/standards-and-documentation#metrics-panel",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["mtbf formula", "mttr formula", "risk score", "percent change"],
+    },
+    {
+        "label": "Weibull Analysis formulas",
+        "url": "/standards-and-documentation#weibull-panel",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["beta", "eta", "observation life", "failure indicator", "b10", "b50"],
+    },
+    {
+        "label": "Pareto and Trends formulas",
+        "url": "/standards-and-documentation#trends-panel",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["pareto", "cumulative percent", "monthly trend", "downtime driver"],
+    },
+    {
+        "label": "Data Sources",
+        "url": "/standards-and-documentation#data-panel",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["where the numbers come from", "asset filter", "work order date", "limble"],
+    },
+]
+
+
+def _search_index(is_admin: bool, can_edit: bool, has_account: bool) -> list[dict]:
+    """The search catalog as the signed-in account may see it.
+
+    Role filtering happens here rather than in the browser so an entry the
+    account cannot open is never sent to it in the first place -- hiding it with
+    a script would put the whole developer catalog in the page source of every
+    anonymous visitor.
+    """
+    allowed = {None}
+    if can_edit:
+        allowed.add("editor")
+    if is_admin:
+        allowed.update({"editor", "admin"})
+
+    entries = [
+        {
+            "label": entry["label"],
+            "url": entry["url"],
+            "kind": entry["kind"],
+            "context": entry["context"],
+            # One space-joined string: the browser only ever substring-matches
+            # against it, and a list would cost bytes on every page for nothing.
+            "keywords": " ".join(entry["keywords"]),
+        }
+        for entry in SEARCH_ENTRIES
+        if entry.get("role") in allowed
+    ]
+
+    # The account dialog has no URL of its own -- it is a <dialog> the sidebar
+    # opens -- so this entry names the action instead and global_search.js opens
+    # it. Logging in is the one thing a visitor with no account most often wants
+    # and the person icon at the foot of the sidebar is the only other way in.
+    entries.append({
+        "label": "Log out" if has_account else "Log in",
+        "url": "#account",
+        "kind": "function",
+        "context": "Account",
+        "keywords": "account sign in sign out session role user",
+    })
+    return entries
+
+
+def _account_search_index() -> list[dict]:
+    """The search catalog for whoever is asking, resolved from the session."""
+    user = _resolved_account()
+    level = ROLE_LEVEL.get(user["role"], -1) if user else -1
+    return _search_index(
+        is_admin=level >= ROLE_LEVEL["admin"],
+        can_edit=level >= ROLE_LEVEL["editor"],
+        has_account=bool(user),
+    )
+
+
+def _search_matches(query: str, entries: list[dict]) -> list[dict]:
+    """Rank `entries` against `query`, best first, dropping the ones that miss.
+
+    Deliberately the same rules global_search.js applies, so the no-script page
+    and the dropdown agree: every whitespace-separated term must appear
+    somewhere in an entry, and where it appears decides how much it is worth --
+    the start of the label beats the middle of it, which beats a keyword nobody
+    can see. Summing per-term scores is what makes a two-word query rank the
+    entry matching both above one matching either.
+    """
+    terms = query.lower().split()
+    if not terms:
+        return []
+
+    ranked = []
+    for position, entry in enumerate(entries):
+        label = entry["label"].lower()
+        context = entry["context"].lower()
+        keywords = entry["keywords"].lower()
+        total = 0
+        for term in terms:
+            if label == term:
+                score = 100
+            elif label.startswith(term):
+                score = 80
+            elif any(word.startswith(term) for word in label.split()):
+                score = 65
+            elif term in label:
+                score = 50
+            elif any(word.startswith(term) for word in keywords.split()):
+                score = 40
+            elif term in keywords:
+                score = 30
+            elif term in context:
+                score = 20
+            else:
+                total = 0
+                break
+            total += score
+        if total:
+            # Shorter labels win a tie: "Metrics" is a better answer to "metric"
+            # than "Metrics Dashboard formulas" is. Catalog order breaks the rest,
+            # which keeps pages ahead of the functions that live on them.
+            ranked.append((-total, len(entry["label"]), position, entry))
+
+    return [entry for _, _, _, entry in sorted(ranked, key=lambda row: row[:3])]
 
 
 RELEVANT_LINKS = [
@@ -817,6 +1208,30 @@ def settings():
 # placeholders for now: the shell exists so the links resolve instead of 404ing
 # while the copy is still being written.
 # ---------------------------------------------------------------------------
+
+
+@app.route("/search")
+def search_results():
+    """The topbar search box's destination when it is submitted rather than clicked.
+
+    The dropdown answers every search that goes through the keyboard or the
+    mouse, so nothing that works reaches here: this is the page for a visitor
+    whose browser ran no script, and for anyone who hits Enter before a result is
+    highlighted. It searches the same catalog by the same rules, so the answer is
+    the one the dropdown would have given.
+    """
+    query = (request.args.get("q") or "").strip()
+    # Entries whose "URL" is a bare fragment name an action the dropdown
+    # performs rather than a place to go -- the account dialog has no page of its
+    # own. Without a script to perform it, linking to one would be a dead end.
+    catalog = [entry for entry in _account_search_index() if not entry["url"].startswith("#")]
+    return render_template(
+        "search_results.html",
+        page_title="Search",
+        nav_links=NAV_LINKS,
+        query=query,
+        results=_search_matches(query, catalog) if query else [],
+    )
 
 
 @app.route("/about")

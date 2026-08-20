@@ -36,6 +36,9 @@
     {% include "footer.html" %}
   </div>
   <script src="{{ url_for('static', filename='js/layout.js') }}"></script>
+  {# After layout.js: the global search can open the account dialog, and that
+     dialog's own buttons are wired up there. #}
+  <script src="{{ url_for('static', filename='js/global_search.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
