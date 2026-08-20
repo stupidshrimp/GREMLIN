@@ -1,0 +1,124 @@
+/* The footer occupies the content column rather than the full page width, so the
+   sidebar stays an unbroken rail from the topbar to the bottom of the window.
+   Its horizontal padding matches .content's for that reason: the copy inside it
+   has to line up with the cards above it, or the seam shows. */
+.site-footer {
+  grid-area: footer;
+  padding: 1.75rem 2rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.66);
+  display: grid;
+  gap: 1.1rem;
+  transition: padding 220ms ease;
+}
+
+/* Brand on the left, links on the right, and they drop onto separate rows once
+   there is no longer width for both. The brand block carries the min-width that
+   decides when that happens; the link list is left to its natural width so the
+   sentence absorbs the slack rather than the navigation. */
+.site-footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.site-footer-brand {
+  display: grid;
+  gap: 0.3rem;
+  max-width: 46ch;
+  min-width: min(260px, 100%);
+}
+
+.site-footer-brand strong {
+  color: var(--forest-900);
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+
+.site-footer-brand p {
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.site-footer-nav {
+  display: grid;
+  gap: 0.55rem;
+}
+
+/* Same treatment as .sidebar-heading, so the two navigation blocks read as the
+   same kind of thing at opposite ends of the page. */
+.site-footer-heading {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--forest-700);
+}
+
+.site-footer-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.4rem;
+}
+
+.site-footer-nav a {
+  display: inline-block;
+  color: var(--forest-800);
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 0.15rem 0;
+  /* The underline is drawn as a border so it can be given its own colour and
+     sit clear of the descenders, which text-decoration cannot do consistently
+     across browsers without extra properties. */
+  border-bottom: 1px solid transparent;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+
+.site-footer-nav a:hover,
+.site-footer-nav a:focus-visible {
+  color: var(--forest-950);
+  border-bottom-color: var(--forest-700);
+}
+
+.site-footer-nav a:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
+}
+
+/* The page you are already on is named but not offered as somewhere to go. */
+.site-footer-nav a[aria-current="page"] {
+  color: var(--forest-950);
+  border-bottom-color: var(--forest-500);
+}
+
+.site-footer-legal {
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.site-footer-legal p {
+  font-size: 0.78rem;
+}
+
+@media (max-width: 900px) {
+  /* Stacked layout: the footer spans the single column and lines up with
+     .content's narrower padding. */
+  .site-footer {
+    padding: 1.5rem 1rem 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-footer,
+  .site-footer-nav a {
+    transition: none;
+  }
+}

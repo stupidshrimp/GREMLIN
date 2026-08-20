@@ -29,10 +29,16 @@ body {
   display: grid;
   grid-template-columns: var(--sidebar-width, 290px) 1fr;
   transition: grid-template-columns 240ms ease;
-  grid-template-rows: 74px 1fr;
+  grid-template-rows: 74px 1fr auto;
+  /* The footer sits in the content column, not across the whole page, so the
+     sidebar runs unbroken from the topbar to the bottom of the window. `1fr` on
+     the content row is what keeps the footer at the bottom on a short page:
+     the row absorbs the leftover height rather than letting the footer ride up
+     under the last card. */
   grid-template-areas:
     "topbar topbar"
-    "sidebar content";
+    "sidebar content"
+    "sidebar footer";
 }
 
 .topbar { grid-area: topbar; }
@@ -307,11 +313,12 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 @media (max-width: 900px) {
   .app-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: 74px auto 1fr;
+    grid-template-rows: 74px auto 1fr auto;
     grid-template-areas:
       "topbar"
       "sidebar"
-      "content";
+      "content"
+      "footer";
   }
 
   .content { padding: 1rem; }

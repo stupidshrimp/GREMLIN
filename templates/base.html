@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/topbar.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/sidebar.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/footer.css') }}">
   {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -30,6 +31,9 @@
     <main class="content" role="main">
       {% block content %}{% endblock %}
     </main>
+    {# Outside <main> on purpose: a contentinfo landmark that sits inside the
+       main landmark is not announced as the page footer. #}
+    {% include "footer.html" %}
   </div>
   <script src="{{ url_for('static', filename='js/layout.js') }}"></script>
   {% block scripts %}{% endblock %}

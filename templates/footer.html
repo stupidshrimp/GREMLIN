@@ -1,0 +1,29 @@
+{#- The site footer, drawn on every page from base.html. Its links are the ones
+    that have no place in the sidebar: they are about GREMLIN itself rather than
+    a part of the reliability workflow, so they live down here the way an
+    About/Contact block does on an ordinary website. -#}
+<footer class="site-footer" role="contentinfo">
+  <div class="site-footer-inner">
+    <div class="site-footer-brand">
+      <strong>GREMLIN</strong>
+      <p>Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</p>
+    </div>
+
+    <nav class="site-footer-nav" aria-label="Footer">
+      <p class="site-footer-heading">About this site</p>
+      <ul>
+      {% for link in footer_links %}
+        <li>
+          {# aria-current is the footer's equivalent of the sidebar's .active class:
+             the styling is shared, but this is what a screen reader announces. #}
+          <a href="{{ link.url }}"{% if request.path == link.url %} aria-current="page"{% endif %}>{{ link.label }}</a>
+        </li>
+      {% endfor %}
+      </ul>
+    </nav>
+  </div>
+
+  <div class="site-footer-legal">
+    <p>&copy; {{ current_year }} GREMLIN</p>
+  </div>
+</footer>

@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import sys
 import tempfile
+from datetime import date
 from functools import wraps
 from pathlib import Path
 
@@ -388,6 +389,28 @@ NAV_LINKS = [
     for page in PAGES
     if page["route"] not in UNLISTED_ROUTES
 ]
+
+# The footer's own navigation. These pages are about GREMLIN rather than part of
+# the reliability workflow, so they are deliberately kept out of PAGES and out of
+# the sidebar: the footer at the bottom of every page is the only route to them,
+# the way About/Contact is on an ordinary website.
+FOOTER_LINKS = [
+    {"label": "About", "url": "/about"},
+    {"label": "Patch Notes", "url": "/patch-notes"},
+    {"label": "Report a Bug", "url": "/report-a-bug"},
+]
+
+
+@app.context_processor
+def footer_context():
+    """Give every template the footer's links without threading them through each view.
+
+    base.html draws the footer on every page, so the alternative is adding two more
+    keyword arguments to all thirty-odd render_template calls and breaking the footer
+    on whichever one gets missed.
+    """
+    return {"footer_links": FOOTER_LINKS, "current_year": date.today().year}
+
 
 RELEVANT_LINKS = [
     {
@@ -786,6 +809,29 @@ def standards_and_documentation():
 @app.route("/settings")
 def settings():
     return render_template("settings.html", page_title="Settings", nav_links=NAV_LINKS)
+
+
+# ---------------------------------------------------------------------------
+# Footer pages. Reached from the footer on every page and from nowhere else --
+# they are not in PAGES, so they never appear in the sidebar. The templates are
+# placeholders for now: the shell exists so the links resolve instead of 404ing
+# while the copy is still being written.
+# ---------------------------------------------------------------------------
+
+
+@app.route("/about")
+def about():
+    return render_template("about.html", page_title="About", nav_links=NAV_LINKS)
+
+
+@app.route("/patch-notes")
+def patch_notes():
+    return render_template("patch_notes.html", page_title="Patch Notes", nav_links=NAV_LINKS)
+
+
+@app.route("/report-a-bug")
+def report_a_bug():
+    return render_template("report_a_bug.html", page_title="Report a Bug", nav_links=NAV_LINKS)
 
 
 # ---------------------------------------------------------------------------
