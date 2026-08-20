@@ -206,29 +206,16 @@ class PatchNotes:
 
     releases: tuple[Release, ...] = ()
     source_path: str = ""
+    # When Word last saved the file, from the file itself rather than from
+    # anything written inside it. Nothing draws it today; it is what the cache
+    # below is keyed on, and it is kept here so a caller can say how fresh the
+    # reading is without stat-ing the share again.
     updated_at: datetime | None = None
     error: str | None = None
 
     @property
     def is_available(self) -> bool:
         return bool(self.releases)
-
-    @property
-    def updated_display(self) -> str:
-        """When Word last saved the document, as "August 18, 2026 at 2:05 PM".
-
-        Built by hand rather than with %-I/%-d, which are not available on
-        Windows, and read from the file's own timestamp rather than from
-        anything written inside it -- the newest release can be months old while
-        the document was edited this morning.
-        """
-
-        stamp = self.updated_at
-        if stamp is None:
-            return ""
-        hour = stamp.hour % 12 or 12
-        meridiem = "AM" if stamp.hour < 12 else "PM"
-        return f"{stamp:%B} {stamp.day}, {stamp.year} at {hour}:{stamp:%M} {meridiem}"
 
     @property
     def latest(self) -> Release | None:

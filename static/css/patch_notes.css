@@ -345,13 +345,6 @@
 .patch-unavailable h2 { color: #7d2b2b; }
 .patch-unavailable-path { font-size: 0.85rem; }
 
-.patch-source {
-  padding: 0 0.3rem;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.patch-source code,
 .patch-unavailable-path code {
   font-family: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
   font-size: 0.85em;
