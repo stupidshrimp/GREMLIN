@@ -589,7 +589,9 @@
 }
 
 /* Left in the page for assistive technology and taken out of the visual layout.
-   Used by the search box's help text and its live result count. */
+   Declared here because this is the stylesheet every page loads, but it belongs
+   to no one page: the search box's help text and live result count use it, and
+   so does any heading a layout needs for its outline but not on screen. */
 .visually-hidden {
   position: absolute;
   width: 1px;
