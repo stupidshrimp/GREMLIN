@@ -66,11 +66,12 @@ DEFAULT_PATCH_NOTES_PATH = Path(
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{_WORD_NS}}}"
 
-# Word's own list styles, for a paragraph that carries one but no numbering
-# reference of its own. A list the author built with the toolbar button has
-# w:numPr and never reaches this; a paragraph that was indented into a list and
-# then had its bullet turned off has the style alone, and still reads as an item.
-_LIST_STYLE_IDS = frozenset({"listparagraph", "listbullet", "listnumber"})
+# Word's own list styles, for a paragraph that carries one but no numbering of
+# its own. A list built with the toolbar button has w:numPr on the paragraph and
+# never reaches this. The trailing digit is the level Word names the style by --
+# "List Bullet 2" is the second level, which is ilvl 1 -- so a nested item keeps
+# its depth instead of flattening onto the one above it.
+_LIST_STYLE_RE = re.compile(r"^list(?:paragraph|bullet|number)(\d*)$")
 
 # Bullets somebody typed rather than let Word draw. The dash forms are the ones
 # autocorrect produces from "- ", so they turn up in a document that looks
@@ -225,12 +226,21 @@ class PatchNotes:
 # ---------------------------------------------------------------------------
 
 
-def _document_xml(path: Path) -> bytes:
-    """The one part of the archive that holds the body text."""
+def _document_parts(path: Path) -> tuple[bytes, bytes | None]:
+    """The body text, and the styles that may be where a list is defined.
+
+    styles.xml is optional: a document that has none simply has no style-defined
+    numbering to resolve, and every list in it is on the paragraphs themselves.
+    """
 
     try:
         with zipfile.ZipFile(path) as archive:
-            return archive.read("word/document.xml")
+            document = archive.read("word/document.xml")
+            try:
+                styles = archive.read("word/styles.xml")
+            except KeyError:
+                styles = None
+            return document, styles
     except FileNotFoundError:
         raise PatchNotesError(
             "The patch notes document was not found. Check that the shared drive "
@@ -286,30 +296,101 @@ def _paragraph_text(paragraph: ET.Element) -> str:
     return " ".join("".join(parts).split())
 
 
-def _list_level(paragraph: ET.Element) -> int | None:
+def _numbering_level(properties: ET.Element | None) -> int | None:
+    """The list level w:numPr asks for, or ``None`` if there is no list here.
+
+    Read from paragraph properties and from a style's, since a paragraph can
+    carry the numbering itself or inherit it from the style it is in.
+    """
+
+    numbering = properties.find(W + "numPr") if properties is not None else None
+    if numbering is None:
+        return None
+    # numId 0 is Word's way of saying this paragraph left the list it inherited
+    # from its style. Reading it as an item would bullet a heading.
+    num_id = numbering.find(W + "numId")
+    if num_id is not None and (num_id.get(W + "val") or "").strip() == "0":
+        return None
+    level = numbering.find(W + "ilvl")
+    return _clamp_level(level.get(W + "val") if level is not None else "0")
+
+
+def _numbered_styles(styles_xml: bytes | None) -> dict[str, int]:
+    """Style ids whose *definition* carries the numbering, and at what level.
+
+    Word puts w:numPr on the paragraph when the list came from the toolbar
+    button, which is what _list_level reads first. A paragraph given a list
+    *style* instead can carry nothing but w:pStyle, with the numbering sitting in
+    styles.xml -- Word's own "List Bullet 2", or a style out of a department
+    template with a name of its own. Without this, such an item is not a bullet
+    to us: it would be read as a heading and set in heading type above the list
+    it belongs to.
+
+    A style that defines no numbering may still be based on one that does, so
+    the basedOn chain is walked. A styles part that is missing or unreadable
+    costs nothing here -- the reader falls back to the names it recognises.
+    """
+
+    if not styles_xml:
+        return {}
+    try:
+        root = ET.fromstring(styles_xml)
+    except ET.ParseError:
+        return {}
+
+    own: dict[str, int | None] = {}
+    based_on: dict[str, str] = {}
+    for style in root.iter(W + "style"):
+        style_id = (style.get(W + "styleId") or "").strip().lower()
+        if not style_id:
+            continue
+        own[style_id] = _numbering_level(style.find(W + "pPr"))
+        parent = style.find(W + "basedOn")
+        parent_id = (parent.get(W + "val") or "").strip().lower() if parent is not None else ""
+        if parent_id:
+            based_on[style_id] = parent_id
+
+    resolved: dict[str, int] = {}
+    for style_id in own:
+        # `seen` bounds the walk: styles.xml is written by whatever produced the
+        # file, and a basedOn cycle would otherwise not terminate.
+        seen: set[str] = set()
+        current: str | None = style_id
+        while current is not None and current not in seen:
+            seen.add(current)
+            level = own.get(current)
+            if level is not None:
+                resolved[style_id] = level
+                break
+            current = based_on.get(current)
+    return resolved
+
+
+def _list_level(paragraph: ET.Element, numbered_styles: dict[str, int]) -> int | None:
     """How deeply this paragraph is bulleted, or ``None`` if it is not."""
 
     properties = paragraph.find(W + "pPr")
     if properties is None:
         return None
 
-    numbering = properties.find(W + "numPr")
-    if numbering is not None:
-        # numId 0 is Word's way of saying this paragraph left the list it
-        # inherited from its style. Reading it as an item would bullet a heading.
-        num_id = numbering.find(W + "numId")
-        if num_id is not None and (num_id.get(W + "val") or "").strip() == "0":
-            return None
-        level = numbering.find(W + "ilvl")
-        return _clamp_level(level.get(W + "val") if level is not None else "0")
+    if properties.find(W + "numPr") is not None:
+        return _numbering_level(properties)
 
     style = properties.find(W + "pStyle")
-    if style is not None and (style.get(W + "val") or "").lower() in _LIST_STYLE_IDS:
-        return 0
-    return None
+    if style is None:
+        return None
+    style_id = (style.get(W + "val") or "").strip().lower()
+    if style_id in numbered_styles:
+        return numbered_styles[style_id]
+    match = _LIST_STYLE_RE.match(style_id)
+    if match is None:
+        return None
+    # "List Bullet" is the first level and names no digit; "List Bullet 2" is the
+    # second. ListParagraph carries no level of its own either way.
+    return _clamp_level(int(match.group(1)) - 1 if match.group(1) else 0)
 
 
-def _clamp_level(raw: str | None) -> int:
+def _clamp_level(raw: str | int | None) -> int:
     try:
         level = int(str(raw).strip())
     except (TypeError, ValueError):
@@ -427,8 +508,12 @@ def _version_sort_key(version: str) -> tuple[int, ...]:
     return tuple((parts + [0, 0, 0, 0])[:4])
 
 
-def parse_document(xml_bytes: bytes) -> tuple[Release, ...]:
-    """Turn ``word/document.xml`` into releases, newest first."""
+def parse_document(xml_bytes: bytes, styles_xml: bytes | None = None) -> tuple[Release, ...]:
+    """Turn ``word/document.xml`` into releases, newest first.
+
+    ``styles_xml`` is the archive's styles part when it has one; it is what says
+    whether a paragraph carrying only a style name is a bullet.
+    """
 
     try:
         root = ET.fromstring(xml_bytes)
@@ -438,6 +523,7 @@ def parse_document(xml_bytes: bytes) -> tuple[Release, ...]:
             "it in Word and saving it again usually repairs the file."
         ) from None
 
+    numbered_styles = _numbered_styles(styles_xml)
     builder = _ReleaseBuilder()
     # iter() rather than a body-children walk so paragraphs inside a table are
     # read too: a release written as a two-column table is still a release.
@@ -445,7 +531,7 @@ def parse_document(xml_bytes: bytes) -> tuple[Release, ...]:
         text = _paragraph_text(paragraph)
         if not text:
             continue
-        level = _list_level(paragraph)
+        level = _list_level(paragraph, numbered_styles)
         if level is None:
             text, typed_bullet = _split_typed_bullet(text)
             if typed_bullet:
@@ -462,12 +548,20 @@ def parse_document(xml_bytes: bytes) -> tuple[Release, ...]:
             "to start on a line of its own that names the version, like "
             "\u201cGREMLIN 1.2.0\u201d."
         )
-    # Newest first, whichever end of the document the author added it to.
-    # Python's sort is stable, so two paragraphs claiming the same version keep
-    # the order they were written in. Anchors are settled afterwards, so that
-    # numbering follows the order the page draws rather than the file's.
+    # Newest first, whichever end of the document the author added it to, and by
+    # date where the version cannot separate two entries -- a hotfix appended
+    # under the version it patches ("1.2.0 - Hotfix") ties on version alone, and
+    # a stable sort would leave the older entry on top wearing the Latest chip.
+    # A release with no date sorts below one that has it. Python's sort is
+    # stable, so entries alike on both keep the order they were written in.
+    # Anchors are settled afterwards, so their numbering follows the order the
+    # page draws rather than the file's.
     return _with_unique_anchors(
-        sorted(releases, key=lambda release: release.sort_key, reverse=True)
+        sorted(
+            releases,
+            key=lambda release: (release.sort_key, release.released_on or date.min),
+            reverse=True,
+        )
     )
 
 
@@ -655,7 +749,7 @@ class PatchNotesReader:
 
             updated_at = datetime.fromtimestamp(stat.st_mtime)
             try:
-                releases = parse_document(_document_xml(self.path))
+                releases = parse_document(*_document_parts(self.path))
             except PatchNotesError as exc:
                 notes = PatchNotes(
                     source_path=str(self.path), updated_at=updated_at, error=str(exc)

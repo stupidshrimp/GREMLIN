@@ -33,11 +33,20 @@ RELS = (
 
 
 def _document_xml(paragraphs) -> str:
-    """The body of a .docx, from ``"text"`` lines and ``("text", level)`` bullets."""
+    """The body of a .docx.
+
+    A paragraph is written as ``"text"`` for a plain line, ``("text", level)``
+    for a bullet Word numbered itself, or ``{"text": ..., "style": ...}`` for one
+    that carries a style name and nothing else -- which is what Word writes when
+    the item came from a list *style* rather than the toolbar button.
+    """
 
     parts = []
     for paragraph in paragraphs:
-        if isinstance(paragraph, tuple):
+        if isinstance(paragraph, dict):
+            text = paragraph["text"]
+            properties = f'<w:pPr><w:pStyle w:val="{paragraph["style"]}"/></w:pPr>'
+        elif isinstance(paragraph, tuple):
             text, level = paragraph
             properties = (
                 '<w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr>'
@@ -56,11 +65,37 @@ def _document_xml(paragraphs) -> str:
     )
 
 
-def _write_docx(path, paragraphs):
+def _styles_xml(styles) -> str:
+    """A styles part, from ``(styleId, ilvl or None, basedOn or None)`` triples.
+
+    ``ilvl`` of None is a style that defines no numbering -- the case that has to
+    reach its basedOn parent before it counts as a list.
+    """
+
+    definitions = []
+    for style_id, level, based_on in styles:
+        properties = "" if level is None else (
+            f'<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="3"/></w:numPr>'
+        )
+        parent = "" if based_on is None else f'<w:basedOn w:val="{based_on}"/>'
+        definitions.append(
+            f'<w:style w:type="paragraph" w:styleId="{style_id}">{parent}'
+            f"<w:pPr>{properties}</w:pPr></w:style>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'{"".join(definitions)}</w:styles>'
+    )
+
+
+def _write_docx(path, paragraphs, styles=None):
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("[Content_Types].xml", CONTENT_TYPES)
         archive.writestr("_rels/.rels", RELS)
         archive.writestr("word/document.xml", _document_xml(paragraphs))
+        if styles is not None:
+            archive.writestr("word/styles.xml", _styles_xml(styles))
     return path
 
 
@@ -77,8 +112,8 @@ SAMPLE = [
 ]
 
 
-def _read(tmp_path, paragraphs, name="GREMLIN_patchnotes.docx"):
-    return PatchNotesReader(_write_docx(tmp_path / name, paragraphs)).read()
+def _read(tmp_path, paragraphs, name="GREMLIN_patchnotes.docx", styles=None):
+    return PatchNotesReader(_write_docx(tmp_path / name, paragraphs, styles)).read()
 
 
 def test_reads_a_release_the_way_the_document_is_written(tmp_path):
@@ -127,6 +162,37 @@ def test_releases_are_ordered_newest_first_however_the_document_grew(tmp_path):
     assert notes.latest.version == "0.10.0"
 
 
+def test_a_hotfix_under_the_version_it_patches_is_the_newer_one(tmp_path):
+    """Both entries claim 1.2.0, so version alone cannot order them and the
+    entry written first would keep the top of the page and the Latest chip."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "1/1/2026", "Bug Fixes:", ("The original fix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "2/1/2026", "Bug Fixes:", ("The hotfix", 0),
+        ],
+    )
+
+    assert [release.date_display for release in notes.releases] == [
+        "February 1, 2026",
+        "January 1, 2026",
+    ]
+    assert notes.latest.label == "Hotfix"
+
+
+def test_a_release_with_no_date_sorts_under_one_that_has_it(tmp_path):
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "Bug Fixes:", ("Dateless", 0),
+            "GREMLIN 1.2.0", "2/1/2026", "Bug Fixes:", ("Dated", 0),
+        ],
+    )
+
+    assert [release.date_display for release in notes.releases] == ["February 1, 2026", ""]
+
+
 def test_two_entries_for_one_version_get_anchors_of_their_own(tmp_path):
     """The anchor is a DOM id and the jump list's target. Repeat it and every
     link lands on the first entry, and two articles name one heading."""
@@ -140,8 +206,10 @@ def test_two_entries_for_one_version_get_anchors_of_their_own(tmp_path):
         ],
     )
 
+    # Newest first within the version, so the two hotfixes lead: the anchor a
+    # release takes follows the order the page draws.
     anchors = [release.anchor for release in notes.releases]
-    assert anchors == ["v1-2-0", "v1-2-0-hotfix", "v1-2-0-hotfix-2"]
+    assert anchors == ["v1-2-0-hotfix", "v1-2-0-hotfix-2", "v1-2-0"]
     assert len(set(anchors)) == len(anchors)
 
 
@@ -156,6 +224,66 @@ def test_indented_bullets_are_nested_under_the_one_above(tmp_path):
     assert [child.text for child in items[0].children] == ["Child"]
     # Sub-bullets are part of what the release changed, so the chip counts them.
     assert notes.latest.feature_count == 3
+
+
+def test_word_s_own_list_styles_are_bullets_at_the_level_they_name(tmp_path):
+    """"List Bullet 2" carries a style and no numbering of its own. Read as a
+    heading, the item would be set in heading type above the list it belongs to."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "Parent", "style": "ListBullet"},
+            {"text": "Child", "style": "ListBullet2"},
+            {"text": "Numbered", "style": "ListNumber"},
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert [item.text for item in section.items] == ["Parent", "Numbered"]
+    assert [child.text for child in section.items[0].children] == ["Child"]
+
+
+def test_a_template_style_that_defines_its_own_numbering_is_a_bullet(tmp_path):
+    """A style out of a department template is named whatever its author called
+    it, so only styles.xml says whether it is a list."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.0.0",
+            "5/1/2026",
+            "What's New",
+            {"text": "A plant bullet", "style": "PlantBullet"},
+            {"text": "Its sub-bullet", "style": "PlantSubBullet"},
+            {"text": "Not a list at all", "style": "Emphasis"},
+        ],
+        styles=[
+            ("PlantBullet", 0, None),
+            # Defines no numbering of its own: it has to reach PlantBullet first.
+            ("PlantSubBullet", 1, "PlantBullet"),
+            ("Emphasis", None, None),
+        ],
+    )
+
+    section = notes.latest.sections[0]
+    assert [item.text for item in section.items] == ["A plant bullet"]
+    assert [child.text for child in section.items[0].children] == ["Its sub-bullet"]
+    # The style that is not a list stays a line of the document.
+    assert [s.title for s in notes.latest.sections] == ["What's New", "Not a list at all"]
+
+
+def test_a_style_inheriting_its_numbering_is_still_a_bullet(tmp_path):
+    notes = _read(
+        tmp_path,
+        ["GREMLIN 1.0.0", "5/1/2026", "What's New", {"text": "Inherited", "style": "PlantChild"}],
+        styles=[("PlantParent", 0, None), ("PlantChild", None, "PlantParent")],
+    )
+
+    assert [item.text for item in notes.latest.sections[0].items] == ["Inherited"]
 
 
 def test_a_bullet_starting_deeper_than_the_list_does_is_kept(tmp_path):
