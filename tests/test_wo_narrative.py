@@ -697,11 +697,70 @@ class InstructionResponseShapeTests(unittest.TestCase):
         # no instructions answers with []. Neither is an error.
         self.assertEqual(self._client_returning([]).get_task_instructions("4"), [])
 
-    def test_junk_among_real_items_is_dropped_rather_than_raised(self):
+    def test_junk_alongside_real_items_is_dropped_rather_than_raised(self):
+        # The read plainly succeeded; one unusable entry does not undo that.
         items = self._client_returning(
             [{"instruction": "Cause", "response": "Wear"}, None, "?", 7]
         ).get_task_instructions("4")
         self.assertEqual(items, [{"instruction": "Cause", "response": "Wear"}])
+
+    def test_an_array_of_nothing_usable_is_an_error_rather_than_an_empty_task(self):
+        # The same mistake as the outer shape, one level in: an array that
+        # cannot be instructions is not a task whose boxes are blank.
+        from integrations.limble import LimbleResponseError
+
+        for payload in (["scheduled maintenance"], [None], [None, "x", 7], [[]]):
+            with self.subTest(payload=payload):
+                with self.assertRaises(LimbleResponseError):
+                    self._client_returning(payload).get_task_instructions("4")
+
+    def test_that_error_says_how_many_came_back_and_what_they_were(self):
+        from integrations.limble import LimbleResponseError
+
+        with self.assertRaises(LimbleResponseError) as caught:
+            self._client_returning(["scheduled maintenance"]).get_task_instructions("4")
+        message = str(caught.exception)
+        self.assertIn("1 item(s)", message)
+        self.assertIn("str", message)
+
+    def test_only_the_shape_is_judged_here_never_the_content(self):
+        # A template that never asked for the four boxes returns perfectly good
+        # instruction objects carrying none of them. That is a blank narrative,
+        # not a failed read, and it must come back normally.
+        items = self._client_returning(
+            [{"instruction": "Does this job require LOTO?", "response": "No"},
+             {"instruction": "Complete work to solve problem", "response": "1"}]
+        ).get_task_instructions("4")
+        self.assertEqual(len(items), 2)
+        self.assertEqual(extract_narrative({"instructions": items}), {})
+        # Nor is an empty object judged: indistinguishable from the above.
+        self.assertEqual(self._client_returning([{}]).get_task_instructions("4"), [{}])
+
+    def test_an_all_junk_array_does_not_clear_what_was_already_read(self):
+        from services.ingestion_service import INSTRUCTIONS_READ_AT
+        from repositories.raw_repo import INSTRUCTIONS_READ_ERROR
+
+        outer = self
+
+        class Wrapped(InstructionFetchTests._StubClient):
+            def get_task_instructions(self, task_id):
+                self.asked.append(str(task_id))
+                return outer._client_returning(["scheduled maintenance"]).get_task_instructions(task_id)
+
+        task = {
+            "taskID": 1,
+            "dateCompleted": 1_750_000_000,
+            "area_affected": "Timing belt",
+            "cause": "Aging",
+        }
+        service = InstructionFetchTests()._service(Wrapped({}), InstructionFetchTests._StubRepo([]))
+        counts = service._attach_instructions([task])
+
+        self.assertEqual(task["area_affected"], "Timing belt")
+        self.assertEqual(task["cause"], "Aging")
+        self.assertIn("none of them instruction objects", task[INSTRUCTIONS_READ_ERROR])
+        self.assertIn(INSTRUCTIONS_READ_AT, task, "still stamped, so it cannot block the queue")
+        self.assertEqual(counts["instructions_failed"], 1)
 
     def test_an_unreadable_response_does_not_clear_what_was_already_read(self):
         # The whole point of raising: an unreadable answer has to reach the phase

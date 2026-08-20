@@ -163,13 +163,28 @@ class LimbleClient:
         Note ``instruction``, not the ``instructionText`` a task export from the
         Limble site uses for the same field; services.wo_narrative reads both.
 
-        A task with no instructions returns an empty list rather than raising.
-        Anything that is not a list raises ``LimbleResponseError``: the caller
-        cannot tell a wrapper object or a maintenance notice from a genuinely
-        empty task, and treating one as the other means believing a work order's
-        boxes are blank when they were never read. That belief is durable --
-        the reader records the task as read and stops asking -- so the ambiguity
-        has to be resolved here, where the response is still in hand.
+        The response's *shape* is validated here, because only here can a
+        malformed answer still be told apart from a real one. Downstream, an
+        empty instruction list is taken as fact -- the reader concludes the four
+        boxes are blank, writes that over whatever it had stored, and records the
+        task as read so it stops asking. So anything that cannot be an
+        instruction list has to raise rather than flatten to ``[]``, which puts
+        it on the retry path instead and leaves the stored answers alone.
+
+        Two things are checked, and nothing else:
+
+        * The payload is a list. An API gateway's wrapper object, a maintenance
+          notice, or an error document served with a 200 is not.
+        * If it has any items at all, at least one is an object. ``[null]`` and
+          ``["scheduled maintenance"]`` are arrays that cannot be instructions;
+          junk mixed in *alongside* real items is just dropped, since the read
+          plainly succeeded.
+
+        Shape only -- never content. An empty list is a task with no
+        instructions, and a list of perfectly good instruction objects that
+        happen to carry no Area/Condition/Cause/Action labels is a task whose
+        template never asked for them. Both are legitimately blank, both return
+        normally, and neither is this method's business to judge.
         """
 
         payload = self._request("GET", f"/tasks/{task_id}/instructions/")
@@ -178,7 +193,14 @@ class LimbleClient:
                 f"GET /tasks/{task_id}/instructions returned "
                 f"{type(payload).__name__}, expected a list of instruction items"
             )
-        return [item for item in payload if isinstance(item, dict)]
+        items = [item for item in payload if isinstance(item, dict)]
+        if payload and not items:
+            raise LimbleResponseError(
+                f"GET /tasks/{task_id}/instructions returned {len(payload)} item(s), "
+                f"none of them instruction objects (first was "
+                f"{type(payload[0]).__name__})"
+            )
+        return items
 
     # ------------------------------------------------------------------
     # Pagination + transport
