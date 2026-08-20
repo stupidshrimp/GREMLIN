@@ -9,6 +9,7 @@ not there.
 
 import importlib
 import os
+import re
 import zipfile
 from xml.sax.saxutils import escape
 
@@ -124,6 +125,24 @@ def test_releases_are_ordered_newest_first_however_the_document_grew(tmp_path):
 
     assert [release.version for release in notes.releases] == ["0.10.0", "0.9.1", "0.2.0"]
     assert notes.latest.version == "0.10.0"
+
+
+def test_two_entries_for_one_version_get_anchors_of_their_own(tmp_path):
+    """The anchor is a DOM id and the jump list's target. Repeat it and every
+    link lands on the first entry, and two articles name one heading."""
+
+    notes = _read(
+        tmp_path,
+        [
+            "GREMLIN 1.2.0", "1/1/2026", "Bug Fixes:", ("The original fix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "2/1/2026", "Bug Fixes:", ("The hotfix", 0),
+            "GREMLIN 1.2.0 - Hotfix", "3/1/2026", "Bug Fixes:", ("The second hotfix", 0),
+        ],
+    )
+
+    anchors = [release.anchor for release in notes.releases]
+    assert anchors == ["v1-2-0", "v1-2-0-hotfix", "v1-2-0-hotfix-2"]
+    assert len(set(anchors)) == len(anchors)
 
 
 def test_indented_bullets_are_nested_under_the_one_above(tmp_path):
@@ -352,6 +371,24 @@ def _client(monkeypatch, tmp_path, notes_path):
     import app
 
     return importlib.reload(app).app.test_client()
+
+
+def test_the_page_gives_every_release_an_id_of_its_own(monkeypatch, tmp_path):
+    """Two entries for one version is the case that used to collide: the ids are
+    what the jump list points at and what aria-labelledby names."""
+
+    document = _write_docx(
+        tmp_path / "GREMLIN_patchnotes.docx",
+        [
+            "GREMLIN 2.0.0", "1/1/2026", "Bug Fixes:", ("A fix", 0),
+            "GREMLIN 2.0.0", "2/1/2026", "Bug Fixes:", ("Another fix", 0),
+        ],
+    )
+    body = _client(monkeypatch, tmp_path, document).get("/patch-notes").get_data(as_text=True)
+
+    ids = re.findall(r'id="([^"]+)"', body)
+    assert sorted(ids) == sorted(set(ids))
+    assert 'href="#v2-0-0-2"' in body
 
 
 def test_the_page_draws_what_the_document_says(monkeypatch, tmp_path):

@@ -49,7 +49,7 @@ import re
 import threading
 import zipfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -163,17 +163,15 @@ class Release:
     """One version's worth of the document."""
 
     version: str
+    # ``v0-1-0``: the release's id in the page and the jump list's target. Stored
+    # rather than derived, because uniqueness is decided across the whole
+    # document -- see _with_unique_anchors.
+    anchor: str
     sort_key: tuple[int, ...]
     label: str | None
     released_on: date | None
     date_text: str
     sections: tuple[NoteSection, ...]
-
-    @property
-    def anchor(self) -> str:
-        """``v0-1-0`` -- so a release can be linked to directly."""
-
-        return "v" + re.sub(r"[^0-9a-z]+", "-", self.version.lower()).strip("-")
 
     @property
     def date_display(self) -> str:
@@ -379,6 +377,45 @@ def _section_kind(title: str) -> str:
     return "notes"
 
 
+# Long enough for a version and a few words of label, short enough that a
+# release named after a whole sentence does not become a URL nobody can read.
+_ANCHOR_MAX_CHARS = 60
+
+
+def _anchor_slug(version: str, label: str | None) -> str:
+    """``v1-2-0``, or ``v1-2-0-hotfix`` when the release carries a label.
+
+    The label is in here because it is usually what tells two entries for the
+    same version apart -- an original 1.2.0 and a "1.2.0 - Hotfix" written later.
+    """
+
+    text = f"{version} {label}" if label else version
+    return ("v" + re.sub(r"[^0-9a-z]+", "-", text.lower()).strip("-"))[:_ANCHOR_MAX_CHARS]
+
+
+def _with_unique_anchors(releases: list[Release]) -> tuple[Release, ...]:
+    """Number any anchor a release has already taken.
+
+    An anchor is a DOM id: two of them alike and every jump-list link lands on
+    the first entry, the second cannot be linked at all, and the two articles
+    name the same heading through aria-labelledby. The label usually separates
+    them; a document that repeats a version *and* its label still cannot be
+    allowed to repeat the id.
+    """
+
+    taken: set[str] = set()
+    unique: list[Release] = []
+    for release in releases:
+        anchor = release.anchor
+        suffix = 1
+        while anchor in taken:
+            suffix += 1
+            anchor = f"{release.anchor}-{suffix}"
+        taken.add(anchor)
+        unique.append(release if anchor == release.anchor else replace(release, anchor=anchor))
+    return tuple(unique)
+
+
 def _version_sort_key(version: str) -> tuple[int, ...]:
     """A four-part key, so 0.2.0 sorts above 0.10 sorts above 0.9.1.
 
@@ -427,8 +464,11 @@ def parse_document(xml_bytes: bytes) -> tuple[Release, ...]:
         )
     # Newest first, whichever end of the document the author added it to.
     # Python's sort is stable, so two paragraphs claiming the same version keep
-    # the order they were written in.
-    return tuple(sorted(releases, key=lambda release: release.sort_key, reverse=True))
+    # the order they were written in. Anchors are settled afterwards, so that
+    # numbering follows the order the page draws rather than the file's.
+    return _with_unique_anchors(
+        sorted(releases, key=lambda release: release.sort_key, reverse=True)
+    )
 
 
 class _ReleaseBuilder:
@@ -547,6 +587,7 @@ class _ReleaseBuilder:
         self._releases.append(
             Release(
                 version=self._version,
+                anchor=_anchor_slug(self._version, self._label),
                 sort_key=_version_sort_key(self._version),
                 label=self._label,
                 released_on=self._released_on,
