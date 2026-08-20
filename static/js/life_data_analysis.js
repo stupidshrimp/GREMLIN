@@ -10,6 +10,13 @@
   "use strict";
 
   const API = "/life-data-analysis/api";
+  // The chart palette. The values live in theme.css like every other colour in
+  // the application -- chart_theme.js reads them back out, since a canvas
+  // inherits nothing from the cascade and has to be told. Held in a variable
+  // rather than read at each use because getComputedStyle is a layout read and
+  // these are wanted once per plotted point; reassigned on a theme change, next
+  // to the redraw it goes with.
+  let C = window.gremlinChartPalette();
   // Whether this browser session may write. Rendered by the server into every
   // page, so it reflects the account's role rather than anything the client
   // decided. The API enforces the same rule on its own -- this only keeps the
@@ -740,13 +747,13 @@
     for (let i = 0; i <= tickCount; i += 1) {
       const frac = i / tickCount;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(tickLabel(maxVal * frac), left - 7, y);
       ctx.textAlign = "left";
@@ -755,7 +762,7 @@
     ctx.textBaseline = "alphabetic";
 
     // Left and right axes.
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
@@ -771,12 +778,12 @@
       const x = left + index * slot + barGap / 2;
       const barHeight = (value / maxVal) * plotH;
       const y = bottom - barHeight;
-      ctx.fillStyle = "#3f5e77";
+      ctx.fillStyle = C.bar;
       ctx.fillRect(x, y, barW, barHeight);
       hitboxes.push({ x, y: top, w: barW, h: plotH, row });
 
       ctx.save();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.font = "10px Inter, sans-serif";
       ctx.translate(x + barW / 2, bottom + 6);
       ctx.rotate(Math.PI / 5);
@@ -786,7 +793,7 @@
     });
 
     // Cumulative percent line + markers (right axis scale: 0..100%).
-    ctx.strokeStyle = "#c2723b";
+    ctx.strokeStyle = C.highlight;
     ctx.lineWidth = 2;
     ctx.beginPath();
     rows.forEach((row, index) => {
@@ -796,7 +803,7 @@
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    ctx.fillStyle = "#c2723b";
+    ctx.fillStyle = C.highlight;
     rows.forEach((row, index) => {
       const x = left + index * slot + slot / 2;
       const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
@@ -806,7 +813,7 @@
     });
 
     // Rotated axis titles on both sides.
-    ctx.fillStyle = "#5e7082";
+    ctx.fillStyle = C.label;
     ctx.font = "10px Inter, sans-serif";
     ctx.textAlign = "center";
     ctx.save();
@@ -1489,20 +1496,20 @@
     for (let i = 0; i <= tickCount; i += 1) {
       const frac = i / tickCount;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(String(Math.round(maxVal * frac)), left - 7, y);
     }
     ctx.textBaseline = "alphabetic";
 
     // Axes.
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
@@ -1515,7 +1522,7 @@
     // then rotated counter-clockwise so it hangs down-and-left beneath the axis
     // line. The font shrinks as the series grows so dense ranges stay legible.
     const labelFont = n > 36 ? 8 : n > 24 ? 9 : 10;
-    ctx.fillStyle = "#5e7082";
+    ctx.fillStyle = C.label;
     ctx.font = `${labelFont}px Inter, sans-serif`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
@@ -1530,7 +1537,7 @@
     ctx.textBaseline = "alphabetic";
 
     // Occurrence-count line + markers.
-    ctx.strokeStyle = "#3f5e77";
+    ctx.strokeStyle = C.bar;
     ctx.lineWidth = 2;
     ctx.beginPath();
     counts.forEach((value, index) => {
@@ -1545,12 +1552,12 @@
       const x = xAt(index);
       const y = yAt(value);
       const isSelected = index === selectedIndex;
-      ctx.fillStyle = isSelected ? "#2a3f50" : "#c2723b";
+      ctx.fillStyle = isSelected ? C.ink : C.highlight;
       ctx.beginPath();
       ctx.arc(x, y, isSelected ? 5 : 3, 0, Math.PI * 2);
       ctx.fill();
       if (isSelected) {
-        ctx.strokeStyle = "#2a3f50";
+        ctx.strokeStyle = C.ink;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(x, y, 8, 0, Math.PI * 2);
@@ -1560,7 +1567,7 @@
     });
 
     // Axis titles.
-    ctx.fillStyle = "#2a3f50";
+    ctx.fillStyle = C.ink;
     ctx.font = "600 11.5px Inter, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("Month", (left + right) / 2, H - 6);
@@ -3071,19 +3078,19 @@
     for (let i = 0; i <= tickCount; i += 1) {
       const frac = i / tickCount;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(compactHours(maxVal * frac), left - 7, y);
     }
     ctx.textBaseline = "alphabetic";
 
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
@@ -3092,7 +3099,7 @@
     ctx.stroke();
 
     const labelFont = n > 36 ? 8 : n > 24 ? 9 : 10;
-    ctx.fillStyle = "#5e7082";
+    ctx.fillStyle = C.label;
     ctx.font = `${labelFont}px Inter, sans-serif`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
@@ -3106,7 +3113,7 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
 
-    ctx.strokeStyle = "#3f5e77";
+    ctx.strokeStyle = C.bar;
     ctx.lineWidth = 2;
     ctx.beginPath();
     values.forEach((value, index) => {
@@ -3116,7 +3123,7 @@
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    ctx.fillStyle = "#c2723b";
+    ctx.fillStyle = C.highlight;
     values.forEach((value, index) => {
       const x = xAt(index);
       const y = yAt(value);
@@ -3125,7 +3132,7 @@
       ctx.fill();
     });
 
-    ctx.fillStyle = "#2a3f50";
+    ctx.fillStyle = C.ink;
     ctx.font = "600 11.5px Inter, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("Month", (left + right) / 2, H - 6);
@@ -3147,7 +3154,7 @@
     const yLabel = opts.yLabel || "";
     const tickFormat = opts.tickFormat || ((v) => String(Math.round(v)));
     const valueLabel = opts.valueLabel || tickFormat;
-    const barColor = opts.barColor || "#3f5e77";
+    const barColor = opts.barColor || C.bar;
     canvas.onclick = null;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
@@ -3169,19 +3176,19 @@
     for (let i = 0; i <= tickCount; i += 1) {
       const frac = i / tickCount;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(tickFormat(maxVal * frac), left - 7, y);
     }
     ctx.textBaseline = "alphabetic";
 
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
@@ -3198,13 +3205,13 @@
       ctx.fillRect(x, y, barW, barHeight);
 
       if (value > 0) {
-        ctx.fillStyle = "#2a3f50";
+        ctx.fillStyle = C.ink;
         ctx.font = "10px Inter, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(valueLabel(value), x + barW / 2, y - 4);
       }
 
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.font = "10px Inter, sans-serif";
       if (opts.rotateLabels) {
         ctx.save();
@@ -3219,7 +3226,7 @@
       }
     });
 
-    ctx.fillStyle = "#2a3f50";
+    ctx.fillStyle = C.ink;
     ctx.font = "600 11.5px Inter, sans-serif";
     ctx.textAlign = "center";
     if (opts.xLabel) ctx.fillText(opts.xLabel, (left + right) / 2, H - 6);
@@ -3937,7 +3944,7 @@
   // is identifiable among the other plotted points once the graph scrolls into view.
   function drawFocusRing(ctx, hit) {
     ctx.save();
-    ctx.strokeStyle = "#0a3a27";
+    ctx.strokeStyle = C.brand;
     ctx.lineWidth = 2.5;
     if (hit.vertical) {
       // Current-life markers are full-height lines, so bracket the line in a band
@@ -3945,7 +3952,7 @@
       // itself: its red is what identifies it as current life in the legend.
       const halfWidth = 6;
       ctx.globalAlpha = 0.16;
-      ctx.fillStyle = "#0a3a27";
+      ctx.fillStyle = C.brand;
       ctx.fillRect(hit.px - halfWidth, hit.top, halfWidth * 2, hit.bottom - hit.top);
       ctx.globalAlpha = 1;
       ctx.lineWidth = 1.5;
@@ -4019,7 +4026,7 @@
     ctx.lineWidth = 1.5;
     ciPairs.forEach(([b, e]) => {
       const lnE = Math.log(e);
-      ctx.strokeStyle = "#d6a700";
+      ctx.strokeStyle = C.goal;
       ctx.beginPath();
       ctx.moveTo(sx(xMin), sy(b * (xMin - lnE)));
       ctx.lineTo(sx(xMax), sy(b * (xMax - lnE)));
@@ -4027,7 +4034,7 @@
     });
 
     // MLE fit line (green)
-    ctx.strokeStyle = "#2f8f5b";
+    ctx.strokeStyle = C.accent;
     ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.moveTo(sx(xMin), sy(fitY(xMin, beta)));
@@ -4054,8 +4061,8 @@
     points.forEach((p) => {
       const px = sx(p.weibull_plot_x);
       const py = sy(p.weibull_plot_y);
-      ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#33455a";
+      ctx.fillStyle = C.pointFill;
+      ctx.strokeStyle = C.ink;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(px, py, 4, 0, Math.PI * 2);
@@ -4069,7 +4076,7 @@
     // Current-life "now" markers: full-height red vertical lines.
     markers.forEach((m) => {
       const px = sx(m.x);
-      ctx.strokeStyle = "#c0392b";
+      ctx.strokeStyle = C.danger;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(px, top);
@@ -4131,11 +4138,11 @@
 
     ctx.lineWidth = 1.5;
     opts.ciLines.forEach((line) => {
-      ctx.strokeStyle = "#d6a700";
+      ctx.strokeStyle = C.goal;
       strokePolyline(ctx, line, sx, sy);
     });
 
-    ctx.strokeStyle = "#2f8f5b";
+    ctx.strokeStyle = C.accent;
     ctx.lineWidth = 2.4;
     strokePolyline(ctx, opts.mleLine, sx, sy);
 
@@ -4143,8 +4150,8 @@
     (opts.scatter || []).forEach((p) => {
       const px = sx(p[0]);
       const py = sy(p[1]);
-      ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#33455a";
+      ctx.fillStyle = C.pointFill;
+      ctx.strokeStyle = C.ink;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(px, py, 4, 0, Math.PI * 2);
@@ -4165,8 +4172,8 @@
     (opts.censored || []).forEach((p) => {
       const px = sx(p[0]);
       const py = sy(p[1]);
-      ctx.fillStyle = "#c0392b";
-      ctx.strokeStyle = "#7d2b2b";
+      ctx.fillStyle = C.danger;
+      ctx.strokeStyle = C.dangerDeep;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(px, py, 4, 0, Math.PI * 2);
@@ -4177,7 +4184,7 @@
     // Current-life "now" markers: full-height red vertical lines.
     (opts.verticalMarkers || []).forEach((m) => {
       const px = sx(m[0]);
-      ctx.strokeStyle = "#c0392b";
+      ctx.strokeStyle = C.danger;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(px, top);
@@ -4227,7 +4234,7 @@
   }
 
   function drawAxes(ctx, left, right, top, bottom, xLabel, yLabel, xMax, yMax) {
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, top);
@@ -4237,7 +4244,7 @@
 
     // Numeric range ticks (subtle). Only drawn when a max value is supplied, i.e.
     // the linear CDF/PDF/Hazard panes; the log-space probability plot omits them.
-    ctx.fillStyle = "#5e7082";
+    ctx.fillStyle = C.label;
     ctx.font = "10px Inter, sans-serif";
     ctx.textBaseline = "alphabetic";
     if (xMax != null) {
@@ -4253,7 +4260,7 @@
 
     // Axis titles: drawn prominently (darker + semibold, centered on the plot
     // area) so every Weibull graph clearly labels what its X and Y axes show.
-    ctx.fillStyle = "#2a3f50";
+    ctx.fillStyle = C.ink;
     ctx.font = "600 11.5px Inter, sans-serif";
     if (xLabel) {
       ctx.textAlign = "center";
@@ -4640,18 +4647,35 @@
     if (pmReset) pmReset.addEventListener("click", resetPmRange);
     // Set the initial secondary-panel visibility for the default analysis type.
     applyAnalysisTypeUI();
-    window.addEventListener("resize", () => {
-      if (state.paretoRows.length) drawPareto();
-      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
-      if (state.analysisType === ANALYSIS_TYPES.PM) renderPmChart();
-      if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
-        renderDowntimeTrendChart();
-        renderDowntimeDistChart();
-        renderDowntimeAssetChart();
-      }
-      if (state.analysisRedraw) state.analysisRedraw();
+    window.addEventListener("resize", redrawCharts);
+
+    // A canvas keeps the pixels it was painted with, so a theme change cannot
+    // reach these the way it reaches everything else: they have to be drawn
+    // again. Same redraw as a resize -- what changed is the palette rather than
+    // the width, and every chart on the page reads both at draw time.
+    // chart_theme.js has already dropped its cached read by the time this runs,
+    // so picking the palette back up here gets the new values.
+    window.gremlinOnThemeChange(() => {
+      C = window.gremlinChartPalette();
+      redrawCharts();
     });
+
     loadAssets();
+  }
+
+  // Every chart currently on screen, redrawn. Which ones those are depends on
+  // the analysis type showing, so the checks are the same ones the initial
+  // render made.
+  function redrawCharts() {
+    if (state.paretoRows.length) drawPareto();
+    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
+    if (state.analysisType === ANALYSIS_TYPES.PM) renderPmChart();
+    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
+      renderDowntimeTrendChart();
+      renderDowntimeDistChart();
+      renderDowntimeAssetChart();
+    }
+    if (state.analysisRedraw) state.analysisRedraw();
   }
 
   function initDispositionPage() {

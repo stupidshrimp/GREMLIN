@@ -25,22 +25,17 @@
   const ALERT_THRESHOLD = 70;
   const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
 
-  // Forest palette (matches theme.css) used for the comparison bars.
-  const BAR_COLOR = "#3f5e77";
-  const BAR_COLOR_ALT = "#7fa6c0";
-  const ACCENT = "#2f8f5b";
-  const WARN = "#c0392b";
-
-  // Per-asset bar colours for the availability charts. Seven entries covers the
-  // largest group (Salvagnini and Building 1 Secondary Finishing); the palette
-  // wraps for anything larger.
-  const SERIES_COLORS = [
-    "#3f5e77", "#7fa6c0", "#2f8f5b", "#8fbf6a",
-    "#c9a227", "#a1668f", "#5b7f8c",
-  ];
-  const AVERAGE_LINE = "#1f4d33";
-  const GOAL_LINE = "#c0392b";
-  const TYPE_COLORS = ["#c0392b", "#c9a227", "#a1668f", "#7fa6c0", "#8a6d00", "#5b7f8c", "#7b8794"];
+  // The chart palette. The values live in theme.css like every other colour in
+  // the application -- chart_theme.js is what reads them back out, since a
+  // canvas inherits nothing from the cascade and has to be told.
+  //
+  // Held in a variable rather than read at each use because getComputedStyle is
+  // a layout read and these are wanted once per bar. Reassigned, not reread, on
+  // a theme change: see the registration at the bottom of this file. `C.series`
+  // and `C.types` carry seven entries each, which covers the largest group
+  // (Salvagnini and Building 1 Secondary Finishing); both wrap for anything
+  // larger.
+  let C = window.gremlinChartPalette();
 
   const state = {
     assets: [], // [{asset_number, asset_name}]
@@ -404,20 +399,20 @@
     for (let i = 0; i <= ticks; i += 1) {
       const frac = i / ticks;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(tickLabel(maxVal * frac), left - 6, y);
     }
     ctx.textBaseline = "alphabetic";
 
     // axes
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.beginPath();
     ctx.moveTo(left, top);
     ctx.lineTo(left, bottom);
@@ -430,10 +425,10 @@
       const x = left + index * slot + barGap / 2;
       const barHeight = (value / maxVal) * plotH;
       const y = bottom - barHeight;
-      ctx.fillStyle = item.color || options.color || BAR_COLOR;
+      ctx.fillStyle = item.color || options.color || C.bar;
       ctx.fillRect(x, y, barW, barHeight);
 
-      ctx.fillStyle = "#33485a";
+      ctx.fillStyle = C.ink;
       ctx.font = "10px Inter, sans-serif";
       ctx.textAlign = "center";
       if (barHeight > 12) {
@@ -441,7 +436,7 @@
       }
 
       ctx.save();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.translate(x + barW / 2, bottom + 6);
       ctx.rotate(Math.PI / 5);
       ctx.textAlign = "left";
@@ -452,7 +447,7 @@
     // threshold line
     if (options.threshold) {
       const y = bottom - (options.threshold / maxVal) * plotH;
-      ctx.strokeStyle = WARN;
+      ctx.strokeStyle = C.danger;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -460,7 +455,7 @@
       ctx.lineTo(right, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = WARN;
+      ctx.fillStyle = C.danger;
       ctx.font = "10px Inter, sans-serif";
       ctx.textAlign = "left";
       ctx.fillText(options.thresholdLabel || `Threshold ${options.threshold}`, left + 4, y - 4);
@@ -497,18 +492,18 @@
     for (let i = 0; i <= ticks; i += 1) {
       const frac = i / ticks;
       const y = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.beginPath();
       ctx.moveTo(left, y);
       ctx.lineTo(right, y);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(tickLabel(maxVal * frac), left - 6, y);
     }
     ctx.textBaseline = "alphabetic";
 
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.beginPath();
     ctx.moveTo(left, top);
     ctx.lineTo(left, bottom);
@@ -521,13 +516,13 @@
       const curVal = Number(item.current) || 0;
       const baseH = (baseVal / maxVal) * plotH;
       const curH = (curVal / maxVal) * plotH;
-      ctx.fillStyle = BAR_COLOR_ALT;
+      ctx.fillStyle = C.barAlt;
       ctx.fillRect(baseX, bottom - baseH, barW, baseH);
-      ctx.fillStyle = curVal >= baseVal && baseVal > 0 ? WARN : BAR_COLOR;
+      ctx.fillStyle = curVal >= baseVal && baseVal > 0 ? C.danger : C.bar;
       ctx.fillRect(baseX + barW, bottom - curH, barW, curH);
 
       ctx.save();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.font = "10px Inter, sans-serif";
       ctx.translate(baseX + groupW / 2, bottom + 6);
       ctx.rotate(Math.PI / 5);
@@ -539,8 +534,8 @@
     // legend
     const labels = options.labels || ["Baseline", "Current"];
     const legend = [
-      { color: BAR_COLOR_ALT, text: labels[0] },
-      { color: BAR_COLOR, text: labels[1] },
+      { color: C.barAlt, text: labels[0] },
+      { color: C.bar, text: labels[1] },
     ];
     let lx = left;
     ctx.font = "10px Inter, sans-serif";
@@ -548,7 +543,7 @@
     legend.forEach((entry) => {
       ctx.fillStyle = entry.color;
       ctx.fillRect(lx, top - 8, 10, 10);
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "left";
       ctx.fillText(entry.text, lx + 14, top - 3);
       lx += 18 + ctx.measureText(entry.text).width + 16;
@@ -710,7 +705,7 @@
       visibleAssets().map((r) => ({
         name: r.asset_number,
         value: r.risk_score || 0,
-        color: (r.risk_score || 0) >= ALERT_THRESHOLD ? WARN : BAR_COLOR,
+        color: (r.risk_score || 0) >= ALERT_THRESHOLD ? C.danger : C.bar,
       }))
     ).slice(0, 12);
     if (!items.length) {
@@ -799,7 +794,7 @@
       rows.map((r) => ({
         name: r.asset_number,
         value: r.risk_score || 0,
-        color: (r.risk_score || 0) >= ALERT_THRESHOLD ? WARN : BAR_COLOR,
+        color: (r.risk_score || 0) >= ALERT_THRESHOLD ? C.danger : C.bar,
       }))
     );
     drawBarChart($("alerts-risk-chart"), riskItems, { threshold: ALERT_THRESHOLD, thresholdLabel: "Alert threshold (70)" });
@@ -914,18 +909,18 @@
     const entries = (stacked
       ? assets
           .map((asset, index) => ({
-            color: SERIES_COLORS[index % SERIES_COLORS.length],
+            color: C.series[index % C.series.length],
             text: asset.display_name,
             outline: true,
           }))
-          .concat([{ color: "#dceee4", text: "Available" }])
+          .concat([{ color: C.band, text: "Available" }])
           .concat(typeNames.map((name, index) => ({
-            color: TYPE_COLORS[index % TYPE_COLORS.length], text: name,
+            color: C.types[index % C.types.length], text: name,
           })))
       : assets.map((asset, index) => ({
-        color: SERIES_COLORS[index % SERIES_COLORS.length], text: asset.display_name,
+        color: C.series[index % C.series.length], text: asset.display_name,
       })))
-      .concat([{ color: AVERAGE_LINE, text: "Average" }, { color: GOAL_LINE, text: "Goal %" }]);
+      .concat([{ color: C.average, text: "Average" }, { color: C.goal, text: "Goal %" }]);
 
     ctx.font = "10px Inter, sans-serif";
     let legendRows = 1;
@@ -953,18 +948,18 @@
     for (let i = 0; i <= 5; i += 1) {
       const frac = i / 5;
       const gy = bottom - frac * plotH;
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = C.grid;
       ctx.beginPath();
       ctx.moveTo(left, gy);
       ctx.lineTo(right, gy);
       ctx.stroke();
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.textAlign = "right";
       ctx.fillText(Math.round(frac * 100) + "%", left - 6, gy);
     }
     ctx.textBaseline = "alphabetic";
 
-    ctx.strokeStyle = "#c4d2dd";
+    ctx.strokeStyle = C.axis;
     ctx.beginPath();
     ctx.moveTo(left, top);
     ctx.lineTo(left, bottom);
@@ -999,7 +994,7 @@
           // Availability occupies the lower portion and each WO class occupies
           // its share of scheduled time above it, making the complete column
           // read as 100%. Overrun is clamped just like the availability value.
-          ctx.fillStyle = "#dceee4";
+          ctx.fillStyle = C.band;
           ctx.fillRect(x, barTop, w, bottom - barTop);
           const month = (options.months || [])[monthIndex];
           const row = rowsByKey[`${asset.asset_number}|${month}`];
@@ -1010,31 +1005,31 @@
             const fraction = scheduled > 0 ? Math.min(hours / scheduled, Math.max(0, 1 - cursor)) : 0;
             if (fraction <= 0) return;
             const next = cursor + fraction;
-            ctx.fillStyle = TYPE_COLORS[typeIndex % TYPE_COLORS.length];
+            ctx.fillStyle = C.types[typeIndex % C.types.length];
             ctx.fillRect(x, y(next), w, Math.max(1, y(cursor) - y(next)));
             cursor = next;
           });
           // The outline identifies the asset without stealing fill colour from
           // the WO-type percentages. This remains usable on touch devices,
           // where the hover tooltip is not available.
-          ctx.strokeStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+          ctx.strokeStyle = C.series[assetIndex % C.series.length];
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x + 0.5, top + 0.5, Math.max(1, w - 1), Math.max(1, bottom - top - 1));
           ctx.lineWidth = 1;
         } else {
-          ctx.fillStyle = SERIES_COLORS[assetIndex % SERIES_COLORS.length];
+          ctx.fillStyle = C.series[assetIndex % C.series.length];
           ctx.fillRect(x, barTop, w, bottom - barTop);
         }
         // A flagged month is one where downtime exceeded scheduled hours, so
         // the bar sits at zero. Mark it rather than let it read as "no data".
         if (asset.flagged && asset.flagged[monthIndex]) {
-          ctx.fillStyle = WARN;
+          ctx.fillStyle = C.danger;
           ctx.fillRect(x, bottom - 3, w, 3);
         }
         // Outline rather than recolour the hovered bar: the series colour is how
         // the legend names it, so it has to survive the hover.
         if (isHot) {
-          ctx.strokeStyle = AVERAGE_LINE;
+          ctx.strokeStyle = C.average;
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x + 0.5, barTop + 0.5, Math.max(1, w - 1), Math.max(1, bottom - barTop - 1));
           ctx.lineWidth = 1;
@@ -1044,7 +1039,7 @@
       // Always label the last month; it is the one a reader looks for first.
       const isLast = monthIndex === labels.length - 1;
       if (monthIndex % labelStep === 0 || isLast) {
-        ctx.fillStyle = "#5e7082";
+        ctx.fillStyle = C.label;
         ctx.font = "10px Inter, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(label, left + monthIndex * slot + slot / 2, bottom + 16);
@@ -1085,8 +1080,8 @@
         ctx.fill();
       });
     };
-    drawLine(group.average || [], AVERAGE_LINE, false);
-    drawLine(group.goal || [], GOAL_LINE, true);
+    drawLine(group.average || [], C.average, false);
+    drawLine(group.goal || [], C.goal, true);
 
     // Legend across the top. Outlined keys identify the side-by-side assets in
     // stacked mode; filled keys identify the segments within each asset bar.
@@ -1110,7 +1105,7 @@
         ctx.fillStyle = entry.color;
         ctx.fillRect(lx, ly - 4, 9, 9);
       }
-      ctx.fillStyle = "#5e7082";
+      ctx.fillStyle = C.label;
       ctx.fillText(entry.text, lx + 13, ly);
       lx += w;
     });
@@ -1185,7 +1180,7 @@
 
     return {
       title: asset.display_name || asset.asset_number,
-      color: SERIES_COLORS[hit.assetIndex % SERIES_COLORS.length],
+      color: C.series[hit.assetIndex % C.series.length],
       subtitle: `${group.asset_group} · ${(group.month_labels || [])[hit.monthIndex] || ""}`,
       rows,
       notes,
@@ -2483,7 +2478,7 @@
               ? el("p", { class: "metrics-modal-focus" }, [
                   el("span", {
                     class: "metrics-tooltip-swatch",
-                    style: `background:${SERIES_COLORS[focused.assetIndex % SERIES_COLORS.length]}`,
+                    style: `background:${C.series[focused.assetIndex % C.series.length]}`,
                   }),
                   `Selected bar: ${focused.row.display_name || focused.row.asset_number} · ${focused.monthLabel}` +
                     (focused.availability == null ? "" : ` · ${(focused.availability * 100).toFixed(2)}%`),
@@ -3036,6 +3031,20 @@
     window.addEventListener("scroll", hideTooltip, { passive: true });
   }
 
+  // A canvas keeps the pixels it was painted with, so a theme change is not
+  // something the cascade can deliver here: the charts have to be drawn again.
+  // chart_theme.js drops its cached read of the palette before calling this, so
+  // picking it back up gets the new values -- and it waits a frame first, which
+  // keeps the redraw from landing inside the view transition's snapshot of the
+  // old page.
+  function wireThemeRepaint() {
+    window.gremlinOnThemeChange(() => {
+      C = window.gremlinChartPalette();
+      hideTooltip();
+      renderAll();
+    });
+  }
+
   function wireAvailability() {
     const windowSelect = $("availability-window");
     if (!windowSelect) return;
@@ -3081,6 +3090,7 @@
     wireAvailability();
     wireAvailabilityInfo();
     wireResize();
+    wireThemeRepaint();
 
     // Availability loads first because it also supplies the curated equipment
     // list the KPI and Alerts cards default to comparing. That list used to be

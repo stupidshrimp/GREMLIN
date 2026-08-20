@@ -159,3 +159,62 @@ def test_every_token_the_stylesheets_use_is_defined():
             if token not in defined:
                 used.setdefault(sheet.name, []).append(token)
     assert used == {}, f"undefined tokens used without a fallback: {used}"
+
+
+# --- the charts -------------------------------------------------------------
+# A canvas is the one thing on the page the cascade cannot reach: it is a bitmap,
+# so it inherits nothing and keeps whatever colour it was painted in. Two rules
+# hold it together, and neither shows up as an exception when broken -- the only
+# symptom is an unreadable chart in one theme.
+
+STATIC_JS = pathlib.Path(__file__).resolve().parent.parent / "static" / "js"
+CHART_SCRIPTS = ["metrics.js", "life_data_analysis.js"]
+
+
+@pytest.mark.parametrize("script", CHART_SCRIPTS)
+def test_the_chart_scripts_hold_no_colours_of_their_own(script):
+    """Every chart colour belongs in theme.css, read back out by chart_theme.js.
+
+    One left behind in the JS is a colour the theme cannot reach: it will keep
+    its light-theme value on a dark card, and nothing will say so.
+    """
+    source = (STATIC_JS / script).read_text()
+    literals = sorted(set(re.findall(r'"#[0-9a-fA-F]{3,8}"', source)))
+    assert literals == [], f"{script} hard-codes {literals}; add tokens to theme.css instead"
+
+
+TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "templates"
+
+
+@pytest.mark.parametrize(
+    "template,script",
+    [
+        ("metrics.html", "metrics.js"),
+        ("perform_analysis.html", "life_data_analysis.js"),
+        ("disposition.html", "life_data_analysis.js"),
+    ],
+)
+def test_chart_theme_is_ordered_before_the_script_that_uses_it(template, script):
+    """Order matters here, not just presence: the chart scripts resolve the
+    palette at load time, so chart_theme.js arriving second would throw on a
+    missing global and take the whole page's script down with it.
+
+    Read from the template rather than from a response because disposition.html
+    is editor-only, and an anonymous request renders the 403 page instead.
+    """
+    source = (TEMPLATES / template).read_text()
+    assert "chart_theme.js" in source, template
+    assert source.index("chart_theme.js") < source.index(script), template
+
+
+@pytest.mark.parametrize(
+    "page,script",
+    [
+        ("/metrics", "metrics.js"),
+        ("/life-data-analysis/perform-analysis", "life_data_analysis.js"),
+    ],
+)
+def test_chart_pages_serve_the_palette_reader(monkeypatch, tmp_path, page, script):
+    """And it survives rendering, for the pages a visitor can actually reach."""
+    body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
+    assert body.index("chart_theme.js") < body.index(script), page

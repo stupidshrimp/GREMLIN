@@ -65,5 +65,9 @@
 {% endblock %}
 
 {% block scripts %}
+  {# Before the chart script: it reads the palette out of the stylesheet at load
+     time, and a canvas cannot be themed by the cascade the way the rest of the
+     page is. #}
+  <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
   <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
 {% endblock %}

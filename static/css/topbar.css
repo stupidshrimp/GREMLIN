@@ -677,10 +677,33 @@
     border-radius: 10px;
   }
 
-  /* Anchored to the window's edge instead of the button's, so a 16.5rem panel
-     hanging off the last button in the rail cannot overhang the viewport. */
+  /* The panel hangs off the *rail* down here rather than off its own button.
+     Quick links is the first of three, so two more buttons and the header's
+     padding sit between it and the window edge -- around 98px. A panel anchored
+     to the button therefore starts 98px in from the right and runs 264px
+     leftwards, which goes off the left of the window below about 354px however
+     the width is capped: the overhang is in the anchor, not in the size, and no
+     `right` offset can pay it back. Re-anchoring to the rail moves the right
+     edge out to the padding line, and the width cap below then guarantees a
+     left edge inside the window at any size.
+
+     Done by taking the positioning context off .topbar-tool rather than by
+     moving the markup: the menu belongs to its button, and only the geometry
+     changes here. */
+  .topbar-tools {
+    position: relative;
+  }
+
+  .topbar-tool {
+    position: static;
+  }
+
   .topbar-menu {
-    right: -0.5rem;
+    right: 0;
+    /* Both bounds, and both capped to the window. min-width beats max-width when
+       the two disagree, so leaving the 16.5rem minimum in place would hold the
+       panel wider than the window it is being kept inside. */
     min-width: min(16.5rem, calc(100vw - 2rem));
+    max-width: calc(100vw - 2rem);
   }
 }

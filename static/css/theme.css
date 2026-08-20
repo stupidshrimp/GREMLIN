@@ -83,9 +83,6 @@
   --brand-tint: rgba(31, 138, 76, 0.14);
   --brand-tint-strong: rgba(31, 138, 76, 0.22);
 
-  /* Status colours. Kept out of the ramp because they mean something -- a red
-     here is "this failed", not "this is decorative" -- and they are lightened
-     rather than inverted for the dark theme so they stay recognisable. */
   /* Opaque table-row fills. The drill-down table has a sticky first column, so
      its rows cannot be tinted with something translucent -- the cells sliding
      under the frozen one would show through. Each state therefore needs a real
@@ -96,12 +93,69 @@
   --row-focus: #dceee4;
   --row-linked: #f2f8f4;
 
+  /* The charts.
+     -------------------------------------------------------------------------
+     A canvas is a bitmap, not a tree: it inherits nothing, and the pixels an
+     axis label was drawn in stay that colour until something draws over them.
+     So the chart palette lives here with everything else and the drawing code
+     reads it back out through getComputedStyle -- see chart_theme.js, which
+     also re-reads it when the theme changes and asks the charts to repaint.
+
+     Split in two on purpose. The chrome -- grid, axis, labels, value ink --
+     inverts like the rest of the application, because it is furniture. The
+     series colours below it do not: they are what tells one asset from another,
+     so they keep their hue in both themes and only move in lightness, and only
+     where the light-theme value would not have held up against a dark card. */
+  --chart-grid: #eef2f6;
+  --chart-axis: #c4d2dd;
+  --chart-label: #5e7082;
+  --chart-ink: #2a3f50;
+  --chart-band: #dceee4;
+  /* The fill inside a plotted point, so the marker reads as a ring on whatever
+     it is sitting on rather than as a white dot. */
+  --chart-point-fill: #ffffff;
+
+  /* The comparison pair, baseline against current. Which of the two is the
+     prominent one has to survive the theme, so they swap rather than both
+     getting lighter -- see the dark block. */
+  --chart-bar: #3f5e77;
+  --chart-bar-alt: #7fa6c0;
+
+  --chart-average: #1f4d33;
+  --chart-brand: #0a3a27;
+  --chart-danger: #c0392b;
+  --chart-danger-deep: #7d2b2b;
+  --chart-accent: #2f8f5b;
+  --chart-highlight: #c2723b;
+  --chart-goal: #d6a700;
+
+  /* Per-asset series, and per-failure-type. Seven each: enough for the largest
+     group, and the drawing code wraps for anything bigger. */
+  --chart-series-1: #3f5e77;
+  --chart-series-2: #7fa6c0;
+  --chart-series-3: #2f8f5b;
+  --chart-series-4: #8fbf6a;
+  --chart-series-5: #c9a227;
+  --chart-series-6: #a1668f;
+  --chart-series-7: #5b7f8c;
+
+  --chart-type-1: #c0392b;
+  --chart-type-2: #c9a227;
+  --chart-type-3: #a1668f;
+  --chart-type-4: #7fa6c0;
+  --chart-type-5: #8a6d00;
+  --chart-type-6: #5b7f8c;
+  --chart-type-7: #7b8794;
+
   /* Panels that show code or log output. Dark in both themes: a terminal that
      turns white in the light theme stops looking like a terminal. */
   --code-bg: #1d2731;
   --code-ink: #e6eef5;
   --code-muted: #8fa6b8;
 
+  /* Status colours. Kept out of the ramp because they mean something -- a red
+     here is "this failed", not "this is decorative" -- and they are lightened
+     rather than inverted for the dark theme so they stay recognisable. */
   --danger-tint: rgba(192, 57, 43, 0.16);
   --danger-tint-soft: rgba(192, 57, 43, 0.08);
   --danger-tint-border: rgba(192, 57, 43, 0.28);
@@ -178,6 +232,45 @@
   --brand-tint-soft: rgba(82, 201, 138, 0.08);
   --brand-tint: rgba(82, 201, 138, 0.16);
   --brand-tint-strong: rgba(82, 201, 138, 0.3);
+
+  --chart-grid: #243039;
+  --chart-axis: #3a4a58;
+  --chart-label: #9fb2c2;
+  --chart-ink: #e6eef6;
+  --chart-band: #17352a;
+  --chart-point-fill: #161e26;
+
+  /* Swapped, not both lightened: the prominent bar of the pair has to stay the
+     prominent one, and over a dark card that is the lighter of the two. */
+  --chart-bar: #8fc0e0;
+  --chart-bar-alt: #4d6e88;
+
+  --chart-average: #5aa87d;
+  --chart-brand: #52c98a;
+  --chart-danger: #f08d80;
+  --chart-danger-deep: #c0564c;
+  --chart-accent: #3fb377;
+  --chart-highlight: #d98f52;
+  --chart-goal: #e0be4a;
+
+  /* Same seven hues, lifted off the dark card. The first two stay a pair of
+     blues and stay distinguishable from each other, which is what they are for
+     -- so the darker of the two goes lighter and the lighter one goes darker. */
+  --chart-series-1: #79b8e8;
+  --chart-series-2: #3f7fa8;
+  --chart-series-3: #52c98a;
+  --chart-series-4: #9fd96a;
+  --chart-series-5: #e7c454;
+  --chart-series-6: #c98fb8;
+  --chart-series-7: #8fa9bb;
+
+  --chart-type-1: #e07a6d;
+  --chart-type-2: #e7c454;
+  --chart-type-3: #c98fb8;
+  --chart-type-4: #79b8e8;
+  --chart-type-5: #c9a94a;
+  --chart-type-6: #8fb3c4;
+  --chart-type-7: #a8b4c0;
 
   --row-zebra: #1b242d;
   --row-attention: #2c2718;

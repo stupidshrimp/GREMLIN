@@ -46,6 +46,13 @@
 
   function apply(theme) {
     root.setAttribute("data-theme", theme);
+
+    // Anything that cannot be themed by the cascade alone gets told. That is the
+    // canvas charts on Metrics and Life Data Analysis: a bitmap inherits nothing
+    // and has to be drawn again in the new palette. See chart_theme.js, which is
+    // what listens for this.
+    document.dispatchEvent(new CustomEvent("gremlin:themechange", { detail: { theme: theme } }));
+
     if (!toggle) return;
 
     // The button offers the theme you are not in, and says so. Both icons are
