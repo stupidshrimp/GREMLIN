@@ -4,11 +4,11 @@
    has to line up with the cards above it, or the seam shows. */
 .site-footer {
   grid-area: footer;
-  padding: 1.75rem 2rem 1.25rem;
+  padding: 1.1rem 2rem 0.9rem;
   border-top: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.66);
   display: grid;
-  gap: 1.1rem;
+  gap: 0.7rem;
   transition: padding 220ms ease;
 }
 
@@ -21,13 +21,18 @@
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 1.5rem;
+  /* The row gap only comes into play once the two blocks wrap onto separate
+     rows, so it is kept tighter than the column gap between them. */
+  gap: 0.8rem 1.5rem;
 }
 
 .site-footer-brand {
   display: grid;
-  gap: 0.3rem;
-  max-width: 46ch;
+  gap: 0.15rem;
+  /* Wide enough for the expanded acronym to sit on one line at full width:
+     wrapping it added a line of footer height for no benefit. It still wraps
+     on narrow viewports, where min-width is what governs. */
+  max-width: 66ch;
   min-width: min(260px, 100%);
 }
 
@@ -44,7 +49,7 @@
 
 .site-footer-nav {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.35rem;
 }
 
 /* Same treatment as .sidebar-heading, so the two navigation blocks read as the
@@ -100,7 +105,7 @@
 }
 
 .site-footer-legal {
-  padding-top: 0.9rem;
+  padding-top: 0.6rem;
   border-top: 1px solid var(--border);
 }
 
@@ -112,7 +117,7 @@
   /* Stacked layout: the footer spans the single column and lines up with
      .content's narrower padding. */
   .site-footer {
-    padding: 1.5rem 1rem 1rem;
+    padding: 1rem 1rem 0.8rem;
   }
 }
 
