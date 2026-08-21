@@ -32,6 +32,17 @@ from services.life_data_service import (
     DatabaseWriteError,
     LifeDataService,
 )
+from services.bug_reports import (
+    DEFAULT_BUG_DB_PATH,
+    LIST_LIMIT,
+    SEVERITIES,
+    STATUSES,
+    BugReportConflictError,
+    BugReportRateLimitError,
+    BugReportStore,
+    BugReportStoreError,
+    BugReportValidationError,
+)
 from services.patch_notes_service import build_reader as build_patch_notes_reader
 from services.schema_service import SchemaService, SchemaServiceError
 from services.access_control import ACTIVITY_DEFAULT_DAYS, ACTIVITY_MAX_DAYS, AccessControl, ROLES
@@ -99,6 +110,15 @@ access_control.ensure_schema(
     initial_username=os.environ.get("GREMLIN_ADMIN_USERNAME"),
     initial_pin=os.environ.get("GREMLIN_ADMIN_PIN"),
 )
+
+# Bug reports live on the shared drive rather than beside GREMLIN.db, so every
+# deployment files into and reads from the same list. Constructing the store
+# touches nothing -- deliberately, unlike the access database above: the folder,
+# the file and the table are created on the first report or the first time the
+# dashboard is opened, so a share that is unreachable at startup does not stop
+# GREMLIN starting.
+BUGS_DB_PATH = Path(os.environ.get("GREMLIN_BUGS_DB_PATH") or DEFAULT_BUG_DB_PATH)
+bug_reports = BugReportStore(BUGS_DB_PATH)
 
 # Signs the cookie that says who is logged in, so this is what stands between a
 # session and a forged one. Falling back to a key generated per process would
@@ -586,6 +606,14 @@ SEARCH_ENTRIES = [
         "context": "Developer",
         "role": "admin",
         "keywords": ["admin", "internals", "tools"],
+    },
+    {
+        "label": "Bug reports",
+        "url": "/developer/bugs",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": ["bugs", "issues", "open", "resolved", "triage", "reports"],
     },
     {
         "label": "Database inspection",
@@ -1313,9 +1341,140 @@ def patch_notes():
     )
 
 
+# The areas the form offers, so a report arrives already sorted by where it
+# happened. Drawn from the sidebar's own page titles rather than a second list
+# that would drift from it, plus the two answers no page title covers.
+def _bug_report_areas() -> list[str]:
+    return [page["title"] for page in PAGES if page["route"] not in UNLISTED_ROUTES] + [
+        "Signing in",
+        "Somewhere else",
+    ]
+
+
+def _bug_form_context(**extra):
+    """Everything report_a_bug.html needs, whoever is asking for it."""
+
+    account = _resolved_account()
+    return {
+        "page_title": "Report a Bug",
+        "nav_links": NAV_LINKS,
+        # Anonymous visitors reach this page too, so the token is minted here
+        # rather than taken from auth_csrf_token, which only exists once
+        # somebody has signed in.
+        "csrf_token": csrf_token(),
+        "areas": _bug_report_areas(),
+        "severities": SEVERITIES,
+        # Signed in, the name is already known, so the form fills it in rather
+        # than asking. Still editable: somebody filing on a colleague's behalf
+        # should be able to say so.
+        "reporter_name": account["username"] if account else "",
+        **extra,
+    }
+
+
+def _bug_form_values() -> dict:
+    """What the reporter typed, for a form that has to be drawn again.
+
+    A refused submission -- incomplete, rate limited, or landing on a share that
+    is down -- comes back with the boxes still filled, because losing a
+    paragraph of description is how somebody gives up on reporting at all.
+    """
+
+    return {
+        "title": request.form.get("title", ""),
+        "description": request.form.get("description", ""),
+        "area": request.form.get("area", ""),
+        "severity": request.form.get("severity", "minor"),
+        "reporter": request.form.get("reporter", ""),
+        # Carried through explicitly. The browser cannot recover it: on a
+        # re-rendered response document.referrer is the form itself, so a
+        # corrected retry would otherwise file the bug against /report-a-bug
+        # rather than the page that actually broke.
+        "page_url": request.form.get("page_url", ""),
+    }
+
+
 @app.route("/report-a-bug")
 def report_a_bug():
-    return render_template("report_a_bug.html", page_title="Report a Bug", nav_links=NAV_LINKS)
+    # ?submitted=<id> is where a successful post lands. Redirecting rather than
+    # rendering the confirmation straight from the POST means a refresh cannot
+    # file the same report twice.
+    submitted = request.args.get("submitted", "").strip()
+    return render_template(
+        "report_a_bug.html",
+        **_bug_form_context(submitted_id=submitted if submitted.isdigit() else None),
+    )
+
+
+@app.post("/report-a-bug")
+@requires_csrf
+def submit_bug_report():
+    """File one report from the public form.
+
+    Deliberately open to anyone who can reach GREMLIN, signed in or not: the
+    people most likely to hit a bug are the ones who cannot get past it, and a
+    report that needs an account is a report that does not get filed. What the
+    account adds, when there is one, is who filed it.
+    """
+
+    account = _resolved_account()
+    try:
+        report_id = bug_reports.submit(
+            title=request.form.get("title", ""),
+            description=request.form.get("description", ""),
+            area=request.form.get("area", ""),
+            severity=request.form.get("severity", "minor"),
+            reporter=request.form.get("reporter", "") or (account["username"] if account else ""),
+            reporter_user_id=account["id"] if account else None,
+            page_url=request.form.get("page_url", ""),
+            user_agent=request.headers.get("User-Agent", ""),
+            # Signed-in reporters are limited as themselves rather than as their
+            # address: behind a proxy the whole plant shares one, and one
+            # person's runaway retry must not spend everybody else's allowance.
+            client_key=(
+                f"user:{account['id']}" if account else f"addr:{request.remote_addr or 'unknown'}"
+            ),
+        )
+    except BugReportValidationError as exc:
+        # Re-render with what was typed still in the boxes. Losing a paragraph
+        # of description to a missing title is how a reporter gives up.
+        return (
+            render_template(
+                "report_a_bug.html",
+                **_bug_form_context(
+                    error=str(exc),
+                    form_values=_bug_form_values(),
+                ),
+            ),
+            400,
+        )
+    except BugReportRateLimitError as exc:
+        # 429 with what the reporter typed still in the boxes, so coming back
+        # when the window frees up is a resubmit rather than a retype.
+        response = make_response(
+            render_template(
+                "report_a_bug.html",
+                **_bug_form_context(error=str(exc), form_values=_bug_form_values()),
+            ),
+            429,
+        )
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
+    except BugReportStoreError as exc:
+        # The share is down. Say so, and say it on the page rather than as a
+        # 500: the reporter needs to know their report was not stored.
+        app.logger.exception("A bug report could not be stored")
+        return (
+            render_template(
+                "report_a_bug.html",
+                **_bug_form_context(
+                    error=str(exc),
+                    form_values=_bug_form_values(),
+                ),
+            ),
+            503,
+        )
+    return redirect(url_for("report_a_bug", submitted=report_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1817,6 +1976,7 @@ def developer_home():
         **_dev_page_context(
             "home",
             access_db_path=str(ACCESS_DB_PATH),
+            bugs_db_path=str(BUGS_DB_PATH),
             # Rendering the hub establishes the session token the pages behind
             # it post with, so arriving here is enough to make their forms work.
             csrf_token=csrf_token(),
@@ -1846,6 +2006,20 @@ def developer_activity():
             access_db_path=str(ACCESS_DB_PATH),
             default_days=ACTIVITY_DEFAULT_DAYS,
             max_days=ACTIVITY_MAX_DAYS,
+        ),
+    )
+
+
+@app.route("/developer/bugs")
+@dev_page
+def developer_bugs():
+    return render_template(
+        "developer_bugs.html",
+        **_dev_page_context(
+            "bugs",
+            bugs_db_path=str(BUGS_DB_PATH),
+            severities=SEVERITIES,
+            statuses=STATUSES,
         ),
     )
 
@@ -2045,6 +2219,120 @@ def api_dev_activity():
 # through SchemaService's read-only connections; this runs the same ingestion
 # the nightly Task Scheduler job runs, so it fetches from the Limble API and
 # writes what it finds. An administrator account limits this consequential write to named, auditable users.
+
+
+@app.route("/developer/api/bugs")
+@dev_api
+def api_dev_bugs():
+    """The dashboard's whole payload: the tiles' counts and the filtered list."""
+
+    try:
+        page = bug_reports.list_reports(
+            status=request.args.get("status", "all"),
+            search=request.args.get("search", ""),
+            # Where the previous page stopped, rather than how many rows to skip
+            # -- see list_reports on why a queue being worked cannot be paged by
+            # counting.
+            cursor=request.args.get("cursor") or None,
+        )
+        summary = bug_reports.summary()
+    except BugReportValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except BugReportStoreError as exc:
+        # 503, not 500: the code is fine and the share is not, and the page
+        # tells the administrator which path it could not open.
+        return jsonify({"error": str(exc)}), 503
+    return jsonify(
+        {
+            "reports": page["reports"],
+            # What the filter matches in total, against what this page holds --
+            # the dashboard needs both to say "showing 200 of 640" and to know
+            # whether to offer more.
+            "total_matching": page["total"],
+            "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
+            "page_size": LIST_LIMIT,
+            "summary": summary,
+            "bugs_db_path": str(BUGS_DB_PATH),
+            "severities": list(SEVERITIES),
+            "statuses": list(STATUSES),
+        }
+    )
+
+
+@app.post("/developer/api/bugs/<int:report_id>/status")
+@dev_api
+@requires_role("admin")
+def api_dev_bug_status(report_id: int):
+    """Resolve a report, or reopen one.
+
+    requires_role sits under dev_api the way the sync endpoint's does: dev_api
+    turns away anyone who is not an administrator, and requires_role records the
+    change in the same audit trail every other protected write lands in, so who
+    resolved what is answerable later.
+    """
+
+    # Same reasoning as the sync endpoint: a cross-site <form> can POST here
+    # with the browser's cookies attached, but it cannot set this content type
+    # without a preflight the browser refuses. That is what stands between a
+    # drive-by page and reopening every report in an admin's live session.
+    if not request.is_json:
+        return jsonify({"error": "Status changes must be sent as JSON."}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "The status change must be a JSON object."}), 400
+
+    # Absent means the caller is deliberately not guarding -- a script, or the
+    # tests. Present but unreadable is a bug in the caller, and is refused
+    # rather than quietly treated as "no guard": silently dropping the check is
+    # the one outcome that loses somebody's resolution.
+    raw_revision = payload.get("expected_revision")
+    expected_revision = None
+    if raw_revision not in (None, ""):
+        try:
+            expected_revision = int(raw_revision)
+        except (TypeError, ValueError):
+            return jsonify({"error": "expected_revision must be a whole number."}), 400
+
+    try:
+        report = bug_reports.set_status(
+            report_id,
+            payload.get("status", ""),
+            actor=(current_user() or {}).get("username", ""),
+            note=payload.get("note", ""),
+            # The revision the dashboard drew this row with. Sending it is what
+            # stops a second administrator, whose page is out of date,
+            # overwriting the first one's resolution note -- including when the
+            # report has been resolved and reopened since, which a status alone
+            # could not tell apart from no change at all.
+            expected_revision=expected_revision,
+        )
+    except BugReportConflictError as exc:
+        return jsonify(
+            {"error": str(exc), "actual_status": exc.actual_status, "actual_revision": exc.actual}
+        ), 409
+    except BugReportValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except BugReportStoreError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"report": report})
+
+
+@app.post("/developer/api/bugs/<int:report_id>/delete")
+@dev_api
+@requires_role("admin")
+def api_dev_bug_delete(report_id: int):
+    """Drop a report entirely -- a duplicate, or something filed by accident."""
+
+    if not request.is_json:
+        return jsonify({"error": "Deletions must be sent as JSON."}), 415
+    try:
+        bug_reports.delete(report_id)
+    except BugReportValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except BugReportStoreError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"deleted": report_id})
 
 
 @app.route("/developer/api/sync")

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include "developer_subnav.html" %}
+
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>Bug reports</h1>
+    <p>
+      Everything filed through the footer's Report a Bug page. A report is open
+      until somebody resolves it, and a resolved one can be reopened if it comes
+      back &mdash; there is nothing else to move it through, because the job here is
+      that nothing filed gets lost. Open reports sort first and the most urgent
+      leads, so the top of the list is the queue.
+    </p>
+    <p class="dev-hero-path">Reports: <code>{{ bugs_db_path }}</code></p>
+  </div>
+</section>
+
+<div id="dev-status" class="dev-banner" role="status" hidden></div>
+
+<section class="dev-panel is-active" data-panel="bugs" aria-label="Bug reports">
+  <div class="glass-card slide-in">
+    <div class="dev-stat-grid" id="dev-bugs-stats"></div>
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-bugs-status">Show</label>
+        <select id="dev-bugs-status">
+          <option value="open" selected>Open</option>
+          <option value="resolved">Resolved</option>
+          <option value="all">Everything</option>
+        </select>
+      </div>
+      <div class="dev-field">
+        <label for="dev-bugs-search">Search</label>
+        <input id="dev-bugs-search" type="search" placeholder="Title, description, area or name"
+               autocomplete="off">
+      </div>
+      <div class="dev-field dev-field-actions">
+        <button type="button" class="btn-secondary" id="dev-bugs-refresh">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="glass-card slide-in">
+    <h2>Reports</h2>
+    <p class="dev-muted" id="dev-bugs-count">Loading&hellip;</p>
+    {#- Each report is a <details>, so the list stays scannable and the full
+        description is one click away rather than a column that wraps to six
+        lines. Built by the script; the container is all the page owns. -#}
+    <div class="dev-bug-list" id="dev-bugs-list"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/developer_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/developer_bugs.js') }}"></script>
+{% endblock %}

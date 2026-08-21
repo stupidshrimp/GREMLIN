@@ -1,0 +1,111 @@
+/* The public Report a Bug form.
+   ---------------------------------------------------------------------------
+   Its own stylesheet rather than a corner of theme.css: the form is reached
+   from the footer by people who may never open another page here, and nothing
+   else in the app looks like it. Every colour is a token from theme.css, so the
+   dark theme needs no rules of its own. */
+
+.bug-intro,
+.bug-thanks {
+  max-width: 720px;
+}
+
+.bug-thanks-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.bug-error {
+  max-width: 720px;
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--danger-tint-border);
+  background: var(--danger-tint-soft);
+  color: var(--danger-strong);
+  font-weight: 500;
+}
+
+.bug-form-card {
+  max-width: 720px;
+  margin-top: 16px;
+}
+
+.bug-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.bug-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bug-field label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bug-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* The hint sits between the label and the box it explains, so it is read in the
+   order it is needed rather than found underneath after the box is filled. */
+.bug-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.bug-field input[type="text"],
+.bug-field select,
+.bug-field textarea {
+  font: inherit;
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.bug-field textarea {
+  resize: vertical;
+  min-height: 120px;
+  line-height: 1.5;
+}
+
+.bug-field input[type="text"]:focus-visible,
+.bug-field select:focus-visible,
+.bug-field textarea:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* Two short questions side by side on a wide screen, stacked on a narrow one.
+   auto-fit rather than a fixed pair, so nothing is squeezed on a phone -- which
+   is where somebody standing at a machine will be filing from. */
+.bug-field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 22px;
+}
+
+.bug-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.bug-actions .btn-primary {
+  padding: 11px 26px;
+  font-size: 1rem;
+}
