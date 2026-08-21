@@ -101,7 +101,7 @@ def _empty_reason(repository, charted: list[str], earliest: date | None) -> str:
         if repository.has_any_work_orders():
             return (
                 "No work orders were found for the configured asset groups. "
-                "Check that the asset numbers in Settings match the ones in Limble."
+                "Check that the asset numbers on the Configuration page match the ones in Limble."
             )
         return "No work orders have been imported yet."
     return "No complete month of work-order data is available yet."
@@ -407,7 +407,7 @@ def build_work_order_detail(
 
 
 def build_config(repository) -> dict:
-    """The editable configuration behind the card, for the Settings page."""
+    """The editable configuration behind the card, for the Configuration page."""
 
     groups = repository.load_groups()
     display_names = repository.load_display_names()

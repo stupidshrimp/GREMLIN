@@ -843,6 +843,11 @@ class DashboardTests(AvailabilityTestCase):
         self.assertEqual(data["groups"], [])
         self.assertIn("configured asset groups", data["empty_reason"])
         self.assertNotIn("imported", data["empty_reason"])
+        # And it has to name the page by the name the sidebar uses, or the one
+        # instruction it gives sends the reader looking for a page that is not
+        # there. Renaming the page is what would break this.
+        self.assertIn("Configuration page", data["empty_reason"])
+        self.assertNotIn("Settings", data["empty_reason"])
 
     def test_no_configured_assets_says_so(self):
         for group in self.repo.load_groups():
