@@ -350,7 +350,7 @@
    grows to fit every row, the page scrolls instead of the wrapper, and the
    sticky head has nothing to stick to. Capping the height is what turns the rule
    below from decoration into a header that stays put. Scoped to the metrics
-   cards so the Settings page's short config tables keep their natural height. */
+   cards so the Configuration page's short config tables keep their natural height. */
 .metrics-card .metrics-table-scroll {
   max-height: min(60vh, 32rem);
   overflow-y: auto;
@@ -376,7 +376,7 @@ table.metrics-table { border-collapse: collapse; width: 100%; font-size: 0.85rem
    table that already fits filling the width exactly as before.
 
    Scoped to the wide data tables, for the same reason the height cap above is:
-   the Settings page's four-column config tables have no overflow to manage and
+   the Configuration page's four-column config tables have no overflow to manage and
    would only gain a scrollbar from it. */
 .metrics-card table.metrics-table,
 .metrics-modal table.metrics-table {
@@ -1081,7 +1081,7 @@ table.availability-wo-table tfoot td:first-child {
   }
 }
 
-/* ---- availability configuration (Settings page) -------------------------- */
+/* ---- availability configuration (Configuration page) --------------------- */
 .availability-config-groups { display: grid; gap: 0.6rem; }
 
 .availability-config-group {

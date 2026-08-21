@@ -190,10 +190,12 @@ def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
 
 def _assert_read_only_ui(client):
     """No page offers a control that writes, whoever this read-only caller is."""
-    settings = client.get("/settings").data
-    assert b"Asset group schedules" not in settings
-    assert b"Refresh CMMS mapping" not in settings
-    assert b"Linked downtime rules" not in settings
+    configuration = client.get("/configuration").data
+    assert b"Asset group schedules" not in configuration
+    assert b"Refresh CMMS mapping" not in configuration
+    assert b"Linked downtime rules" not in configuration
+    # Named rather than silently missing: the section says who may edit it.
+    assert b"editable by authorized users only" in configuration
     analysis = client.get("/life-data-analysis/perform-analysis").data
     assert b'id="lda-perform" hidden' in analysis
     assert b'id="lda-disposition-wo" hidden' in analysis
@@ -252,9 +254,9 @@ def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_pat
     module.access_control.save_user(None, "editor", "2468", "editor")
     client = module.app.test_client()
     assert client.post("/auth/login", json={"username": "editor", "pin": "2468"}).status_code == 200
-    settings = client.get("/settings").data
-    assert b"Asset group schedules" in settings
-    assert b"Refresh CMMS mapping" in settings
+    configuration = client.get("/configuration").data
+    assert b"Asset group schedules" in configuration
+    assert b"Refresh CMMS mapping" in configuration
     analysis = client.get("/life-data-analysis/perform-analysis").data
     assert b'id="lda-perform" hidden' not in analysis
     assert b"lda-calculate-all" in analysis

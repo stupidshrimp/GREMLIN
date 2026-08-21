@@ -22,7 +22,7 @@ def _app(monkeypatch, tmp_path):
 
 # One page of each kind that base.html serves: the home hero, a form page, a
 # footer page, and the links page.
-PAGES = ["/", "/settings", "/about", "/reliability-links"]
+PAGES = ["/", "/configuration", "/about", "/reliability-links"]
 
 
 @pytest.mark.parametrize("page", PAGES)

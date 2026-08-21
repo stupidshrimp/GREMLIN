@@ -1,11 +1,13 @@
-/* Availability configuration editor on the Settings page.
+/* Availability configuration editor on the Configuration page.
  *
  * Holds the structural configuration behind the Metrics page's Availability
  * card: each asset group's shift schedule and membership, and the linked
- * downtime rules. These live here rather than on the card because they are rare
- * edits with a wide blast radius -- availability is always recomputed from the
- * current schedule, so changing one of these values moves every month that has
- * data, including months already reported.
+ * downtime rules. These live there rather than on the card because they are
+ * rare edits with a wide blast radius -- availability is always recomputed from
+ * the current schedule, so changing one of these values moves every month that
+ * has data, including months already reported. The page keeps them behind
+ * collapsed panels for the same reason; this renders into those panels whether
+ * or not one is open yet.
  *
  * Per-month values (Goal % and manual OT hours) are edited inline on the card
  * instead: they are keyed by month, so editing one cannot disturb another.
@@ -17,8 +19,8 @@
   const RULES_API = "/metrics/api/availability/linked-rules";
   const DISPLAY_NAME_API = "/metrics/api/availability/display-name";
 
-  const groupsHost = document.getElementById("settings-availability-groups");
-  const rulesHost = document.getElementById("settings-linked-rules");
+  const groupsHost = document.getElementById("config-availability-groups");
+  const rulesHost = document.getElementById("config-linked-rules");
   if (!groupsHost) return;
 
   let config = null;
@@ -117,7 +119,7 @@
     save.addEventListener("click", async () => {
       const values = readValues();
       if (!refreshNet()) {
-        show("settings-availability-status",
+        show("config-availability-status",
           `${group.asset_group}: break, lunch and setup exceed the scheduled hours — net would be negative.`,
           "error");
         return;
@@ -142,10 +144,10 @@
             asset_numbers: assetsInput.value.split(",").map((s) => s.trim()).filter(Boolean),
           }),
         });
-        show("settings-availability-status", `Saved ${group.asset_group}.`, "success");
+        show("config-availability-status", `Saved ${group.asset_group}.`, "success");
         renderGroups();
       } catch (err) {
-        show("settings-availability-status", err.message || "Could not save.", "error");
+        show("config-availability-status", err.message || "Could not save.", "error");
       } finally {
         save.disabled = false;
       }
@@ -162,10 +164,10 @@
             body: "{}",
           }
         );
-        show("settings-availability-status", `${group.asset_group} restored to defaults.`, "success");
+        show("config-availability-status", `${group.asset_group} restored to defaults.`, "success");
         renderGroups();
       } catch (err) {
-        show("settings-availability-status", err.message || "Could not reset.", "error");
+        show("config-availability-status", err.message || "Could not reset.", "error");
       }
     });
 
@@ -186,7 +188,7 @@
           const name = input.value.trim();
           if (!name) {
             input.value = (config.display_names || {})[asset] || asset;
-            show("settings-availability-status", "A display name cannot be blank.", "error");
+            show("config-availability-status", "A display name cannot be blank.", "error");
             return;
           }
           try {
@@ -197,9 +199,9 @@
             });
             config.display_names = config.display_names || {};
             config.display_names[asset] = name;
-            show("settings-availability-status", `Renamed ${asset} to “${name}”.`, "success");
+            show("config-availability-status", `Renamed ${asset} to “${name}”.`, "success");
           } catch (err) {
-            show("settings-availability-status", err.message || "Could not save the display name.", "error");
+            show("config-availability-status", err.message || "Could not save the display name.", "error");
           }
         });
         return el("label", { class: "availability-config-field" }, [
@@ -305,10 +307,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ rules: payload }),
         });
-        show("settings-linked-status", `Saved ${payload.length} rule(s).`, "success");
+        show("config-linked-status", `Saved ${payload.length} rule(s).`, "success");
         renderGroups();
       } catch (err) {
-        show("settings-linked-status", err.message || "Could not save rules.", "error");
+        show("config-linked-status", err.message || "Could not save rules.", "error");
       } finally {
         save.disabled = false;
       }

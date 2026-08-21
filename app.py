@@ -255,7 +255,16 @@ PAGES = [
         "title": "Reliability Links",
         "icon": ICONS["docs"],
     },
-    {"route": "/settings", "template": "settings.html", "title": "Settings", "icon": ICONS["settings"]},
+    {
+        # Named "Configuration" rather than "Settings": most of what is on it is
+        # structural plant configuration -- shift schedules, group membership,
+        # linked-downtime rules -- rather than the personal preferences
+        # "Settings" promises. /settings still resolves, as a redirect.
+        "route": "/configuration",
+        "template": "configuration.html",
+        "title": "Configuration",
+        "icon": ICONS["settings"],
+    },
     {
         "route": "/developer",
         "template": "developer_home.html",
@@ -541,11 +550,13 @@ SEARCH_ENTRIES = [
         "keywords": ["preventive maintenance", "schedule", "upcoming", "due date", "frequency"],
     },
     {
-        "label": "Settings",
-        "url": "/settings",
+        "label": "Configuration",
+        "url": "/configuration",
         "kind": "page",
         "context": "GREMLIN",
-        "keywords": ["preferences", "configuration", "options", "workspace"],
+        # "settings" is kept as a keyword deliberately: the page answered to that
+        # name for long enough that it is what people will still type.
+        "keywords": ["settings", "preferences", "options", "workspace"],
     },
     {
         "label": "About",
@@ -675,31 +686,33 @@ SEARCH_ENTRIES = [
         "context": "Metrics",
         "keywords": ["uptime", "goal", "overtime", "ot", "scheduled hours"],
     },
-    # The three editing sections of Settings. They are drawn for an editor and
-    # left out of the page entirely for anyone else, so they are gated here to
-    # match: pointing a viewer at a fragment naming an element their copy of the
-    # page does not contain would land them at the top of it with no explanation.
+    # The three editing sections of Configuration. They are drawn for an editor
+    # and left out of the page entirely for anyone else, so they are gated here
+    # to match: pointing a viewer at a fragment naming an element their copy of
+    # the page does not contain would land them at the top of it with no
+    # explanation. Each fragment names the collapsed panel rather than a heading
+    # inside it, which is what lets the page open the one that was asked for.
     {
         "label": "Asset group schedules",
-        "url": "/settings#settings-availability-heading",
+        "url": "/configuration#config-availability",
         "kind": "function",
-        "context": "Settings",
+        "context": "Configuration",
         "role": "editor",
         "keywords": ["shift", "operating hours", "availability basis", "calendar"],
     },
     {
         "label": "Linked downtime rules",
-        "url": "/settings#settings-linked-heading",
+        "url": "/configuration#config-linked",
         "kind": "function",
-        "context": "Settings",
+        "context": "Configuration",
         "role": "editor",
         "keywords": ["linked work order", "double count", "downtime rule"],
     },
     {
         "label": "Refresh CMMS mapping",
-        "url": "/settings#settings-cmms-heading",
+        "url": "/configuration#config-cmms",
         "kind": "function",
-        "context": "Settings",
+        "context": "Configuration",
         "role": "editor",
         "keywords": ["limble", "asset mapping", "remap", "reimport"],
     },
@@ -1229,9 +1242,18 @@ def standards_and_documentation():
     )
 
 
+@app.route("/configuration")
+def configuration():
+    return render_template("configuration.html", page_title="Configuration", nav_links=NAV_LINKS)
+
+
 @app.route("/settings")
 def settings():
-    return render_template("settings.html", page_title="Settings", nav_links=NAV_LINKS)
+    # The page is called Configuration now. The old route survives only so
+    # existing bookmarks and anything that linked to a section of it land on the
+    # renamed page instead of on a 404; the fragment rides along untouched,
+    # because the browser never sends it to us in the first place.
+    return redirect(url_for("configuration"))
 
 
 # ---------------------------------------------------------------------------

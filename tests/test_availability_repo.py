@@ -1360,7 +1360,7 @@ class ApiTests(AvailabilityTestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(expected, response.get_json()["error"])
 
-    def test_the_config_endpoint_serves_the_settings_editor(self):
+    def test_the_config_endpoint_serves_the_configuration_editor(self):
         response = self.client.get("/metrics/api/availability/config")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.get_json()["groups"]), 10)
@@ -1402,8 +1402,8 @@ class ApiTests(AvailabilityTestCase):
     def test_the_metrics_page_still_renders(self):
         self.assertEqual(self.client.get("/metrics").status_code, 200)
 
-    def test_the_settings_page_still_renders(self):
-        self.assertEqual(self.client.get("/settings").status_code, 200)
+    def test_the_configuration_page_still_renders(self):
+        self.assertEqual(self.client.get("/configuration").status_code, 200)
 
 
 if __name__ == "__main__":

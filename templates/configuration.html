@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/configuration.css') }}">
+{% endblock %}
+
+{% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Configuration</p>
+  <h1>Configure your reliability workspace.</h1>
+  <p class="hero-copy">Preferences, report defaults, and the structural settings behind the availability
+     numbers. Each area below opens on its own, so the page stays a menu until you pick something.</p>
+</section>
+
+<section class="config-section slide-in" aria-labelledby="config-workspace-heading">
+  <div class="config-section-head">
+    <div>
+      <p class="eyebrow">Workspace</p>
+      <h2 id="config-workspace-heading">Your preferences</h2>
+    </div>
+  </div>
+  <div class="card-grid two-col">
+    <article class="glass-card tile">
+      <h3>User Preferences</h3>
+      <p>Personalize dashboard density, notification cadence, and data refresh behavior.</p>
+    </article>
+    <article class="glass-card tile">
+      <h3>System Configuration</h3>
+      <p>Set package defaults, reliability model presets, and controlled vocabulary for teams.</p>
+    </article>
+  </div>
+</section>
+
+{# Reliability configuration. These three editors used to sit open on the page,
+   one under the other, which meant every visit opened on a wall of inputs
+   nobody had asked for -- the schedules alone are ten expandable groups. They
+   are collapsed panels now: rare edits with a wide blast radius should cost a
+   deliberate click to reach, and the page reads as a list of what can be
+   configured rather than as the configuration itself.
+
+   Availability configuration lives here rather than on the Metrics card because
+   these values are structural: they change rarely and they change every month
+   at once, including months already reported. Goal % and manual OT hours are
+   per-month values and are edited inline on the card instead. #}
+<section class="config-section slide-in" aria-labelledby="config-reliability-heading">
+  <div class="config-section-head">
+    <div>
+      <p class="eyebrow">Reliability</p>
+      <h2 id="config-reliability-heading">Reliability configuration</h2>
+      <p>The structural inputs behind the Metrics dashboard's Availability card. Editing any of
+         them recalculates <strong>every month, including ones already reported</strong>.</p>
+    </div>
+    {% if auth_can_edit %}
+    <button type="button" class="btn-secondary config-expand-all" id="config-expand-all" aria-expanded="false">
+      Expand all
+    </button>
+    {% endif %}
+  </div>
+
+  {% if auth_can_edit %}
+  <div class="config-panels">
+    <details class="config-panel" id="config-availability">
+      <summary class="config-panel-summary">
+        <h3 class="config-panel-title">Asset group schedules</h3>
+        <span class="config-panel-hint">Shift hours, group membership, and the chart labels each asset is drawn with.</span>
+        <span class="config-panel-marker" aria-hidden="true"></span>
+      </summary>
+      <div class="config-panel-body">
+        <p>Scheduled hours are counted on weekdays only: <strong>net hours/day × weekdays in the month</strong>.
+           Net hours is derived from the values below and cannot be entered directly.</p>
+        <p class="lda-warning">Availability is always recalculated from the current schedule, so editing these
+           values changes <strong>every month, including ones already reported</strong>.</p>
+
+        <div id="config-availability-status" class="lda-banner" role="status" hidden></div>
+        <div id="config-availability-groups" class="availability-config-groups">
+          <p class="metrics-hint">Loading availability configuration…</p>
+        </div>
+      </div>
+    </details>
+
+    <details class="config-panel" id="config-linked">
+      <summary class="config-panel-summary">
+        <h3 class="config-panel-title">Linked downtime rules</h3>
+        <span class="config-panel-hint">Share a coupled asset’s downtime onto the parent it takes down with it.</span>
+        <span class="config-panel-marker" aria-hidden="true"></span>
+      </summary>
+      <div class="config-panel-body">
+        <p>Mechanically coupled assets charge a share of their downtime onto a parent asset. A parent's share is
+           computed from each linked asset's <strong>direct</strong> downtime, so rules never cascade. Simultaneous
+           outages are counted once per rule and are not merged.</p>
+        <div id="config-linked-status" class="lda-banner" role="status" hidden></div>
+        <div id="config-linked-rules"></div>
+      </div>
+    </details>
+
+    <details class="config-panel" id="config-cmms">
+      <summary class="config-panel-summary">
+        <h3 class="config-panel-title">Refresh CMMS mapping</h3>
+        <span class="config-panel-hint">Run after a Limble sync so records imported since the last one are mapped.</span>
+        <span class="config-panel-marker" aria-hidden="true"></span>
+      </summary>
+      <div class="config-panel-body">
+        <p>Re-map newly imported CMMS records so later Limble syncs appear in the Asset Number lists
+           on the Life Data Analysis pages.</p>
+        <div id="config-refresh-status" class="lda-banner" role="status" hidden></div>
+        <div class="lda-row-actions" style="justify-content:flex-start">
+          <button type="button" class="btn-secondary" id="config-refresh-mapping">Refresh CMMS mapping</button>
+        </div>
+      </div>
+    </details>
+  </div>
+  {% else %}
+  {#- Explained rather than vanished, the way the Disposition card is on Home: a
+      section that simply is not there reads as a feature GREMLIN does not have,
+      and this one is the reason half the Metrics numbers are what they are. -#}
+  <p class="config-locked-note">
+    {% if auth_user %}These are editable by authorized users only. They need the editor role; ask an
+    administrator to change yours.{% else %}These are editable by authorized users only. Log in with the
+    person icon at the bottom of the sidebar.{% endif %}
+  </p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/metrics.css') }}">
+  {% if auth_can_edit %}<script src="{{ url_for('static', filename='js/availability_config.js') }}"></script>{% endif %}
+{% if auth_can_edit %}
+<script>
+  (function () {
+    const panels = Array.from(document.querySelectorAll(".config-panel"));
+    const expandAll = document.getElementById("config-expand-all");
+
+    /* The button says what the next click will do, so it has to follow the
+       panels rather than only lead them -- opening all three by hand and then
+       reading "Expand all" would be a button that lies. */
+    function syncExpandAll() {
+      if (!expandAll) return;
+      const allOpen = panels.length > 0 && panels.every((panel) => panel.open);
+      expandAll.textContent = allOpen ? "Collapse all" : "Expand all";
+      expandAll.setAttribute("aria-expanded", String(allOpen));
+    }
+
+    panels.forEach((panel) => panel.addEventListener("toggle", syncExpandAll));
+
+    if (expandAll) {
+      expandAll.addEventListener("click", () => {
+        const open = !panels.every((panel) => panel.open);
+        panels.forEach((panel) => { panel.open = open; });
+        syncExpandAll();
+      });
+    }
+
+    /* Open the panel a fragment names, so /configuration#config-linked arrives
+       on the linked-downtime rules rather than on a closed list of three. The
+       topbar's global search links here that way, and so does anyone who copied
+       the address out of it. An unknown fragment is ignored. */
+    function openPanelFromHash() {
+      const target = document.getElementById(window.location.hash.slice(1));
+      if (!target || !target.classList.contains("config-panel")) return;
+      target.open = true;
+      syncExpandAll();
+      target.scrollIntoView({ block: "start" });
+    }
+
+    openPanelFromHash();
+    // Following a second link to this page changes only the fragment, which
+    // navigates nothing and would otherwise leave the panel closed.
+    window.addEventListener("hashchange", openPanelFromHash);
+    syncExpandAll();
+  })();
+</script>
+<script>
+  (function () {
+    const button = document.getElementById("config-refresh-mapping");
+    const status = document.getElementById("config-refresh-status");
+    if (!button) return;
+
+    function show(message, kind) {
+      if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
+        window.gremlinToast(message);
+        return;
+      }
+      if (!status) return;
+      status.textContent = message;
+      status.className = "lda-banner" + (kind ? " is-" + kind : "");
+      status.hidden = false;
+    }
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      show("Refreshing CMMS mapping…", "info");
+      try {
+        const response = await fetch("{{ url_for('api_refresh_mapping') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || ("Request failed (" + response.status + ")"));
+        }
+        const mapped = data.mapped || 0;
+        const assets = Array.isArray(data.assets) ? data.assets.length : 0;
+        show("Refreshed " + mapped + " mapped CMMS record(s). " + assets + " Asset Number(s) available.", "success");
+      } catch (err) {
+        show(err.message || "Could not refresh CMMS mapping.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}
