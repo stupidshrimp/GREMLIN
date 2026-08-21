@@ -9,6 +9,54 @@
   html { scroll-behavior: smooth; }
 }
 
+/* ---- hero ---------------------------------------------------------------- */
+/* Copy on the left, the current version on the right. The badge column is
+   capped rather than fluid so the sentence beside it keeps a readable measure. */
+.patch-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+  gap: 1.6rem;
+  align-items: center;
+}
+
+.patch-hero-copy { min-width: 0; }
+
+/* The one dark surface on the page, because the version somebody came here to
+   check should be the first thing they find. Its own colours are restated for
+   that reason: the shared heading and body colours are picked for light cards
+   and would not survive this background. */
+.patch-current {
+  border-radius: 16px;
+  padding: 1rem 1.2rem;
+  background: linear-gradient(150deg, var(--forest-800), var(--forest-950));
+  box-shadow: 0 16px 32px rgba(6, 43, 28, 0.18);
+  display: grid;
+  gap: 0.15rem;
+}
+
+.patch-current-label {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.patch-current-version {
+  font-size: clamp(1.8rem, 1.4rem + 1vw, 2.3rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: #fff;
+  /* Lining figures of one width, so 0.10.0 and 0.11.0 do not shift the number
+     around as releases go by. */
+  font-variant-numeric: tabular-nums;
+}
+
+.patch-current-date {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 /* ---- jump list ----------------------------------------------------------- */
 /* Only drawn once there is more than one release to jump between. */
 .patch-jump {
@@ -313,6 +361,8 @@
 /* 900px is where the whole layout stacks (theme.css), so the release cards drop
    to one column at the same point rather than at a width of their own. */
 @media (max-width: 900px) {
+  .patch-hero { grid-template-columns: 1fr; }
+
   .patch-release {
     grid-template-columns: 1fr;
     row-gap: 1rem;
