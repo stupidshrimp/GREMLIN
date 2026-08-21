@@ -86,6 +86,30 @@ def test_search_fragments_name_panels_the_page_actually_has(monkeypatch, tmp_pat
         assert f'id="{fragment}"' in body, fragment
 
 
+# What each section's fragment was before the rename, when it was a card with a
+# heading of its own, and the panel that replaced it.
+RENAMED_FRAGMENTS = {
+    "settings-availability-heading": "config-availability",
+    "settings-linked-heading": "config-linked",
+    "settings-cmms-heading": "config-cmms",
+}
+
+
+@pytest.mark.parametrize("legacy,panel", sorted(RENAMED_FRAGMENTS.items()))
+def test_a_pre_rename_bookmark_still_opens_its_section(monkeypatch, tmp_path, legacy, panel):
+    """The redirect does not drop the fragment -- the browser re-applies it.
+
+    /settings#settings-linked-heading lands on
+    /configuration#settings-linked-heading, naming an element this page does not
+    have; without the translation the panel stays shut and the reader is left at
+    the top of the page wondering what their bookmark did. Nothing raises when
+    that happens, which is the whole reason to pin it here. The page is the only
+    place that can fix it: the fragment never reaches the server at all.
+    """
+    body = _editor_client(_app(monkeypatch, tmp_path)).get("/configuration").get_data(as_text=True)
+    assert f'"{legacy}": "{panel}"' in body
+
+
 @pytest.mark.parametrize("panel", PANELS)
 def test_a_reader_who_may_not_edit_gets_no_panel_at_all(monkeypatch, tmp_path, panel):
     body = _app(monkeypatch, tmp_path).app.test_client().get("/configuration").get_data(as_text=True)

@@ -1251,8 +1251,15 @@ def configuration():
 def settings():
     # The page is called Configuration now. The old route survives only so
     # existing bookmarks and anything that linked to a section of it land on the
-    # renamed page instead of on a 404; the fragment rides along untouched,
-    # because the browser never sends it to us in the first place.
+    # renamed page instead of on a 404.
+    #
+    # A fragment on such a bookmark never reaches us -- the browser keeps it --
+    # but it does not simply evaporate either: the browser re-applies it to the
+    # address this redirect names, so /settings#settings-linked-heading becomes
+    # /configuration#settings-linked-heading, naming an element the renamed page
+    # does not have. configuration.html translates those three old names, which
+    # is the only place that can: by the time the fragment matters, the request
+    # is long over.
     return redirect(url_for("configuration"))
 
 

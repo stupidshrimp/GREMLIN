@@ -152,16 +152,35 @@
       });
     }
 
+    /* The fragments this page answered to before the rename, when each section
+       was a card with a heading of its own. A bookmark saved then still names
+       one of these: /settings redirects here, but the *browser* re-applies the
+       fragment to the address it lands on, so what arrives is a name this page
+       no longer has anywhere in it. Mapped rather than kept alive as spare ids,
+       so each panel goes on having exactly one name. */
+    const RENAMED_FRAGMENTS = {
+      "settings-availability-heading": "config-availability",
+      "settings-linked-heading": "config-linked",
+      "settings-cmms-heading": "config-cmms",
+    };
+
     /* Open the panel a fragment names, so /configuration#config-linked arrives
        on the linked-downtime rules rather than on a closed list of three. The
        topbar's global search links here that way, and so does anyone who copied
        the address out of it. An unknown fragment is ignored. */
     function openPanelFromHash() {
-      const target = document.getElementById(window.location.hash.slice(1));
+      const asked = window.location.hash.slice(1);
+      const name = RENAMED_FRAGMENTS[asked] || asked;
+      const target = document.getElementById(name);
       if (!target || !target.classList.contains("config-panel")) return;
       target.open = true;
       syncExpandAll();
       target.scrollIntoView({ block: "start" });
+      // Leave the current name in the address bar, so re-bookmarking from here
+      // saves the panel's own id rather than the one being translated away.
+      // replaceState rather than assigning to location.hash: that would push a
+      // history entry, making Back a no-op that lands on the same page.
+      if (name !== asked) history.replaceState(null, "", "#" + name);
     }
 
     openPanelFromHash();
