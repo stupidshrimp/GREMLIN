@@ -45,16 +45,16 @@
   const state = {
     status: "open",
     search: "",
-    offset: 0,
+    cursor: null,
     loaded: [],
     requestVersion: 0,
     busy: false,
   };
 
-  function bugsUrl(offset) {
+  function bugsUrl(cursor) {
     const params = new URLSearchParams({ status: state.status });
     if (state.search) params.set("search", state.search);
-    if (offset) params.set("offset", String(offset));
+    if (cursor) params.set("cursor", cursor);
     return `/developer/api/bugs?${params.toString()}`;
   }
 
@@ -62,13 +62,13 @@
   // whatever was on screen is replaced.
   async function load(append) {
     const version = ++state.requestVersion;
-    const offset = append ? state.offset : 0;
+    const cursor = append ? state.cursor : null;
     try {
-      const payload = await dev.getJSON(bugsUrl(offset));
+      const payload = await dev.getJSON(bugsUrl(cursor));
       if (version !== state.requestVersion) return;
       dev.showStatus("");
-      state.loaded = append ? state.loaded.concat(payload.reports || []) : (payload.reports || []);
-      state.offset = state.loaded.length;
+      state.loaded = append ? mergeById(state.loaded, payload.reports || []) : (payload.reports || []);
+      state.cursor = payload.next_cursor || null;
       render(payload);
     } catch (err) {
       if (version !== state.requestVersion) return;
@@ -79,6 +79,15 @@
       $("dev-bugs-count").textContent = "Could not read the reports.";
       dev.replaceChildren($("dev-bugs-list"), null);
     }
+  }
+
+  // A report whose status changed mid-walk can sort into a later page than the
+  // one it was already served on, so appending blindly could show it twice.
+  // Cheap insurance: the id decides, and the newer copy wins.
+  function mergeById(existing, incoming) {
+    const byId = new Map(existing.map((report) => [report.id, report]));
+    incoming.forEach((report) => byId.set(report.id, report));
+    return Array.from(byId.values());
   }
 
   function render(payload) {
@@ -230,10 +239,11 @@
     const toggle = el("button", isOpen ? "btn-primary" : "btn-secondary", isOpen ? "Mark resolved" : "Reopen");
     toggle.type = "button";
     toggle.addEventListener("click", function () {
-      // report.status is what this row was drawn with. Sending it lets the
+      // report.revision is what this row was drawn with. Sending it lets the
       // server refuse the change if somebody else has moved the report on
-      // since, rather than overwriting what they recorded.
-      setStatus(report.id, isOpen ? "resolved" : "open", note.value, actions, report.status);
+      // since, rather than overwriting what they recorded -- including when it
+      // was resolved and reopened, which leaves the status looking untouched.
+      setStatus(report.id, isOpen ? "resolved" : "open", note.value, actions, report.revision);
     });
     actions.appendChild(toggle);
 
@@ -256,7 +266,7 @@
     });
   }
 
-  async function setStatus(reportId, status, note, container, expectedStatus) {
+  async function setStatus(reportId, status, note, container, expectedRevision) {
     if (state.busy) return;
     state.busy = true;
     setButtonsDisabled(container, true);
@@ -267,7 +277,7 @@
         body: JSON.stringify({
           status: status,
           note: note || "",
-          expected_status: expectedStatus || "",
+          expected_revision: expectedRevision,
         }),
       });
     } catch (err) {

@@ -14,6 +14,7 @@ import pytest
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
     LIST_LIMIT,
+    SEVERITIES,
     SUBMISSION_LIMIT_PER_WINDOW,
     BugReportConflictError,
     BugReportRateLimitError,
@@ -574,7 +575,7 @@ def test_a_listing_says_how_much_it_is_not_showing(tmp_path):
     assert len(first["reports"]) == LIST_LIMIT
     assert first["total"] == LIST_LIMIT + 15
     assert first["has_more"] is True
-    assert first["offset"] == 0
+    assert first["next_cursor"]
 
 
 def test_paging_reaches_every_report_exactly_once(tmp_path):
@@ -584,24 +585,24 @@ def test_paging_reaches_every_report_exactly_once(tmp_path):
         for index in range(LIST_LIMIT + 15)
     ]
 
-    seen, offset = [], 0
+    seen, cursor = [], None
     while True:
-        page = store.list_reports(offset=offset)
+        page = store.list_reports(cursor=cursor)
         seen.extend(row["id"] for row in page["reports"])
         if not page["has_more"]:
+            assert page["next_cursor"] is None
             break
-        offset += len(page["reports"])
+        cursor = page["next_cursor"]
 
     assert sorted(seen) == sorted(filed)
     assert len(seen) == len(set(seen))  # no report served twice
-    assert store.list_reports(offset=offset)["has_more"] is False
 
 
 def test_the_page_size_cannot_be_talked_past(tmp_path):
     store = BugReportStore(tmp_path / "bugreports.db")
     store.submit(title="Only one", description="Detail.")
     assert len(store.list_reports(limit=10_000)["reports"]) == 1
-    assert store.list_reports(limit=0)["offset"] == 0
+    assert store.list_reports(limit=0)["total"] == 1
 
 
 def test_the_dashboard_pages_and_reports_the_total(monkeypatch, tmp_path):
@@ -615,7 +616,7 @@ def test_the_dashboard_pages_and_reports_the_total(monkeypatch, tmp_path):
     assert first["total_matching"] == LIST_LIMIT + 5
     assert first["has_more"] is True
 
-    rest = admin.get(f"/developer/api/bugs?offset={LIST_LIMIT}").get_json()
+    rest = admin.get(f"/developer/api/bugs?cursor={first['next_cursor']}").get_json()
     assert len(rest["reports"]) == 5
     assert rest["has_more"] is False
     # The two pages together are the whole set, with nothing served twice.
@@ -623,11 +624,11 @@ def test_the_dashboard_pages_and_reports_the_total(monkeypatch, tmp_path):
     assert len(set(ids)) == LIST_LIMIT + 5
 
 
-@pytest.mark.parametrize("offset", ["-1", "lots", "1.5"])
-def test_an_unusable_offset_is_a_bad_request(monkeypatch, tmp_path, offset):
+@pytest.mark.parametrize("cursor", ["not-base64", "bm90LWEtY3Vyc29y", "a|b|c|d"])
+def test_an_unusable_cursor_is_a_bad_request(monkeypatch, tmp_path, cursor):
     module = _app(monkeypatch, tmp_path)
     admin = _signed_in(module)
-    assert admin.get(f"/developer/api/bugs?offset={offset}").status_code == 400
+    assert admin.get(f"/developer/api/bugs?cursor={cursor}").status_code == 400
 
 
 def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
@@ -636,13 +637,14 @@ def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
     store = BugReportStore(tmp_path / "bugreports.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
 
+    drawn = _reports(store)[0]["revision"]
     store.set_status(report_id, "resolved", actor="root", note="Fixed in 1.4.",
-                     expected_status="open")
-    # The second administrator's page still showed the report as open.
+                     expected_revision=drawn)
+    # The second administrator's page still showed the report as it was drawn.
     with pytest.raises(BugReportConflictError) as caught:
         store.set_status(report_id, "resolved", actor="other", note="Duplicate.",
-                         expected_status="open")
-    assert caught.value.actual == "resolved"
+                         expected_revision=drawn)
+    assert caught.value.actual_status == "resolved"
 
     stored = _reports(store)[0]
     assert stored["resolved_by"] == "root"
@@ -652,13 +654,15 @@ def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
 def test_a_change_from_the_state_actually_stored_still_applies(tmp_path):
     store = BugReportStore(tmp_path / "bugreports.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
-    store.set_status(report_id, "resolved", actor="root", expected_status="open")
-    # Reopening from resolved is the state the page really saw, so it applies.
-    reopened = store.set_status(report_id, "open", note="Came back.", expected_status="resolved")
+    drawn = _reports(store)[0]["revision"]
+    resolved = store.set_status(report_id, "resolved", actor="root", expected_revision=drawn)
+    # Reopening from the revision the page really saw, so it applies.
+    reopened = store.set_status(report_id, "open", note="Came back.",
+                                expected_revision=resolved["revision"])
     assert reopened["status"] == "open"
 
 
-def test_omitting_the_expected_status_still_applies_unconditionally(tmp_path):
+def test_omitting_the_expected_revision_still_applies_unconditionally(tmp_path):
     """Internal callers and the tests do not have a page whose state could be stale."""
 
     store = BugReportStore(tmp_path / "bugreports.db")
@@ -672,14 +676,15 @@ def test_the_dashboard_answers_a_stale_change_with_a_conflict(monkeypatch, tmp_p
     module.bug_reports.submit(title="Charts blank", description="Detail.")
     admin = _signed_in(module)
 
+    drawn = admin.get("/developer/api/bugs").get_json()["reports"][0]["revision"]
     assert admin.post(
         "/developer/api/bugs/1/status",
-        json={"status": "resolved", "note": "Fixed.", "expected_status": "open"},
+        json={"status": "resolved", "note": "Fixed.", "expected_revision": drawn},
     ).status_code == 200
 
     stale = admin.post(
         "/developer/api/bugs/1/status",
-        json={"status": "resolved", "note": "Duplicate.", "expected_status": "open"},
+        json={"status": "resolved", "note": "Duplicate.", "expected_revision": drawn},
     )
     assert stale.status_code == 409
     assert stale.get_json()["actual_status"] == "resolved"
@@ -707,3 +712,166 @@ def test_the_page_a_bug_was_filed_from_survives_a_correction(monkeypatch, tmp_pa
     # The corrected retry files against the page that actually broke.
     _file_one(client, title="Charts blank", page_url="http://gremlin/metrics")
     assert _reports(module.bug_reports)[0]["page_url"] == "http://gremlin/metrics"
+
+
+# ---------------------------------------------------------------------------
+# The second review round: a status alone cannot detect resolve-then-reopen,
+# and an offset cannot page a queue that is being worked while it is read.
+# ---------------------------------------------------------------------------
+
+
+def test_a_resolve_reopen_cycle_does_not_let_a_stale_click_through(tmp_path):
+    """The ABA case: the status ends up where A left it, but the row moved twice."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    report_id = store.submit(title="Charts blank", description="Detail.")
+    a_drew = _reports(store)[0]["revision"]
+
+    resolved = store.set_status(report_id, "resolved", actor="B", note="B resolved it.",
+                                expected_revision=a_drew)
+    store.set_status(report_id, "open", actor="B", note="B reopened: still broken.",
+                     expected_revision=resolved["revision"])
+
+    # A's page is two changes out of date, but the status reads "open" again --
+    # exactly what A saw. Only the revision can tell that apart from no change.
+    with pytest.raises(BugReportConflictError):
+        store.set_status(report_id, "resolved", actor="A", note="A's stale note.",
+                         expected_revision=a_drew)
+
+    stored = _reports(store)[0]
+    assert stored["status"] == "open"
+    assert stored["resolution_note"] == "B reopened: still broken."
+
+
+def test_every_change_moves_the_revision_forward(tmp_path):
+    store = BugReportStore(tmp_path / "bugreports.db")
+    report_id = store.submit(title="Charts blank", description="Detail.")
+
+    revisions = [_reports(store)[0]["revision"]]
+    for status in ("resolved", "open", "resolved"):
+        revisions.append(store.set_status(report_id, status, actor="root")["revision"])
+    assert revisions == sorted(set(revisions))  # strictly increasing, never reused
+
+
+def test_the_dashboard_refuses_a_stale_click_after_a_reopen(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.bug_reports.submit(title="Charts blank", description="Detail.")
+    admin = _signed_in(module)
+    a_drew = admin.get("/developer/api/bugs").get_json()["reports"][0]["revision"]
+
+    module.bug_reports.set_status(1, "resolved", actor="B", note="B resolved it.")
+    module.bug_reports.set_status(1, "open", actor="B", note="B reopened: still broken.")
+
+    stale = admin.post(
+        "/developer/api/bugs/1/status",
+        json={"status": "resolved", "note": "A's stale note.", "expected_revision": a_drew},
+    )
+    assert stale.status_code == 409
+    assert _reports(module.bug_reports)[0]["resolution_note"] == "B reopened: still broken."
+
+
+def test_a_malformed_revision_is_refused_rather_than_ignored(monkeypatch, tmp_path):
+    """Dropping the guard on bad input is the one outcome that loses a resolution."""
+
+    module = _app(monkeypatch, tmp_path)
+    module.bug_reports.submit(title="Charts blank", description="Detail.")
+    admin = _signed_in(module)
+
+    response = admin.post(
+        "/developer/api/bugs/1/status",
+        json={"status": "resolved", "expected_revision": "not-a-number"},
+    )
+    assert response.status_code == 400
+    assert _reports(module.bug_reports)[0]["status"] == "open"
+
+
+def test_paging_skips_nothing_when_the_queue_is_worked_underneath_it(tmp_path):
+    """Resolving a row on page one must not push an unseen report past page two."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(LIST_LIMIT + 3):
+        store.submit(title=f"Report {index}", description="Detail.")
+
+    first = store.list_reports(status="open")
+    seen = [row["id"] for row in first["reports"]]
+    assert first["has_more"] is True
+
+    # Another administrator resolves one of the rows already on screen, so it
+    # leaves the filtered set and everything behind it shifts forward.
+    store.set_status(seen[0], "resolved", actor="B")
+
+    second = store.list_reports(status="open", cursor=first["next_cursor"])
+    seen += [row["id"] for row in second["reports"]]
+
+    still_open = {row["id"] for row in store.list_reports(status="open", limit=500)["reports"]}
+    assert not still_open - set(seen), "an open report was never shown"
+    assert len(seen) == len(set(seen)), "a report was served twice"
+
+
+def test_paging_reaches_everything_across_a_mix_of_statuses_and_severities(tmp_path):
+    """The cursor walks the same compound key the listing is ordered by."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    filed = [
+        store.submit(
+            title=f"Report {index}",
+            description="Detail.",
+            severity=SEVERITIES[index % len(SEVERITIES)],
+        )
+        for index in range(LIST_LIMIT + 55)
+    ]
+    for index in range(0, len(filed), 7):
+        store.set_status(filed[index], "resolved", actor="B")
+
+    walked, cursor = [], None
+    while True:
+        page = store.list_reports(cursor=cursor)
+        walked.extend(row["id"] for row in page["reports"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+
+    assert sorted(walked) == sorted(filed)
+    assert len(walked) == len(set(walked))
+
+
+def test_the_total_describes_the_filter_rather_than_the_page(tmp_path):
+    """It is counted without the cursor, so it does not shrink as pages are walked."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(LIST_LIMIT + 8):
+        store.submit(title=f"Report {index}", description="Detail.")
+
+    first = store.list_reports()
+    second = store.list_reports(cursor=first["next_cursor"])
+    assert first["total"] == second["total"] == LIST_LIMIT + 8
+
+
+def test_a_cursor_that_this_page_did_not_issue_is_refused(tmp_path):
+    store = BugReportStore(tmp_path / "bugreports.db")
+    store.submit(title="Charts blank", description="Detail.")
+    for bad in ("not-base64!", "bm90LWEtY3Vyc29y", ""):
+        if bad == "":
+            continue  # empty means "first page", which is not an error
+        with pytest.raises(BugReportValidationError):
+            store.list_reports(cursor=bad)
+
+
+def test_a_database_written_before_revisions_existed_is_migrated(tmp_path):
+    """Reports filed by an earlier build must survive the upgrade, not be rebuilt."""
+
+    path = tmp_path / "bugreports.db"
+    store = BugReportStore(path)
+    store.submit(title="Filed earlier", description="Detail.")
+
+    # Stand in for the older schema by dropping the column back off.
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN revision")
+    reopened = BugReportStore(path)
+    stored = _reports(reopened)[0]
+
+    assert stored["title"] == "Filed earlier"
+    assert stored["revision"] == 1
+    # And the guard works from there on.
+    assert reopened.set_status(stored["id"], "resolved", actor="root",
+                               expected_revision=1)["revision"] == 2

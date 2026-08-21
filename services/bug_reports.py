@@ -22,6 +22,8 @@ module runs at import, so an unreachable share never stops GREMLIN starting.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import sqlite3
 import time
@@ -104,13 +106,15 @@ class BugReportConflictError(RuntimeError):
     done -- with its own, and that history cannot be recovered.
     """
 
-    def __init__(self, report_id: int, expected: str, actual: str) -> None:
+    def __init__(self, report_id: int, expected: int, actual: int, actual_status: str) -> None:
         self.report_id = report_id
         self.expected = expected
         self.actual = actual
+        self.actual_status = actual_status
         super().__init__(
-            f"Report #{report_id} is already {actual}; somebody changed it while "
-            "this page was open. Refresh to see where it stands before changing it."
+            f"Report #{report_id} has changed since this page drew it, and is "
+            f"now {actual_status}. Refresh to see where it stands before "
+            "changing it."
         )
 
 
@@ -129,6 +133,55 @@ class BugReportRateLimitError(RuntimeError):
             f"Please try again in about {minutes} minute{'s' if minutes != 1 else ''}. "
             "If this is urgent, tell the reliability team directly."
         )
+
+
+# The queue's ordering, as SQL. Defined once because two things depend on it
+# being identical: the ORDER BY that produces a page, and the cursor comparison
+# that says where the next page starts. If those ever disagreed, paging would
+# skip or repeat rows -- which is the failure the cursor exists to prevent.
+_STATUS_RANK_SQL = f"CASE status WHEN '{STATUS_OPEN}' THEN 0 ELSE 1 END"
+_SEVERITY_RANK_SQL = (
+    "CASE severity "
+    + " ".join(f"WHEN '{name}' THEN {rank}" for name, rank in SEVERITY_RANK.items())
+    + f" ELSE {len(SEVERITIES)} END"
+)
+_ORDER_BY_SQL = (
+    f"{_STATUS_RANK_SQL} ASC, {_SEVERITY_RANK_SQL} ASC, created_at DESC, id DESC"
+)
+
+
+def _encode_cursor(row: dict) -> str:
+    """Where a page ended, as the full sort key of its last row.
+
+    A position rather than a count. An offset says "skip 200 rows", so anything
+    that leaves the result set between two requests shifts the rest forward and
+    the next page steps over a report nobody ever saw. This says "resume after
+    exactly this row", which no insertion or deletion elsewhere can move.
+    """
+
+    key = "|".join(
+        str(part)
+        for part in (
+            0 if row["status"] == STATUS_OPEN else 1,
+            SEVERITY_RANK.get(row["severity"], len(SEVERITIES)),
+            row["created_at"],
+            row["id"],
+        )
+    )
+    return base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(token: str) -> tuple[int, int, str, int]:
+    """The sort key a cursor stands for, or a refusal if it is not one."""
+
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        status_rank, severity_rank, created_at, report_id = raw.split("|", 3)
+        return int(status_rank), int(severity_rank), created_at, int(report_id)
+    except (ValueError, TypeError, binascii.Error) as exc:
+        raise BugReportValidationError(
+            "That listing cursor is not one this page issued. Reload the list."
+        ) from exc
 
 
 def _limiter_scope(client_key: str) -> str:
@@ -219,9 +272,30 @@ class BugReportStore:
                         updated_at TEXT NOT NULL,
                         resolved_at TEXT,
                         resolved_by TEXT NOT NULL DEFAULT '',
-                        resolution_note TEXT NOT NULL DEFAULT ''
+                        resolution_note TEXT NOT NULL DEFAULT '',
+                        revision INTEGER NOT NULL DEFAULT 1
                     )
                 """)
+                # `revision` is bumped by every change, and is what the dashboard
+                # sends back to prove the row it is acting on is the row it drew
+                # -- see set_status. A status alone cannot do that job, because
+                # open -> resolved -> open reads as though nothing happened.
+                #
+                # Kept as a Python comment rather than a -- comment inside the
+                # CREATE TABLE above: sqlite stores that statement text verbatim
+                # and re-parses it for ALTER TABLE, where a trailing comment on
+                # the last column makes a later DROP COLUMN fail to parse.
+                # A database created before revisions existed has the rest of
+                # the table but not this column. Added rather than rebuilt, so
+                # nothing filed is disturbed; existing rows start at revision 1.
+                columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(bug_reports)").fetchall()
+                }
+                if "revision" not in columns:
+                    conn.execute(
+                        "ALTER TABLE bug_reports ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+                    )
                 # The dashboard's default view is "open, newest first", and its
                 # counts group by status; both read this rather than the table.
                 conn.execute(
@@ -375,7 +449,7 @@ class BugReportStore:
         *,
         actor: str = "",
         note: str = "",
-        expected_status: str | None = None,
+        expected_revision: int | None = None,
     ) -> dict:
         """Resolve a report, or reopen one, and return it as it now stands.
 
@@ -384,13 +458,19 @@ class BugReportStore:
         reason a report was reopened is worth as much as the reason it was
         closed.
 
-        ``expected_status`` is the status the caller believed the report had when
-        it decided to act. Give it and the change is refused with
-        BugReportConflictError if the stored status has moved on since; omit it
-        and the change is applied unconditionally. BEGIN IMMEDIATE alone is not
-        enough here -- it serializes the two writes but still lets the later one
-        overwrite the earlier one's resolution, which is the history being
-        protected.
+        ``expected_revision`` is the row's revision as the caller last saw it.
+        Give it and the change is refused with BugReportConflictError if the
+        stored row has moved on since; omit it and the change is applied
+        unconditionally.
+
+        A revision rather than the status it replaced, because a status cannot
+        detect the case that matters most: A opens the page, B resolves the
+        report and then reopens it, and A's stale click now finds the status it
+        expected and overwrites B's reopening. The revision only ever goes up,
+        so any change at all between the draw and the click is caught.
+
+        BEGIN IMMEDIATE is not an alternative to this -- it orders the two
+        writes but still lets the later one land on top of the earlier one.
         """
 
         status = _clean(status, 32).lower()
@@ -407,25 +487,29 @@ class BugReportStore:
             with self._connect() as conn:
                 # BEGIN IMMEDIATE so the read and the write are one step. It
                 # orders concurrent changes but does not by itself stop a stale
-                # one landing -- expected_status above is what does that.
+                # one landing -- expected_revision above is what does that.
                 conn.execute("BEGIN IMMEDIATE")
                 existing = conn.execute(
-                    "SELECT id, status FROM bug_reports WHERE id = ?", (report_id,)
+                    "SELECT id, status, revision FROM bug_reports WHERE id = ?", (report_id,)
                 ).fetchone()
                 if existing is None:
                     conn.rollback()
                     raise BugReportValidationError(f"No bug report has id {report_id}.")
-                if expected_status is not None and existing["status"] != expected_status:
+                if expected_revision is not None and existing["revision"] != expected_revision:
                     conn.rollback()
                     raise BugReportConflictError(
-                        report_id, expected_status, existing["status"]
+                        report_id,
+                        expected_revision,
+                        int(existing["revision"]),
+                        existing["status"],
                     )
                 if status == STATUS_RESOLVED:
                     conn.execute(
                         """
                         UPDATE bug_reports
                            SET status = ?, updated_at = ?, resolved_at = ?,
-                               resolved_by = ?, resolution_note = ?
+                               resolved_by = ?, resolution_note = ?,
+                               revision = revision + 1
                          WHERE id = ?
                         """,
                         (STATUS_RESOLVED, stamp, stamp, actor, note, report_id),
@@ -435,7 +519,8 @@ class BugReportStore:
                         """
                         UPDATE bug_reports
                            SET status = ?, updated_at = ?, resolved_at = NULL,
-                               resolved_by = '', resolution_note = ?
+                               resolved_by = '', resolution_note = ?,
+                               revision = revision + 1
                          WHERE id = ?
                         """,
                         (STATUS_OPEN, stamp, note, report_id),
@@ -471,7 +556,7 @@ class BugReportStore:
         status: str = "all",
         search: str = "",
         limit: int = LIST_LIMIT,
-        offset: int = 0,
+        cursor: str | None = None,
     ) -> dict:
         """One page of the reports matching a status filter and a free-text search.
 
@@ -479,10 +564,19 @@ class BugReportStore:
         within a status the more urgent severity leads -- so the default view is
         already the queue to work through rather than a list to re-sort.
 
-        Returns the page together with how many match in total and whether more
-        remain. A triage list that silently stopped at its limit would drop
-        exactly the oldest reports -- the ones most likely to have been
-        forgotten, in a feature whose point is that nothing filed gets lost.
+        Returns the page together with how many match in total, whether more
+        remain, and the cursor that continues it. A triage list that silently
+        stopped at its limit would drop exactly the oldest reports -- the ones
+        most likely to have been forgotten, in a feature whose point is that
+        nothing filed gets lost.
+
+        Paging is by cursor rather than offset because this queue is being
+        worked while it is being read. An offset says "skip 200 rows", so when
+        another administrator resolves something on the first page, every row
+        after it shifts forward and the second page steps straight over a report
+        nobody has seen -- and the count can even report that there is no more
+        to fetch. The cursor names the last row's position in the ordering
+        instead, which nothing happening elsewhere in the table can move.
         """
 
         status = _clean(status, 32).lower() or "all"
@@ -492,6 +586,9 @@ class BugReportStore:
             )
 
         self.ensure_schema()
+        # The filter is what the administrator chose; the cursor is only where
+        # this page resumes. Kept apart so the total can be counted over the
+        # filter alone -- folded together, it would shrink with every page.
         clauses: list[str] = []
         params: list[object] = []
         if status != "all":
@@ -511,39 +608,63 @@ class BugReportStore:
             )
             params.extend([pattern] * 4)
 
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        count_where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        count_params = tuple(params)
+
+        # Everything strictly after the cursor's position in the ordering. The
+        # comparison walks the same key ORDER BY sorts on, most significant
+        # first, so it lands exactly where the previous page stopped -- no
+        # matter what has been added or removed in between.
+        page_clauses = list(clauses)
+        page_params = list(params)
+        if cursor:
+            status_rank, severity_rank, created_at, last_id = _decode_cursor(cursor)
+            page_clauses.append(
+                f"("
+                f"  {_STATUS_RANK_SQL} > ?"
+                f"  OR ({_STATUS_RANK_SQL} = ? AND {_SEVERITY_RANK_SQL} > ?)"
+                f"  OR ({_STATUS_RANK_SQL} = ? AND {_SEVERITY_RANK_SQL} = ? AND created_at < ?)"
+                f"  OR ({_STATUS_RANK_SQL} = ? AND {_SEVERITY_RANK_SQL} = ? AND created_at = ?"
+                f"      AND id < ?)"
+                f")"
+            )
+            page_params.extend(
+                [
+                    status_rank,
+                    status_rank, severity_rank,
+                    status_rank, severity_rank, created_at,
+                    status_rank, severity_rank, created_at, last_id,
+                ]
+            )
+        page_where = f"WHERE {' AND '.join(page_clauses)}" if page_clauses else ""
         page_size = max(1, min(int(limit), MAX_LIST_LIMIT))
-        start = max(0, int(offset))
         try:
             with self._connect() as conn:
                 total = conn.execute(
-                    f"SELECT COUNT(*) FROM bug_reports {where}", tuple(params)
+                    f"SELECT COUNT(*) FROM bug_reports {count_where}", count_params
                 ).fetchone()[0]
                 rows = conn.execute(
                     f"""
                     SELECT * FROM bug_reports
-                    {where}
-                    ORDER BY CASE status WHEN '{STATUS_OPEN}' THEN 0 ELSE 1 END,
-                             CASE severity
-                                 {" ".join(
-                                     f"WHEN '{name}' THEN {rank}" for name, rank in SEVERITY_RANK.items()
-                                 )}
-                                 ELSE {len(SEVERITIES)}
-                             END,
-                             created_at DESC,
-                             id DESC
-                    LIMIT ? OFFSET ?
+                    {page_where}
+                    ORDER BY {_ORDER_BY_SQL}
+                    LIMIT ?
                     """,
-                    (*params, page_size, start),
+                    (*page_params, page_size + 1),
                 ).fetchall()
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
-        reports = [dict(row) for row in rows]
+
+        # One row beyond the page was fetched purely to answer "is there more?"
+        # without a second query, and without inferring it from a count that
+        # another administrator may already have changed.
+        has_more = len(rows) > page_size
+        reports = [dict(row) for row in rows[:page_size]]
         return {
             "reports": reports,
             "total": int(total),
-            "offset": start,
-            "has_more": start + len(reports) < int(total),
+            "has_more": has_more,
+            "next_cursor": _encode_cursor(reports[-1]) if has_more and reports else None,
         }
 
     def summary(self) -> dict:

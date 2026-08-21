@@ -2227,17 +2227,13 @@ def api_dev_bugs():
     """The dashboard's whole payload: the tiles' counts and the filtered list."""
 
     try:
-        offset = int(request.args.get("offset", 0))
-    except ValueError:
-        return jsonify({"error": "Offset must be a whole number."}), 400
-    if offset < 0:
-        return jsonify({"error": "Offset must be a whole number."}), 400
-
-    try:
         page = bug_reports.list_reports(
             status=request.args.get("status", "all"),
             search=request.args.get("search", ""),
-            offset=offset,
+            # Where the previous page stopped, rather than how many rows to skip
+            # -- see list_reports on why a queue being worked cannot be paged by
+            # counting.
+            cursor=request.args.get("cursor") or None,
         )
         summary = bug_reports.summary()
     except BugReportValidationError as exc:
@@ -2253,8 +2249,8 @@ def api_dev_bugs():
             # the dashboard needs both to say "showing 200 of 640" and to know
             # whether to offer more.
             "total_matching": page["total"],
-            "offset": page["offset"],
             "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
             "page_size": LIST_LIMIT,
             "summary": summary,
             "bugs_db_path": str(BUGS_DB_PATH),
@@ -2285,19 +2281,36 @@ def api_dev_bug_status(report_id: int):
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"error": "The status change must be a JSON object."}), 400
+
+    # Absent means the caller is deliberately not guarding -- a script, or the
+    # tests. Present but unreadable is a bug in the caller, and is refused
+    # rather than quietly treated as "no guard": silently dropping the check is
+    # the one outcome that loses somebody's resolution.
+    raw_revision = payload.get("expected_revision")
+    expected_revision = None
+    if raw_revision not in (None, ""):
+        try:
+            expected_revision = int(raw_revision)
+        except (TypeError, ValueError):
+            return jsonify({"error": "expected_revision must be a whole number."}), 400
+
     try:
         report = bug_reports.set_status(
             report_id,
             payload.get("status", ""),
             actor=(current_user() or {}).get("username", ""),
             note=payload.get("note", ""),
-            # The status the dashboard drew this row with. Sending it is what
-            # stops a second administrator, whose page still showed the report
-            # as open, overwriting the first one's resolution note.
-            expected_status=payload.get("expected_status") or None,
+            # The revision the dashboard drew this row with. Sending it is what
+            # stops a second administrator, whose page is out of date,
+            # overwriting the first one's resolution note -- including when the
+            # report has been resolved and reopened since, which a status alone
+            # could not tell apart from no change at all.
+            expected_revision=expected_revision,
         )
     except BugReportConflictError as exc:
-        return jsonify({"error": str(exc), "actual_status": exc.actual}), 409
+        return jsonify(
+            {"error": str(exc), "actual_status": exc.actual_status, "actual_revision": exc.actual}
+        ), 409
     except BugReportValidationError as exc:
         return jsonify({"error": str(exc)}), 400
     except BugReportStoreError as exc:
