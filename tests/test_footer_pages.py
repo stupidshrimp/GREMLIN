@@ -20,7 +20,7 @@ def test_footer_pages_are_readable_without_logging_in(monkeypatch, tmp_path):
         assert client.get(route).status_code == 200, route
 
 
-@pytest.mark.parametrize("page", ["/", "/settings", "/reliability-links", "/about"])
+@pytest.mark.parametrize("page", ["/", "/configuration", "/reliability-links", "/about"])
 def test_every_page_carries_the_footer(monkeypatch, tmp_path, page):
     """base.html includes the footer, so a page that extends it cannot be missing one.
 

@@ -36,7 +36,7 @@ def _labels(index):
 
 # --- the box itself ---------------------------------------------------------
 
-@pytest.mark.parametrize("page", ["/", "/settings", "/metrics", "/reliability-links", "/about", "/search"])
+@pytest.mark.parametrize("page", ["/", "/configuration", "/metrics", "/reliability-links", "/about", "/search"])
 def test_every_page_carries_the_search_box(monkeypatch, tmp_path, page):
     """base.html draws the topbar everywhere, so no page may be missing the search.
 
@@ -75,8 +75,8 @@ def test_visitors_are_not_offered_doors_that_would_refuse_them(monkeypatch, tmp_
         assert "/developer" not in entry["url"], entry
     assert "Log in" in _labels(index)
 
-    # Settings draws its three editing sections for an editor and leaves them
-    # out of the page for everybody else. Search has to agree, or it sends a
+    # Configuration draws its three editing panels for an editor and leaves
+    # them out of the page for everybody else. Search has to agree, or it sends a
     # viewer to a fragment their copy of the page does not contain.
     assert _labels(index).isdisjoint(
         {"Asset group schedules", "Linked downtime rules", "Refresh CMMS mapping"}
@@ -190,7 +190,7 @@ def test_a_page_named_by_the_query_comes_first(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     index = _index(module)
     assert module._search_matches("metrics", index)[0]["label"] == "Metrics"
-    assert module._search_matches("settings", index)[0]["label"] == "Settings"
+    assert module._search_matches("configuration", index)[0]["label"] == "Configuration"
 
 
 def test_a_word_nobody_can_see_still_finds_its_entry(monkeypatch, tmp_path):

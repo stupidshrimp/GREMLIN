@@ -843,6 +843,11 @@ class DashboardTests(AvailabilityTestCase):
         self.assertEqual(data["groups"], [])
         self.assertIn("configured asset groups", data["empty_reason"])
         self.assertNotIn("imported", data["empty_reason"])
+        # And it has to name the page by the name the sidebar uses, or the one
+        # instruction it gives sends the reader looking for a page that is not
+        # there. Renaming the page is what would break this.
+        self.assertIn("Configuration page", data["empty_reason"])
+        self.assertNotIn("Settings", data["empty_reason"])
 
     def test_no_configured_assets_says_so(self):
         for group in self.repo.load_groups():
@@ -1360,7 +1365,7 @@ class ApiTests(AvailabilityTestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(expected, response.get_json()["error"])
 
-    def test_the_config_endpoint_serves_the_settings_editor(self):
+    def test_the_config_endpoint_serves_the_configuration_editor(self):
         response = self.client.get("/metrics/api/availability/config")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.get_json()["groups"]), 10)
@@ -1402,8 +1407,8 @@ class ApiTests(AvailabilityTestCase):
     def test_the_metrics_page_still_renders(self):
         self.assertEqual(self.client.get("/metrics").status_code, 200)
 
-    def test_the_settings_page_still_renders(self):
-        self.assertEqual(self.client.get("/settings").status_code, 200)
+    def test_the_configuration_page_still_renders(self):
+        self.assertEqual(self.client.get("/configuration").status_code, 200)
 
 
 if __name__ == "__main__":

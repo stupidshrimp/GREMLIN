@@ -1,0 +1,173 @@
+/* The Configuration page's own layout: the section shells and the collapsible
+   panels the reliability editors live in.
+   ---------------------------------------------------------------------------
+   The editors themselves are styled in metrics.css, under
+   "availability configuration" -- they are the Availability card's structural
+   inputs and they moved here whole. What this file adds is the shell around
+   them: the page is a menu of what can be configured, and each panel is a door
+   into one editor rather than the editor itself. Nothing here opens on load.
+
+   Every colour is a token from theme.css, so both themes are covered by the one
+   set of rules. */
+
+/* .content is itself a grid with a gap, so this margin is deliberately on top
+   of it: a break between two sections has to read as larger than the gap
+   between a heading and the cards under it, or the page goes back to being one
+   undifferentiated column. */
+.config-section {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+/* The heading block and the expand-all control share a row on a wide screen and
+   stack on a narrow one. `align-items: end` sits the button on the baseline of
+   the last line of copy rather than floating it against the eyebrow. */
+.config-section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.config-section-head > div {
+  display: grid;
+  gap: 0.3rem;
+  /* Long enough to read as a paragraph, short enough that the button beside it
+     is not pushed off the row on a laptop. */
+  max-width: 68ch;
+  min-width: 0;
+}
+
+.config-section-head h2 {
+  margin: 0;
+  color: var(--forest-900);
+}
+
+.config-expand-all {
+  /* The label swaps between "Expand all" and "Collapse all", so the button is
+     given the wider of the two as a floor and stops resizing under the cursor. */
+  min-width: 8.5rem;
+  flex: none;
+}
+
+.config-panels {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.config-panel {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-veil);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.config-panel[open] {
+  border-color: var(--forest-500);
+  box-shadow: var(--shadow-md);
+}
+
+/* Three children laid out directly rather than through a wrapper: a <summary>
+   may hold phrasing content intermixed with exactly one heading, and a <span>
+   around the <h3> would not be legal. So the grid places the title and its hint
+   in one column and the chevron in another spanning both rows. */
+.config-panel-summary {
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title marker"
+    "hint  marker";
+  align-items: center;
+  column-gap: 1rem;
+  row-gap: 0.2rem;
+  padding: 1rem 1.15rem;
+  /* The default disclosure triangle is replaced by .config-panel-marker below,
+     which can be themed and can sit on the right where the eye leaves the row. */
+  list-style: none;
+}
+
+.config-panel-summary::-webkit-details-marker { display: none; }
+
+.config-panel-summary:hover { background: var(--brand-tint-soft); }
+
+.config-panel-summary:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: -2px;
+}
+
+/* An <h3> so the three panels are in the page's outline and reachable by
+   heading navigation -- a <summary> is announced as a button, which is not the
+   same thing on a page whose whole job is a list of what can be configured.
+   The global h2/h3 margins would push it off the row's centre line. */
+.config-panel-title {
+  grid-area: title;
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.02rem;
+  color: var(--forest-900);
+}
+
+.config-panel-hint {
+  grid-area: hint;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* A chevron drawn from two borders on a rotated square, so it needs no asset and
+   inherits the ink of the row it sits in. It points down when the panel is shut
+   and up once it is open. */
+.config-panel-marker {
+  grid-area: marker;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.25rem;
+  border-right: 2px solid var(--forest-700);
+  border-bottom: 2px solid var(--forest-700);
+  transform: translateY(-0.15rem) rotate(45deg);
+  transition: transform 200ms ease;
+}
+
+.config-panel[open] > .config-panel-summary .config-panel-marker {
+  transform: translateY(0.1rem) rotate(-135deg);
+}
+
+.config-panel-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 1.15rem 1.15rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  animation: fadeInUp 240ms ease-out both;
+}
+
+/* Read-only visitors get the section heading and this line instead of the
+   panels, so the page says what it holds rather than pretending it holds
+   nothing. */
+.config-locked-note {
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  background: var(--surface-veil-soft);
+  padding: 0.9rem 1.15rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 700px) {
+  .config-section-head { align-items: stretch; }
+  .config-expand-all { width: 100%; }
+  .config-panel-summary { padding: 0.9rem 1rem; }
+  .config-panel-body { padding-left: 1rem; padding-right: 1rem; }
+}
+
+/* Somebody who has asked not to be animated still gets the panel; it just
+   appears instead of sliding, and the chevron snaps rather than turning. */
+@media (prefers-reduced-motion: reduce) {
+  .config-panel-body { animation: none; }
+  .config-panel-marker { transition: none; }
+}

@@ -200,7 +200,7 @@ authoritative from then on.
 One consequence worth knowing: adding an asset to `DEFAULT_DISPLAY_NAMES` in a
 later code change will not appear in an already-seeded database. That is the
 intended trade — §2.6 makes the database authoritative once configured, and
-labels are editable in Settings.
+labels are editable on the Configuration page.
 
 ### 2.7 One source of truth for group membership
 
@@ -476,14 +476,17 @@ Editing is split by how often a value changes and how much it moves:
 - **Inline on the card** — Goal % and Manual OT hours. These are edited while
   looking at the chart ("March's goal should be 97%"), are per-month keyed, and
   carry no history risk.
-- **Settings page** — schedule hours, group membership, display names, linked
-  rules. Rare, higher blast radius, deserves a deliberate context switch and a
-  confirm step. `templates/settings.html` has an empty "System Configuration"
-  tile and a working fetch/banner pattern in the CMMS-refresh card to copy.
+- **Configuration page** — schedule hours, group membership, display names,
+  linked rules. Rare, higher blast radius, deserves a deliberate context switch
+  and a confirm step. `templates/configuration.html` keeps each of them behind a
+  collapsed disclosure panel for that reason: the page opens as a list of what
+  can be configured, not as the configuration itself. It also has an empty
+  "System Configuration" tile and a working fetch/banner pattern in the
+  CMMS-refresh panel to copy.
 
   Display names sit inside each group's panel, next to the membership that
   decides which bars exist, and save per asset on blur. They are the one
-  Settings edit that does *not* take the recompute warning: a chart label is
+  Configuration edit that does *not* take the recompute warning: a chart label is
   cosmetic and carries none of the schedule's blast radius.
 
 The Availability card is the first Metrics card to put focusable controls inside
