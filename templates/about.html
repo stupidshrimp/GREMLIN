@@ -1,12 +1,192 @@
 {% extends "base.html" %}
 
-{#- Placeholder. The footer links here already so the shell can be reviewed; the
-    copy is still to be written. -#}
-
 {% block content %}
-<section class="glass-card fade-in-up">
-  <p class="eyebrow">About</p>
-  <h1>About GREMLIN</h1>
-  <p class="hero-copy">This page is not written yet.</p>
+<section class="glass-card fade-in-up about-hero" aria-labelledby="about-title">
+  <div class="about-hero-copy">
+    <p class="eyebrow">About</p>
+    <h1 id="about-title">The Process Reliability team's digital toolkit.</h1>
+    <p class="hero-copy">
+      GREMLIN — Graphical Reliability Engineering, Maintenance, Life-Data
+      Analysis INterface — puts the analysis, the trackers, the dashboards and
+      the links this team works from behind one address. It is built by the
+      people who use it, for the work they already do: understanding why a
+      piece of equipment failed, and deciding what to do about it next.
+    </p>
+  </div>
+  <div class="about-hero-media">
+    {#- The same welcome the home page opens with, and deliberately the same
+        one file: it plays once and then holds on the frame it had reached, so
+        a page somebody is here to read is not left with something moving on
+        it. held_animation.js swaps the still in on a timer; with scripting off
+        the animation simply keeps running. Decorative -- the page says in
+        words everything the mark says. -#}
+    <img class="about-hero-animation"
+         src="{{ url_for('static', filename='img/sc_loading_animation.gif') }}"
+         data-still-src="{{ url_for('static', filename='img/sc_loading_animation_still.png') }}"
+         alt=""
+         width="640"
+         height="640"
+         aria-hidden="true">
+  </div>
 </section>
+
+<section class="glass-card slide-in about-section" aria-labelledby="about-primary">
+  <header>
+    <p class="eyebrow">Primary purpose</p>
+    <h2 id="about-primary">Investigate root cause events, and plan what follows</h2>
+  </header>
+  <p class="hero-copy">
+    GREMLIN is a digital toolkit for the Process Reliability team. It carries
+    analysis and trackers at two altitudes at once — the engineering detail
+    that finds a root cause, and the leadership view that turns a set of those
+    findings into a maintenance strategy — and both are drawn from the same
+    records, so the two never disagree about what happened.
+  </p>
+
+  <div class="doc-section-grid">
+    <div class="doc-section">
+      <h3>Engineering level</h3>
+      <p>
+        Work orders and PM resets are dispositioned into failure modes and
+        mechanisms, then fitted with life distributions and compared on model
+        confidence. That is what moves a failure from a date on a calendar to a
+        cause with evidence behind it.
+      </p>
+    </div>
+
+    <div class="doc-section">
+      <h3>Leadership level</h3>
+      <p>
+        The same records roll up into availability, MTBF, MTTR, downtime
+        drivers and PM effectiveness, and the fitted models project reliability
+        out to a mission time. That is what an interval, a spares decision or a
+        strategy change gets argued from.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="glass-card slide-in about-section" aria-labelledby="about-secondary">
+  <header>
+    <p class="eyebrow">It also</p>
+    <h2 id="about-secondary">Keeps the day-to-day in one place</h2>
+  </header>
+
+  <div class="about-grid">
+    <div class="doc-section">
+      <h3>One place for links and data</h3>
+      <p>
+        The dashboards, portals, SharePoint documents and engineering systems
+        this team reaches for are collected on one page instead of scattered
+        across bookmark bars, and the work order and asset data behind every
+        analysis is pulled from the CMMS rather than re-keyed.
+      </p>
+    </div>
+
+    <div class="doc-section">
+      <h3>A dashboard to leave up</h3>
+      <p>
+        The metrics pages are meant to be displayed, not just opened: maintenance
+        and operations can read availability, downtime and PM status off a screen
+        without anybody being asked to run a report first.
+      </p>
+    </div>
+
+    <div class="doc-section">
+      <h3>Time given back</h3>
+      <p>
+        Every part of this is the same goal from a different side — cutting out
+        the wasted time and energy of hunting for a file, a link or a number, so
+        more of the day goes to the work those numbers are for.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="glass-card slide-in about-section" aria-labelledby="about-inside">
+  <header>
+    <p class="eyebrow">What is here</p>
+    <h2 id="about-inside">The site, page by page</h2>
+  </header>
+
+  <div class="link-grid">
+    <a class="link-card" href="{{ url_for('perform_analysis') }}">
+      <span class="link-title">Life Data Analysis</span>
+      <span class="link-description">
+        Fit life distributions to an asset's history, compare model confidence,
+        and project reliability to a mission time
+      </span>
+    </a>
+
+    <a class="link-card" href="{{ url_for('metrics') }}">
+      <span class="link-title">Metrics</span>
+      <span class="link-description">
+        Availability, MTBF, MTTR, downtime drivers and risk, charted by asset
+        and asset group
+      </span>
+    </a>
+
+    <a class="link-card" href="{{ url_for('pm_calendar') }}">
+      <span class="link-title">PM Calendar</span>
+      <span class="link-description">
+        Upcoming preventive maintenance by asset, with the frequencies each one
+        is running on
+      </span>
+    </a>
+
+    <a class="link-card" href="{{ url_for('standards_and_documentation') }}">
+      <span class="link-title">Standards and Documentation</span>
+      <span class="link-description">
+        The formulas, definitions and methods GREMLIN calculates with, written
+        out rather than buried in code
+      </span>
+    </a>
+
+    <a class="link-card" href="{{ url_for('reliability_links') }}">
+      <span class="link-title">Reliability Links</span>
+      <span class="link-description">
+        Dashboards, vendor portals, SharePoint resources and engineering systems
+        in one list
+      </span>
+    </a>
+
+    <a class="link-card" href="{{ url_for('patch_notes') }}">
+      <span class="link-title">Patch Notes</span>
+      <span class="link-description">
+        Every release, newest first: what was added and what was fixed
+      </span>
+    </a>
+  </div>
+
+  {#- Disposition is deliberately not a card here. It needs the editor role, and
+      a link that only ever answers with a 403 is worse than a sentence saying
+      who the page is for. -#}
+  <p>
+    Dispositioning work orders and PM resets — assigning failure modes and
+    mechanisms, and flagging the observations that feed the analysis — is done
+    from Home by team members with the editor role.
+  </p>
+</section>
+
+<section class="glass-card slide-in about-section" aria-labelledby="about-team">
+  <header>
+    <p class="eyebrow">Who built it</p>
+    <h2 id="about-team">The GREMLINS team</h2>
+  </header>
+  <p class="hero-copy">
+    GREMLIN is made by the GREMLINS team on the Process Reliability Team in
+    Building 704. It is an internal tool built alongside the reliability work it
+    supports, which is the reason it keeps changing: the people who hit its
+    rough edges are the same people who file them.
+  </p>
+  <p>
+    Found one? <a href="{{ url_for('report_a_bug') }}">Report a bug</a>, or read
+    the <a href="{{ url_for('patch_notes') }}">patch notes</a> to see what has
+    already landed.
+  </p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/held_animation.js') }}"></script>
 {% endblock %}

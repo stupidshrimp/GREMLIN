@@ -1009,3 +1009,87 @@ button.life-data-card {
   font-size: 0.9rem;
   line-height: 1.6;
 }
+
+/* About.
+   ---------------------------------------------------------------------------
+   Copy on the left, the S&C mark on the right, and a stack of plain sections
+   under it. Almost none of the page is new furniture: the sections are
+   .glass-card, the purpose panels are the .doc-section the documentation page
+   uses, and the page-by-page list is Reliability Links' own .link-grid. What is
+   written below is only what About does differently. */
+.about-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 220px);
+  gap: 1.6rem;
+  align-items: center;
+}
+
+.about-hero-copy { min-width: 0; }
+
+.about-hero-media {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Capped well under the artwork's own 640px, and smaller than the home page
+   caps the same file: there it is the welcome the page opens on, here it sits
+   beside the sentence that does the actual introducing. */
+.about-hero-animation {
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+  border-radius: 16px;
+}
+
+.about-section {
+  display: grid;
+  gap: 0.9rem;
+}
+
+/* An eyebrow and the heading directly under it are one label, so they are set
+   as one block and the section's own gap is left to separate that block from
+   the body it introduces. Without this the two would sit the same distance
+   apart as the heading and the cards, and stop reading as a pair. */
+.about-section > header {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.about-section h2 {
+  margin: 0;
+}
+
+/* Three panels, where .doc-section-grid's fixed two columns would leave the
+   third stranded alone on a second row. auto-fit fits as many as the card is
+   wide enough for and drops to two, then one, on its own. The minimum is
+   clamped to the container for the same reason .link-grid clamps its own: a
+   flat 240px keeps that width once the card is narrower than it and pushes the
+   page into a sideways scroll. */
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 0.85rem;
+}
+
+/* The first links the app sets in running prose. Everything else that links is
+   a card or a nav item and brings its own colour with it; left bare, these
+   would be the browser's blue -- a colour from no token, and in the dark theme
+   a dark blue sitting on a dark card. */
+.about-section p a {
+  color: var(--forest-700);
+  font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+.about-section p a:hover,
+.about-section p a:focus-visible {
+  color: var(--forest-900);
+}
+
+@media (max-width: 900px) {
+  .about-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .about-hero-media { justify-content: center; }
+}

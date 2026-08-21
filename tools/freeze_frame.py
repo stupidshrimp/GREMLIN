@@ -1,21 +1,23 @@
 """Write the frame an animated GIF is showing at a given moment out as a PNG.
 
-The home page plays ``sc_loading_animation.gif`` for a moment and then holds
-still. A GIF cannot be stopped from script, and capturing the live frame with
-``canvas.drawImage`` does not work either -- browsers hand back the GIF's *first*
-frame, not the one on screen -- so the held frame has to be a separate still
-image that the page swaps in on a timer.
+The home and about pages play ``sc_loading_animation.gif`` for a moment and then
+hold still. A GIF cannot be stopped from script, and capturing the live frame
+with ``canvas.drawImage`` does not work either -- browsers hand back the GIF's
+*first* frame, not the one on screen -- so the held frame has to be a separate
+still image that the page swaps in on a timer.
 
 This script produces that still. Re-run it whenever the GIF is replaced or the
-hold time in ``static/js/home.js`` changes, and keep the two in step: the swap is
-only seamless while the PNG shows what the animation had reached at ``--at``.
+hold time in ``static/js/held_animation.js`` changes, and keep the two in step:
+the swap is only seamless while the PNG shows what the animation had reached at
+``--at``. There is one still and one hold time for every page that shows the
+mark, which is why that hold does not live in any one page's script.
 
 Pillow is needed to read the frames and is not a GREMLIN runtime dependency:
 install it just for this (``pip install pillow``).
 
 Usage::
 
-    python tools/freeze_frame.py                       # 2400 ms of the home page GIF
+    python tools/freeze_frame.py                       # 2400 ms of the S&C GIF
     python tools/freeze_frame.py --at 2000
     python tools/freeze_frame.py --gif in.gif --out still.png --at 500
 """

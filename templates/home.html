@@ -24,10 +24,10 @@
   </div>
   <div class="home-hero-media">
     {#- Plays once and then holds on the frame it had reached, so the page
-        settles instead of looping forever. home.js swaps the still in on a
-        timer; with scripting off the animation simply keeps running. -#}
-    <img id="home-hero-animation"
-         class="home-hero-animation"
+        settles instead of looping forever. held_animation.js swaps the still in
+        on a timer -- About opens with the same mark and the same hold -- and
+        with scripting off the animation simply keeps running. -#}
+    <img class="home-hero-animation"
          src="{{ url_for('static', filename='img/sc_loading_animation.gif') }}"
          data-still-src="{{ url_for('static', filename='img/sc_loading_animation_still.png') }}"
          alt=""
@@ -100,5 +100,6 @@
 {% endblock %}
 
 {% block scripts %}
+  <script src="{{ url_for('static', filename='js/held_animation.js') }}"></script>
   <script src="{{ url_for('static', filename='js/home.js') }}"></script>
 {% endblock %}
