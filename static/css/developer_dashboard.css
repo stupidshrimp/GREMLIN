@@ -1020,6 +1020,13 @@ body:has(.dev-panel) .content,
   cursor: not-allowed;
 }
 
+/* The paging control, centred under the list it continues. */
+.dev-bug-more {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+
 /* Destructive, and the only irreversible action on the page, so it is coloured
    as one rather than sitting there looking like Reopen. */
 .dev-bug-delete {

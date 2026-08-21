@@ -34,8 +34,11 @@ from services.life_data_service import (
 )
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
+    LIST_LIMIT,
     SEVERITIES,
     STATUSES,
+    BugReportConflictError,
+    BugReportRateLimitError,
     BugReportStore,
     BugReportStoreError,
     BugReportValidationError,
@@ -1369,6 +1372,28 @@ def _bug_form_context(**extra):
     }
 
 
+def _bug_form_values() -> dict:
+    """What the reporter typed, for a form that has to be drawn again.
+
+    A refused submission -- incomplete, rate limited, or landing on a share that
+    is down -- comes back with the boxes still filled, because losing a
+    paragraph of description is how somebody gives up on reporting at all.
+    """
+
+    return {
+        "title": request.form.get("title", ""),
+        "description": request.form.get("description", ""),
+        "area": request.form.get("area", ""),
+        "severity": request.form.get("severity", "minor"),
+        "reporter": request.form.get("reporter", ""),
+        # Carried through explicitly. The browser cannot recover it: on a
+        # re-rendered response document.referrer is the form itself, so a
+        # corrected retry would otherwise file the bug against /report-a-bug
+        # rather than the page that actually broke.
+        "page_url": request.form.get("page_url", ""),
+    }
+
+
 @app.route("/report-a-bug")
 def report_a_bug():
     # ?submitted=<id> is where a successful post lands. Redirecting rather than
@@ -1403,6 +1428,12 @@ def submit_bug_report():
             reporter_user_id=account["id"] if account else None,
             page_url=request.form.get("page_url", ""),
             user_agent=request.headers.get("User-Agent", ""),
+            # Signed-in reporters are limited as themselves rather than as their
+            # address: behind a proxy the whole plant shares one, and one
+            # person's runaway retry must not spend everybody else's allowance.
+            client_key=(
+                f"user:{account['id']}" if account else f"addr:{request.remote_addr or 'unknown'}"
+            ),
         )
     except BugReportValidationError as exc:
         # Re-render with what was typed still in the boxes. Losing a paragraph
@@ -1412,17 +1443,23 @@ def submit_bug_report():
                 "report_a_bug.html",
                 **_bug_form_context(
                     error=str(exc),
-                    form_values={
-                        "title": request.form.get("title", ""),
-                        "description": request.form.get("description", ""),
-                        "area": request.form.get("area", ""),
-                        "severity": request.form.get("severity", "minor"),
-                        "reporter": request.form.get("reporter", ""),
-                    },
+                    form_values=_bug_form_values(),
                 ),
             ),
             400,
         )
+    except BugReportRateLimitError as exc:
+        # 429 with what the reporter typed still in the boxes, so coming back
+        # when the window frees up is a resubmit rather than a retype.
+        response = make_response(
+            render_template(
+                "report_a_bug.html",
+                **_bug_form_context(error=str(exc), form_values=_bug_form_values()),
+            ),
+            429,
+        )
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
     except BugReportStoreError as exc:
         # The share is down. Say so, and say it on the page rather than as a
         # 500: the reporter needs to know their report was not stored.
@@ -1432,13 +1469,7 @@ def submit_bug_report():
                 "report_a_bug.html",
                 **_bug_form_context(
                     error=str(exc),
-                    form_values={
-                        "title": request.form.get("title", ""),
-                        "description": request.form.get("description", ""),
-                        "area": request.form.get("area", ""),
-                        "severity": request.form.get("severity", "minor"),
-                        "reporter": request.form.get("reporter", ""),
-                    },
+                    form_values=_bug_form_values(),
                 ),
             ),
             503,
@@ -2196,9 +2227,17 @@ def api_dev_bugs():
     """The dashboard's whole payload: the tiles' counts and the filtered list."""
 
     try:
-        reports = bug_reports.list_reports(
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        return jsonify({"error": "Offset must be a whole number."}), 400
+    if offset < 0:
+        return jsonify({"error": "Offset must be a whole number."}), 400
+
+    try:
+        page = bug_reports.list_reports(
             status=request.args.get("status", "all"),
             search=request.args.get("search", ""),
+            offset=offset,
         )
         summary = bug_reports.summary()
     except BugReportValidationError as exc:
@@ -2209,7 +2248,14 @@ def api_dev_bugs():
         return jsonify({"error": str(exc)}), 503
     return jsonify(
         {
-            "reports": reports,
+            "reports": page["reports"],
+            # What the filter matches in total, against what this page holds --
+            # the dashboard needs both to say "showing 200 of 640" and to know
+            # whether to offer more.
+            "total_matching": page["total"],
+            "offset": page["offset"],
+            "has_more": page["has_more"],
+            "page_size": LIST_LIMIT,
             "summary": summary,
             "bugs_db_path": str(BUGS_DB_PATH),
             "severities": list(SEVERITIES),
@@ -2245,7 +2291,13 @@ def api_dev_bug_status(report_id: int):
             payload.get("status", ""),
             actor=(current_user() or {}).get("username", ""),
             note=payload.get("note", ""),
+            # The status the dashboard drew this row with. Sending it is what
+            # stops a second administrator, whose page still showed the report
+            # as open, overwriting the first one's resolution note.
+            expected_status=payload.get("expected_status") or None,
         )
+    except BugReportConflictError as exc:
+        return jsonify({"error": str(exc), "actual_status": exc.actual}), 409
     except BugReportValidationError as exc:
         return jsonify({"error": str(exc)}), 400
     except BugReportStoreError as exc:

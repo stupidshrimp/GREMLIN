@@ -39,20 +39,36 @@
 
   // A request in flight is stale the moment another is made -- typing in the
   // search box makes several. Only the newest is allowed to draw.
-  const state = { status: "open", search: "", requestVersion: 0, busy: false };
+  //
+  // `loaded` accumulates across pages so "Load more" appends rather than
+  // replacing; changing the filter or the search resets it.
+  const state = {
+    status: "open",
+    search: "",
+    offset: 0,
+    loaded: [],
+    requestVersion: 0,
+    busy: false,
+  };
 
-  function bugsUrl() {
+  function bugsUrl(offset) {
     const params = new URLSearchParams({ status: state.status });
     if (state.search) params.set("search", state.search);
+    if (offset) params.set("offset", String(offset));
     return `/developer/api/bugs?${params.toString()}`;
   }
 
-  async function load() {
+  // `append` continues the current listing; otherwise this is a fresh one and
+  // whatever was on screen is replaced.
+  async function load(append) {
     const version = ++state.requestVersion;
+    const offset = append ? state.offset : 0;
     try {
-      const payload = await dev.getJSON(bugsUrl());
+      const payload = await dev.getJSON(bugsUrl(offset));
       if (version !== state.requestVersion) return;
       dev.showStatus("");
+      state.loaded = append ? state.loaded.concat(payload.reports || []) : (payload.reports || []);
+      state.offset = state.loaded.length;
       render(payload);
     } catch (err) {
       if (version !== state.requestVersion) return;
@@ -67,7 +83,7 @@
 
   function render(payload) {
     renderStats(payload.summary || {});
-    renderList(payload.reports || []);
+    renderList(state.loaded, payload);
   }
 
   function renderStats(summary) {
@@ -97,7 +113,7 @@
     });
   }
 
-  function renderList(reports) {
+  function renderList(reports, payload) {
     const list = $("dev-bugs-list");
     const count = $("dev-bugs-count");
     if (!list || !count) return;
@@ -111,14 +127,39 @@
       list.textContent = "";
       return;
     }
-    count.textContent = `${formatNumber(reports.length)} report${reports.length === 1 ? "" : "s"}.`;
+
+    // Say what is on screen against what matches, so a listing that stops at
+    // its page size reads as "there is more" rather than as the whole answer.
+    const total = typeof payload.total_matching === "number" ? payload.total_matching : reports.length;
+    count.textContent =
+      reports.length < total
+        ? `Showing ${formatNumber(reports.length)} of ${formatNumber(total)} reports.`
+        : `${formatNumber(total)} report${total === 1 ? "" : "s"}.`;
 
     const fragment = document.createDocumentFragment();
     reports.forEach(function (report) {
       fragment.appendChild(buildReport(report));
     });
+    if (payload.has_more) fragment.appendChild(buildLoadMore(total - reports.length));
     list.textContent = "";
     list.appendChild(fragment);
+  }
+
+  function buildLoadMore(remaining) {
+    const wrapper = el("div", "dev-bug-more");
+    const button = el(
+      "button",
+      "btn-secondary",
+      `Load ${formatNumber(remaining)} more`
+    );
+    button.type = "button";
+    button.addEventListener("click", function () {
+      button.disabled = true;
+      button.textContent = "Loading…";
+      load(true);
+    });
+    wrapper.appendChild(button);
+    return wrapper;
   }
 
   function buildReport(report) {
@@ -189,7 +230,10 @@
     const toggle = el("button", isOpen ? "btn-primary" : "btn-secondary", isOpen ? "Mark resolved" : "Reopen");
     toggle.type = "button";
     toggle.addEventListener("click", function () {
-      setStatus(report.id, isOpen ? "resolved" : "open", note.value, actions);
+      // report.status is what this row was drawn with. Sending it lets the
+      // server refuse the change if somebody else has moved the report on
+      // since, rather than overwriting what they recorded.
+      setStatus(report.id, isOpen ? "resolved" : "open", note.value, actions, report.status);
     });
     actions.appendChild(toggle);
 
@@ -212,7 +256,7 @@
     });
   }
 
-  async function setStatus(reportId, status, note, container) {
+  async function setStatus(reportId, status, note, container, expectedStatus) {
     if (state.busy) return;
     state.busy = true;
     setButtonsDisabled(container, true);
@@ -220,19 +264,32 @@
       await dev.getJSON(`/developer/api/bugs/${reportId}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: status, note: note || "" }),
+        body: JSON.stringify({
+          status: status,
+          note: note || "",
+          expected_status: expectedStatus || "",
+        }),
       });
-      dev.showStatus(
-        status === "resolved" ? `Report #${reportId} resolved.` : `Report #${reportId} reopened.`
-      );
     } catch (err) {
+      state.busy = false;
+      if (err.status === 409) {
+        // Somebody else changed this report while the page was open. Nothing
+        // was written; reload so the row shows where it actually stands, then
+        // say why -- after the reload, because a successful load clears the
+        // banner and would otherwise wipe this on its way past.
+        await load();
+        dev.showStatus(err.message, true);
+        return;
+      }
       dev.showStatus(err.message, true);
       setButtonsDisabled(container, false);
-      state.busy = false;
       return;
     }
     state.busy = false;
     await load();
+    dev.showStatus(
+      status === "resolved" ? `Report #${reportId} resolved.` : `Report #${reportId} reopened.`
+    );
   }
 
   async function deleteReport(reportId, container) {
@@ -245,7 +302,6 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      dev.showStatus(`Report #${reportId} deleted.`);
     } catch (err) {
       dev.showStatus(err.message, true);
       setButtonsDisabled(container, false);
@@ -253,7 +309,9 @@
       return;
     }
     state.busy = false;
+    // Set after the reload, which clears the banner on its way past.
     await load();
+    dev.showStatus(`Report #${reportId} deleted.`);
   }
 
   dev.whenReady("#dev-bugs-list", function () {

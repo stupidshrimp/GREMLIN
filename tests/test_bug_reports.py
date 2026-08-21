@@ -13,6 +13,10 @@ import pytest
 
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
+    LIST_LIMIT,
+    SUBMISSION_LIMIT_PER_WINDOW,
+    BugReportConflictError,
+    BugReportRateLimitError,
     BugReportStore,
     BugReportStoreError,
     BugReportValidationError,
@@ -28,6 +32,12 @@ def _app(monkeypatch, tmp_path, *, bugs_db=None):
     import app
 
     return importlib.reload(app)
+
+
+def _reports(store, **filters):
+    """Just the rows of one page -- list_reports returns the page around them."""
+
+    return store.list_reports(**filters)["reports"]
 
 
 def _signed_in(module, username="root", pin="secret"):
@@ -90,7 +100,7 @@ def test_the_default_location_is_the_shared_drive():
 def test_a_new_report_starts_open(tmp_path):
     store = BugReportStore(tmp_path / "bugreports.db")
     report_id = store.submit(title="Broken", description="It broke.")
-    stored = store.list_reports()[0]
+    stored = _reports(store)[0]
     assert stored["id"] == report_id
     assert stored["status"] == "open"
     assert stored["resolved_at"] is None
@@ -116,7 +126,7 @@ def test_long_fields_are_truncated_rather_than_refused(tmp_path):
 
     store = BugReportStore(tmp_path / "bugreports.db")
     store.submit(title="T" * 5000, description="D" * 50_000, reporter="R" * 500)
-    stored = store.list_reports()[0]
+    stored = _reports(store)[0]
     assert len(stored["title"]) == 200
     assert len(stored["description"]) == 8000
     assert len(stored["reporter"]) == 128
@@ -161,9 +171,9 @@ def test_open_reports_lead_and_the_most_urgent_leads_them(tmp_path):
     store.set_status(blocking, "resolved", actor="root")
 
     # Resolved sinks even though it is the most urgent severity.
-    assert [row["id"] for row in store.list_reports()] == [major, minor, blocking]
-    assert [row["id"] for row in store.list_reports(status="open")] == [major, minor]
-    assert [row["id"] for row in store.list_reports(status="resolved")] == [blocking]
+    assert [row["id"] for row in _reports(store)] == [major, minor, blocking]
+    assert [row["id"] for row in _reports(store, status="open")] == [major, minor]
+    assert [row["id"] for row in _reports(store, status="resolved")] == [blocking]
 
 
 def test_search_covers_the_fields_a_reader_would_search_by(tmp_path):
@@ -171,12 +181,12 @@ def test_search_covers_the_fields_a_reader_would_search_by(tmp_path):
     store.submit(title="Charts blank", description="No bars drew.", area="Metrics", reporter="Sam")
     store.submit(title="Typo", description="Says 'teh'.", area="About", reporter="Alex")
 
-    assert len(store.list_reports(search="charts")) == 1
-    assert len(store.list_reports(search="CHARTS")) == 1  # case-insensitive
-    assert len(store.list_reports(search="bars drew")) == 1  # description
-    assert len(store.list_reports(search="Metrics")) == 1  # area
-    assert len(store.list_reports(search="Alex")) == 1  # reporter
-    assert len(store.list_reports(search="")) == 2
+    assert len(_reports(store, search="charts")) == 1
+    assert len(_reports(store, search="CHARTS")) == 1  # case-insensitive
+    assert len(_reports(store, search="bars drew")) == 1  # description
+    assert len(_reports(store, search="Metrics")) == 1  # area
+    assert len(_reports(store, search="Alex")) == 1  # reporter
+    assert len(_reports(store, search="")) == 2
 
 
 def test_a_wildcard_in_a_search_is_searched_for_rather_than_obeyed(tmp_path):
@@ -186,17 +196,17 @@ def test_a_wildcard_in_a_search_is_searched_for_rather_than_obeyed(tmp_path):
     store.submit(title="Reads 100% when idle", description="Gauge is wrong.")
     store.submit(title="Something else", description="Unrelated.")
 
-    assert len(store.list_reports(search="100%")) == 1
+    assert len(_reports(store, search="100%")) == 1
     # A bare wildcard is a literal too: it finds the report that contains that
     # character, rather than matching everything the way an unescaped LIKE would.
-    assert [row["title"] for row in store.list_reports(search="%")] == ["Reads 100% when idle"]
-    assert store.list_reports(search="_") == []
+    assert [row["title"] for row in _reports(store, search="%")] == ["Reads 100% when idle"]
+    assert _reports(store, search="_") == []
 
 
 def test_an_unusable_status_filter_is_refused(tmp_path):
     store = BugReportStore(tmp_path / "bugreports.db")
     with pytest.raises(BugReportValidationError):
-        store.list_reports(status="pending")
+        _reports(store, status="pending")
 
 
 def test_the_summary_counts_what_the_tiles_show(tmp_path):
@@ -268,7 +278,7 @@ def test_anyone_can_reach_and_file_from_the_form(monkeypatch, tmp_path):
     assert response.status_code == 302
     assert response.headers["Location"] == "/report-a-bug?submitted=1"
 
-    stored = module.bug_reports.list_reports()[0]
+    stored = _reports(module.bug_reports)[0]
     assert stored["title"] == "Charts are blank"
     assert stored["reporter"] == "Sam"
     assert stored["status"] == "open"
@@ -292,7 +302,7 @@ def test_a_report_filed_while_signed_in_says_who_filed_it(monkeypatch, tmp_path)
     assert 'value="root"' in client.get("/report-a-bug").get_data(as_text=True)
 
     _file_one(client, reporter="root")
-    stored = module.bug_reports.list_reports()[0]
+    stored = _reports(module.bug_reports)[0]
     assert stored["reporter"] == "root"
     assert stored["reporter_user_id"] == module.access_control.authenticate("root", "secret")["id"]
 
@@ -307,7 +317,7 @@ def test_an_incomplete_report_keeps_what_was_typed(monkeypatch, tmp_path):
     body = response.get_data(as_text=True)
     assert "Three paragraphs of detail." in body
     assert "Give the report a short title." in body
-    assert module.bug_reports.list_reports() == []
+    assert _reports(module.bug_reports) == []
 
 
 def test_a_post_from_another_site_is_refused(monkeypatch, tmp_path):
@@ -315,7 +325,7 @@ def test_a_post_from_another_site_is_refused(monkeypatch, tmp_path):
     client = module.app.test_client()
     response = client.post("/report-a-bug", data={"title": "x", "description": "y"})
     assert response.status_code == 403
-    assert module.bug_reports.list_reports() == []
+    assert _reports(module.bug_reports) == []
 
 
 def test_the_form_offers_the_pages_the_sidebar_does(monkeypatch, tmp_path):
@@ -438,7 +448,7 @@ def test_a_cross_site_form_cannot_resolve_a_report(monkeypatch, tmp_path):
 
     assert admin.post("/developer/api/bugs/1/status", data={"status": "resolved"}).status_code == 415
     assert admin.post("/developer/api/bugs/1/delete", data={}).status_code == 415
-    assert module.bug_reports.list_reports()[0]["status"] == "open"
+    assert _reports(module.bug_reports)[0]["status"] == "open"
 
 
 @pytest.mark.parametrize("body", [{"status": "wontfix"}, {"status": ""}, {}])
@@ -447,7 +457,7 @@ def test_an_impossible_status_change_is_a_bad_request(monkeypatch, tmp_path, bod
     module.bug_reports.submit(title="Charts blank", description="No bars.")
     admin = _signed_in(module)
     assert admin.post("/developer/api/bugs/1/status", json=body).status_code == 400
-    assert module.bug_reports.list_reports()[0]["status"] == "open"
+    assert _reports(module.bug_reports)[0]["status"] == "open"
 
 
 def test_changing_a_report_lands_in_the_audit_trail_but_reading_does_not(monkeypatch, tmp_path):
@@ -484,3 +494,216 @@ def test_the_dashboard_is_findable_from_the_global_search(monkeypatch, tmp_path)
     # Not offered to somebody who could not open it.
     viewer = module._search_index(is_admin=False, can_edit=False, has_account=True)
     assert all(entry["url"] != "/developer/bugs" for entry in viewer)
+
+
+# ---------------------------------------------------------------------------
+# Bounding the public write endpoint, and paging past the first screenful.
+# These cover the review findings on the first revision of this feature.
+# ---------------------------------------------------------------------------
+
+
+def test_one_client_cannot_file_without_limit(tmp_path):
+    """An unbounded public write would fill a shared drive and bury real reports."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(SUBMISSION_LIMIT_PER_WINDOW):
+        store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
+
+    with pytest.raises(BugReportRateLimitError) as caught:
+        store.submit(title="One too many", description="Detail.", client_key="addr:10.0.0.1")
+    assert caught.value.retry_after > 0
+    assert len(_reports(store)) == SUBMISSION_LIMIT_PER_WINDOW
+
+
+def test_the_limit_is_per_client_rather_than_global(tmp_path):
+    """One runaway client must not stop everybody else reporting."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(SUBMISSION_LIMIT_PER_WINDOW):
+        store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
+
+    assert store.submit(title="Somebody else", description="Detail.", client_key="addr:10.0.0.2")
+    assert store.submit(title="A signed-in reporter", description="Detail.", client_key="user:7")
+
+
+def test_a_refused_submission_stores_nothing_and_costs_nothing(tmp_path):
+    """The charge and the insert are one step, so neither happens without the other."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(SUBMISSION_LIMIT_PER_WINDOW):
+        store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
+    before = store.summary()["total"]
+
+    for _ in range(3):
+        with pytest.raises(BugReportRateLimitError):
+            store.submit(title="Refused", description="Detail.", client_key="addr:10.0.0.1")
+    assert store.summary()["total"] == before
+
+
+def test_an_internal_caller_is_not_limited(tmp_path):
+    """No client key means no limit -- the limit is a property of the public form."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(SUBMISSION_LIMIT_PER_WINDOW + 5):
+        store.submit(title=f"Report {index}", description="Detail.")
+    assert store.summary()["total"] == SUBMISSION_LIMIT_PER_WINDOW + 5
+
+
+def test_the_form_refuses_a_flood_and_keeps_what_was_typed(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    for index in range(SUBMISSION_LIMIT_PER_WINDOW):
+        assert _file_one(client, title=f"Report {index}").status_code == 302
+
+    response = _file_one(client, title="One too many", description="Still worth keeping.")
+    assert response.status_code == 429
+    assert response.headers["Retry-After"]
+    body = response.get_data(as_text=True)
+    assert "Still worth keeping." in body
+    assert "try again in about" in body
+
+
+def test_a_listing_says_how_much_it_is_not_showing(tmp_path):
+    """Stopping silently at the page size would hide the oldest reports for good."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    for index in range(LIST_LIMIT + 15):
+        store.submit(title=f"Report {index}", description="Detail.")
+
+    first = store.list_reports()
+    assert len(first["reports"]) == LIST_LIMIT
+    assert first["total"] == LIST_LIMIT + 15
+    assert first["has_more"] is True
+    assert first["offset"] == 0
+
+
+def test_paging_reaches_every_report_exactly_once(tmp_path):
+    store = BugReportStore(tmp_path / "bugreports.db")
+    filed = [
+        store.submit(title=f"Report {index}", description="Detail.")
+        for index in range(LIST_LIMIT + 15)
+    ]
+
+    seen, offset = [], 0
+    while True:
+        page = store.list_reports(offset=offset)
+        seen.extend(row["id"] for row in page["reports"])
+        if not page["has_more"]:
+            break
+        offset += len(page["reports"])
+
+    assert sorted(seen) == sorted(filed)
+    assert len(seen) == len(set(seen))  # no report served twice
+    assert store.list_reports(offset=offset)["has_more"] is False
+
+
+def test_the_page_size_cannot_be_talked_past(tmp_path):
+    store = BugReportStore(tmp_path / "bugreports.db")
+    store.submit(title="Only one", description="Detail.")
+    assert len(store.list_reports(limit=10_000)["reports"]) == 1
+    assert store.list_reports(limit=0)["offset"] == 0
+
+
+def test_the_dashboard_pages_and_reports_the_total(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    for index in range(LIST_LIMIT + 5):
+        module.bug_reports.submit(title=f"Report {index}", description="Detail.")
+    admin = _signed_in(module)
+
+    first = admin.get("/developer/api/bugs").get_json()
+    assert len(first["reports"]) == LIST_LIMIT
+    assert first["total_matching"] == LIST_LIMIT + 5
+    assert first["has_more"] is True
+
+    rest = admin.get(f"/developer/api/bugs?offset={LIST_LIMIT}").get_json()
+    assert len(rest["reports"]) == 5
+    assert rest["has_more"] is False
+    # The two pages together are the whole set, with nothing served twice.
+    ids = [row["id"] for row in first["reports"]] + [row["id"] for row in rest["reports"]]
+    assert len(set(ids)) == LIST_LIMIT + 5
+
+
+@pytest.mark.parametrize("offset", ["-1", "lots", "1.5"])
+def test_an_unusable_offset_is_a_bad_request(monkeypatch, tmp_path, offset):
+    module = _app(monkeypatch, tmp_path)
+    admin = _signed_in(module)
+    assert admin.get(f"/developer/api/bugs?offset={offset}").status_code == 400
+
+
+def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
+    """Two administrators, one queue: the second click must not erase the first."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    report_id = store.submit(title="Charts blank", description="Detail.")
+
+    store.set_status(report_id, "resolved", actor="root", note="Fixed in 1.4.",
+                     expected_status="open")
+    # The second administrator's page still showed the report as open.
+    with pytest.raises(BugReportConflictError) as caught:
+        store.set_status(report_id, "resolved", actor="other", note="Duplicate.",
+                         expected_status="open")
+    assert caught.value.actual == "resolved"
+
+    stored = _reports(store)[0]
+    assert stored["resolved_by"] == "root"
+    assert stored["resolution_note"] == "Fixed in 1.4."
+
+
+def test_a_change_from_the_state_actually_stored_still_applies(tmp_path):
+    store = BugReportStore(tmp_path / "bugreports.db")
+    report_id = store.submit(title="Charts blank", description="Detail.")
+    store.set_status(report_id, "resolved", actor="root", expected_status="open")
+    # Reopening from resolved is the state the page really saw, so it applies.
+    reopened = store.set_status(report_id, "open", note="Came back.", expected_status="resolved")
+    assert reopened["status"] == "open"
+
+
+def test_omitting_the_expected_status_still_applies_unconditionally(tmp_path):
+    """Internal callers and the tests do not have a page whose state could be stale."""
+
+    store = BugReportStore(tmp_path / "bugreports.db")
+    report_id = store.submit(title="Charts blank", description="Detail.")
+    store.set_status(report_id, "resolved", actor="root")
+    assert store.set_status(report_id, "resolved", actor="other")["resolved_by"] == "other"
+
+
+def test_the_dashboard_answers_a_stale_change_with_a_conflict(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.bug_reports.submit(title="Charts blank", description="Detail.")
+    admin = _signed_in(module)
+
+    assert admin.post(
+        "/developer/api/bugs/1/status",
+        json={"status": "resolved", "note": "Fixed.", "expected_status": "open"},
+    ).status_code == 200
+
+    stale = admin.post(
+        "/developer/api/bugs/1/status",
+        json={"status": "resolved", "note": "Duplicate.", "expected_status": "open"},
+    )
+    assert stale.status_code == 409
+    assert stale.get_json()["actual_status"] == "resolved"
+    # The first administrator's note survived the second one's click.
+    assert _reports(module.bug_reports)[0]["resolution_note"] == "Fixed."
+
+
+def test_the_documented_override_is_readable_from_a_dotenv_file():
+    """Advertising GREMLIN_BUGS_DB_PATH means the .env loader has to accept it."""
+
+    from services.sync_service import APP_ENV_KEYS
+
+    assert "GREMLIN_BUGS_DB_PATH" in APP_ENV_KEYS
+
+
+def test_the_page_a_bug_was_filed_from_survives_a_correction(monkeypatch, tmp_path):
+    """The browser cannot recover it: on a re-render the referrer is this form."""
+
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    rejected = _file_one(client, title="", page_url="http://gremlin/metrics")
+    assert rejected.status_code == 400
+    assert 'value="http://gremlin/metrics"' in rejected.get_data(as_text=True)
+
+    # The corrected retry files against the page that actually broke.
+    _file_one(client, title="Charts blank", page_url="http://gremlin/metrics")
+    assert _reports(module.bug_reports)[0]["page_url"] == "http://gremlin/metrics"

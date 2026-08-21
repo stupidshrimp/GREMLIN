@@ -42,9 +42,11 @@
 <section class="glass-card slide-in bug-form-card">
   <form method="post" action="{{ url_for('report_a_bug') }}" class="bug-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    {#- Filled in by the browser so the report says which page it was filed
-        from. Harmless if scripting is off: the field simply stays empty. -#}
-    <input type="hidden" name="page_url" id="bug-page-url" value="">
+    {#- Which page the reporter came from. Filled in by the browser on the way
+        in, and carried through by the server on a re-render -- see the script
+        at the foot of this page. Harmless if scripting is off: it stays empty. -#}
+    <input type="hidden" name="page_url" id="bug-page-url"
+           value="{{ form_values.page_url if form_values else '' }}">
 
     <div class="bug-field">
       <label for="bug-title">What went wrong?</label>
@@ -113,9 +115,14 @@
   // Where the reporter came from, which is almost always the page that broke.
   // Set here rather than server-side because the server only ever sees this
   // page's own URL.
+  //
+  // Only when the field is empty. On a re-render after a validation error the
+  // server has put the original page back, and document.referrer is this form
+  // -- so overwriting would file the corrected retry against /report-a-bug and
+  // lose the one piece of context the reporter cannot retype.
   (function () {
     var field = document.getElementById("bug-page-url");
-    if (field) field.value = document.referrer || "";
+    if (field && !field.value) field.value = document.referrer || "";
   })();
 </script>
 {% endif %}

@@ -22,7 +22,9 @@ module runs at import, so an unreachable share never stops GREMLIN starting.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,8 +64,27 @@ MAX_NOTE_CHARS = 2000
 MAX_USER_AGENT_CHARS = 400
 
 # How many reports a listing will return at once. The dashboard filters and
-# searches server-side, so this bounds one response rather than the file.
-LIST_LIMIT = 500
+# searches server-side, so this bounds one response rather than the file; the
+# dashboard pages past it with an offset rather than losing what is beyond.
+LIST_LIMIT = 200
+MAX_LIST_LIMIT = 500
+
+# What one client may file in one window. The form is open to anyone who can
+# reach GREMLIN, including anonymously, so without this a loop -- a stuck retry
+# as easily as an attack -- could grow a file on a shared drive until the drive
+# is full, and bury the genuine reports in what it wrote.
+#
+# Deliberately generous. Behind a reverse proxy with GREMLIN_TRUSTED_PROXY_HOPS
+# unset, every anonymous reporter shares one address, so a tight limit would let
+# one runaway client stop the whole plant filing. Twenty an hour is far past what
+# a person files and still bounds a loop to a few hundred KB an hour.
+SUBMISSION_LIMIT_PER_WINDOW = 20
+SUBMISSION_WINDOW_SECONDS = 3600
+
+# Same reasoning as the caps above: rotating client addresses must not grow the
+# limiter's own table forever. Expired rows are swept on every submission; this
+# bounds what a burst can leave behind between sweeps.
+SUBMISSION_ATTEMPT_ROW_CAP = 10_000
 
 
 class BugReportStoreError(RuntimeError):
@@ -72,6 +93,53 @@ class BugReportStoreError(RuntimeError):
 
 class BugReportValidationError(ValueError):
     """The submitted report is missing something, or says something impossible."""
+
+
+class BugReportConflictError(RuntimeError):
+    """The report moved on before this change could be applied.
+
+    Two administrators working the same queue can each have a page that still
+    shows a report as open. Without this, the second click would overwrite the
+    first one's resolution -- who resolved it, when, and the note saying what was
+    done -- with its own, and that history cannot be recovered.
+    """
+
+    def __init__(self, report_id: int, expected: str, actual: str) -> None:
+        self.report_id = report_id
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"Report #{report_id} is already {actual}; somebody changed it while "
+            "this page was open. Refresh to see where it stands before changing it."
+        )
+
+
+class BugReportRateLimitError(RuntimeError):
+    """This client has filed its allowance of reports for now.
+
+    Carries ``retry_after`` in seconds so the caller can tell the reporter when
+    to come back, rather than only that it refused.
+    """
+
+    def __init__(self, retry_after: int) -> None:
+        self.retry_after = max(1, int(retry_after))
+        minutes = max(1, round(self.retry_after / 60))
+        super().__init__(
+            "Thanks \u2014 that is as many reports as we can take from you just now. "
+            f"Please try again in about {minutes} minute{'s' if minutes != 1 else ''}. "
+            "If this is urgent, tell the reliability team directly."
+        )
+
+
+def _limiter_scope(client_key: str) -> str:
+    """The limiter's key for one caller, at a fixed storage cost.
+
+    Hashed for the same reason the login limiter hashes its own: the caller does
+    not control how much space its identifier takes in the table, and these rows
+    are never displayed, so there is nothing here a plain digest fails to do.
+    """
+
+    return hashlib.sha256(str(client_key).encode("utf-8")).hexdigest()
 
 
 def _now() -> str:
@@ -160,6 +228,20 @@ class BugReportStore:
                     "CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created "
                     "ON bug_reports(status, created_at DESC)"
                 )
+                # The submission limiter's working state. Separate from the
+                # reports themselves because it is disposable: rows here expire
+                # and are swept, whereas a report is kept until somebody deletes
+                # it. Nothing filed is ever removed to make room.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS submission_attempts (
+                        scope TEXT NOT NULL,
+                        filed_at REAL NOT NULL
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_submission_attempts_scope "
+                    "ON submission_attempts(scope, filed_at)"
+                )
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
         self._schema_ready = True
@@ -177,6 +259,7 @@ class BugReportStore:
         reporter_user_id: int | None = None,
         page_url: str = "",
         user_agent: str = "",
+        client_key: str | None = None,
     ) -> int:
         """Store one report and return its id.
 
@@ -184,6 +267,11 @@ class BugReportStore:
         context that helps whoever picks the report up, and a report filed
         without it is still worth having -- the alternative is a form somebody
         abandons, which stores nothing at all.
+
+        ``client_key`` identifies who is filing, for the submission limit. Pass
+        None to skip the limit entirely -- which is what the tests and any
+        internal caller do; every path reachable from the public form passes one.
+        Raises BugReportRateLimitError when that caller has filed its allowance.
         """
 
         title = _clean(title, MAX_TITLE_CHARS)
@@ -203,6 +291,13 @@ class BugReportStore:
         stamp = _now()
         try:
             with self._connect() as conn:
+                # BEGIN IMMEDIATE so the check and the insert are one step. A
+                # deferred transaction would let parallel submissions all read
+                # the same count and each conclude it was under the limit, which
+                # is exactly the burst the limit exists to stop.
+                conn.execute("BEGIN IMMEDIATE")
+                if client_key is not None:
+                    self._charge_submission(conn, client_key)
                 cursor = conn.execute(
                     """
                     INSERT INTO bug_reports (
@@ -225,8 +320,53 @@ class BugReportStore:
                     ),
                 )
                 return int(cursor.lastrowid)
+        except BugReportRateLimitError:
+            # Nothing was written, so give the budget back by rolling the
+            # transaction the limiter opened. Raised past the sqlite handler
+            # below, which would otherwise report it as an unreachable share.
+            raise
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
+
+    def _charge_submission(self, conn: sqlite3.Connection, client_key: str) -> None:
+        """Spend one of this caller's allowance, or refuse the submission.
+
+        Runs inside the caller's BEGIN IMMEDIATE, so the sweep, the count and the
+        charge are serialized against every other submission.
+        """
+
+        now = time.time()
+        cutoff = now - SUBMISSION_WINDOW_SECONDS
+        scope = _limiter_scope(client_key)
+
+        # Rows outside every live window are disposable; sweep them while the
+        # writer slot is already held rather than in a job of their own.
+        conn.execute("DELETE FROM submission_attempts WHERE filed_at < ?", (cutoff,))
+        # The sweep above only reaches expired rows, so a fast enough burst
+        # outruns it inside the window. Cap what is left, oldest first.
+        overflow = conn.execute("SELECT COUNT(*) FROM submission_attempts").fetchone()[0]
+        if overflow > SUBMISSION_ATTEMPT_ROW_CAP:
+            conn.execute(
+                "DELETE FROM submission_attempts WHERE rowid IN ("
+                "  SELECT rowid FROM submission_attempts ORDER BY filed_at LIMIT ?"
+                ")",
+                (overflow - SUBMISSION_ATTEMPT_ROW_CAP,),
+            )
+
+        recent = conn.execute(
+            "SELECT COUNT(*), MIN(filed_at) FROM submission_attempts "
+            "WHERE scope = ? AND filed_at >= ?",
+            (scope, cutoff),
+        ).fetchone()
+        if recent[0] >= SUBMISSION_LIMIT_PER_WINDOW:
+            # The allowance frees up when the oldest attempt in the window ages
+            # out, so that is what the reporter is told to wait for.
+            conn.rollback()
+            raise BugReportRateLimitError(recent[1] + SUBMISSION_WINDOW_SECONDS - now)
+
+        conn.execute(
+            "INSERT INTO submission_attempts (scope, filed_at) VALUES (?, ?)", (scope, now)
+        )
 
     def set_status(
         self,
@@ -235,6 +375,7 @@ class BugReportStore:
         *,
         actor: str = "",
         note: str = "",
+        expected_status: str | None = None,
     ) -> dict:
         """Resolve a report, or reopen one, and return it as it now stands.
 
@@ -242,6 +383,14 @@ class BugReportStore:
         a resolution that no longer holds. The note is kept either way: the
         reason a report was reopened is worth as much as the reason it was
         closed.
+
+        ``expected_status`` is the status the caller believed the report had when
+        it decided to act. Give it and the change is refused with
+        BugReportConflictError if the stored status has moved on since; omit it
+        and the change is applied unconditionally. BEGIN IMMEDIATE alone is not
+        enough here -- it serializes the two writes but still lets the later one
+        overwrite the earlier one's resolution, which is the history being
+        protected.
         """
 
         status = _clean(status, 32).lower()
@@ -256,15 +405,21 @@ class BugReportStore:
         actor = _clean(actor, MAX_REPORTER_CHARS)
         try:
             with self._connect() as conn:
-                # BEGIN IMMEDIATE so the row cannot be resolved by two
-                # administrators at once, each having read it as open.
+                # BEGIN IMMEDIATE so the read and the write are one step. It
+                # orders concurrent changes but does not by itself stop a stale
+                # one landing -- expected_status above is what does that.
                 conn.execute("BEGIN IMMEDIATE")
                 existing = conn.execute(
-                    "SELECT id FROM bug_reports WHERE id = ?", (report_id,)
+                    "SELECT id, status FROM bug_reports WHERE id = ?", (report_id,)
                 ).fetchone()
                 if existing is None:
                     conn.rollback()
                     raise BugReportValidationError(f"No bug report has id {report_id}.")
+                if expected_status is not None and existing["status"] != expected_status:
+                    conn.rollback()
+                    raise BugReportConflictError(
+                        report_id, expected_status, existing["status"]
+                    )
                 if status == STATUS_RESOLVED:
                     conn.execute(
                         """
@@ -288,6 +443,10 @@ class BugReportStore:
                 row = conn.execute(
                     "SELECT * FROM bug_reports WHERE id = ?", (report_id,)
                 ).fetchone()
+        except (BugReportConflictError, BugReportValidationError):
+            # Raised past the sqlite handler below, which would otherwise report
+            # a refused change as an unreachable share.
+            raise
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
         return dict(row)
@@ -306,12 +465,24 @@ class BugReportStore:
 
     # -- reads ------------------------------------------------------------
 
-    def list_reports(self, *, status: str = "all", search: str = "", limit: int = LIST_LIMIT) -> list[dict]:
-        """Reports matching a status filter and a free-text search, newest first.
+    def list_reports(
+        self,
+        *,
+        status: str = "all",
+        search: str = "",
+        limit: int = LIST_LIMIT,
+        offset: int = 0,
+    ) -> dict:
+        """One page of the reports matching a status filter and a free-text search.
 
         Open reports sort above resolved ones whichever filter is in force, and
         within a status the more urgent severity leads -- so the default view is
         already the queue to work through rather than a list to re-sort.
+
+        Returns the page together with how many match in total and whether more
+        remain. A triage list that silently stopped at its limit would drop
+        exactly the oldest reports -- the ones most likely to have been
+        forgotten, in a feature whose point is that nothing filed gets lost.
         """
 
         status = _clean(status, 32).lower() or "all"
@@ -341,8 +512,13 @@ class BugReportStore:
             params.extend([pattern] * 4)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        page_size = max(1, min(int(limit), MAX_LIST_LIMIT))
+        start = max(0, int(offset))
         try:
             with self._connect() as conn:
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM bug_reports {where}", tuple(params)
+                ).fetchone()[0]
                 rows = conn.execute(
                     f"""
                     SELECT * FROM bug_reports
@@ -356,13 +532,19 @@ class BugReportStore:
                              END,
                              created_at DESC,
                              id DESC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    (*params, max(1, int(limit))),
+                    (*params, page_size, start),
                 ).fetchall()
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
-        return [dict(row) for row in rows]
+        reports = [dict(row) for row in rows]
+        return {
+            "reports": reports,
+            "total": int(total),
+            "offset": start,
+            "has_more": start + len(reports) < int(total),
+        }
 
     def summary(self) -> dict:
         """The counts the dashboard's tiles show, in one pass over the table."""
