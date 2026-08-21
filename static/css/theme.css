@@ -153,6 +153,18 @@
   --code-ink: #e6eef5;
   --code-muted: #8fa6b8;
 
+  /* The current-release badge on the patch notes page: a dark chip on a page of
+     light cards, because the version somebody came there to check should be the
+     first thing they find. Dark in both themes for the same reason the code
+     panels above are -- the ink on it is light in both, and a badge built from
+     the --forest-* ramp instead inverted with it, which handed a white version
+     number a near-white fill. Three inks, for the three lines the badge holds. */
+  --spotlight-bg: linear-gradient(150deg, #2f4455, #1d2731);
+  --spotlight-border: rgba(255, 255, 255, 0.08);
+  --spotlight-ink: #ffffff;
+  --spotlight-ink-muted: rgba(255, 255, 255, 0.85);
+  --spotlight-ink-soft: rgba(255, 255, 255, 0.78);
+
   /* Status colours. Kept out of the ramp because they mean something -- a red
      here is "this failed", not "this is decorative" -- and they are lightened
      rather than inverted for the dark theme so they stay recognisable. */
@@ -281,6 +293,14 @@
   --code-bg: #0a1016;
   --code-ink: #dbe6f0;
   --code-muted: #8fa6b8;
+
+  /* Deeper than the cards it sits on rather than lighter, so the badge is still
+     the one surface that stands apart from them, and the ink stays light. */
+  --spotlight-bg: linear-gradient(150deg, #16222c, #080d12);
+  --spotlight-border: rgba(255, 255, 255, 0.14);
+  --spotlight-ink: #eaf1f7;
+  --spotlight-ink-muted: rgba(234, 241, 247, 0.85);
+  --spotlight-ink-soft: rgba(234, 241, 247, 0.78);
 
   --danger-tint: rgba(240, 141, 128, 0.18);
   --danger-tint-soft: rgba(240, 141, 128, 0.1);

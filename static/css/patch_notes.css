@@ -22,14 +22,22 @@
 .patch-hero-copy { min-width: 0; }
 
 /* The one dark surface on the page, because the version somebody came here to
-   check should be the first thing they find. Its own colours are restated for
-   that reason: the shared heading and body colours are picked for light cards
-   and would not survive this background. */
+   check should be the first thing they find. Every colour on it comes from the
+   --spotlight-* group in theme.css, which is a background and the inks that
+   belong on it: the badge stays dark and its ink stays light in either theme.
+   The --forest-* ramp cannot do that -- it inverts, so a badge built from it
+   turned near-white in the dark theme with the white version number still on
+   top of it. */
 .patch-current {
   border-radius: 16px;
   padding: 1rem 1.2rem;
-  background: linear-gradient(150deg, var(--forest-800), var(--forest-950));
-  box-shadow: 0 16px 32px rgba(6, 43, 28, 0.18);
+  background: var(--spotlight-bg);
+  /* The hairline is an inset ring rather than a border so it costs the badge no
+     width: it is there to hold the card's edge against the dark theme's page,
+     where a dark chip on a dark card would otherwise have none. */
+  box-shadow:
+    0 16px 32px rgba(var(--shadow-ink), 0.18),
+    inset 0 0 0 1px var(--spotlight-border);
   display: grid;
   gap: 0.15rem;
 }
@@ -39,14 +47,14 @@
   letter-spacing: 0.09em;
   font-size: 0.7rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--spotlight-ink-soft);
 }
 
 .patch-current-version {
   font-size: clamp(1.8rem, 1.4rem + 1vw, 2.3rem);
   font-weight: 700;
   line-height: 1.1;
-  color: #fff;
+  color: var(--spotlight-ink);
   /* Lining figures of one width, so 0.10.0 and 0.11.0 do not shift the number
      around as releases go by. */
   font-variant-numeric: tabular-nums;
@@ -54,7 +62,7 @@
 
 .patch-current-date {
   font-size: 0.82rem;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--spotlight-ink-muted);
 }
 
 /* ---- jump list ----------------------------------------------------------- */
@@ -91,7 +99,7 @@
   padding: 0.28rem 0.7rem;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--surface-veil);
   color: var(--forest-800);
   font-size: 0.82rem;
   font-weight: 600;
@@ -103,9 +111,9 @@
 .patch-jump-link:hover,
 .patch-jump-link:focus-visible {
   transform: translateY(-1px);
-  background: var(--forest-800);
-  border-color: var(--forest-800);
-  color: #fff;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
 }
 
 .patch-jump-link:focus-visible {
@@ -124,8 +132,10 @@
 /* The accent stripe is painted as a background layer rather than a border or an
    absolutely positioned bar: a background is clipped by the card's own radius
    for free, and it leaves the card free of `overflow: hidden`, which would
-   otherwise stop the meta column below from sticking. The second layer restates
-   .glass-card's gradient, since declaring `background` at all replaces it. */
+   otherwise stop the meta column below from sticking. The second layer is
+   .glass-card's own gradient, named rather than copied out: declaring
+   `background` at all replaces it, and a copy of the light theme's colours left
+   these cards white under the dark theme's light body text. */
 .patch-release {
   display: grid;
   grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
@@ -133,7 +143,7 @@
   padding: 1.5rem 1.5rem 1.5rem 1.75rem;
   background:
     linear-gradient(90deg, var(--forest-500) 0 4px, transparent 4px),
-    linear-gradient(140deg, rgba(255, 255, 255, 0.93), rgba(229, 245, 236, 0.85));
+    var(--glass-bg);
   /* Room above a release the jump list has just scrolled to. */
   scroll-margin-top: 1.5rem;
 }
@@ -142,7 +152,7 @@
 .patch-timeline > .patch-release:first-child {
   background:
     linear-gradient(90deg, var(--forest-800) 0 4px, transparent 4px),
-    linear-gradient(140deg, rgba(255, 255, 255, 0.93), rgba(229, 245, 236, 0.85));
+    var(--glass-bg);
 }
 
 /* Staggered the way .card-grid staggers its own cards. */
@@ -202,9 +212,13 @@
   white-space: nowrap;
 }
 
+/* The one filled chip of the set. --accent-solid rather than a step of the
+   ramp, for the reason theme.css gives it: a fill needs a colour that stays a
+   background when the ramp inverts, and it arrives paired with the ink that
+   belongs on it. */
 .patch-chip.is-latest {
-  background: var(--forest-800);
-  color: #fff;
+  background: var(--accent-solid);
+  color: var(--accent-solid-ink);
 }
 
 .patch-chip.is-features {
@@ -333,16 +347,18 @@
 }
 
 /* ---- nothing to show ----------------------------------------------------- */
-/* Same palette as the metrics dashboard's error banner, so a page that cannot
-   reach its source looks the same wherever it happens in GREMLIN. */
+/* The same three tokens as the metrics dashboard's error banner
+   (.metrics-banner.is-error), so a page that cannot reach its source looks the
+   same wherever it happens in GREMLIN -- and so the card follows the theme
+   rather than staying a pale pink rectangle under it. */
 .patch-unavailable {
   display: grid;
   gap: 0.6rem;
-  border-color: rgba(217, 138, 138, 0.5);
-  background: linear-gradient(140deg, rgba(255, 255, 255, 0.95), rgba(251, 236, 236, 0.9));
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }
 
-.patch-unavailable h2 { color: #7d2b2b; }
+.patch-unavailable h2 { color: var(--danger-ink); }
 .patch-unavailable-path { font-size: 0.85rem; }
 
 .patch-unavailable-path code {
@@ -351,7 +367,7 @@
   padding: 0.1rem 0.35rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.75);
+  background: var(--surface-veil);
   /* The share path is long and has no spaces to break on; without this it
      pushes the card into a horizontal scroll on a narrow window. */
   overflow-wrap: anywhere;
