@@ -262,20 +262,40 @@ def test_the_wipe_notices_a_display_that_differs_only_in_scale():
     assert "dppx" in source and "resolution: " in source
 
 
-def test_a_display_change_mid_wipe_ends_the_wipe():
-    """The keyframes are fixed pixel lengths, and cannot be renegotiated.
+def test_a_display_change_mid_wipe_takes_the_whole_transition_down():
+    """Ending the clip-path animation on its own would not be enough.
 
-    Once the window is a different size they describe a circle centred off the
-    button and short of the corners, which would band the old theme around the
-    edge for the rest of the run. Jumping to the end is the one outcome that
-    cannot look wrong.
+    Filling the window with the new theme still leaves what fills it a
+    photograph, and it is the browser's own animation on
+    `::view-transition-group(root)` that sizes that photograph. theme.css turns
+    animation off on the old and new snapshots but not on the group, so the group
+    keeps running -- and keeps stretching the snapshot towards the shape of the
+    new window -- for as long as it has left. Skipping takes the snapshot tree
+    down instead and puts back the live page, which is already in the new theme
+    and already laid out for the display it is now on.
     """
     source = TOPBAR_JS.read_text()
     reveal = source[source.index("function reveal("):source.index("function switchTo(")]
     assert "onViewportChange" in reveal
-    assert "animation.finish()" in reveal
-    # Both signals, and both taken off again -- a listener left behind would
-    # outlive its animation and finish an object nothing is drawing with.
+    # Both ways a moved window can land: across the two photographs, and mid-wipe.
+    assert reveal.count("skipTransition()") == 2, "both paths have to drop the transition"
+    # Both signals, and both taken off again when the transition is -- a listener
+    # left behind would outlive the thing it was watching for.
     assert 'addEventListener("resize"' in source
     assert 'removeEventListener("resize"' in source
-    assert "animation.finished" in reveal
+    assert "transition.finished" in reveal
+
+
+def test_the_group_snapshot_is_why_finishing_the_clip_is_not_enough():
+    """The premise of the test above, asserted where it actually lives.
+
+    Three pseudo-elements carry animations during a view transition and theme.css
+    silences two of them. If the group is ever silenced as well then finishing the
+    clip would be enough, and the reasoning above stops being true -- but so would
+    the transition's own lifetime, which is what the group's animation holds open.
+    Either way it is worth knowing that this changed.
+    """
+    css = THEME_CSS.read_text()
+    silenced = css[css.index("::view-transition-old(root)"):css.index("is-theme-switching")]
+    assert "animation: none;" in silenced
+    assert "::view-transition-group(root)" not in silenced

@@ -184,7 +184,7 @@
           Math.max(y, window.innerHeight - y)
         );
 
-        const animation = root.animate(
+        root.animate(
           {
             clipPath: [
               "circle(0px at " + x + "px " + y + "px)",
@@ -202,15 +202,21 @@
         // lengths, worked out for the window as it was a moment ago; once it is a
         // different size they describe a circle centred off the button and short
         // of the corners, which would leave the old theme banded around the edge
-        // for the rest of the run. Jumping to the end puts the page in the state
-        // the animation was going to reach anyway, a few hundred milliseconds
-        // early -- which is the one thing here that cannot look wrong.
-        const stopWatching = onViewportChange(() => {
-          if (animation.playState === "running") animation.finish();
-        });
-        // Cancelled as well as finished: a second switch started over the top of
-        // this one drops the animation, and the listeners have to go with it.
-        animation.finished.catch(() => {}).then(stopWatching);
+        // for the rest of the run.
+        //
+        // Dropped rather than hurried to the end. Finishing the clip would fill
+        // the window with the new theme, but what it filled the window with would
+        // still be a photograph -- and the browser's own animation on
+        // ::view-transition-group(root) is what sizes that photograph. That one is
+        // not among the two theme.css turns off, so it keeps running, and keeps
+        // stretching the snapshot towards the shape of the new window, for as long
+        // as it has left. Skipping takes the whole snapshot tree down instead and
+        // puts the live page back: already in the new theme, and already laid out
+        // for the display it is now on.
+        const stopWatching = onViewportChange(() => transition.skipTransition());
+        // Off when the transition is, however it ended -- including skipped by the
+        // next switch starting over the top of this one.
+        transition.finished.catch(() => {}).then(stopWatching);
       })
       // `ready` rejects when the transition is skipped -- another one started, or
       // the tab was hidden mid-flight. The theme is applied either way, so there
