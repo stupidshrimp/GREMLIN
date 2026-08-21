@@ -1,12 +1,122 @@
 {% extends "base.html" %}
 
-{#- Placeholder. The footer links here already so the shell can be reviewed; the
-    reporting form is still to be built. -#}
+{#- The form anyone can reach from the footer, signed in or not. Deliberately
+    short: a title, what happened, and two optional questions that only need a
+    click. Every extra required box is somebody deciding not to bother. -#}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/bug_report.css') }}">
+{% endblock %}
 
 {% block content %}
-<section class="glass-card fade-in-up">
+{% if submitted_id %}
+{#- Landed here by the redirect that follows a successful post, so a refresh
+    cannot file the report twice. -#}
+<section class="glass-card fade-in-up bug-thanks" role="status">
+  <p class="eyebrow">Report a Bug</p>
+  <h1>Thanks &mdash; that's filed.</h1>
+  <p class="hero-copy">
+    Your report is number <strong>#{{ submitted_id }}</strong>. It is on the
+    reliability team's list now; quote that number if you need to follow it up.
+  </p>
+  <p class="bug-thanks-actions">
+    <a class="btn-primary" href="{{ url_for('report_a_bug') }}">Report another</a>
+    <a class="btn-secondary" href="{{ url_for('home') }}">Back to Home</a>
+  </p>
+</section>
+{% else %}
+<section class="glass-card fade-in-up bug-intro">
   <p class="eyebrow">Report a Bug</p>
   <h1>Something not working?</h1>
-  <p class="hero-copy">This page is not written yet.</p>
+  <p class="hero-copy">
+    Tell us what happened and we will look into it. You do not need an account, and
+    there is no wrong way to fill this in &mdash; a sentence in your own words is more
+    useful than a blank form.
+  </p>
 </section>
+
+{% if error %}
+<div class="bug-error" role="alert">{{ error }}</div>
+{% endif %}
+
+<section class="glass-card slide-in bug-form-card">
+  <form method="post" action="{{ url_for('report_a_bug') }}" class="bug-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {#- Filled in by the browser so the report says which page it was filed
+        from. Harmless if scripting is off: the field simply stays empty. -#}
+    <input type="hidden" name="page_url" id="bug-page-url" value="">
+
+    <div class="bug-field">
+      <label for="bug-title">What went wrong?</label>
+      <p class="bug-hint">One line. &ldquo;The metrics charts are blank&rdquo; is plenty.</p>
+      <input id="bug-title" name="title" type="text" maxlength="200" required
+             autocomplete="off"
+             value="{{ form_values.title if form_values else '' }}">
+    </div>
+
+    <div class="bug-field">
+      <label for="bug-description">What happened?</label>
+      <p class="bug-hint">
+        What you were doing, what you expected, and what you got instead. Any error
+        message you saw helps a lot.
+      </p>
+      <textarea id="bug-description" name="description" rows="7" maxlength="8000" required>{{ form_values.description if form_values else '' }}</textarea>
+    </div>
+
+    <div class="bug-field-row">
+      <div class="bug-field">
+        <label for="bug-area">Where in GREMLIN?</label>
+        <select id="bug-area" name="area">
+          <option value="">Not sure</option>
+          {% for area in areas %}
+          <option value="{{ area }}" {% if form_values and form_values.area == area %}selected{% endif %}>{{ area }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="bug-field">
+        <label for="bug-severity">How much is it getting in the way?</label>
+        {#- Worded by what it stops you doing rather than by a severity scale:
+            the person filing knows the first and is guessing at the second. -#}
+        <select id="bug-severity" name="severity">
+          {#- Kept short enough to read inside a collapsed <select> at this
+              column's width, on a phone as well as a desktop: an option that is
+              truncated to "...I can work arou" is not the plain-language
+              wording it was written to be. -#}
+          <option value="minor" {% if not form_values or form_values.severity == 'minor' %}selected{% endif %}>
+            Minor &mdash; I can work around it
+          </option>
+          <option value="major" {% if form_values and form_values.severity == 'major' %}selected{% endif %}>
+            Major &mdash; part of my job is blocked
+          </option>
+          <option value="blocking" {% if form_values and form_values.severity == 'blocking' %}selected{% endif %}>
+            Blocking &mdash; I am completely stuck
+          </option>
+        </select>
+      </div>
+    </div>
+
+    <div class="bug-field">
+      <label for="bug-reporter">Your name <span class="bug-optional">(optional)</span></label>
+      <p class="bug-hint">So we can come back to you if we need more detail.</p>
+      <input id="bug-reporter" name="reporter" type="text" maxlength="128" autocomplete="name"
+             value="{{ form_values.reporter if form_values else reporter_name }}">
+    </div>
+
+    <div class="bug-actions">
+      <button type="submit" class="btn-primary">Send report</button>
+    </div>
+  </form>
+</section>
+
+<script>
+  // Where the reporter came from, which is almost always the page that broke.
+  // Set here rather than server-side because the server only ever sees this
+  // page's own URL.
+  (function () {
+    var field = document.getElementById("bug-page-url");
+    if (field) field.value = document.referrer || "";
+  })();
+</script>
+{% endif %}
 {% endblock %}

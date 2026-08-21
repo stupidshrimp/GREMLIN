@@ -430,6 +430,14 @@ body:has(.dev-panel) .content,
   color: var(--muted);
 }
 
+/* Between ok and warn. Without it "blocking" and "major" would both be the
+   danger tint, and the queue's most urgent report would not stand out from the
+   merely urgent one. */
+.dev-pill-major {
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+}
+
 /* --- Schema explorer ----------------------------------------------------- */
 
 .dev-split {
@@ -571,7 +579,8 @@ body:has(.dev-panel) .content,
 }
 
 .dev-field select,
-.dev-field input[type="date"] {
+.dev-field input[type="date"],
+.dev-field input[type="search"] {
   font: inherit;
   padding: 8px 12px;
   border: 1px solid var(--border);
@@ -884,4 +893,136 @@ body:has(.dev-panel) .content,
   margin: 8px 0 0;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+
+/* --- Bug reports --------------------------------------------------------- */
+
+.dev-bug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* One report is a <details>: the list stays scannable, and the description --
+   which can run to paragraphs -- is one click away rather than a column that
+   wraps. Collapsed, the row carries everything needed to triage without
+   opening it. */
+.dev-bug {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil-soft);
+  overflow: hidden;
+}
+
+/* A resolved report stays legible but stops competing with the open ones above
+   it, which is the whole reason the list is sorted the way it is. */
+.dev-bug.is-resolved {
+  opacity: 0.75;
+}
+
+.dev-bug-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+
+.dev-bug-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dev-bug-summary:hover {
+  background: var(--forest-100);
+}
+
+.dev-bug-summary:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: -2px;
+}
+
+.dev-bug-id {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* Takes the slack so the pills and the date sit at the right-hand end at any
+   width, and wraps rather than truncating: a title cut off mid-sentence is the
+   one part of a report that has to be readable without opening it. */
+.dev-bug-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.dev-bug-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dev-bug-when {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.dev-bug-body {
+  padding: 4px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* The reporter's own line breaks are usually the steps to reproduce, so they
+   are preserved rather than collapsed into a paragraph. */
+.dev-bug-description {
+  margin: 12px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.dev-bug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dev-bug-note {
+  font: inherit;
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.dev-bug-note:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+.dev-bug-actions button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Destructive, and the only irreversible action on the page, so it is coloured
+   as one rather than sitting there looking like Reopen. */
+.dev-bug-delete {
+  color: var(--danger-strong);
+  border-color: var(--danger-tint-border);
 }
