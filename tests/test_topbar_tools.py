@@ -218,3 +218,62 @@ def test_chart_pages_serve_the_palette_reader(monkeypatch, tmp_path, page, scrip
     """And it survives rendering, for the pages a visitor can actually reach."""
     body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
     assert body.index("chart_theme.js") < body.index(script), page
+
+
+# --- the theme wipe ---------------------------------------------------------
+# Switching themes grows a circle of the new theme out of the toggle, drawn onto
+# ::view-transition-new(root) -- a snapshot the browser owns rather than any part
+# of this page. A pixel in there is not obliged to be a pixel out here, and on a
+# display running at 250% it is not: a shape given in this page's pixels comes out
+# scaled towards the top left corner. That put the circle in the top middle
+# instead of the top right and left the radius about 39% of what it needed, so the
+# wipe stalled partway and the rest of the screen arrived at once when the clip
+# reverted. Percentages resolve against the snapshot's own box, which is the one
+# thing both spaces agree on.
+
+TOPBAR_JS = STATIC_JS / "topbar_tools.js"
+
+
+def _reveal():
+    """The body of reveal(), which is the only place the circle is measured."""
+    source = TOPBAR_JS.read_text()
+    return source[source.index("function reveal("):source.index("function switchTo(")]
+
+
+def test_the_circle_is_given_in_the_snapshot_s_own_units():
+    """A length in this page's pixels means nothing to the snapshot it is handed
+    to. This is the whole bug, and `px at` is exactly what it looked like."""
+    reveal = _reveal()
+    assert "% at " in reveal, "the circle has to be placed in percentages"
+    assert "px at " not in reveal, "a page pixel handed to the snapshot is the bug"
+
+
+def test_the_radius_is_converted_against_the_diagonal_and_not_a_side():
+    """CSS resolves a percentage radius against `hypot(w, h) / sqrt(2)` -- not
+    against the width, and not against the diagonal on its own.
+
+    Converting against either of those instead still looks plausible and still
+    animates; it just quietly stops short of the corner on most window shapes,
+    which is the same failure this whole section exists to prevent.
+    """
+    reveal = _reveal()
+    assert "Math.SQRT2" in reveal
+    assert "Math.hypot(width, height)" in reveal
+
+
+def test_the_reach_is_measured_to_the_furthest_corner():
+    """The button sits in a corner, so the circle has to cross the whole diagonal
+    to clear the window -- the nearer corner is not what it has to reach."""
+    reveal = _reveal()
+    assert "Math.max(x, width - x)" in reveal
+    assert "Math.max(y, height - y)" in reveal
+
+
+def test_the_window_is_measured_once():
+    """`innerWidth` is read for the reach and again for the conversion. Reading it
+    fresh each time is how the two halves end up describing different windows if
+    anything moves in between -- which, on a laptop being docked and undocked, is
+    a thing that happens."""
+    reveal = _reveal()
+    assert reveal.count("window.innerWidth") == 1
+    assert reveal.count("window.innerHeight") == 1
