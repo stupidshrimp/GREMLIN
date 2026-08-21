@@ -363,13 +363,67 @@
   outline-offset: 2px;
 }
 table.metrics-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+/* `max-content` rather than `100%`, with `100%` kept as the floor.
+   ------------------------------------------------------------------------
+   At `width: 100%` a table wider than its scroll container has to find the
+   difference somewhere, and it takes it all from the columns that are able to
+   give: the nowrap ones cannot shrink below their text, so every pixel comes
+   out of the wrapping ones, which collapse to their min-width and stack up
+   forty lines tall while a date column sits on 100px of slack beside them.
+   Sizing to content instead lets each column take what it needs -- capped, for
+   the text columns, by the max-width below -- and hands the overflow to the
+   scroll container, which is what it is there for. The `min-width` keeps a
+   table that already fits filling the width exactly as before.
+
+   Scoped to the wide data tables, for the same reason the height cap above is:
+   the Settings page's four-column config tables have no overflow to manage and
+   would only gain a scrollbar from it. */
+.metrics-card table.metrics-table,
+.metrics-modal table.metrics-table {
+  width: max-content;
+  min-width: 100%;
+}
 table.metrics-table th,
 table.metrics-table td {
   padding: 0.55rem 0.7rem;
   text-align: left;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+  /* Once a column wraps, its neighbours have to line up with the first line of
+     it rather than float in the middle of the tallest cell in the row. */
+  vertical-align: top;
 }
+/* Anything overriding `white-space` or `text-align` for one column has to
+   out-specify the rule above, which is (0,1,2). A bare `.availability-wo-name`
+   is (0,1,0) and loses -- which is how the text columns below ended up clamped
+   to a max-width they were never allowed to wrap inside: the content kept its
+   nowrap intrinsic width, overflowed the cell box, and painted straight across
+   the column beside it. Every per-column rule that touches one of those two
+   properties is therefore written `table.metrics-table td.<class>`. */
+
+/* The text columns: prose and machine names, which wrap inside their own cell.
+   `overflow-wrap` is what keeps that promise for a single space-less run -- a
+   part number, a pasted URL -- which otherwise sets the cell's minimum width on
+   its own and spills over the edge exactly the way nowrap text did.
+
+   `break-word` and not `anywhere`: the two break identically once a line has to
+   be broken, but `anywhere` also lets the *intrinsic* minimum drop to a single
+   character, and an auto-layout table reads that as licence to squeeze the
+   column to nothing -- the notes end up one letter wide and forty lines tall.
+   `break-word` leaves the column its natural minimum and breaks only the runs
+   that would otherwise overflow. */
+table.metrics-table td.availability-detail-asset,
+table.metrics-table td.availability-detail-notes,
+table.metrics-table td.availability-wo-name,
+table.metrics-table td.availability-wo-asset {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+/* The number columns: right-aligned so the digits line up under each other and
+   the column can be read down. The heading follows the cells -- `.metrics-sort`
+   already flips its own contents to the same edge. */
+table.metrics-table td.availability-cell { text-align: right; }
+table.metrics-table th.is-numeric { text-align: right; }
 table.metrics-table thead th {
   background: var(--forest-100);
   color: var(--forest-800);
@@ -529,13 +583,28 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 .availability-group-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .availability-mode-toggle { padding: 0.3rem 0.7rem; font-size: 0.78rem; }
 
+/* The frozen column paints over the cells sliding under it, so it needs a fill
+   of its own -- but a fill hard-coded to one colour is the row's colour on only
+   half the rows, and shows as a white notch down the left edge of every zebra
+   stripe and both summary rows. Giving the rows an opaque background and having
+   the frozen cells inherit it keeps the column part of the row it belongs to.
+   This is what .availability-detail-table already does. */
+table.availability-table tbody tr { background: var(--surface); }
+table.availability-table tbody tr.availability-summary-row { background: var(--forest-100); }
 table.availability-table td:first-child,
 table.availability-table th:first-child {
   position: sticky;
   left: 0;
-  background: var(--surface);
+  background: inherit;
   font-weight: 600;
   z-index: 1;
+  /* The only edge in a table drawn with horizontal rules alone, because it is
+     the only one that means something: it marks where the frozen column ends
+     and the scrolling ones begin. Without it a half-scrolled column reads as a
+     second value crowding the asset name. An inset shadow rather than a border
+     -- border-collapse would hand a real border to the neighbouring cell, which
+     is the cell that scrolls away. */
+  box-shadow: inset -1px 0 0 var(--border);
 }
 /* The corner cell is sticky on both axes at once, so it has to outrank the
    header row it sits in as well as the column below it. */
@@ -555,8 +624,10 @@ table.availability-table thead th:first-child { background: var(--forest-100); z
   font-style: italic;
 }
 
-.availability-summary-row td { font-weight: 600; background: var(--forest-100); }
-.availability-summary-row td:first-child { background: var(--forest-100); }
+/* The fill is on the row (above), not on these cells: the frozen first column
+   inherits it from there, and a second copy here would only be a second place
+   to forget to change. */
+.availability-summary-row td { font-weight: 600; }
 
 .availability-input {
   width: 5.2rem;
@@ -821,15 +892,25 @@ table.availability-detail-table th:first-child {
   left: 0;
   background: inherit;
   z-index: 1;
+  /* Marks the frozen edge -- see the note on .availability-table above. */
+  box-shadow: inset -1px 0 0 var(--border);
 }
 table.availability-detail-table thead th:first-child { background: var(--forest-100); z-index: 3; }
 /* The marker goes on the cell rather than the row: a box-shadow on a <tr> under
-   border-collapse renders inconsistently across browsers. */
+   border-collapse renders inconsistently across browsers. Both shadows are
+   listed because `box-shadow` replaces rather than adds -- naming only the
+   focus marker here would take the frozen column's right edge off the one row
+   the reader is looking at. */
 table.availability-detail-table tbody tr.is-focused td:first-child {
-  box-shadow: inset 3px 0 0 var(--forest-700);
+  box-shadow: inset 3px 0 0 var(--forest-700), inset -1px 0 0 var(--border);
 }
 
-.availability-detail-asset { font-weight: 600; }
+/* Sized in `ch` rather than `rem` so the cap tracks the text it is capping: a
+   column measured in characters stays the same number of words wide whatever
+   the font settles at. The asset column is the sticky one, so every character
+   it is allowed to run to is a character permanently off the front of the
+   scrollable area -- two short lines read better here than one long one. */
+.availability-detail-asset { font-weight: 600; min-width: 16ch; max-width: 30ch; }
 .availability-detail-sub {
   display: block;
   font-weight: 500;
@@ -840,7 +921,7 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 .availability-detail-delta.is-below { color: var(--danger-strong); font-weight: 700; }
 .availability-detail-delta.is-above { color: var(--forest-700); }
 
-.availability-detail-notes { white-space: normal; min-width: 15rem; max-width: 26rem; }
+.availability-detail-notes { min-width: 20ch; max-width: 40ch; }
 .availability-detail-flag {
   display: inline-block;
   margin: 0.1rem 0.3rem 0.1rem 0;
@@ -947,8 +1028,8 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
 .availability-wo-caveat.is-warn { color: var(--warning-ink); font-weight: 600; }
 
 .availability-wo-id { font-variant-numeric: tabular-nums; color: var(--muted); }
-.availability-wo-name { white-space: normal; min-width: 16rem; max-width: 28rem; font-weight: 600; }
-.availability-wo-asset { font-weight: 600; }
+.availability-wo-name { min-width: 22ch; max-width: 42ch; font-weight: 600; }
+.availability-wo-asset { font-weight: 600; min-width: 14ch; max-width: 26ch; }
 .availability-wo-when { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .availability-wo-counted { font-weight: 700; }
 .availability-wo-counted.is-quiet { font-weight: 500; color: var(--muted); }
@@ -983,6 +1064,10 @@ table.availability-wo-table tfoot td:first-child {
   left: 0;
   z-index: 4;
   background: var(--forest-100);
+  /* Carries the total row's top rule and the frozen column's right edge, for
+     the same reason as the focused row above: the two cannot be inherited
+     separately from the rules they each come from. */
+  box-shadow: inset 0 2px 0 var(--forest-500), inset -1px 0 0 var(--border);
 }
 
 @media (max-width: 860px) {
