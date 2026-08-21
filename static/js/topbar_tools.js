@@ -115,23 +115,42 @@
 
     transition.ready
       .then(() => {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
         const box = origin.getBoundingClientRect();
         const x = box.left + box.width / 2;
         const y = box.top + box.height / 2;
         // Far enough to clear the window: the distance to whichever corner is
         // furthest from the button, which is the longest of the two horizontal
         // and two vertical reaches combined.
-        const radius = Math.hypot(
-          Math.max(x, window.innerWidth - x),
-          Math.max(y, window.innerHeight - y)
-        );
+        const radius = Math.hypot(Math.max(x, width - x), Math.max(y, height - y));
+
+        // All four of those are CSS pixels of *this page*. The circle is not
+        // drawn on this page: it is drawn on ::view-transition-new(root), a
+        // snapshot the browser owns, and a pixel in there is not obliged to be
+        // the pixel out here. On a display running at 250% it is not, and the
+        // whole shape comes out scaled towards the top left corner -- so the
+        // button in the top right draws its circle from the top middle, and a
+        // radius that should have reached the far corner gives up around halfway
+        // through. The clip then reverts to none as the animation ends, which is
+        // the rest of the screen arriving all at once.
+        //
+        // Percentages are resolved against the snapshot's own box, so they carry
+        // over. Turning the measurements into them here is the last point at
+        // which this page's pixels are involved at all.
+        //
+        // A percentage radius is measured against the box's diagonal over root
+        // two rather than against either side, so that is what the radius has to
+        // be given as a fraction of. Both are lengths on this page and the units
+        // cancel, which is the whole point.
+        const atX = (x / width) * 100;
+        const atY = (y / height) * 100;
+        const reach = (radius * Math.SQRT2 * 100) / Math.hypot(width, height);
+        const circle = (r) => "circle(" + r + "% at " + atX + "% " + atY + "%)";
 
         root.animate(
           {
-            clipPath: [
-              "circle(0px at " + x + "px " + y + "px)",
-              "circle(" + radius + "px at " + x + "px " + y + "px)",
-            ],
+            clipPath: [circle(0), circle(reach)],
           },
           {
             duration: REVEAL_MS,
