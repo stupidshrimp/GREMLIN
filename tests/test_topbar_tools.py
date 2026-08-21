@@ -218,3 +218,64 @@ def test_chart_pages_serve_the_palette_reader(monkeypatch, tmp_path, page, scrip
     """And it survives rendering, for the pages a visitor can actually reach."""
     body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
     assert body.index("chart_theme.js") < body.index(script), page
+
+
+# --- the theme wipe ---------------------------------------------------------
+# Switching to dark grows a circle of the new theme out of the toggle, drawn over
+# a pair of photographs the browser takes of the window either side of the swap.
+# All three of those -- the circle, and both photographs -- are sized in the CSS
+# pixels of one particular window, so any of them being measured for a *different*
+# window is a visibly broken animation rather than an error: the wipe comes out of
+# the wrong place, or stops short and leaves a band of the old theme around the
+# edge until it snaps. Dragging the browser from one display to another is how
+# that happens in practice -- a laptop panel and a desk monitor rarely agree on
+# either the CSS size of a window or its device pixel ratio.
+
+TOPBAR_JS = STATIC_JS / "topbar_tools.js"
+
+
+def test_the_wipe_is_measured_against_the_window_that_was_photographed():
+    """The reading has to happen before the browser is asked for the transition.
+
+    `transition.ready` resolves a couple of frames after the request, and a
+    display change landing in between means the two photographs are of two
+    differently sized windows. Reading the window only inside `ready` cannot tell
+    that apart from a window that never moved.
+    """
+    source = TOPBAR_JS.read_text()
+    assert source.index("captured = viewport()") < source.index("startViewTransition")
+    assert "viewport() !== captured" in source
+    assert "skipTransition" in source
+
+
+def test_the_wipe_notices_a_display_that_differs_only_in_scale():
+    """A Retina laptop panel and a 1x desk monitor can report the same CSS size.
+
+    Nothing about `innerWidth` and `innerHeight` moves in that case, so a check
+    written on those alone would call the window unchanged while the browser
+    re-rasterises both photographs at a different scale. `devicePixelRatio` is
+    what separates the two, and `resolution` is the media feature that reports it
+    changing -- a resize event is not guaranteed for it.
+    """
+    source = TOPBAR_JS.read_text()
+    assert "devicePixelRatio" in source
+    assert "dppx" in source and "resolution: " in source
+
+
+def test_a_display_change_mid_wipe_ends_the_wipe():
+    """The keyframes are fixed pixel lengths, and cannot be renegotiated.
+
+    Once the window is a different size they describe a circle centred off the
+    button and short of the corners, which would band the old theme around the
+    edge for the rest of the run. Jumping to the end is the one outcome that
+    cannot look wrong.
+    """
+    source = TOPBAR_JS.read_text()
+    reveal = source[source.index("function reveal("):source.index("function switchTo(")]
+    assert "onViewportChange" in reveal
+    assert "animation.finish()" in reveal
+    # Both signals, and both taken off again -- a listener left behind would
+    # outlive its animation and finish an object nothing is drawing with.
+    assert 'addEventListener("resize"' in source
+    assert 'removeEventListener("resize"' in source
+    assert "animation.finished" in reveal

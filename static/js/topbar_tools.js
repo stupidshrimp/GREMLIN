@@ -44,6 +44,41 @@
   // the page on every load.
   const current = () => (root.getAttribute("data-theme") === "dark" ? "dark" : "light");
 
+  // Everything the wipe's geometry is measured against, as one string, so that
+  // the window it was measured for can be compared against the window it is
+  // being drawn into. Both halves of it move when the browser is dragged from
+  // one display to another: a different scale factor makes the same pane of
+  // glass a different number of CSS pixels across, and a laptop panel and a desk
+  // monitor can report the same CSS size at two different device pixel ratios.
+  const viewport = () =>
+    window.innerWidth + "x" + window.innerHeight + "@" + (window.devicePixelRatio || 1);
+
+  // Calls `handler` once -- the first time the window stops being the one the
+  // wipe was measured for -- and hands back the way to stop listening. `resize`
+  // is the usual signal, since most display changes do change the CSS size. A
+  // move between two displays that differ *only* in scale factor changes no CSS
+  // size and need not fire a resize at all; `resolution` is the media feature
+  // that reports that one.
+  function onViewportChange(handler) {
+    const scale = window.matchMedia(
+      "(resolution: " + (window.devicePixelRatio || 1) + "dppx)"
+    );
+
+    function fire() {
+      stop();
+      handler();
+    }
+
+    function stop() {
+      window.removeEventListener("resize", fire);
+      scale.removeEventListener("change", fire);
+    }
+
+    window.addEventListener("resize", fire);
+    scale.addEventListener("change", fire);
+    return stop;
+  }
+
   function apply(theme) {
     root.setAttribute("data-theme", theme);
 
@@ -110,11 +145,34 @@
   // makes it look like a light being turned on rather than a thousand things
   // changing at once. The circle grows from the button that was pressed, so the
   // change visibly comes from there.
+  //
+  // All of that is measured in the pixels of one particular window, and stops
+  // being true the moment the window is a different size. Dragging the browser
+  // between two displays is how that happens in practice, so both of the places
+  // it can land -- across the two photographs, and mid-wipe -- are handled below.
   function reveal(theme, origin) {
+    // Read before the transition is asked for, so it describes the window the
+    // browser is about to photograph rather than the window a couple of frames
+    // later.
+    const captured = viewport();
     const transition = document.startViewTransition(() => apply(theme));
 
     transition.ready
       .then(() => {
+        // The two photographs the browser is now holding were taken a frame
+        // apart. A display change landing in that gap means they are of two
+        // differently sized windows: the browser stretches one to the other's
+        // shape, and the radius worked out below -- measured against whichever of
+        // them is current -- falls short of the corner it was aimed at, so the
+        // wipe stops with a band of the old theme still showing and then snaps.
+        // No circle is right for both, and nothing is lost by dropping the
+        // animation: `apply` has already run, so the theme is on the page either
+        // way.
+        if (viewport() !== captured) {
+          transition.skipTransition();
+          return;
+        }
+
         const box = origin.getBoundingClientRect();
         const x = box.left + box.width / 2;
         const y = box.top + box.height / 2;
@@ -126,7 +184,7 @@
           Math.max(y, window.innerHeight - y)
         );
 
-        root.animate(
+        const animation = root.animate(
           {
             clipPath: [
               "circle(0px at " + x + "px " + y + "px)",
@@ -139,6 +197,20 @@
             pseudoElement: "::view-transition-new(root)",
           }
         );
+
+        // And the same change arriving mid-wipe. Those keyframes are fixed pixel
+        // lengths, worked out for the window as it was a moment ago; once it is a
+        // different size they describe a circle centred off the button and short
+        // of the corners, which would leave the old theme banded around the edge
+        // for the rest of the run. Jumping to the end puts the page in the state
+        // the animation was going to reach anyway, a few hundred milliseconds
+        // early -- which is the one thing here that cannot look wrong.
+        const stopWatching = onViewportChange(() => {
+          if (animation.playState === "running") animation.finish();
+        });
+        // Cancelled as well as finished: a second switch started over the top of
+        // this one drops the animation, and the listeners have to go with it.
+        animation.finished.catch(() => {}).then(stopWatching);
       })
       // `ready` rejects when the transition is skipped -- another one started, or
       // the tab was hidden mid-flight. The theme is applied either way, so there
