@@ -3,29 +3,554 @@
 {% block content %}
 
 <div class="page-header">
-    <h1>PM Calendar</h1>
+    <h1>📅 PM Calendar</h1>
 
     <p>
-        Upcoming preventive maintenance activities by asset.
+        View upcoming preventive maintenance activities by asset.
     </p>
 </div>
+
+<!-- ==========================
+     YTD SUMMARY
+=========================== -->
+
+<div class="pm-summary-grid">
+
+    <div class="pm-summary-card">
+        <div class="pm-summary-label">
+            PMs Scheduled YTD
+        </div>
+
+        <div class="pm-summary-value">
+            2,431
+        </div>
+    </div>
+
+    <div class="pm-summary-card">
+        <div class="pm-summary-label">
+            PMs Completed YTD
+        </div>
+
+        <div class="pm-summary-value">
+            2,348
+        </div>
+    </div>
+
+    <div class="pm-summary-card">
+        <div class="pm-summary-label">
+            PMs Overdue YTD
+        </div>
+
+        <div class="pm-summary-value">
+            83
+        </div>
+    </div>
+
+    <div class="pm-summary-card">
+        <div class="pm-summary-label">
+            PM Compliance
+        </div>
+
+        <div class="pm-summary-value">
+            96.6%
+        </div>
+    </div>
+
+</div>
+
+<!-- ==========================
+     MAIN CARD
+=========================== -->
 
 <div class="card">
 
-    <h2>🚧 Coming Soon</h2>
+    <div class="toolbar-group">
 
-    <p>
-        This tool will allow users to:
-    </p>
+        <label>Select Assets</label>
 
-    <ul>
-        <li>Select an asset</li>
-        <li>View all upcoming PMs</li>
-        <li>Display PMs on a calendar view</li>
-        <li>Filter by month and year</li>
-        <li>Review PM due dates and frequencies</li>
-    </ul>
+        <div class="asset-chip-container" id="selected-assets">
+
+            <div class="asset-chip">
+                S4 Laser
+                <span class="asset-remove">✕</span>
+            </div>
+
+            <div class="asset-chip">
+                Press Line 3
+                <span class="asset-remove">✕</span>
+            </div>
+
+            <button
+                id="open-asset-picker"
+                class="asset-add-btn"
+                type="button">
+                + Add Asset
+            </button>
+
+        </div>
+
+    </div>
+
+    <div class="calendar-topbar">
+
+        <div class="calendar-view-selector">
+
+            <button
+                id="month-btn"
+                class="view-btn active"
+                type="button">
+
+                Month View
+
+            </button>
+
+            <button
+                id="week-btn"
+                class="view-btn"
+                type="button">
+
+                Week View
+
+            </button>
+
+        </div>
+
+        <div class="calendar-navigation">
+
+            <button
+                id="previous-btn"
+                class="calendar-btn"
+                type="button">
+
+                ◄ Previous
+
+            </button>
+
+            <div
+                id="calendar-title"
+                class="calendar-title">
+
+                September 2026
+
+            </div>
+
+            <button
+                id="today-btn"
+                class="calendar-btn"
+                type="button">
+
+                Today
+
+            </button>
+
+            <button
+                id="next-btn"
+                class="calendar-btn"
+                type="button">
+
+                Next ►
+
+            </button>
+
+        </div>
+
+    </div>
+
+    <!-- ==========================
+         MONTH VIEW
+    =========================== -->
+
+    <div id="month-view">
+
+        <div class="calendar-grid">
+
+            <div class="calendar-header">Sun</div>
+            <div class="calendar-header">Mon</div>
+            <div class="calendar-header">Tue</div>
+            <div class="calendar-header">Wed</div>
+            <div class="calendar-header">Thu</div>
+            <div class="calendar-header">Fri</div>
+            <div class="calendar-header">Sat</div>
+
+            <div id="calendar-grid-body"></div>
+
+        </div>
+
+    </div>
+
+    <!-- ==========================
+         WEEK VIEW
+    =========================== -->
+
+    <div id="week-view" style="display:none;">
+
+        <div class="week-grid">
+
+            <div class="week-day">
+                <div class="week-header">Monday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Tuesday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Wednesday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Thursday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Friday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Saturday</div>
+            </div>
+
+            <div class="week-day">
+                <div class="week-header">Sunday</div>
+            </div>
+
+        </div>
+
+    </div>
 
 </div>
+
+<!-- ==========================
+     ASSET MODAL
+=========================== -->
+
+<div id="asset-modal" class="asset-modal">
+
+    <div class="asset-modal-content">
+
+        <div class="asset-modal-header">
+
+            <h3>Select Assets</h3>
+
+            <button
+                id="close-asset-picker"
+                class="modal-close"
+                type="button">
+
+                ✕
+
+            </button>
+
+        </div>
+
+        <input
+            type="text"
+            id="asset-search"
+            class="asset-search"
+            placeholder="Search assets..."
+        >
+
+        <div id="asset-list">
+
+            <div class="asset-option">
+                S4 Laser
+            </div>
+
+            <div class="asset-option">
+                Salvagnini Panel Bender
+            </div>
+
+            <div class="asset-option">
+                Press Line 3
+            </div>
+
+            <div class="asset-option">
+                Press Line 4
+            </div>
+
+            <div class="asset-option">
+                HVAC System
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+
+<script>
+
+document.addEventListener('DOMContentLoaded', function () {
+
+    const monthBtn = document.getElementById('month-btn');
+    const weekBtn = document.getElementById('week-btn');
+
+    const monthView = document.getElementById('month-view');
+    const weekView = document.getElementById('week-view');
+
+    const title =
+        document.getElementById('calendar-title');
+
+    const grid =
+        document.getElementById('calendar-grid-body');
+
+    const modal =
+        document.getElementById('asset-modal');
+
+    const months = [
+        'January',
+        'February',
+        'March',
+        'April',
+        'May',
+        'June',
+        'July',
+        'August',
+        'September',
+        'October',
+        'November',
+        'December'
+    ];
+
+    let currentMonth = 8;
+    let currentYear = 2026;
+
+    function buildCalendar(month, year)
+    {
+        title.textContent =
+            months[month] + ' ' + year;
+
+        grid.innerHTML = '';
+
+        const firstDay =
+            new Date(year, month, 1).getDay();
+
+        const daysInMonth =
+            new Date(year, month + 1, 0).getDate();
+
+        for (let i = 0; i < firstDay; i++)
+        {
+            const cell =
+                document.createElement('div');
+
+            cell.className =
+                'calendar-day empty';
+
+            grid.appendChild(cell);
+        }
+
+        for (let day = 1; day <= daysInMonth; day++)
+        {
+            const cell =
+                document.createElement('div');
+
+            cell.className =
+                'calendar-day';
+
+            cell.innerHTML =
+                `<strong>${day}</strong>`;
+
+            grid.appendChild(cell);
+        }
+    }
+
+    buildCalendar(currentMonth, currentYear);
+
+    monthBtn.addEventListener('click', () => {
+
+        monthView.style.display = 'block';
+        weekView.style.display = 'none';
+
+        monthBtn.classList.add('active');
+        weekBtn.classList.remove('active');
+
+    });
+
+    weekBtn.addEventListener('click', () => {
+
+        monthView.style.display = 'none';
+        weekView.style.display = 'block';
+
+        weekBtn.classList.add('active');
+        monthBtn.classList.remove('active');
+
+    });
+
+    document
+        .getElementById('next-btn')
+        .addEventListener('click', () => {
+
+            currentMonth++;
+
+            if (currentMonth > 11)
+            {
+                currentMonth = 0;
+                currentYear++;
+            }
+
+            buildCalendar(
+                currentMonth,
+                currentYear
+            );
+
+        });
+
+    document
+        .getElementById('previous-btn')
+        .addEventListener('click', () => {
+
+            currentMonth--;
+
+            if (currentMonth < 0)
+            {
+                currentMonth = 11;
+                currentYear--;
+            }
+
+            buildCalendar(
+                currentMonth,
+                currentYear
+            );
+
+        });
+
+    document
+        .getElementById('today-btn')
+        .addEventListener('click', () => {
+
+            const today = new Date();
+
+            currentMonth = today.getMonth();
+            currentYear = today.getFullYear();
+
+            buildCalendar(
+                currentMonth,
+                currentYear
+            );
+
+        });
+
+    function initializeChipRemoval()
+    {
+        document
+            .querySelectorAll('.asset-remove')
+            .forEach(removeBtn => {
+
+                removeBtn.onclick = function()
+                {
+                    this.parentElement.remove();
+                };
+
+            });
+    }
+
+    initializeChipRemoval();
+
+    document
+        .getElementById('open-asset-picker')
+        .addEventListener('click', () => {
+
+            modal.style.display = 'flex';
+
+        });
+
+    document
+        .getElementById('close-asset-picker')
+        .addEventListener('click', () => {
+
+            modal.style.display = 'none';
+
+        });
+
+    window.addEventListener('click', function(event) {
+
+        if (event.target === modal)
+        {
+            modal.style.display = 'none';
+        }
+
+    });
+
+    const searchBox =
+        document.getElementById('asset-search');
+
+    searchBox.addEventListener('keyup', () => {
+
+        const value =
+            searchBox.value.toLowerCase();
+
+        document
+            .querySelectorAll('.asset-option')
+            .forEach(option => {
+
+                option.style.display =
+                    option.textContent
+                        .toLowerCase()
+                        .includes(value)
+                        ? ''
+                        : 'none';
+
+            });
+
+    });
+
+    document
+        .querySelectorAll('.asset-option')
+        .forEach(option => {
+
+            option.addEventListener('click', function() {
+
+                const assetName =
+                    this.textContent.trim();
+
+                const container =
+                    document.getElementById(
+                        'selected-assets'
+                    );
+
+                const exists =
+                    [...document.querySelectorAll('.asset-chip')]
+                    .some(chip =>
+                        chip.textContent.includes(assetName)
+                    );
+
+                if (exists)
+                    return;
+
+                const chip =
+                    document.createElement('div');
+
+                chip.className =
+                    'asset-chip';
+
+                chip.innerHTML =
+                    assetName +
+                    ' <span class="asset-remove">✕</span>';
+
+                const addButton =
+                    document.getElementById(
+                        'open-asset-picker'
+                    );
+
+                container.insertBefore(
+                    chip,
+                    addButton
+                );
+
+                initializeChipRemoval();
+
+                modal.style.display = 'none';
+
+            });
+
+        });
+
+});
+
+</script>
 
 {% endblock %}
