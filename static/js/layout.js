@@ -57,7 +57,17 @@
 })();
 
 (function () {
-  window.gremlinToast = function (message) {
+  // `kind` names a variant in sidebar.css and is optional. Left off, the toast
+  // keeps the alarmed look that bare `.gremlin-toast` carries, which is what
+  // every caller predating this argument wants -- all of them are reporting a
+  // write the server refused. Pass "info" for one that is merely telling you
+  // something, so a note about a feature that does not exist yet does not
+  // arrive in the same red as a rejected save.
+  //
+  // Returns the toast so a caller that can fire repeatedly has something to ask
+  // whether the last one it put up is still on screen -- see the notifications
+  // button in topbar_tools.js. Nothing is obliged to use it.
+  window.gremlinToast = function (message, kind) {
     let host = document.getElementById("gremlinToastHost");
     if (!host) {
       host = document.createElement("div");
@@ -66,12 +76,13 @@
       document.body.appendChild(host);
     }
     const toast = document.createElement("div");
-    toast.className = "gremlin-toast";
+    toast.className = "gremlin-toast" + (kind ? " is-" + kind : "");
     toast.setAttribute("role", "status");
     toast.textContent = message;
     host.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add("is-visible"));
     setTimeout(() => { toast.classList.remove("is-visible"); setTimeout(() => toast.remove(), 250); }, 5000);
+    return toast;
   };
 
   const dialog = document.getElementById("accountDialog");

@@ -66,9 +66,12 @@
   {# After layout.js: the global search can open the account dialog, and that
      dialog's own buttons are wired up there. #}
   <script src="{{ url_for('static', filename='js/global_search.js') }}"></script>
-  {# The topbar's tool rail: the theme toggle and the quick links dropdown. The
-     theme itself is already applied by the inline script in <head> above; this
-     is what makes the button able to change it. #}
+  {# The topbar's tool rail: the theme toggle, the quick links dropdown, and the
+     notifications button. The theme itself is already applied by the inline
+     script in <head> above; this is what makes the button able to change it.
+
+     After layout.js, which is where the toast the notifications button raises
+     is defined. #}
   <script src="{{ url_for('static', filename='js/topbar_tools.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>

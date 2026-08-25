@@ -138,11 +138,15 @@
       </span>
     </button>
 
-    {#- Notifications. Deliberately unwired for now: there is no notification
-        feed behind it yet, so the button carries no click handler and no unread
-        badge. It is here so the rail is laid out for what it will hold, and
-        wiring it means adding a panel and a handler -- nothing about the markup
-        below has to change first. -#}
+    {#- Notifications. There is no notification feed behind this yet, so the
+        press is answered with a toast saying so -- see topbar_tools.js. A
+        button that silently swallows every press cannot be told apart from a
+        broken one, and this is a button people press.
+
+        No `aria-expanded` and no `aria-controls`, deliberately: both are
+        promises to a screen reader that pressing this opens a panel, and a
+        toast is not a panel. Building the real feed means adding them here,
+        along with the unread badge, and dropping the handler. -#}
     <button
       type="button"
       id="notificationsButton"

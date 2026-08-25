@@ -1,4 +1,5 @@
-/* The topbar's tool rail: the theme toggle and the quick links dropdown.
+/* The topbar's tool rail: the theme toggle, the quick links dropdown, and the
+ * notifications button.
  *
  * Nothing here decides what anything looks like -- theme.css holds both
  * palettes, and all this file does is put `data-theme` on <html>, animate the
@@ -323,5 +324,40 @@
   // in the menu, so this is a no-op in that case rather than a second close.
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && isOpen()) close(true);
+  });
+})();
+
+/* Notifications.
+ *
+ * There is no feed behind the bell yet, so pressing it says so. That is the
+ * whole feature for now, and it is here because the alternative is worse: a
+ * button that swallows every press is indistinguishable from a broken one, and
+ * this is a button people press.
+ *
+ * A toast rather than a panel, deliberately. The markup in topbar.html carries
+ * no `aria-expanded` or `aria-controls` because those promise a screen reader
+ * that something opens, and nothing does -- so the message goes to the live
+ * region the toast already is. Building the real feed means adding the panel,
+ * those attributes, and the unread badge, and deleting this block. */
+(function () {
+  const button = document.getElementById("notificationsButton");
+
+  if (!button) return;
+
+  const MESSAGE = "Notifications are still under development.";
+
+  // Holding the last toast is what keeps a second press from stacking the same
+  // sentence up the screen. `isConnected` asks the toast itself rather than
+  // this file keeping its own copy of how long one lasts -- that timing lives
+  // in gremlinToast, and a duplicate of it here would go stale the first time
+  // it changed there.
+  let toast = null;
+
+  button.addEventListener("click", () => {
+    // layout.js defines it and base.html loads that first, so this is only a
+    // guard against the ordering being changed out from under the button.
+    if (typeof window.gremlinToast !== "function") return;
+    if (toast && toast.isConnected) return;
+    toast = window.gremlinToast(MESSAGE, "info");
   });
 })();

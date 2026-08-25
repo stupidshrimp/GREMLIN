@@ -33,6 +33,10 @@
 .gremlin-toast-host { position:fixed; top:1rem; right:1rem; z-index:2000; display:grid; gap:.6rem; max-width:min(380px,calc(100vw - 2rem)); pointer-events:none; }
 .gremlin-toast { padding:.85rem 1.1rem; border-radius:12px; border:1px solid var(--danger-border); background:var(--danger-bg); color:var(--danger-ink); box-shadow:var(--shadow-sm); font-weight:600; pointer-events:auto; opacity:0; transform:translateX(12px); transition:opacity .2s,transform .2s; }
 .gremlin-toast.is-visible { opacity:1; transform:none; }
+/* For a toast that is telling you something rather than reporting a refused
+   write. The bare rule above is dressed as an alarm, and a note about a
+   feature that is not built yet arriving in that red reads as a failure. */
+.gremlin-toast.is-info { border-color:var(--forest-200); background:var(--forest-100); color:var(--forest-800); }
 
 .sidebar-header {
   display: flex;

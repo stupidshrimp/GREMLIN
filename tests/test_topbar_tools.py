@@ -115,9 +115,10 @@ def test_the_theme_is_light_unless_dark_was_chosen(monkeypatch, tmp_path):
 
 
 def test_the_notifications_button_does_not_claim_a_panel_it_has_not_got(monkeypatch, tmp_path):
-    """It is deliberately unwired for now. Until there is something behind it,
-    it must not advertise itself as opening one: `aria-expanded` and
-    `aria-controls` are promises to a screen reader that nothing would keep."""
+    """Pressing it raises a toast, not a panel. `aria-expanded` and
+    `aria-controls` are promises to a screen reader that something opens and
+    stays open, and neither would be kept -- so they stay off until there is a
+    real feed behind the button to open."""
     body = _app(monkeypatch, tmp_path).app.test_client().get("/").get_data(as_text=True)
     button = re.search(r"<button\b[^>]*id=\"notificationsButton\"[^>]*>", body, re.S)
     assert button, "the notifications button was not rendered"
@@ -277,3 +278,70 @@ def test_the_window_is_measured_once():
     reveal = _reveal()
     assert reveal.count("window.innerWidth") == 1
     assert reveal.count("window.innerHeight") == 1
+
+
+# --- the notifications button -----------------------------------------------
+# There is no feed behind the bell, so a press is answered with a toast saying
+# the feature is not built yet. None of that can be reached by rendering a page
+# -- it is a click handler -- so these read the sources, the way the section
+# above does. What they guard is that the wiring is still there at all, and that
+# the toast does not come out dressed as an error.
+
+SIDEBAR_CSS = THEME_CSS.parent / "sidebar.css"
+LAYOUT_JS = STATIC_JS / "layout.js"
+
+
+def _notifications():
+    """The code of the block in topbar_tools.js that wires up the bell.
+
+    Comments stripped, the way _theme_bootstrap above strips them: this section
+    explains itself at some length, and a test that a guard is still *there*
+    passes just as happily on the sentence describing the guard.
+    """
+    source = TOPBAR_JS.read_text()
+    block = source[source.index('getElementById("notificationsButton")'):]
+    return "\n".join(re.sub(r"//.*", "", line) for line in block.splitlines())
+
+
+def test_pressing_the_bell_says_the_feature_is_not_built_yet():
+    """A button that swallows every press cannot be told apart from a broken
+    one, and this is a button people press. Until there is a feed behind it, the
+    press has to produce something that says so."""
+    handler = _notifications()
+    assert "addEventListener" in handler, "the button is wired to nothing"
+    assert "window.gremlinToast(" in handler, "the press raises no toast"
+    assert re.search(r'"[^"]*under development[^"]*"', handler), \
+        "the toast does not say the feature is under development"
+
+
+def test_the_bells_toast_is_not_dressed_as_an_error():
+    """`.gremlin-toast` on its own is the red one, because every caller of the
+    helper that predates this button is reporting a write the server refused. A
+    note about a feature that does not exist yet is not a failure and must not
+    arrive looking like one -- which takes both halves: a kind passed here, and
+    a rule behind it in the stylesheet. Miss the second and it renders red."""
+    assert 'window.gremlinToast(MESSAGE, "info")' in _notifications()
+    assert ".gremlin-toast.is-info" in SIDEBAR_CSS.read_text(), \
+        "the info variant has no rule behind it, so the toast comes out red"
+
+
+def test_the_toast_helper_still_defaults_to_the_alarmed_look():
+    """The kind is optional and every caller predating it leaves it off -- see
+    metrics.js, life_data_analysis.js, availability_config.js, home.js and
+    configuration.html, all of them reporting a refused write. Making the quiet
+    look the default would quietly soften every one of those."""
+    assert 'toast.className = "gremlin-toast" + (kind ? " is-" + kind : "");' in LAYOUT_JS.read_text()
+
+
+def test_the_bell_does_not_stack_the_same_sentence_up_the_screen():
+    """The host keeps every toast it is given on screen at once, so a second
+    press while the first is still up leaves two identical notes, and a fifth
+    leaves five."""
+    assert "isConnected" in _notifications(), "nothing stops a press from stacking another toast"
+
+
+def test_the_bell_keeps_no_copy_of_how_long_a_toast_lasts():
+    """That timing belongs to gremlinToast. A copy of it here would go stale the
+    first time it changed there, and the symptom would be a button that ignores
+    a press for a while -- the very thing this section exists to prevent."""
+    assert "5000" not in _notifications()
