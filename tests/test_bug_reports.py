@@ -27,7 +27,7 @@ from services.bug_reports import (
 def _app(monkeypatch, tmp_path, *, bugs_db=None):
     monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
     monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
-    monkeypatch.setenv("GREMLIN_BUGS_DB_PATH", str(bugs_db or tmp_path / "bugreports.db"))
+    monkeypatch.setenv("GREMLIN_BUGS_DB_PATH", str(bugs_db or tmp_path / "auxillary.db"))
     monkeypatch.setenv("GREMLIN_ADMIN_USERNAME", "root")
     monkeypatch.setenv("GREMLIN_ADMIN_PIN", "secret")
     import app
@@ -78,7 +78,7 @@ def _file_one(client, **fields):
 def test_the_database_and_its_folder_are_created_on_first_use(tmp_path):
     """Nothing exists at the location beforehand -- the first report makes it."""
 
-    path = tmp_path / "GREMLIN Global DB" / "bugreports.db"
+    path = tmp_path / "GREMLIN Global DB" / "auxillary.db"
     store = BugReportStore(path)
     assert not path.exists()
     assert store.submit(title="First", description="Something broke.") == 1
@@ -86,7 +86,7 @@ def test_the_database_and_its_folder_are_created_on_first_use(tmp_path):
 
 
 def test_the_default_location_is_the_shared_drive():
-    """The one place bugreports.db belongs, spelled as the deployment sees it.
+    """The one place auxillary.db belongs, spelled as the deployment sees it.
 
     Asserted against the string rather than PurePath.name: GREMLIN is deployed on
     Windows, and on a POSIX test runner the whole thing is a single path segment
@@ -95,11 +95,11 @@ def test_the_default_location_is_the_shared_drive():
 
     written = str(DEFAULT_BUG_DB_PATH)
     assert written.startswith(r"Z:\FACIL\MAIN-ENG")
-    assert written.endswith(r"GREMLIN Program\GREMLIN Global DB\bugreports.db")
+    assert written.endswith(r"GREMLIN Program\GREMLIN Global DB\auxillary.db")
 
 
 def test_a_new_report_starts_open(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Broken", description="It broke.")
     stored = _reports(store)[0]
     assert stored["id"] == report_id
@@ -117,7 +117,7 @@ def test_a_new_report_starts_open(tmp_path):
     ],
 )
 def test_a_report_that_says_nothing_is_refused(tmp_path, fields):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     with pytest.raises(BugReportValidationError):
         store.submit(**fields)
 
@@ -125,7 +125,7 @@ def test_a_report_that_says_nothing_is_refused(tmp_path, fields):
 def test_long_fields_are_truncated_rather_than_refused(tmp_path):
     """The file is on a share other people's work depends on, so nothing it stores is unbounded."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     store.submit(title="T" * 5000, description="D" * 50_000, reporter="R" * 500)
     stored = _reports(store)[0]
     assert len(stored["title"]) == 200
@@ -134,7 +134,7 @@ def test_long_fields_are_truncated_rather_than_refused(tmp_path):
 
 
 def test_resolving_records_who_did_it_and_reopening_clears_that(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Broken", description="It broke.")
 
     resolved = store.set_status(report_id, "resolved", actor="root", note="Fixed in 1.4.")
@@ -152,7 +152,7 @@ def test_resolving_records_who_did_it_and_reopening_clears_that(tmp_path):
 
 
 def test_an_impossible_status_or_a_missing_report_is_refused(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Broken", description="It broke.")
     with pytest.raises(BugReportValidationError):
         store.set_status(report_id, "wontfix")
@@ -165,7 +165,7 @@ def test_an_impossible_status_or_a_missing_report_is_refused(tmp_path):
 def test_open_reports_lead_and_the_most_urgent_leads_them(tmp_path):
     """The top of the list is the queue to work through, not a list to re-sort."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     minor = store.submit(title="Typo", description="Says 'teh'.", severity="minor")
     blocking = store.submit(title="Stuck", description="Cannot sign in.", severity="blocking")
     major = store.submit(title="Slow", description="Export takes minutes.", severity="major")
@@ -178,7 +178,7 @@ def test_open_reports_lead_and_the_most_urgent_leads_them(tmp_path):
 
 
 def test_search_covers_the_fields_a_reader_would_search_by(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     store.submit(title="Charts blank", description="No bars drew.", area="Metrics", reporter="Sam")
     store.submit(title="Typo", description="Says 'teh'.", area="About", reporter="Alex")
 
@@ -193,7 +193,7 @@ def test_search_covers_the_fields_a_reader_would_search_by(tmp_path):
 def test_a_wildcard_in_a_search_is_searched_for_rather_than_obeyed(tmp_path):
     """"100%" finds the report that says so, not every report."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     store.submit(title="Reads 100% when idle", description="Gauge is wrong.")
     store.submit(title="Something else", description="Unrelated.")
 
@@ -205,13 +205,13 @@ def test_a_wildcard_in_a_search_is_searched_for_rather_than_obeyed(tmp_path):
 
 
 def test_an_unusable_status_filter_is_refused(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     with pytest.raises(BugReportValidationError):
         _reports(store, status="pending")
 
 
 def test_the_summary_counts_what_the_tiles_show(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     assert store.summary() == {
         "total": 0,
         "open": 0,
@@ -231,7 +231,7 @@ def test_the_summary_counts_what_the_tiles_show(tmp_path):
 
 
 def test_a_resolved_blocking_report_stops_counting_as_blocking(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Stuck", description="Cannot sign in.", severity="blocking")
     assert store.summary()["open_blocking"] == 1
     store.set_status(report_id, "resolved", actor="root")
@@ -241,18 +241,18 @@ def test_a_resolved_blocking_report_stops_counting_as_blocking(tmp_path):
 def test_an_unreachable_share_is_reported_rather_than_raised_as_sqlite(tmp_path):
     """A laptop off the network is the expected failure, and it names the path."""
 
-    store = BugReportStore("/proc/nowhere/bugreports.db")
+    store = BugReportStore("/proc/nowhere/auxillary.db")
     for call in (store.summary, store.list_reports, lambda: store.submit(title="a", description="b")):
         with pytest.raises(BugReportStoreError) as caught:
             call()
-        assert "/proc/nowhere/bugreports.db" in str(caught.value)
+        assert "/proc/nowhere/auxillary.db" in str(caught.value)
         assert not isinstance(caught.value, sqlite3.Error)
 
 
 def test_a_share_that_comes_back_is_used_without_a_restart(tmp_path):
     """ensure_schema caches success only, so a failed attempt is retried."""
 
-    path = tmp_path / "share" / "bugreports.db"
+    path = tmp_path / "share" / "auxillary.db"
     store = BugReportStore(path)
     (tmp_path / "share").write_text("not a directory")  # stands in for the share being down
     with pytest.raises(BugReportStoreError):
@@ -339,7 +339,7 @@ def test_the_form_offers_the_pages_the_sidebar_does(monkeypatch, tmp_path):
 
 
 def test_an_unreachable_share_tells_the_reporter_the_report_was_not_stored(monkeypatch, tmp_path):
-    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/bugreports.db")
+    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/auxillary.db")
     client = module.app.test_client()
     response = _file_one(client, description="Worth keeping.")
     # 503, not 500: the code is fine and the drive is not.
@@ -352,7 +352,7 @@ def test_an_unreachable_share_tells_the_reporter_the_report_was_not_stored(monke
 def test_gremlin_still_starts_when_the_share_is_unreachable(monkeypatch, tmp_path):
     """Nothing in the store runs at import, so a drive that is not mapped is not fatal."""
 
-    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/bugreports.db")
+    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/auxillary.db")
     assert module.app.test_client().get("/").status_code == 200
     assert module.app.test_client().get("/report-a-bug").status_code == 200
 
@@ -382,7 +382,7 @@ def test_the_dashboard_renders_and_every_developer_page_carries_the_tab(monkeypa
     body = response.get_data(as_text=True)
     assert "Bug reports" in body
     # The page says which file it is reading, as the other developer pages do.
-    assert str(tmp_path / "bugreports.db") in body
+    assert str(tmp_path / "auxillary.db") in body
 
     for page in ("/developer", "/developer/database", "/developer/activity", "/developer/access"):
         assert "/developer/bugs" in _signed_in(module).get(page).get_data(as_text=True), page
@@ -396,7 +396,7 @@ def test_the_endpoint_answers_the_whole_page(monkeypatch, tmp_path):
     assert payload["summary"]["open"] == 1
     assert payload["summary"]["open_blocking"] == 1
     assert payload["reports"][0]["title"] == "Charts blank"
-    assert payload["bugs_db_path"] == str(tmp_path / "bugreports.db")
+    assert payload["bugs_db_path"] == str(tmp_path / "auxillary.db")
     assert payload["statuses"] == ["open", "resolved"]
 
 
@@ -479,13 +479,13 @@ def test_changing_a_report_lands_in_the_audit_trail_but_reading_does_not(monkeyp
 
 
 def test_the_dashboard_reports_an_unreachable_share_rather_than_failing(monkeypatch, tmp_path):
-    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/bugreports.db")
+    module = _app(monkeypatch, tmp_path, bugs_db="/proc/nowhere/auxillary.db")
     admin = _signed_in(module)
     # The page itself still draws -- it is the fetch behind it that cannot.
     assert admin.get("/developer/bugs").status_code == 200
     response = admin.get("/developer/api/bugs")
     assert response.status_code == 503
-    assert "/proc/nowhere/bugreports.db" in response.get_json()["error"]
+    assert "/proc/nowhere/auxillary.db" in response.get_json()["error"]
 
 
 def test_the_dashboard_is_findable_from_the_global_search(monkeypatch, tmp_path):
@@ -506,7 +506,7 @@ def test_the_dashboard_is_findable_from_the_global_search(monkeypatch, tmp_path)
 def test_one_client_cannot_file_without_limit(tmp_path):
     """An unbounded public write would fill a shared drive and bury real reports."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(SUBMISSION_LIMIT_PER_WINDOW):
         store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
 
@@ -519,7 +519,7 @@ def test_one_client_cannot_file_without_limit(tmp_path):
 def test_the_limit_is_per_client_rather_than_global(tmp_path):
     """One runaway client must not stop everybody else reporting."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(SUBMISSION_LIMIT_PER_WINDOW):
         store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
 
@@ -530,7 +530,7 @@ def test_the_limit_is_per_client_rather_than_global(tmp_path):
 def test_a_refused_submission_stores_nothing_and_costs_nothing(tmp_path):
     """The charge and the insert are one step, so neither happens without the other."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(SUBMISSION_LIMIT_PER_WINDOW):
         store.submit(title=f"Report {index}", description="Detail.", client_key="addr:10.0.0.1")
     before = store.summary()["total"]
@@ -544,7 +544,7 @@ def test_a_refused_submission_stores_nothing_and_costs_nothing(tmp_path):
 def test_an_internal_caller_is_not_limited(tmp_path):
     """No client key means no limit -- the limit is a property of the public form."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(SUBMISSION_LIMIT_PER_WINDOW + 5):
         store.submit(title=f"Report {index}", description="Detail.")
     assert store.summary()["total"] == SUBMISSION_LIMIT_PER_WINDOW + 5
@@ -567,7 +567,7 @@ def test_the_form_refuses_a_flood_and_keeps_what_was_typed(monkeypatch, tmp_path
 def test_a_listing_says_how_much_it_is_not_showing(tmp_path):
     """Stopping silently at the page size would hide the oldest reports for good."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(LIST_LIMIT + 15):
         store.submit(title=f"Report {index}", description="Detail.")
 
@@ -579,7 +579,7 @@ def test_a_listing_says_how_much_it_is_not_showing(tmp_path):
 
 
 def test_paging_reaches_every_report_exactly_once(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     filed = [
         store.submit(title=f"Report {index}", description="Detail.")
         for index in range(LIST_LIMIT + 15)
@@ -599,7 +599,7 @@ def test_paging_reaches_every_report_exactly_once(tmp_path):
 
 
 def test_the_page_size_cannot_be_talked_past(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     store.submit(title="Only one", description="Detail.")
     assert len(store.list_reports(limit=10_000)["reports"]) == 1
     assert store.list_reports(limit=0)["total"] == 1
@@ -634,7 +634,7 @@ def test_an_unusable_cursor_is_a_bad_request(monkeypatch, tmp_path, cursor):
 def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
     """Two administrators, one queue: the second click must not erase the first."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
 
     drawn = _reports(store)[0]["revision"]
@@ -652,7 +652,7 @@ def test_a_stale_resolution_does_not_overwrite_the_real_one(tmp_path):
 
 
 def test_a_change_from_the_state_actually_stored_still_applies(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
     drawn = _reports(store)[0]["revision"]
     resolved = store.set_status(report_id, "resolved", actor="root", expected_revision=drawn)
@@ -665,7 +665,7 @@ def test_a_change_from_the_state_actually_stored_still_applies(tmp_path):
 def test_omitting_the_expected_revision_still_applies_unconditionally(tmp_path):
     """Internal callers and the tests do not have a page whose state could be stale."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
     store.set_status(report_id, "resolved", actor="root")
     assert store.set_status(report_id, "resolved", actor="other")["resolved_by"] == "other"
@@ -723,7 +723,7 @@ def test_the_page_a_bug_was_filed_from_survives_a_correction(monkeypatch, tmp_pa
 def test_a_resolve_reopen_cycle_does_not_let_a_stale_click_through(tmp_path):
     """The ABA case: the status ends up where A left it, but the row moved twice."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
     a_drew = _reports(store)[0]["revision"]
 
@@ -744,7 +744,7 @@ def test_a_resolve_reopen_cycle_does_not_let_a_stale_click_through(tmp_path):
 
 
 def test_every_change_moves_the_revision_forward(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     report_id = store.submit(title="Charts blank", description="Detail.")
 
     revisions = [_reports(store)[0]["revision"]]
@@ -788,7 +788,7 @@ def test_a_malformed_revision_is_refused_rather_than_ignored(monkeypatch, tmp_pa
 def test_paging_skips_nothing_when_the_queue_is_worked_underneath_it(tmp_path):
     """Resolving a row on page one must not push an unseen report past page two."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(LIST_LIMIT + 3):
         store.submit(title=f"Report {index}", description="Detail.")
 
@@ -811,7 +811,7 @@ def test_paging_skips_nothing_when_the_queue_is_worked_underneath_it(tmp_path):
 def test_paging_reaches_everything_across_a_mix_of_statuses_and_severities(tmp_path):
     """The cursor walks the same compound key the listing is ordered by."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     filed = [
         store.submit(
             title=f"Report {index}",
@@ -838,7 +838,7 @@ def test_paging_reaches_everything_across_a_mix_of_statuses_and_severities(tmp_p
 def test_the_total_describes_the_filter_rather_than_the_page(tmp_path):
     """It is counted without the cursor, so it does not shrink as pages are walked."""
 
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     for index in range(LIST_LIMIT + 8):
         store.submit(title=f"Report {index}", description="Detail.")
 
@@ -848,7 +848,7 @@ def test_the_total_describes_the_filter_rather_than_the_page(tmp_path):
 
 
 def test_a_cursor_that_this_page_did_not_issue_is_refused(tmp_path):
-    store = BugReportStore(tmp_path / "bugreports.db")
+    store = BugReportStore(tmp_path / "auxillary.db")
     store.submit(title="Charts blank", description="Detail.")
     for bad in ("not-base64!", "bm90LWEtY3Vyc29y", ""):
         if bad == "":
@@ -860,7 +860,7 @@ def test_a_cursor_that_this_page_did_not_issue_is_refused(tmp_path):
 def test_a_database_written_before_revisions_existed_is_migrated(tmp_path):
     """Reports filed by an earlier build must survive the upgrade, not be rebuilt."""
 
-    path = tmp_path / "bugreports.db"
+    path = tmp_path / "auxillary.db"
     store = BugReportStore(path)
     store.submit(title="Filed earlier", description="Detail.")
 

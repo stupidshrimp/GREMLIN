@@ -30,13 +30,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# The one location for bugreports.db: the GREMLIN Program folder on the shared
+# The one location for auxillary.db: the GREMLIN Program folder on the shared
 # drive, alongside the other global databases. Override with the
 # GREMLIN_BUGS_DB_PATH environment variable -- which is what the tests do, and
 # what a deployment that maps the share to a different letter would set.
 DEFAULT_BUG_DB_PATH = Path(
     r"Z:\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects"
-    r"\GREMLIN Program\GREMLIN Global DB\bugreports.db"
+    r"\GREMLIN Program\GREMLIN Global DB\auxillary.db"
 )
 
 # A share is a slower writer than a local file and several people may file at
@@ -213,7 +213,7 @@ def _clean(value: object, limit: int) -> str:
 
 
 class BugReportStore:
-    """Every read and write of bugreports.db."""
+    """Every read and write of auxillary.db."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
