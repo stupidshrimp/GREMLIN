@@ -1,0 +1,14 @@
+{#- The help contacts, drawn wherever somebody needs to reach a person: the
+    footer on every page, and the dialog behind the login form's help button.
+    One partial rather than two copies, because a list of names and addresses
+    that exists twice is a list that goes stale in one of the two places. -#}
+<ul class="support-contacts">
+{% for contact in support_contacts %}
+  <li>
+    <a href="mailto:{{ contact.email }}">{{ contact.name }}</a>
+    {# The address is spelled out as well as linked: it is the thing somebody
+       copies into Outlook when a mailto: link has nowhere to open. #}
+    <span class="support-contact-email">{{ contact.email }}</span>
+  </li>
+{% endfor %}
+</ul>

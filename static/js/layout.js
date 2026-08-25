@@ -112,3 +112,17 @@
     window.location.reload();
   });
 })();
+
+// The help contacts behind the login form's "Need log in access?" button. Wired
+// up on its own rather than inside the account dialog's block above, because
+// that block gives up early on a page without an account button and this dialog
+// should not disappear with it.
+(function () {
+  const dialog = document.getElementById("supportDialog");
+  const open = document.getElementById("accountHelpButton");
+  if (!dialog || !open) return;
+  // Opened over the account dialog, which stays where it is: closing this one
+  // hands the login form straight back, still filled in.
+  open.addEventListener("click", () => dialog.showModal());
+  document.getElementById("supportClose")?.addEventListener("click", () => dialog.close());
+})();

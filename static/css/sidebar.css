@@ -30,6 +30,21 @@
 .account-dialog-dev { margin:0 0 16px; }
 .account-close { float:right; border:0; background:none; color:inherit; font-size:1.6rem; cursor:pointer; }
 .account-error { color:var(--danger-strong); margin:0; }
+/* The help button under the login form. Set as quiet prose rather than a third
+   button competing with "Log in": it is the way out for somebody the form
+   cannot help, not an alternative to filling the form in. */
+.account-help-line { margin:16px 0 0; }
+.account-help-button { display:inline-flex; align-items:center; gap:.5rem; border:0; background:none; padding:0; font:inherit; font-size:.9rem; font-weight:600; color:var(--forest-700); cursor:pointer; border-bottom:1px solid transparent; }
+.account-help-button:hover { color:var(--forest-950); border-bottom-color:var(--forest-500); }
+.account-help-button:focus-visible { outline:2px solid var(--forest-700); outline-offset:3px; border-radius:4px; }
+.account-help-icon { display:inline-grid; place-items:center; width:1.25rem; height:1.25rem; border-radius:50%; border:1px solid currentColor; font-size:.75rem; line-height:1; }
+/* The contacts dialog is the account dialog's twin, so it keeps that box and
+   only changes what it has to. Narrower, because it opens over the login dialog
+   rather than instead of it: inset on both sides, it reads as the sheet on top
+   instead of as the same sheet with different words on it. */
+.support-dialog { width:min(360px, calc(100vw - 32px)); }
+.support-dialog .support-contacts { margin-top:16px; gap:.7rem; }
+.support-dialog .support-contacts li { line-height:1.45; }
 .gremlin-toast-host { position:fixed; top:1rem; right:1rem; z-index:2000; display:grid; gap:.6rem; max-width:min(380px,calc(100vw - 2rem)); pointer-events:none; }
 .gremlin-toast { padding:.85rem 1.1rem; border-radius:12px; border:1px solid var(--danger-border); background:var(--danger-bg); color:var(--danger-ink); box-shadow:var(--shadow-sm); font-weight:600; pointer-events:auto; opacity:0; transform:translateX(12px); transition:opacity .2s,transform .2s; }
 .gremlin-toast.is-visible { opacity:1; transform:none; }

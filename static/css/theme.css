@@ -1113,3 +1113,50 @@ button.life-data-card {
 
   .about-hero-media { justify-content: center; }
 }
+
+/* The help contacts. The same list is drawn in the footer and in the dialog
+   behind the login form's help button, so its shape is set here once and each
+   of the two adjusts what it has to. An entry is a name with its address under
+   it, which is the shape the dialog's narrow column wants; the footer, which
+   has width but no height to spare, pulls the two back onto one line. */
+.support-contacts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.support-contacts a {
+  color: var(--forest-800);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+
+.support-contacts a:hover,
+.support-contacts a:focus-visible {
+  color: var(--forest-950);
+  border-bottom-color: var(--forest-700);
+}
+
+.support-contacts a:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 3px;
+}
+
+/* The address sits under the name, quieter than it: it is there to be copied,
+   not to be read down the list. */
+.support-contact-email {
+  display: block;
+  color: var(--muted);
+  /* An address is one unbroken word to a text layout engine, and the narrowest
+     column here is narrower than some of them: let it break mid-address rather
+     than push the block wider than its container. */
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .support-contacts a { transition: none; }
+}
