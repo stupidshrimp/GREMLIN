@@ -56,5 +56,35 @@
       <p id="loginError" class="account-error" role="alert" hidden></p>
       <button type="submit" class="btn-primary">Log in</button>
     </form>
+    {#- Somebody who has no account cannot get one from this form, and the form
+        is where they find that out. The button is the answer to the question
+        the failed login raises. -#}
+    <p class="account-help-line">
+      <button
+        type="button"
+        class="account-help-button"
+        id="accountHelpButton"
+        aria-haspopup="dialog"
+        aria-controls="supportDialog"
+      >
+        <span class="account-help-icon" aria-hidden="true">?</span>
+        Need log in access?
+      </button>
+    </p>
   {% endif %}
 </dialog>
+{#- Drawn only alongside the login form, which holds the button that opens it.
+    Somebody already signed in reads the same contacts in the footer.
+
+    A sibling of the account dialog rather than a child of it: this one opens
+    while that one is still open, and a modal dialog nested inside another is
+    harder to reason about than two that sit side by side. -#}
+{% if not auth_user %}
+<dialog id="supportDialog" class="account-dialog support-dialog" aria-labelledby="supportDialogHeading">
+  <button type="button" class="account-close" id="supportClose" aria-label="Close">&times;</button>
+  <h2 id="supportDialogHeading">Need log in access?</h2>
+  <p>GREMLIN accounts are handed out by hand. If you require log in access,
+     please contact:</p>
+  {% include "support_contacts.html" %}
+</dialog>
+{% endif %}

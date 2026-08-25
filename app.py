@@ -436,6 +436,18 @@ FOOTER_LINKS = [
 ]
 
 
+# Who to ask about GREMLIN. The same three people answer both questions the app
+# cannot answer for itself -- "how do I get a login?" and "why does this page do
+# that?" -- so the list lives here once and is drawn twice: in the login dialog,
+# where somebody without an account is already stuck, and in the footer, where
+# somebody with one can find it from any page.
+SUPPORT_CONTACTS = [
+    {"name": "Tim Kim", "email": "tim.kim@sandc.com"},
+    {"name": "Sania Sohail", "email": "sania.sohail@sandc.com"},
+    {"name": "Billy Trinh", "email": "billy.trinh@sandc.com"},
+]
+
+
 # The topbar's quick links: the systems people leave GREMLIN for, rather than
 # anywhere inside it. They are deliberately not in NAV_LINKS or the search
 # catalog -- both of those are about pages this app serves, and an entry that
@@ -469,6 +481,10 @@ def footer_context():
         "current_year": date.today().year,
         # Same reasoning, for the topbar: it is drawn on every page too.
         "quick_links": QUICK_LINKS,
+        # And for the help contacts, which the footer and the login dialog both
+        # draw -- the login dialog being part of the sidebar, which is likewise
+        # on every page.
+        "support_contacts": SUPPORT_CONTACTS,
     }
 
 

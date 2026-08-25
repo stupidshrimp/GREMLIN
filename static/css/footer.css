@@ -31,9 +31,15 @@
   gap: 0.15rem;
   /* Wide enough for the expanded acronym to sit on one line at full width:
      wrapping it added a line of footer height for no benefit. It still wraps
-     on narrow viewports, where min-width is what governs. */
+     on narrow viewports, where the flex basis below is what governs. */
   max-width: 66ch;
-  min-width: min(260px, 100%);
+  /* Grows into whatever the blocks on the right leave, up to that cap, and is
+     the block that gives ground first. The basis is 260px rather than the
+     sentence's own width because flex wraps on the basis, not the shrunk size:
+     measured at its full width the brand would take the row over on a middling
+     window and send the whole right-hand group onto a second line, which costs
+     more footer height than wrapping one sentence does. */
+  flex: 1 1 min(260px, 100%);
 }
 
 .site-footer-brand strong {
@@ -47,9 +53,61 @@
   line-height: 1.5;
 }
 
+/* The navigation and the help block. They sit side by side while there is room
+   for both and stack once there is not, which is well after the brand block has
+   already dropped onto a row of its own: grouping them is what keeps that first
+   wrap from stranding one of the two beside the brand. */
+.site-footer-columns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.8rem 2rem;
+}
+
 .site-footer-nav {
   display: grid;
   gap: 0.35rem;
+}
+
+.site-footer-help {
+  display: grid;
+  gap: 0.35rem;
+  /* Wide enough for the longest name and its address to hold one line, with room
+     to spare, and no wider: every character past this is width taken from the
+     brand block, which is the one that wraps when the row runs out. The lead
+     sentence is the part that gives way instead -- it reads as well over two
+     lines, and the rows below it are what somebody is here to read. */
+  max-width: 34ch;
+}
+
+.site-footer-help-lead {
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+/* One line per person down here, where the footer is on every page and each
+   extra row is height taken from every one of them. The dialog, which is opened
+   deliberately and closed again, sets the address on its own line instead. */
+.site-footer-help .support-contacts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.45rem;
+  line-height: 1.5;
+}
+
+.site-footer-help .support-contacts a { font-size: 0.88rem; }
+
+.site-footer-help .support-contact-email {
+  display: inline;
+  font-size: 0.78rem;
+}
+
+/* The separator the flex gap cannot draw. The pair is short enough to hold one
+   line at this block's width, so it is only ever read between the two. */
+.site-footer-help .support-contact-email::before {
+  content: "·";
+  margin-right: 0.45rem;
 }
 
 /* Same treatment as .sidebar-heading, so the two navigation blocks read as the
