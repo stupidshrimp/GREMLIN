@@ -20,4 +20,7 @@
   <a class="dev-subnav-link{% if dev_section == 'activity' %} is-active{% endif %}"
      href="{{ url_for('developer_activity') }}"
      {% if dev_section == 'activity' %}aria-current="page"{% endif %}>User activity</a>
+  <a class="dev-subnav-link{% if dev_section == 'bugs' %} is-active{% endif %}"
+     href="{{ url_for('developer_bugs') }}"
+     {% if dev_section == 'bugs' %}aria-current="page"{% endif %}>Bug reports</a>
 </nav>
