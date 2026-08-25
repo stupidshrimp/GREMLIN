@@ -9,35 +9,49 @@
       <p>Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface</p>
     </div>
 
-    {#- The navigation and the help block are grouped so they travel together:
-        with the brand on the left, these two share the right-hand side and wrap
-        under one another rather than one of them being stranded mid-row. -#}
-    <div class="site-footer-columns">
-      <nav class="site-footer-nav" aria-label="Footer">
-        <p class="site-footer-heading">About this site</p>
-        <ul>
-        {% for link in footer_links %}
-          <li>
-            {# aria-current is the footer's equivalent of the sidebar's .active class:
-               the styling is shared, but this is what a screen reader announces. #}
-            <a href="{{ link.url }}"{% if request.path == link.url %} aria-current="page"{% endif %}>{{ link.label }}</a>
-          </li>
-        {% endfor %}
-        </ul>
-      </nav>
-
-      {#- The same three people the login dialog names. Here it is not about
-          getting in, so the wording is the general one: whatever the question
-          is, these are the people who answer it. -#}
-      <section class="site-footer-help" aria-labelledby="footerHelpHeading">
-        <p class="site-footer-heading" id="footerHelpHeading">Help</p>
-        <p class="site-footer-help-lead">If you have any questions, please contact:</p>
-        {% include "support_contacts.html" %}
-      </section>
-    </div>
+    <nav class="site-footer-nav" aria-label="Footer">
+      <p class="site-footer-heading">About this site</p>
+      <ul>
+      {% for link in footer_links %}
+        <li>
+          {# aria-current is the footer's equivalent of the sidebar's .active class:
+             the styling is shared, but this is what a screen reader announces. #}
+          <a href="{{ link.url }}"{% if request.path == link.url %} aria-current="page"{% endif %}>{{ link.label }}</a>
+        </li>
+      {% endfor %}
+      </ul>
+    </nav>
   </div>
 
   <div class="site-footer-legal">
     <p>&copy; {{ current_year }} GREMLIN</p>
+    {#- Who to ask, one click away rather than spelled out here. The contacts are
+        read rarely and the footer is on every page, so as prose they were three
+        rows of height charged to every visitor for the sake of the few who
+        wanted them. As a button they cost one line and say the same thing. -#}
+    <button
+      type="button"
+      class="site-footer-help-button"
+      id="footerHelpButton"
+      aria-haspopup="dialog"
+      aria-controls="footerHelpDialog"
+    >
+      <span class="site-footer-help-icon" aria-hidden="true">?</span>
+      Help
+    </button>
   </div>
 </footer>
+
+{#- A sibling of the footer rather than a child of it, the way the account
+    dialog sits beside the sidebar that opens it: a modal belongs to the page it
+    covers, not to the strip of markup holding its button.
+
+    Drawn for everybody, signed in or not -- this one answers questions in
+    general, unlike the login form's help button, which exists only for somebody
+    who cannot get in. -#}
+<dialog id="footerHelpDialog" class="account-dialog support-dialog" aria-labelledby="footerHelpHeading">
+  <button type="button" class="account-close" id="footerHelpClose" aria-label="Close">&times;</button>
+  <h2 id="footerHelpHeading">Help</h2>
+  <p>If you have any questions, please contact:</p>
+  {% include "support_contacts.html" %}
+</dialog>

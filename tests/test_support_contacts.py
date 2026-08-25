@@ -1,4 +1,4 @@
-"""The help contacts: the footer block and the login dialog's help button.
+"""The help contacts: the footer's Help dialog and the login dialog's help button.
 
 Both are drawn from the same SUPPORT_CONTACTS list through one partial, so what
 is worth pinning down is that the list reaches both places -- a missing context
@@ -28,20 +28,34 @@ def _login(module):
 
 
 @pytest.mark.parametrize("page", ["/", "/about", "/reliability-links"])
-def test_the_footer_names_every_contact_on_every_page(monkeypatch, tmp_path, page):
+def test_the_footer_offers_every_contact_on_every_page(monkeypatch, tmp_path, page):
+    """The names are not printed in the footer itself -- they are a click behind it."""
     module = _app(monkeypatch, tmp_path)
     body = module.app.test_client().get(page).get_data(as_text=True)
-    assert 'class="site-footer-help"' in body
+    assert 'id="footerHelpButton"' in body
+    assert 'id="footerHelpDialog"' in body
+    # The button has to name the dialog it opens, or the click handler in
+    # layout.js is wiring up two halves of nothing.
+    assert 'aria-controls="footerHelpDialog"' in body
     for contact in module.SUPPORT_CONTACTS:
         assert contact["name"] in body, contact["name"]
         assert f'mailto:{contact["email"]}' in body, contact["email"]
 
 
-def test_the_footer_help_block_survives_signing_in(monkeypatch, tmp_path):
+def test_the_footer_keeps_the_contacts_out_of_the_footer_itself(monkeypatch, tmp_path):
+    """The block of prose the button replaced does not come back alongside it."""
+    body = _app(monkeypatch, tmp_path).app.test_client().get("/about").get_data(as_text=True)
+    footer = body.split('<footer', 1)[1].split('</footer>', 1)[0]
+    assert "please contact" not in footer
+    assert "support-contacts" not in footer
+
+
+def test_the_footer_help_button_survives_signing_in(monkeypatch, tmp_path):
     """It answers questions, not just access requests, so it is not a signed-out thing."""
     module = _app(monkeypatch, tmp_path)
     body = _login(module).get("/about").get_data(as_text=True)
-    assert 'class="site-footer-help"' in body
+    assert 'id="footerHelpButton"' in body
+    assert 'id="footerHelpDialog"' in body
     for contact in module.SUPPORT_CONTACTS:
         assert f'mailto:{contact["email"]}' in body, contact["email"]
 
