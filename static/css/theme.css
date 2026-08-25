@@ -1114,11 +1114,11 @@ button.life-data-card {
   .about-hero-media { justify-content: center; }
 }
 
-/* The help contacts. The same list is drawn in the footer and in the dialog
-   behind the login form's help button, so its shape is set here once and each
-   of the two adjusts what it has to. An entry is a name with its address under
-   it, which is the shape the dialog's narrow column wants; the footer, which
-   has width but no height to spare, pulls the two back onto one line. */
+/* The help contacts. The same list is drawn in both dialogs that offer them --
+   the footer's Help button and the login form's -- so its shape is set here
+   once rather than in whichever stylesheet each of the two belongs to. An entry
+   is a name with its address under it, which is the shape a dialog's narrow
+   column wants. */
 .support-contacts {
   list-style: none;
   margin: 0;

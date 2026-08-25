@@ -113,16 +113,24 @@
   });
 })();
 
-// The help contacts behind the login form's "Need log in access?" button. Wired
-// up on its own rather than inside the account dialog's block above, because
-// that block gives up early on a page without an account button and this dialog
-// should not disappear with it.
+// The help contacts, which are read from a dialog in both of the places they
+// are offered. Wired up on its own rather than inside the account dialog's
+// block above, because that block gives up early on a page without an account
+// button and neither of these dialogs should disappear with it.
 (function () {
-  const dialog = document.getElementById("supportDialog");
-  const open = document.getElementById("accountHelpButton");
-  if (!dialog || !open) return;
-  // Opened over the account dialog, which stays where it is: closing this one
-  // hands the login form straight back, still filled in.
-  open.addEventListener("click", () => dialog.showModal());
-  document.getElementById("supportClose")?.addEventListener("click", () => dialog.close());
+  const wire = (buttonId, dialogId, closeId) => {
+    const dialog = document.getElementById(dialogId);
+    const open = document.getElementById(buttonId);
+    // Either half can be legitimately absent: the login help button is drawn
+    // only for a visitor who is not signed in.
+    if (!dialog || !open) return;
+    open.addEventListener("click", () => dialog.showModal());
+    document.getElementById(closeId)?.addEventListener("click", () => dialog.close());
+  };
+
+  // Under the login form. Opened over the account dialog, which stays where it
+  // is: closing this one hands the login form straight back, still filled in.
+  wire("accountHelpButton", "supportDialog", "supportClose");
+  // In the footer, on every page and whether or not anybody is signed in.
+  wire("footerHelpButton", "footerHelpDialog", "footerHelpClose");
 })();

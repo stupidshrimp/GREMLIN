@@ -38,10 +38,12 @@
 .account-help-button:hover { color:var(--forest-950); border-bottom-color:var(--forest-500); }
 .account-help-button:focus-visible { outline:2px solid var(--forest-700); outline-offset:3px; border-radius:4px; }
 .account-help-icon { display:inline-grid; place-items:center; width:1.25rem; height:1.25rem; border-radius:50%; border:1px solid currentColor; font-size:.75rem; line-height:1; }
-/* The contacts dialog is the account dialog's twin, so it keeps that box and
-   only changes what it has to. Narrower, because it opens over the login dialog
-   rather than instead of it: inset on both sides, it reads as the sheet on top
-   instead of as the same sheet with different words on it. */
+/* The contacts dialog -- opened from the login form here, and from the footer's
+   Help button on every page -- is the account dialog's twin, so it keeps that
+   box and only changes what it has to. Narrower, because over the login dialog
+   it has to read as the sheet on top rather than as the same sheet with
+   different words on it, and because a name and an address want nothing like
+   the width a login form does. */
 .support-dialog { width:min(360px, calc(100vw - 32px)); }
 .support-dialog .support-contacts { margin-top:16px; gap:.7rem; }
 .support-dialog .support-contacts li { line-height:1.45; }
