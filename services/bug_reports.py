@@ -870,6 +870,16 @@ class BugReportStore:
             # as_uri() refuses a path that is not absolute on this platform --
             # the Windows default read on a POSIX runner, for one.
             return None
+        except (OSError, RuntimeError):
+            # resolve() walks the path again, and this one is on a share: the
+            # caller has already had a good stat() of it, but between that and
+            # here it can go away, and resolve() answers a symlink loop with
+            # RuntimeError rather than OSError. Not fatal either way -- giving
+            # up the URI falls back to the ordinary connection, which is the
+            # degradation this method is allowed to make. Defensive rather than
+            # demonstrated: is_file() catches every case that can be built
+            # deliberately, and what is left is the race.
+            return None
         return f"{_sqlite_file_uri(uri)}?mode=ro"
 
     def describe(self) -> dict:

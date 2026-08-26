@@ -1188,6 +1188,35 @@ def test_describe_explains_a_path_it_is_not_allowed_to_look_at(tmp_path, monkeyp
     assert not isinstance(caught.value, OSError)
 
 
+@pytest.mark.parametrize("failure", [OSError(5, "I/O error"), RuntimeError("Symlink loop")])
+def test_the_status_check_survives_a_path_that_stops_resolving(tmp_path, failure):
+    """The share can go away between the probe and the connection.
+
+    resolve() walks the path a second time, after is_file() has already had a
+    good look at it, and answers a symlink loop with RuntimeError rather than
+    OSError. Neither is worth failing the check over: dropping the read-only URI
+    falls back to the ordinary connection, which reads the same answer.
+    """
+
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+    store.submit(title="Charts blank", description="No bars.")
+
+    def gone(self, *args, **kwargs):
+        raise failure
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(type(path), "resolve", gone)
+    try:
+        assert store._readonly_uri() is None
+        info = store.describe()
+    finally:
+        monkeypatched.undo()
+
+    assert info["schema_ready"] is True
+    assert info["summary"]["total"] == 1
+
+
 def test_describe_repairs_nothing_by_itself(tmp_path):
     """It reports; ensure_schema fixes. A check with a side effect is not a check."""
 
