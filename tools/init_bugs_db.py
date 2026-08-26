@@ -66,7 +66,7 @@ def _format_bytes(size: int | None) -> str:
     return f"{value:.1f} GB"
 
 
-def build_report(info: dict, *, created: bool) -> str:
+def build_report(info: dict, *, created: bool, schema_applied: bool) -> str:
     """The status, as the lines printed to the terminal."""
 
     lines = ["Bug reports database", f"  Path:     {info['path']}"]
@@ -90,15 +90,28 @@ def build_report(info: dict, *, created: bool) -> str:
     lines.append(f"  Tables:   {', '.join(info['tables']) or 'none'}")
 
     # A file that opens but is missing a piece is the confusing case: it looks
-    # installed and then fails on use. Say which piece, and say that running
-    # this fixes it, because ensure_schema only ever adds to what is there.
+    # installed, passes every glance, and then refuses the first report filed
+    # against it -- with a message about the drive, because that is what a
+    # failed write looks like from the outside. So say which piece is missing,
+    # and say honestly what will and will not mend it.
     gaps = list(info["missing_tables"]) + [
         f"the {name} column" for name in info["missing_columns"]
     ]
-    if gaps:
+    if gaps and not schema_applied:
         lines.append(
             f"  Schema:   INCOMPLETE -- missing {', '.join(gaps)}. "
-            "Run this without --check to add what is missing; nothing filed is disturbed."
+            "Run this without --check to add what can be added."
+        )
+    elif gaps:
+        # The schema has just been applied and these are still missing, so they
+        # are not things it adds: CREATE TABLE IF NOT EXISTS leaves an existing
+        # table alone however little of it is left. Promising another run would
+        # fix it would send an administrator round the same loop.
+        lines.append(
+            f"  Schema:   DAMAGED -- still missing {', '.join(gaps)} after applying the "
+            "schema, which only ever adds what is absent whole. This file cannot serve "
+            "reports. Move it aside and run this again to make a fresh one; keep it if "
+            "the reports in it still matter."
         )
     else:
         lines.append(f"  Schema:   complete ({len(SCHEMA_TABLES)} tables)")
@@ -154,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(build_report(info, created=created))
+    print(build_report(info, created=created, schema_applied=not args.check))
 
     if not info["exists"] or not info["schema_ready"]:
         return 1

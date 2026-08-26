@@ -182,10 +182,54 @@ def test_it_adds_a_column_an_older_database_is_missing(tool, db_path, capsys):
     capsys.readouterr()
 
     assert tool.main(["--check", "--db", str(db_path)]) == 1
-    assert "missing the revision column" in capsys.readouterr().out
+    assert "missing the bug_reports.revision column" in capsys.readouterr().out
 
     assert tool.main(["--db", str(db_path)]) == 0
     assert "Schema:   complete" in capsys.readouterr().out
+
+
+def test_a_damaged_table_is_called_damaged_rather_than_complete(tool, db_path, capsys):
+    """The case the command exists to catch, and the one it must not get wrong.
+
+    A table that has lost a column opens, lists and counts like a healthy one,
+    so a check that stopped at the table names would print "complete" over a
+    database that refuses the next report filed against it.
+    """
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN title")
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "INCOMPLETE" in out
+    assert "bug_reports.title" in out
+    assert "complete (" not in out
+
+
+def test_what_the_schema_cannot_mend_is_not_promised_as_mendable(tool, db_path, capsys):
+    """CREATE TABLE IF NOT EXISTS leaves a broken table alone, however broken.
+
+    Telling an administrator to run the command again would send them round the
+    same loop and leave them no better off, so once the schema has been applied
+    and something is still missing, say what that actually means.
+    """
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN title")
+    capsys.readouterr()
+
+    assert tool.main(["--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "DAMAGED" in out
+    assert "Run this without --check" not in out
+    assert "Move it aside" in out
 
 
 # ---------------------------------------------------------------------------

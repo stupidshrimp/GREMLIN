@@ -27,6 +27,7 @@ import binascii
 import hashlib
 import sqlite3
 import time
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,17 +55,81 @@ SEVERITIES = ("blocking", "major", "minor")
 SEVERITY_RANK = {name: rank for rank, name in enumerate(SEVERITIES)}
 DEFAULT_SEVERITY = "minor"
 
-# The tables ensure_schema creates. Named here so a status check can say whether
-# a file that is present is actually a reports database: an empty file made by
-# hand, or a copy taken before the limiter's table existed, both open perfectly
-# well and then fail on the first query that needs what is missing.
-SCHEMA_TABLES = ("bug_reports", "submission_attempts")
+# The schema, as the statements that make it. Named up here rather than written
+# inline in ensure_schema because the status check derives what a complete
+# database looks like by running these into an empty in-memory one: a single
+# source of truth, so a check can never come to disagree with what is actually
+# created. Without that, a file that is present but damaged -- an empty file
+# made by hand, a copy taken before the limiter's table existed, a table someone
+# has altered -- opens perfectly well, passes the check, and then fails on the
+# first query that needs what is missing.
+#
+# `revision` is bumped by every change, and is what the dashboard sends back to
+# prove the row it is acting on is the row it drew -- see set_status. A status
+# alone cannot do that job, because open -> resolved -> open reads as though
+# nothing happened.
+#
+# The comments live out here rather than inside the statements: sqlite stores
+# statement text verbatim and re-parses it for ALTER TABLE, where a trailing
+# comment on the last column makes a later DROP COLUMN fail to parse.
+SCHEMA_DDL = {
+    "bug_reports": f"""
+        CREATE TABLE IF NOT EXISTS bug_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            area TEXT NOT NULL DEFAULT '',
+            severity TEXT NOT NULL DEFAULT '{DEFAULT_SEVERITY}'
+                CHECK(severity IN {SEVERITIES!r}),
+            reporter TEXT NOT NULL DEFAULT '',
+            reporter_user_id INTEGER,
+            page_url TEXT NOT NULL DEFAULT '',
+            user_agent TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '{STATUS_OPEN}'
+                CHECK(status IN {STATUSES!r}),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT,
+            resolved_by TEXT NOT NULL DEFAULT '',
+            resolution_note TEXT NOT NULL DEFAULT '',
+            revision INTEGER NOT NULL DEFAULT 1
+        )
+    """,
+    # The submission limiter's working state. Separate from the reports
+    # themselves because it is disposable: rows here expire and are swept,
+    # whereas a report is kept until somebody deletes it. Nothing filed is ever
+    # removed to make room.
+    "submission_attempts": """
+        CREATE TABLE IF NOT EXISTS submission_attempts (
+            scope TEXT NOT NULL,
+            filed_at REAL NOT NULL
+        )
+    """,
+}
+SCHEMA_TABLES = tuple(SCHEMA_DDL)
 
-# Columns ensure_schema adds to a database created before they existed. Named
-# for the same reason as the tables above: a check that only looked for tables
-# would call a database from an earlier build complete, when what it is missing
-# is the column the dashboard's concurrency guard reads.
-MIGRATED_COLUMNS = ("revision",)
+# The indexes are not part of the completeness check -- a database missing one
+# is slow, not broken -- so they are kept apart from the tables above.
+SCHEMA_INDEXES = (
+    # The dashboard's default view is "open, newest first", and its counts group
+    # by status; both read this rather than the table.
+    "CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created "
+    "ON bug_reports(status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_submission_attempts_scope "
+    "ON submission_attempts(scope, filed_at)",
+)
+
+# Columns ensure_schema can add to a database that predates them, each with the
+# definition to add it with -- rather than a bare list of names and one ALTER
+# that assumes they are all the same shape. Everything else in the schema
+# arrives with the CREATE TABLE, so a database missing one of those is damaged
+# rather than old, and running the schema again will not mend it: a different
+# thing to tell an administrator, and the reason this is a separate list.
+MIGRATED_COLUMNS = {"revision": "INTEGER NOT NULL DEFAULT 1"}
+
+# The columns _summarise reads. Checked before it runs, so that a database
+# missing one of them is reported as missing it rather than as unreadable.
+_SUMMARY_COLUMNS = ("status", "severity", "created_at")
 
 # Bounds on what one report may store. The form is open to anyone who can reach
 # GREMLIN, including anonymously, so nothing it writes is allowed to be
@@ -224,6 +289,58 @@ def _clean(value: object, limit: int) -> str:
     return text[:limit]
 
 
+def _sqlite_file_uri(uri: str) -> str:
+    """A file: URI pathlib produced, in the form sqlite will accept.
+
+    The two disagree about UNC paths, which is how half the plant reaches the
+    share. ``as_uri()`` renders ``\\\\server\\share\\auxillary.db`` as
+    ``file://server/share/auxillary.db``, putting the host in the URI's
+    authority; sqlite rejects any authority that is not empty or ``localhost``
+    -- "invalid uri authority: server" -- so a deployment that reaches the share
+    by name rather than by a mapped drive letter would be told its perfectly
+    readable database could not be opened.
+
+    Moving the host down into the path leaves the authority empty, which is the
+    form sqlite takes. A drive letter and a POSIX path both already come back
+    with an empty authority (``file:///``) and are left alone.
+    """
+
+    if uri.startswith("file://") and not uri.startswith("file:///"):
+        return "file:////" + uri[len("file://") :]
+    return uri
+
+
+@lru_cache(maxsize=1)
+def _expected_columns() -> dict[str, tuple[str, ...]]:
+    """Which columns each table should have, in the order they are declared.
+
+    Read back off SCHEMA_DDL by running it into an empty in-memory database and
+    asking sqlite what it made, rather than by listing the column names a second
+    time here. A hand-kept list would drift from the CREATE TABLE, and a check
+    that disagrees with what is actually created is worse than no check at all:
+    it would call a healthy database incomplete, and nothing would be able to
+    mend what it claims is wrong.
+
+    Cached because it is the same answer every time, and computed on first use
+    rather than at import, so this module still does nothing when it is loaded.
+    """
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        for statement in SCHEMA_DDL.values():
+            conn.execute(statement)
+        return {
+            table: tuple(
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            )
+            for table in SCHEMA_DDL
+        }
+    finally:
+        conn.close()
+
+
 def _summarise(conn: sqlite3.Connection) -> dict:
     """The dashboard's tile counts, in one pass over the table.
 
@@ -296,37 +413,8 @@ class BugReportStore:
             raise BugReportStoreError(self._unreachable(exc)) from exc
         try:
             with self._connect() as conn:
-                conn.execute(f"""
-                    CREATE TABLE IF NOT EXISTS bug_reports (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        title TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        area TEXT NOT NULL DEFAULT '',
-                        severity TEXT NOT NULL DEFAULT '{DEFAULT_SEVERITY}'
-                            CHECK(severity IN {SEVERITIES!r}),
-                        reporter TEXT NOT NULL DEFAULT '',
-                        reporter_user_id INTEGER,
-                        page_url TEXT NOT NULL DEFAULT '',
-                        user_agent TEXT NOT NULL DEFAULT '',
-                        status TEXT NOT NULL DEFAULT '{STATUS_OPEN}'
-                            CHECK(status IN {STATUSES!r}),
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        resolved_at TEXT,
-                        resolved_by TEXT NOT NULL DEFAULT '',
-                        resolution_note TEXT NOT NULL DEFAULT '',
-                        revision INTEGER NOT NULL DEFAULT 1
-                    )
-                """)
-                # `revision` is bumped by every change, and is what the dashboard
-                # sends back to prove the row it is acting on is the row it drew
-                # -- see set_status. A status alone cannot do that job, because
-                # open -> resolved -> open reads as though nothing happened.
-                #
-                # Kept as a Python comment rather than a -- comment inside the
-                # CREATE TABLE above: sqlite stores that statement text verbatim
-                # and re-parses it for ALTER TABLE, where a trailing comment on
-                # the last column makes a later DROP COLUMN fail to parse.
+                for statement in SCHEMA_DDL.values():
+                    conn.execute(statement)
                 # A database created before revisions existed has the rest of
                 # the table but not this column. Added rather than rebuilt, so
                 # nothing filed is disturbed; existing rows start at revision 1.
@@ -334,30 +422,13 @@ class BugReportStore:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(bug_reports)").fetchall()
                 }
-                if "revision" not in columns:
-                    conn.execute(
-                        "ALTER TABLE bug_reports ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
-                    )
-                # The dashboard's default view is "open, newest first", and its
-                # counts group by status; both read this rather than the table.
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created "
-                    "ON bug_reports(status, created_at DESC)"
-                )
-                # The submission limiter's working state. Separate from the
-                # reports themselves because it is disposable: rows here expire
-                # and are swept, whereas a report is kept until somebody deletes
-                # it. Nothing filed is ever removed to make room.
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS submission_attempts (
-                        scope TEXT NOT NULL,
-                        filed_at REAL NOT NULL
-                    )
-                """)
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_submission_attempts_scope "
-                    "ON submission_attempts(scope, filed_at)"
-                )
+                for name, definition in MIGRATED_COLUMNS.items():
+                    if name not in columns:
+                        conn.execute(
+                            f"ALTER TABLE bug_reports ADD COLUMN {name} {definition}"
+                        )
+                for statement in SCHEMA_INDEXES:
+                    conn.execute(statement)
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
         self._schema_ready = True
@@ -732,21 +803,35 @@ class BugReportStore:
         by having somebody's report refused.
         """
 
-        try:
-            target = f"{self.path.resolve().as_uri()}?mode=ro"
-            use_uri = True
-        except ValueError:
-            # as_uri() refuses a path that is not absolute on this platform --
-            # the Windows default read on a POSIX runner, for one. A plain
-            # connection still answers the question; it just cannot promise the
-            # file is not being opened for writing.
-            target, use_uri = str(self.path), False
-        try:
-            conn = sqlite3.connect(target, uri=use_uri, timeout=DB_BUSY_TIMEOUT_SECONDS)
-        except sqlite3.Error as exc:
-            raise BugReportStoreError(self._unreachable(exc)) from exc
+        uri = self._readonly_uri()
+        if uri is not None:
+            try:
+                conn = sqlite3.connect(uri, uri=True, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            except sqlite3.Error:
+                # Read-only is worth having but not worth failing over: the file
+                # is known to exist by the time this is called, and nothing here
+                # writes to it. So a URI sqlite will not take falls back to the
+                # ordinary connection, which answers the question either way,
+                # rather than reporting a reachable database as unreachable.
+                uri = None
+        if uri is None:
+            try:
+                conn = sqlite3.connect(self.path, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            except sqlite3.Error as exc:
+                raise BugReportStoreError(self._unreachable(exc)) from exc
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _readonly_uri(self) -> str | None:
+        """``self.path`` as a read-only sqlite URI, or None if it cannot be one."""
+
+        try:
+            uri = self.path.resolve().as_uri()
+        except ValueError:
+            # as_uri() refuses a path that is not absolute on this platform --
+            # the Windows default read on a POSIX runner, for one.
+            return None
+        return f"{_sqlite_file_uri(uri)}?mode=ro"
 
     def describe(self) -> dict:
         """Where the database stands right now, creating nothing.
@@ -771,7 +856,10 @@ class BugReportStore:
             "size_bytes": None,
             "tables": [],
             "missing_tables": list(SCHEMA_TABLES),
-            "missing_columns": list(MIGRATED_COLUMNS),
+            # Left empty when the tables are missing whole, for the same reason
+            # the loop below skips them: missing_tables already says everything
+            # is absent, and every column listed under it would bury that.
+            "missing_columns": [],
             "schema_ready": False,
             "summary": None,
         }
@@ -797,20 +885,38 @@ class BugReportStore:
             )
             info["tables"] = tables
             info["missing_tables"] = [name for name in SCHEMA_TABLES if name not in tables]
-            # Both of these only once the table is known to be there. Querying a
-            # database that predates it, or one that is not a reports database
-            # at all, would fail as "unreadable" and hide the far more useful
-            # answer, which is exactly what is missing.
-            if "bug_reports" in tables:
-                columns = {
+
+            # Every column the schema declares, not only the ones ensure_schema
+            # migrates. A table that is present but has had a column taken off
+            # it opens, lists, and counts exactly like a healthy one, and then
+            # refuses the first report filed against it -- with a message about
+            # the drive, because that is what a failed write looks like from the
+            # outside. Reported here instead, while somebody is asking.
+            missing_columns: list[str] = []
+            present: dict[str, set[str]] = {}
+            for table in SCHEMA_TABLES:
+                if table not in tables:
+                    # Already reported whole in missing_tables; listing each of
+                    # its columns underneath would bury that.
+                    continue
+                present[table] = {
                     row["name"]
-                    for row in conn.execute("PRAGMA table_info(bug_reports)").fetchall()
+                    for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
                 }
-                info["missing_columns"] = [
-                    name for name in MIGRATED_COLUMNS if name not in columns
+                missing_columns += [
+                    f"{table}.{name}"
+                    for name in _expected_columns()[table]
+                    if name not in present[table]
                 ]
-                info["summary"] = _summarise(conn)
+            info["missing_columns"] = missing_columns
             info["schema_ready"] = not info["missing_tables"] and not info["missing_columns"]
+
+            # Counted last, and only when the columns it reads are all there.
+            # Otherwise the count is what fails, and "unreadable" is what gets
+            # reported -- hiding the far more useful answer, which is exactly
+            # which column has gone.
+            if all(name in present.get("bug_reports", ()) for name in _SUMMARY_COLUMNS):
+                info["summary"] = _summarise(conn)
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
         finally:

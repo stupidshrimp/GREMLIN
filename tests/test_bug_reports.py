@@ -8,6 +8,7 @@ default stand would create that name as a folder in the working tree.
 
 import importlib
 import sqlite3
+from pathlib import PureWindowsPath
 
 import pytest
 
@@ -22,6 +23,7 @@ from services.bug_reports import (
     BugReportStore,
     BugReportStoreError,
     BugReportValidationError,
+    _sqlite_file_uri,
 )
 
 
@@ -902,6 +904,9 @@ def test_describe_reports_a_missing_database_without_creating_it(tmp_path):
     assert info["schema_ready"] is False
     assert info["summary"] is None
     assert sorted(info["missing_tables"]) == sorted(SCHEMA_TABLES)
+    # The tables are reported missing whole; their columns are not listed
+    # underneath, which would bury the one fact that matters.
+    assert info["missing_columns"] == []
     assert str(path) == info["path"]
     assert not path.exists()
     assert not path.parent.exists()
@@ -975,9 +980,84 @@ def test_describe_names_a_migrated_column_an_older_database_is_missing(tmp_path)
     info = BugReportStore(path).describe()
 
     assert info["missing_tables"] == []
-    assert info["missing_columns"] == ["revision"]
+    assert info["missing_columns"] == ["bug_reports.revision"]
     assert info["schema_ready"] is False
     assert info["summary"]["total"] == 1
+
+
+def test_describe_names_a_column_taken_off_a_table(tmp_path):
+    """Present tables are not a complete schema, and this is the costly gap.
+
+    A table that has lost a column opens, lists, and counts exactly like a
+    healthy one, then refuses the first report filed against it -- reported as
+    the drive being unreachable, because that is what a refused write looks like
+    from the outside. Nobody chasing a mapped drive finds a dropped column.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN title")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_tables"] == []
+    assert info["missing_columns"] == ["bug_reports.title"]
+    assert info["schema_ready"] is False
+
+
+def test_describe_still_counts_what_a_damaged_database_holds(tmp_path):
+    """The reports are readable even when something else is not, so report them."""
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).submit(title="Filed earlier", description="Detail.")
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN resolution_note")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_columns"] == ["bug_reports.resolution_note"]
+    assert info["summary"]["total"] == 1
+
+
+def test_describe_names_the_missing_column_rather_than_failing_to_count(tmp_path):
+    """When the count itself cannot run, the reason must survive it.
+
+    Losing a column _summarise reads would make the count raise, and the whole
+    check would come back as "could not be opened" -- the message for an
+    unreachable share, on a database sitting right there. The useful answer is
+    which column has gone.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN severity")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_columns"] == ["bug_reports.severity"]
+    assert info["schema_ready"] is False
+    assert info["summary"] is None
+
+
+def test_the_expected_columns_come_from_the_statements_that_create_them(tmp_path):
+    """A hand-kept list would drift; a drifted list condemns a healthy database.
+
+    The check is only safe to fail an install on because what it expects is read
+    back off the schema itself. So: a database the schema just made must have
+    nothing missing, whatever the schema happens to say today.
+    """
+
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+    store.ensure_schema()
+
+    info = store.describe()
+
+    assert info["missing_tables"] == []
+    assert info["missing_columns"] == []
+    assert info["schema_ready"] is True
 
 
 def test_describe_repairs_nothing_by_itself(tmp_path):
@@ -1032,3 +1112,44 @@ def test_the_status_check_reads_through_a_connection_that_cannot_write(tmp_path)
 
     # And the reports are still all there to be counted.
     assert store.describe()["summary"]["total"] == 1
+
+
+def test_a_unc_path_becomes_a_uri_sqlite_will_accept():
+    """The share reached by name rather than by a mapped drive letter.
+
+    pathlib puts the host in the URI's authority; sqlite refuses any authority
+    that is not empty or localhost. Left alone, that turns a perfectly readable
+    database on \\\\server\\share into "could not be opened".
+
+    Asserted on the URI rather than by opening one, because a POSIX test runner
+    has no UNC path to resolve -- but it has the same sqlite, and sqlite checks
+    the authority before it ever looks for the file.
+    """
+
+    raw = PureWindowsPath(r"\\server\share\GREMLIN Global DB\auxillary.db").as_uri()
+    assert raw.startswith("file://server/")  # what pathlib hands over
+
+    fixed = _sqlite_file_uri(raw)
+    assert fixed == "file:////server/share/GREMLIN%20Global%20DB/auxillary.db"
+
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        sqlite3.connect(f"{fixed}?mode=ro", uri=True)
+    # Past the authority check, and failing only because no such share is
+    # mounted here -- which is the whole of what this fix has to prove.
+    assert "authority" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "windows_path",
+    [r"Z:\FACIL\GREMLIN Global DB\auxillary.db", r"C:\GREMLIN\auxillary.db"],
+)
+def test_a_mapped_drive_letter_is_left_exactly_as_pathlib_wrote_it(windows_path):
+    """The UNC repair must not touch the ordinary case it does not apply to."""
+
+    raw = PureWindowsPath(windows_path).as_uri()
+    assert _sqlite_file_uri(raw) == raw
+
+
+def test_a_posix_path_is_left_exactly_as_pathlib_wrote_it(tmp_path):
+    raw = (tmp_path / "auxillary.db").as_uri()
+    assert _sqlite_file_uri(raw) == raw
