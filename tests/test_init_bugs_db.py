@@ -284,7 +284,7 @@ def test_a_column_that_kept_its_name_and_lost_its_shape_is_caught(tool, db_path,
     assert tool.main(["--check", "--db", str(db_path)]) == 1
     out = capsys.readouterr().out
     assert "complete (" not in out
-    assert "bug_reports.id (expected INTEGER PRIMARY KEY, found INTEGER)" in out
+    assert "bug_reports.id (expected INTEGER PRIMARY KEY AUTOINCREMENT, found INTEGER)" in out
 
     # And the failure it stands for is real: the report cannot be found again.
     store = BugReportStore(db_path)
@@ -316,6 +316,41 @@ def test_a_wall_of_faults_is_bounded_and_leads_with_the_worst(tool, db_path, cap
     assert "... and 6 more" in out
     # Declaration order, so the cap trims the far end and id survives it.
     assert "bug_reports.id" in listed[0]
+
+
+def test_a_table_that_lost_only_autoincrement_is_caught(tool, db_path, capsys):
+    """Identical in table_info, and it silently misfiles resolutions."""
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(declaration.replace(" AUTOINCREMENT", ""))
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "complete (" not in out
+    assert "expected INTEGER PRIMARY KEY AUTOINCREMENT, found INTEGER PRIMARY KEY" in out
+
+
+def test_a_path_it_may_not_look_at_is_explained_not_traced(tool, db_path, capsys, monkeypatch):
+    """The actionable message, not a traceback, for a share it cannot traverse."""
+
+    def denied(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(type(db_path), "is_file", denied)
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    captured = capsys.readouterr()
+    assert str(db_path) in captured.err
+    assert "drive is mapped and reachable" in captured.err
+    assert "Traceback" not in captured.err
 
 
 # ---------------------------------------------------------------------------

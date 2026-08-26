@@ -319,16 +319,34 @@ def _column_shapes(conn: sqlite3.Connection, table: str) -> dict[str, str]:
     resolved, reopened or deleted, because nothing can find it again. That
     passes any check that only counts names.
 
-    AUTOINCREMENT is not in what sqlite reports here and so is not compared; it
-    governs whether an id is reused after a deletion, not whether a report can
-    be addressed at all.
+    AUTOINCREMENT is read off the stored CREATE TABLE rather than from
+    table_info, which does not carry it, because losing it is not cosmetic here.
+    Without it sqlite reuses the id of a deleted report, and this application
+    deletes: file a report after deleting the highest-numbered one and it takes
+    that number back, at revision 1. A dashboard still showing the deleted
+    report then passes set_status its id and revision 1, the concurrency guard
+    matches, and the note lands on somebody else's report instead -- silently,
+    and to the reporter of a report nobody has read yet.
     """
+
+    declaration = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    # A substring, not a comparison of the statement text: sqlite stores that
+    # verbatim, so whitespace and the IF NOT EXISTS differ between one database
+    # and the next while meaning the same thing. The keyword either appears or
+    # it does not.
+    autoincrement = "AUTOINCREMENT" in ((declaration["sql"] or "").upper() if declaration else "")
 
     shapes: dict[str, str] = {}
     for row in conn.execute(f"PRAGMA table_info({table})").fetchall():
         parts = [row["type"]]
         if row["pk"]:
             parts.append("PRIMARY KEY")
+            # Only ever on a single INTEGER PRIMARY KEY, which is the only shape
+            # sqlite accepts it on, so it lands on the column it belongs to.
+            if autoincrement:
+                parts.append("AUTOINCREMENT")
         if row["notnull"]:
             parts.append("NOT NULL")
         if row["dflt_value"] is not None:
@@ -870,10 +888,22 @@ class BugReportStore:
         administrator has to act on.
         """
 
+        # Probed inside the guard, not in the dict literal below. is_file()
+        # swallows "no such file" but re-raises a permission error, and a share
+        # the caller may not traverse is exactly what this is asked about -- so
+        # unguarded, the one method meant to explain an unreachable share would
+        # answer with a traceback instead. Everything here is OSError, the same
+        # as the mkdir in ensure_schema.
+        try:
+            exists = self.path.is_file()
+            parent_exists = self.path.parent.is_dir()
+        except OSError as exc:
+            raise BugReportStoreError(self._unreachable(exc)) from exc
+
         info: dict = {
             "path": str(self.path),
-            "exists": self.path.is_file(),
-            "parent_exists": self.path.parent.is_dir(),
+            "exists": exists,
+            "parent_exists": parent_exists,
             "size_bytes": None,
             "tables": [],
             "missing_tables": list(SCHEMA_TABLES),

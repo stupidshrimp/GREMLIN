@@ -1082,7 +1082,7 @@ def test_describe_catches_a_column_that_kept_its_name_and_lost_its_shape(tmp_pat
 
     assert info["missing_columns"] == []  # every name is still there
     assert info["schema_ready"] is False
-    assert "bug_reports.id (expected INTEGER PRIMARY KEY, found INTEGER)" in (
+    assert "bug_reports.id (expected INTEGER PRIMARY KEY AUTOINCREMENT, found INTEGER)" in (
         info["altered_columns"]
     )
 
@@ -1106,6 +1106,86 @@ def test_a_database_the_schema_migrated_is_not_called_altered(tmp_path):
     assert info["altered_columns"] == []
     assert info["missing_columns"] == []
     assert info["schema_ready"] is True
+
+
+def test_describe_catches_a_table_that_lost_only_autoincrement(tmp_path):
+    """table_info cannot see this one, and it is not cosmetic.
+
+    Without AUTOINCREMENT sqlite hands a deleted report's id to the next one
+    filed, at revision 1 -- so a dashboard still showing the deleted report
+    passes set_status that id and revision, the concurrency guard matches, and
+    the resolution lands on a different report that nobody has read yet.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(declaration.replace(" AUTOINCREMENT", ""))
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_columns"] == []
+    assert info["schema_ready"] is False
+    assert info["altered_columns"] == [
+        "bug_reports.id (expected INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "found INTEGER PRIMARY KEY)"
+    ]
+
+
+def test_the_harm_that_missing_autoincrement_stands_for(tmp_path):
+    """Why the check bothers: the guard that should stop this does not."""
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(declaration.replace(" AUTOINCREMENT", ""))
+
+    store = BugReportStore(path)
+    store.submit(title="First", description="Detail.")
+    highest = store.submit(title="Highest", description="Detail.")
+
+    # An administrator's page is drawn showing `highest` at revision 1.
+    store.delete(highest)
+    reused = store.submit(title="Somebody else's new report", description="Unrelated.")
+    assert reused == highest  # the id came back round
+
+    resolved = store.set_status(
+        highest, "resolved", actor="admin", note="closing the old one",
+        expected_revision=1,
+    )
+    assert resolved["title"] == "Somebody else's new report"
+
+
+def test_describe_explains_a_path_it_is_not_allowed_to_look_at(tmp_path, monkeypatch):
+    """A share the caller may not traverse is what this method exists to explain.
+
+    ``is_file()`` swallows "no such file" but re-raises a permission error, so
+    unguarded it answers with a traceback -- from the one method whose whole job
+    is to say which path could not be reached. Asserted by making the probe
+    raise rather than by changing file modes, which prove nothing when the suite
+    runs as a user who may read everything anyway.
+    """
+
+    path = tmp_path / "locked" / "auxillary.db"
+    store = BugReportStore(path)
+
+    def denied(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(type(path), "is_file", denied)
+
+    with pytest.raises(BugReportStoreError) as caught:
+        store.describe()
+    assert str(path) in str(caught.value)
+    assert not isinstance(caught.value, OSError)
 
 
 def test_describe_repairs_nothing_by_itself(tmp_path):
