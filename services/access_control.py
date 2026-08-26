@@ -489,25 +489,70 @@ class AccessControl:
         # authenticates with. Everything else is copied as it stands.
         source = ("id,username,password_hash,role,department,staff_level,credential_version"
                   ",COALESCE(created_at,CURRENT_TIMESTAMP),COALESCE(updated_at,CURRENT_TIMESTAMP)")
+        # The id AUTOINCREMENT would hand out next, which is not recoverable from
+        # the surviving rows. sqlite keeps it in sqlite_sequence, and dropping
+        # the table drops that row with it; copying explicit ids then sets it
+        # back only as high as the highest id still stored. Delete the most
+        # recently added account and rebuild, and the next account created takes
+        # the id that account had -- inheriting its sign-in history in
+        # login_events and its entries in audit_log, both of which file by
+        # user_id and neither of which is a foreign key, precisely so that
+        # removing somebody does not rewrite what was recorded about them.
+        sequenced = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'"
+        ).fetchone()
+        row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='users'").fetchone() if sequenced else None
+        high_water = row["seq"] if row else None
+
+        # One savepoint around the whole rebuild, so that standing down is
+        # actually standing down. Without it a failure in the rename -- after
+        # the original table has already been dropped -- would leave the
+        # accounts file with no users table at all, and the handler's own
+        # cleanup would drop the copy that still held every account. Rolling
+        # back to here undoes the drop as well, so the file is exactly as it was
+        # and GREMLIN comes up on the constraints it already had.
+        conn.execute("SAVEPOINT catalog_rebuild")
         try:
             conn.execute(_users_table_sql("users_rebuilt"))
             conn.execute(f"INSERT INTO users_rebuilt({columns}) SELECT {source} FROM users")
             conn.execute("DROP TABLE users")
             conn.execute("ALTER TABLE users_rebuilt RENAME TO users")
+            self._restore_high_water(conn, high_water)
         except sqlite3.Error:
             # Whatever shape this file is in, it is one people sign in with. Say
             # so and leave it alone rather than failing the start: the old
             # constraint still accepts every row already stored, so GREMLIN
             # comes up working and short of the newly added values, which is the
             # same place the orphan branch above leaves it.
+            conn.execute("ROLLBACK TO catalog_rebuild")
+            conn.execute("RELEASE catalog_rebuild")
             logger.exception(
                 "The accounts table could not be rebuilt for the current %s catalog(s); "
                 "it keeps the constraints it has, and the new values cannot be assigned yet.",
                 ", ".join(missing),
             )
-            conn.execute("DROP TABLE IF EXISTS users_rebuilt")
             return
+        conn.execute("RELEASE catalog_rebuild")
         logger.info("Rebuilt the accounts table onto the current schema (%s).", ", ".join(missing))
+
+    @staticmethod
+    def _restore_high_water(conn: sqlite3.Connection, high_water: int | None) -> None:
+        """Put the rebuilt table's id counter back where the old one had it.
+
+        Only ever raises the counter. The rebuilt table sets it to the highest id
+        copied, which is right whenever nothing was deleted and too low the
+        moment something was.
+        """
+
+        if high_water is None:
+            return
+        current = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='users'").fetchone()
+        if current is None:
+            # No row to raise: every account had been removed before the
+            # rebuild, so the copy inserted nothing and sqlite recorded nothing.
+            conn.execute("INSERT INTO sqlite_sequence(name,seq) VALUES ('users',?)", (high_water,))
+        elif current["seq"] < high_water:
+            conn.execute("UPDATE sqlite_sequence SET seq=? WHERE name='users'", (high_water,))
 
     def _restrict_permissions(self) -> None:
         """Keep the file readable only by the account GREMLIN runs as.

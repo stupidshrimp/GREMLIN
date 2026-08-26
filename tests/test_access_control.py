@@ -579,10 +579,12 @@ def test_the_rebuild_keeps_every_account_intact(tmp_path, monkeypatch):
 
     control = AccessControl(tmp_path / "accesscontrol.db")
     control.ensure_schema(initial_username="root", initial_pin="secret")
-    control.save_user(None, "temp", "0000", "viewer")
-    control.delete_user(control.authenticate("temp", "0000")["id"], 1)
     control.save_user(None, "planner", "2468", "editor", "maintenance", "leadership")
+    control.save_user(None, "temp", "0000", "viewer")
+    temp_id = control.authenticate("temp", "0000")["id"]
+    control.delete_user(temp_id, 1)
     before = {user["username"]: user["id"] for user in control.list_users()}
+    assert temp_id > max(before.values()), "the removed account must be the most recent allocation"
 
     _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
     control.ensure_schema()
@@ -590,9 +592,14 @@ def test_the_rebuild_keeps_every_account_intact(tmp_path, monkeypatch):
     assert {user["username"]: user["id"] for user in control.list_users()} == before
     assert control.authenticate("planner", "2468")["department"] == "maintenance"
     assert control.authenticate("root", "secret") is not None
-    # The id of the account that was removed must not be handed out again:
-    # login_events keeps history by user_id and is deliberately not a foreign key.
+    # sqlite keeps the next id in sqlite_sequence, and dropping the table drops
+    # it; the copy then sets it only as high as the highest id still stored. The
+    # removed account was the highest, so without carrying the mark across, the
+    # next account takes its id -- and with it its sign-in history in
+    # login_events and its entries in audit_log, neither of which is a foreign
+    # key precisely so that removing somebody leaves the record alone.
     control.save_user(None, "newhire", "1111", "viewer")
+    assert control.authenticate("newhire", "1111")["id"] != temp_id
     assert control.authenticate("newhire", "1111")["id"] not in before.values()
     with control._connect() as conn:
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='users_rebuilt'").fetchone()
@@ -696,3 +703,82 @@ def test_the_released_accounts_file_upgrades_in_place(tmp_path):
     # edits one of them is a rebuild rather than a puzzle.
     control.save_user(None, "newhire", "1111", "editor", "operations_maintenance", "leadership")
     assert control.authenticate("newhire", "1111")["department"] == "operations_maintenance"
+
+
+def test_a_rebuild_that_fails_part_way_leaves_every_account_where_it_was(tmp_path, monkeypatch, caplog):
+    """Standing down has to actually stand down.
+
+    The rebuild drops the original table before renaming the copy over it, so a
+    failure in between is the one moment the accounts exist under a name nothing
+    looks for. Rolling back only the rebuild puts them back; without that, the
+    handler's own cleanup would drop the copy that still held every account, and
+    the start would go on to fail against a users table that no longer exists.
+    """
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "maintenance", "engineer")
+    before = {user["username"]: user["id"] for user in control.list_users()}
+
+    real_connect = AccessControl._connect
+
+    class FailsTheRename:
+        """The connection, with the last step of the rebuild broken."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if "RENAME TO" in sql:
+                raise sqlite3.OperationalError("simulated I/O error during rename")
+            return self._conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+    monkeypatch.setattr(AccessControl, "_connect", lambda self: FailsTheRename(real_connect(self)))
+    _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
+    with caplog.at_level("ERROR"):
+        control.ensure_schema()
+    assert "could not be rebuilt" in caplog.text
+    monkeypatch.setattr(AccessControl, "_connect", real_connect)
+
+    assert {user["username"]: user["id"] for user in control.list_users()} == before
+    assert control.authenticate("planner", "2468") is not None
+    assert control.authenticate("root", "secret") is not None
+    with control._connect() as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='users_rebuilt'").fetchone()
+    # And the file is still on its old constraints, which is what the log said:
+    # the deployment runs, short of the value the release added.
+    with pytest.raises(sqlite3.IntegrityError):
+        control.save_user(None, "newhire", "1111", "editor", "engineering", "engineer")
+
+
+def test_the_id_counter_survives_a_rebuild_of_an_emptied_table(tmp_path, monkeypatch):
+    """The counter has no row to raise when the copy inserts nothing.
+
+    delete_user will not empty the roster -- the last administrator cannot be
+    removed -- so an accounts file in this state got there some other way, and
+    the rebuild still must not start handing out ids that history is filed
+    under. Emptied here the same way: directly.
+    """
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "temp", "0000", "viewer")
+    highest = control.authenticate("temp", "0000")["id"]
+    with control._connect() as conn:
+        conn.execute("DELETE FROM users")
+
+    _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
+    control.ensure_schema()
+
+    control.save_user(None, "newhire", "1111", "admin")
+    assert control.authenticate("newhire", "1111")["id"] > highest
