@@ -37,6 +37,11 @@
   <button type="button" class="account-close" id="accountClose" aria-label="Close">×</button>
   {% if auth_user %}
     <h2>Signed in</h2><p><strong>{{ auth_user.username }}</strong> · {{ auth_user.role }}</p>
+    {#- Department and level are shown but never acted on: nothing is filtered by
+        them yet. They are here so somebody can check what their account records
+        about them, and ask an administrator if it is wrong, before the day those
+        two fields start deciding which pages they are offered. -#}
+    <p class="account-dialog-scope">{{ department_label(auth_user.department) }} · {{ staff_level_label(auth_user.staff_level) }}</p>
     <p>Your login lasts for this browser session. Closing the browser signs you out.</p>
     {#- The developer area has no sidebar entry and is not linked from any page:
         this dialog is its entrance, and only an administrator is shown the door.

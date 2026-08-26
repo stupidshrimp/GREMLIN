@@ -17,6 +17,14 @@
       Accounts and the changed-by/changed-at audit trail for protected writes live
       separately from the analysis database.
     </p>
+    <p>
+      Department and level record where in the plant an account&rsquo;s holder works. They
+      are stored against the account and can be changed here at any time, but nothing
+      is filtered by them yet &mdash; which pages and sidebar entries each department and
+      level should see has still to be decided. Until it is, every account reaches
+      exactly what its role allows, and accounts that predate these two fields carry
+      the unrestricted &ldquo;All&rdquo; values.
+    </p>
     <p class="dev-hero-path">Accounts: <code>{{ access_db_path }}</code></p>
   </div>
 </section>
@@ -28,7 +36,7 @@
     <div class="dev-table-scroll">
       <table class="dev-data-table">
         <thead>
-          <tr><th>Username</th><th>Role</th><th>New PIN</th><th>Actions</th></tr>
+          <tr><th>Username</th><th>Role</th><th>Department</th><th>Level</th><th>New PIN</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {#- Each row's inputs sit in their own cells but belong to the <form> in
@@ -42,6 +50,20 @@
               <select form="edit-user-{{ user.id }}" name="role">
                 {% for role in roles %}
                 <option value="{{ role }}" {% if role == user.role %}selected{% endif %}>{{ role }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <select form="edit-user-{{ user.id }}" name="department">
+                {% for department in departments %}
+                <option value="{{ department }}" {% if department == user.department %}selected{% endif %}>{{ department_label(department) }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <select form="edit-user-{{ user.id }}" name="staff_level">
+                {% for staff_level in staff_levels %}
+                <option value="{{ staff_level }}" {% if staff_level == user.staff_level %}selected{% endif %}>{{ staff_level_label(staff_level) }}</option>
                 {% endfor %}
               </select>
             </td>
@@ -64,6 +86,16 @@
             <td>
               <select form="add-user" name="role">
                 {% for role in roles %}<option value="{{ role }}">{{ role }}</option>{% endfor %}
+              </select>
+            </td>
+            <td>
+              <select form="add-user" name="department">
+                {% for department in departments %}<option value="{{ department }}" {% if department == default_department %}selected{% endif %}>{{ department_label(department) }}</option>{% endfor %}
+              </select>
+            </td>
+            <td>
+              <select form="add-user" name="staff_level">
+                {% for staff_level in staff_levels %}<option value="{{ staff_level }}" {% if staff_level == default_staff_level %}selected{% endif %}>{{ staff_level_label(staff_level) }}</option>{% endfor %}
               </select>
             </td>
             <td><input form="add-user" name="pin" type="password" inputmode="numeric" required></td>

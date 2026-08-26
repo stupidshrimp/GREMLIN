@@ -6,7 +6,20 @@ from threading import Barrier
 
 import pytest
 
-from services.access_control import LOGIN_FAILURE_LIMIT, AccessControl
+import sqlite3
+
+from services.access_control import (
+    DEFAULT_DEPARTMENT,
+    DEFAULT_STAFF_LEVEL,
+    DEPARTMENT_ALL,
+    DEPARTMENTS,
+    LOGIN_FAILURE_LIMIT,
+    STAFF_LEVELS,
+    AccessControl,
+    department_label,
+    department_scope,
+    staff_level_label,
+)
 
 
 def test_users_are_hashed_and_authenticate(tmp_path):
@@ -46,8 +59,6 @@ def test_account_credentials_obey_login_input_bounds(tmp_path):
 
 
 def test_existing_user_schema_gains_credential_version(tmp_path):
-    import sqlite3
-
     path = tmp_path / "legacy-accesscontrol.db"
     with sqlite3.connect(path) as conn:
         conn.execute("""CREATE TABLE users (
@@ -408,3 +419,116 @@ def test_locked_scopes_are_capped_too(tmp_path, monkeypatch):
     assert locked > 0, "the flood should be producing lockouts, or this proves nothing"
     # cap, plus the one real account that is held back, plus this request's two.
     assert total <= 20 + 1 + 2
+
+
+# -- department and staff level ------------------------------------------------
+#
+# Two fields recorded against each account that gate nothing: which pages and
+# sidebar entries each department and level should see has not been decided.
+# What is worth pinning down until it is, is that the values survive a round
+# trip, that the column refuses anything outside the catalog, and that adding
+# the columns to an existing accounts file cannot narrow an account that is
+# already in it.
+
+
+def test_department_and_level_round_trip(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "operations_maintenance", "engineer")
+
+    assert control.authenticate("planner", "2468")["department"] == "operations_maintenance"
+    stored = next(user for user in control.list_users() if user["username"] == "planner")
+    assert (stored["department"], stored["staff_level"]) == ("operations_maintenance", "engineer")
+
+    # Editing without a new PIN keeps the hash and still moves both fields, which
+    # is the case the developer page's Save button submits most often.
+    control.save_user(stored["id"], "planner", "", "editor", "facilities", "leadership")
+    moved = control.authenticate("planner", "2468")
+    assert (moved["department"], moved["staff_level"]) == ("facilities", "leadership")
+    assert moved["credential_version"] == 1, "moving somebody between departments is not a credential change"
+
+
+def test_an_account_defaults_to_the_unrestricted_values(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "viewer", "1111", "viewer")
+    for username in ("root", "viewer"):
+        user = next(row for row in control.list_users() if row["username"] == username)
+        assert (user["department"], user["staff_level"]) == (DEFAULT_DEPARTMENT, DEFAULT_STAFF_LEVEL)
+
+
+@pytest.mark.parametrize(
+    "department,staff_level,message",
+    [
+        ("engineering", "engineer", "Department must be one of"),
+        ("", "engineer", "Department must be one of"),
+        ("operations", "manager", "Level must be one of"),
+        ("operations", "", "Level must be one of"),
+    ],
+)
+def test_a_value_outside_the_catalog_is_refused(tmp_path, department, staff_level, message):
+    """Never coerced to the default: both defaults are the *widest* values, so a
+    misspelling that fell through to one would quietly hand out more access than
+    was asked for once these fields do filter pages."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with pytest.raises(ValueError, match=message):
+        control.save_user(None, "somebody", "2468", "editor", department, staff_level)
+    assert control.authenticate("somebody", "2468") is None
+
+
+def test_the_column_itself_refuses_a_value_outside_the_catalog(tmp_path):
+    """The catalog is in the schema, not only in save_user's argument checks."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with control._connect() as conn:
+        for column, value in (("department", "engineering"), ("staff_level", "manager")):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(f"UPDATE users SET {column}=? WHERE username='root'", (value,))
+
+
+def test_an_existing_accounts_file_gains_both_columns_unrestricted(tmp_path):
+    """Migration must not narrow anybody: an account that predates these fields
+    has no recorded department, and guessing one would take pages away from a
+    real person the first time something filters on it."""
+
+    path = tmp_path / "legacy-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, role TEXT,
+            created_at TEXT, updated_at TEXT)""")
+        conn.execute("INSERT INTO users(username,password_hash,role) VALUES ('incumbent','x','admin')")
+    control = AccessControl(path)
+    control.ensure_schema()
+
+    with control._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    assert {"department", "staff_level"} <= columns
+    incumbent = control.list_users()[0]
+    assert (incumbent["department"], incumbent["staff_level"]) == (DEFAULT_DEPARTMENT, DEFAULT_STAFF_LEVEL)
+
+
+def test_a_department_reports_the_single_departments_it_stands_for():
+    """The only thing that reads the combined value, so that whatever eventually
+    filters by department does not parse the string for itself."""
+
+    assert department_scope("facilities") == ("facilities",)
+    assert department_scope("operations_maintenance") == ("operations", "maintenance")
+    assert set(department_scope(DEPARTMENT_ALL)) == {"facilities", "operations", "maintenance"}
+    # Every stored value resolves to real departments, including the combined
+    # ones -- so a department added to the catalog and forgotten here shows up.
+    for department in DEPARTMENTS:
+        assert set(department_scope(department)) <= {"facilities", "operations", "maintenance"}
+        assert department_scope(department), department
+
+
+def test_the_catalogs_carry_a_label_for_every_value():
+    """The developer page's dropdowns draw these; a value with no label would be
+    offered to an administrator as its raw column value."""
+
+    for department in DEPARTMENTS:
+        assert department_label(department) != department
+    for level in STAFF_LEVELS:
+        assert staff_level_label(level) != level
