@@ -12,6 +12,7 @@ reason test_bug_reports.py gives at its top.
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,22 @@ def tool():
 
 
 @pytest.fixture()
+def fresh_dotenv(monkeypatch):
+    """A cleared .env load cache, for the tests that exercise the real loader.
+
+    load_dotenv_files caches per scope, so once anything in the pytest process
+    has loaded APP_ENV_KEYS -- importing app.py does -- every later call is a
+    no-op and these tests would pass without loading anything. The command is a
+    one-shot process where the cache is always cold, so this restores the
+    conditions it actually runs under.
+    """
+
+    import services.sync_service as sync_service
+
+    monkeypatch.setattr(sync_service, "_dotenv_loaded_scopes", set())
+
+
+@pytest.fixture()
 def db_path(tmp_path):
     """Under a folder of its own, so "the folder is missing too" is reachable."""
 
@@ -53,6 +70,9 @@ def test_the_path_is_resolved_the_way_the_app_resolves_it(tool, monkeypatch, tmp
 
     from services.bug_reports import DEFAULT_BUG_DB_PATH
 
+    # Stubbed so that whoever runs the suite cannot decide this from their own
+    # .env: what is under test is that nothing configured means the default.
+    monkeypatch.setattr(tool, "load_dotenv_files", lambda **kwargs: None)
     monkeypatch.delenv("GREMLIN_BUGS_DB_PATH", raising=False)
     assert tool.resolve_db_path(None) == Path(DEFAULT_BUG_DB_PATH)
 
@@ -60,6 +80,55 @@ def test_the_path_is_resolved_the_way_the_app_resolves_it(tool, monkeypatch, tmp
     assert tool.resolve_db_path(None) == tmp_path / "from-env.db"
 
     # --db is the last word, for an administrator creating one somewhere else.
+    assert tool.resolve_db_path(str(tmp_path / "explicit.db")) == tmp_path / "explicit.db"
+
+
+def test_a_path_configured_only_in_dotenv_is_the_one_used(
+    tool, monkeypatch, tmp_path, fresh_dotenv
+):
+    """The override the module documents is a file, not an exported variable.
+
+    app.py applies .env before it reads the variable, so a deployment that
+    configures the path there is configured as far as the app is concerned. A
+    tool that read os.environ alone would resolve to the shared-drive default,
+    check the wrong database, report success, and leave a stray one on the share.
+    """
+
+    configured = tmp_path / "from-dotenv.db"
+    (tmp_path / ".env").write_text(
+        f"GREMLIN_BUGS_DB_PATH={configured}\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GREMLIN_BUGS_DB_PATH", raising=False)
+    try:
+        assert tool.resolve_db_path(None) == configured
+    finally:
+        # load_dotenv_files writes straight to os.environ, which monkeypatch
+        # did not put there and so will not take back.
+        os.environ.pop("GREMLIN_BUGS_DB_PATH", None)
+
+
+def test_an_exported_variable_still_beats_the_file(
+    tool, monkeypatch, tmp_path, fresh_dotenv
+):
+    """load_dotenv_files' own rule, and therefore the app's."""
+
+    (tmp_path / ".env").write_text(
+        f"GREMLIN_BUGS_DB_PATH={tmp_path / 'from-dotenv.db'}\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GREMLIN_BUGS_DB_PATH", str(tmp_path / "from-env.db"))
+
+    assert tool.resolve_db_path(None) == tmp_path / "from-env.db"
+
+
+def test_db_needs_no_file_read_to_outrank_everything(tool, monkeypatch, tmp_path):
+    """--db is answered without touching .env at all."""
+
+    def fail(**kwargs):
+        raise AssertionError("resolve_db_path read .env despite --db")
+
+    monkeypatch.setattr(tool, "load_dotenv_files", fail)
     assert tool.resolve_db_path(str(tmp_path / "explicit.db")) == tmp_path / "explicit.db"
 
 
@@ -351,6 +420,48 @@ def test_a_path_it_may_not_look_at_is_explained_not_traced(tool, db_path, capsys
     assert str(db_path) in captured.err
     assert "drive is mapped and reachable" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_an_added_column_no_report_can_satisfy_is_caught(tool, db_path, capsys):
+    """One ALTER on a fresh database is enough -- no rebuilt table needed."""
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        # sqlite allows this without a default while the table is empty.
+        conn.execute("ALTER TABLE bug_reports ADD COLUMN tenant TEXT NOT NULL")
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "complete (" not in out
+    assert "blocking column: bug_reports.tenant" in out
+    assert "every report filed is refused" in out
+
+
+def test_a_column_somebody_added_on_purpose_is_left_alone(tool, db_path, capsys):
+    """Extras are not faults. Condemning one nothing here can drop would be.
+
+    A nullable column, or one with a default, costs the application nothing --
+    every insert it makes still succeeds. Reporting those would tell a plant its
+    database is damaged over a column it added deliberately, with no way out.
+    """
+
+    import sqlite3
+
+    from services.bug_reports import BugReportStore
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE bug_reports ADD COLUMN site TEXT")
+        conn.execute("ALTER TABLE bug_reports ADD COLUMN line TEXT NOT NULL DEFAULT ''")
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 0
+    assert "complete (" in capsys.readouterr().out
+    # And the check is right that it still works.
+    assert BugReportStore(db_path).submit(title="Still fine", description="Detail.") == 1
 
 
 # ---------------------------------------------------------------------------

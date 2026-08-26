@@ -355,6 +355,37 @@ def _column_shapes(conn: sqlite3.Connection, table: str) -> dict[str, str]:
     return shapes
 
 
+def _blocking_extra_columns(
+    conn: sqlite3.Connection, table: str, expected: dict[str, str]
+) -> list[str]:
+    """Columns the schema does not declare that make filing a report impossible.
+
+    An extra column is usually somebody's own addition and none of this
+    command's business, so extras are not reported merely for being there --
+    telling a plant its database is damaged over a column it added on purpose,
+    when nothing here can drop it again, is the failure this whole check has
+    been careful to avoid.
+
+    One kind is different in kind rather than degree: NOT NULL with no default.
+    Every insert the application makes omits it, so every report filed is
+    refused -- and refused as a write failure, which reaches the reporter as a
+    message about the drive. sqlite accepts ``ADD COLUMN ... NOT NULL`` without
+    a default on an empty table, so this needs no rebuilt table to happen; one
+    ALTER on a fresh database is enough.
+    """
+
+    blocking = []
+    for row in conn.execute(f"PRAGMA table_info({table})").fetchall():
+        if row["name"] in expected:
+            continue
+        if row["notnull"] and row["dflt_value"] is None:
+            blocking.append(
+                f"{table}.{row['name']} (added, NOT NULL with no default -- "
+                "every report filed is refused)"
+            )
+    return blocking
+
+
 @lru_cache(maxsize=1)
 def _expected_columns() -> dict[str, dict[str, str]]:
     """The shape every table should have, in the order the columns are declared.
@@ -923,6 +954,7 @@ class BugReportStore:
             # that.
             "missing_columns": [],
             "altered_columns": [],
+            "blocking_columns": [],
             "schema_ready": False,
             "summary": None,
         }
@@ -957,25 +989,32 @@ class BugReportStore:
             # outside. Reported here instead, while somebody is asking.
             missing_columns: list[str] = []
             altered_columns: list[str] = []
+            blocking_columns: list[str] = []
             present: dict[str, set[str]] = {}
             for table in SCHEMA_TABLES:
                 if table not in tables:
                     # Already reported whole in missing_tables; listing each of
                     # its columns underneath would bury that.
                     continue
+                expected = _expected_columns()[table]
                 found = _column_shapes(conn, table)
                 present[table] = set(found)
-                for name, shape in _expected_columns()[table].items():
+                for name, shape in expected.items():
                     if name not in found:
                         missing_columns.append(f"{table}.{name}")
                     elif found[name] != shape:
                         altered_columns.append(
                             f"{table}.{name} (expected {shape}, found {found[name]})"
                         )
+                blocking_columns += _blocking_extra_columns(conn, table, expected)
             info["missing_columns"] = missing_columns
             info["altered_columns"] = altered_columns
+            info["blocking_columns"] = blocking_columns
             info["schema_ready"] = not (
-                info["missing_tables"] or missing_columns or altered_columns
+                info["missing_tables"]
+                or missing_columns
+                or altered_columns
+                or blocking_columns
             )
 
             # Counted last, and only when the columns it reads are all there.

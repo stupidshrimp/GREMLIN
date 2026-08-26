@@ -42,17 +42,35 @@ from services.bug_reports import (  # noqa: E402
     BugReportStore,
     BugReportStoreError,
 )
+from services.sync_service import APP_ENV_KEYS, load_dotenv_files  # noqa: E402
 
 
 def resolve_db_path(explicit: str | None) -> Path:
     """Where the reports live, resolved the way app.py resolves it.
 
-    Deliberately the same order of precedence as the web app: a tool that
-    created the file somewhere the app does not look would leave an
-    administrator with two databases and a page that still says it is empty.
+    Deliberately the same precedence as the web app, and through the same call
+    rather than a second reading of it. A tool that created the file somewhere
+    the app does not look would leave an administrator with two databases and a
+    page that still says it is empty -- and, falling back to the default, a
+    stray database on the share nobody put there.
+
+    The ``.env`` load is the part that is easy to miss. app.py applies it before
+    reading the variable, so a deployment that configures the override in a file
+    rather than exporting it is configured as far as the app is concerned, and a
+    tool reading os.environ alone would quietly resolve to the shared-drive
+    default instead -- then report success over the wrong database. Same
+    function and same keys as app.py, so the two cannot come to disagree.
+
+    Skipped entirely when --db is given, which outranks both and needs no file
+    read to say so.
     """
 
-    return Path(explicit or os.environ.get("GREMLIN_BUGS_DB_PATH") or DEFAULT_BUG_DB_PATH)
+    if explicit:
+        return Path(explicit)
+    # An exported variable still beats the file, which is load_dotenv_files'
+    # own rule and therefore the app's.
+    load_dotenv_files(only_keys=APP_ENV_KEYS)
+    return Path(os.environ.get("GREMLIN_BUGS_DB_PATH") or DEFAULT_BUG_DB_PATH)
 
 
 def _format_bytes(size: int | None) -> str:
@@ -87,6 +105,12 @@ def _count_gaps(info: dict) -> str:
     altered = info["altered_columns"]
     if altered:
         counts.append(f"{len(altered)} column{'s' if len(altered) != 1 else ''} altered")
+    blocking = info["blocking_columns"]
+    if blocking:
+        counts.append(
+            f"{len(blocking)} added column{'s' if len(blocking) != 1 else ''} "
+            "that no report can satisfy"
+        )
     return ", ".join(counts)
 
 
@@ -97,6 +121,7 @@ def _gaps(info: dict) -> list[str]:
         [f"missing table:   {name}" for name in info["missing_tables"]]
         + [f"missing column:  {name}" for name in info["missing_columns"]]
         + [f"altered column:  {change}" for change in info["altered_columns"]]
+        + [f"blocking column: {name}" for name in info["blocking_columns"]]
     )
     lines = [f"            - {gap}" for gap in gaps[:MAX_GAPS_LISTED]]
     if len(gaps) > MAX_GAPS_LISTED:

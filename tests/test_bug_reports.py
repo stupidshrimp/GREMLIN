@@ -1217,6 +1217,58 @@ def test_the_status_check_survives_a_path_that_stops_resolving(tmp_path, failure
     assert info["summary"]["total"] == 1
 
 
+def test_describe_catches_an_added_column_that_no_report_can_satisfy(tmp_path):
+    """NOT NULL with no default refuses every insert the application makes.
+
+    And refuses it as a write failure, which reaches the reporter as a message
+    about the drive -- so this is the third way a database can look installed
+    and quietly take no reports.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports ADD COLUMN tenant TEXT NOT NULL")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_columns"] == []
+    assert info["altered_columns"] == []
+    assert info["schema_ready"] is False
+    assert info["blocking_columns"] == [
+        "bug_reports.tenant (added, NOT NULL with no default -- "
+        "every report filed is refused)"
+    ]
+
+    # The harm it stands for.
+    with pytest.raises(BugReportStoreError):
+        BugReportStore(path).submit(title="Charts blank", description="No bars.")
+
+
+@pytest.mark.parametrize(
+    "addition",
+    ["site TEXT", "line TEXT NOT NULL DEFAULT ''", "seq INTEGER DEFAULT 0"],
+)
+def test_describe_leaves_a_column_somebody_added_on_purpose_alone(tmp_path, addition):
+    """Extras are not faults, and condemning one nothing here can drop would be.
+
+    Every one of these still lets the application insert, so a plant that has
+    added a column of its own must not be told its database is damaged over it
+    -- there would be nothing it could run to make that go away.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"ALTER TABLE bug_reports ADD COLUMN {addition}")
+
+    info = BugReportStore(path).describe()
+
+    assert info["blocking_columns"] == []
+    assert info["schema_ready"] is True
+    assert BugReportStore(path).submit(title="Still fine", description="Detail.") == 1
+
+
 def test_describe_repairs_nothing_by_itself(tmp_path):
     """It reports; ensure_schema fixes. A check with a side effect is not a check."""
 
