@@ -54,6 +54,18 @@ SEVERITIES = ("blocking", "major", "minor")
 SEVERITY_RANK = {name: rank for rank, name in enumerate(SEVERITIES)}
 DEFAULT_SEVERITY = "minor"
 
+# The tables ensure_schema creates. Named here so a status check can say whether
+# a file that is present is actually a reports database: an empty file made by
+# hand, or a copy taken before the limiter's table existed, both open perfectly
+# well and then fail on the first query that needs what is missing.
+SCHEMA_TABLES = ("bug_reports", "submission_attempts")
+
+# Columns ensure_schema adds to a database created before they existed. Named
+# for the same reason as the tables above: a check that only looked for tables
+# would call a database from an earlier build complete, when what it is missing
+# is the column the dashboard's concurrency guard reads.
+MIGRATED_COLUMNS = ("revision",)
+
 # Bounds on what one report may store. The form is open to anyone who can reach
 # GREMLIN, including anonymously, so nothing it writes is allowed to be
 # unbounded: sqlite never returns freed pages to the filesystem, and this file
@@ -210,6 +222,36 @@ def _clean(value: object, limit: int) -> str:
 
     text = "" if value is None else str(value).strip()
     return text[:limit]
+
+
+def _summarise(conn: sqlite3.Connection) -> dict:
+    """The dashboard's tile counts, in one pass over the table.
+
+    A function rather than a method because the status check reads it through a
+    read-only connection while the dashboard reads it through the ordinary one.
+    Defined once so the two can never come to disagree about what "open" counts.
+    """
+
+    counts = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS open_count,
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS resolved_count,
+            SUM(CASE WHEN status = ? AND severity = 'blocking' THEN 1 ELSE 0 END)
+                AS open_blocking,
+            MAX(created_at) AS latest_report
+        FROM bug_reports
+        """,
+        (STATUS_OPEN, STATUS_RESOLVED, STATUS_OPEN),
+    ).fetchone()
+    return {
+        "total": int(counts["total"] or 0),
+        "open": int(counts["open_count"] or 0),
+        "resolved": int(counts["resolved_count"] or 0),
+        "open_blocking": int(counts["open_blocking"] or 0),
+        "latest_report": counts["latest_report"],
+    }
 
 
 class BugReportStore:
@@ -673,25 +715,104 @@ class BugReportStore:
         self.ensure_schema()
         try:
             with self._connect() as conn:
-                counts = conn.execute(
-                    """
-                    SELECT
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS open_count,
-                        SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS resolved_count,
-                        SUM(CASE WHEN status = ? AND severity = 'blocking' THEN 1 ELSE 0 END)
-                            AS open_blocking,
-                        MAX(created_at) AS latest_report
-                    FROM bug_reports
-                    """,
-                    (STATUS_OPEN, STATUS_RESOLVED, STATUS_OPEN),
-                ).fetchone()
+                return _summarise(conn)
         except sqlite3.Error as exc:
             raise BugReportStoreError(self._unreachable(exc)) from exc
-        return {
-            "total": int(counts["total"] or 0),
-            "open": int(counts["open_count"] or 0),
-            "resolved": int(counts["resolved_count"] or 0),
-            "open_blocking": int(counts["open_blocking"] or 0),
-            "latest_report": counts["latest_report"],
+
+    # -- status -----------------------------------------------------------
+
+    def _connect_readonly(self) -> sqlite3.Connection:
+        """A connection that cannot write, for the status check below.
+
+        Read-only rather than the ordinary connection for two reasons. Opening a
+        path read-write creates it, and a check that makes the file it was asked
+        to look for cannot report that it was missing. And the share may be
+        mounted read-only on the machine asking -- which is exactly the machine
+        whose administrator wants to know where things stand before finding out
+        by having somebody's report refused.
+        """
+
+        try:
+            target = f"{self.path.resolve().as_uri()}?mode=ro"
+            use_uri = True
+        except ValueError:
+            # as_uri() refuses a path that is not absolute on this platform --
+            # the Windows default read on a POSIX runner, for one. A plain
+            # connection still answers the question; it just cannot promise the
+            # file is not being opened for writing.
+            target, use_uri = str(self.path), False
+        try:
+            conn = sqlite3.connect(target, uri=use_uri, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        except sqlite3.Error as exc:
+            raise BugReportStoreError(self._unreachable(exc)) from exc
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def describe(self) -> dict:
+        """Where the database stands right now, creating nothing.
+
+        The one method here that does not call ensure_schema first. Every other
+        method exists to serve a report, and making the file in order to serve
+        one is the right answer. This exists to answer "is it there, and is it
+        whole" -- for the CLI that sets a deployment up, and for anyone who has
+        looked on the share and not found it -- and a check that creates what it
+        was sent to look for cannot answer that.
+
+        A missing file is not an error: it is the state before anybody has filed
+        anything, and the honest report of it. BugReportStoreError is raised only
+        when a file that is there cannot be read, which is the case an
+        administrator has to act on.
+        """
+
+        info: dict = {
+            "path": str(self.path),
+            "exists": self.path.is_file(),
+            "parent_exists": self.path.parent.is_dir(),
+            "size_bytes": None,
+            "tables": [],
+            "missing_tables": list(SCHEMA_TABLES),
+            "missing_columns": list(MIGRATED_COLUMNS),
+            "schema_ready": False,
+            "summary": None,
         }
+        if not info["exists"]:
+            return info
+
+        try:
+            info["size_bytes"] = self.path.stat().st_size
+        except OSError as exc:
+            raise BugReportStoreError(self._unreachable(exc)) from exc
+
+        conn = self._connect_readonly()
+        try:
+            # sqlite_sequence and friends are excluded the same way
+            # schema_service excludes them: AUTOINCREMENT creates one, and an
+            # administrator reading this wants GREMLIN's tables, not sqlite's.
+            tables = sorted(
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            )
+            info["tables"] = tables
+            info["missing_tables"] = [name for name in SCHEMA_TABLES if name not in tables]
+            # Both of these only once the table is known to be there. Querying a
+            # database that predates it, or one that is not a reports database
+            # at all, would fail as "unreadable" and hide the far more useful
+            # answer, which is exactly what is missing.
+            if "bug_reports" in tables:
+                columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(bug_reports)").fetchall()
+                }
+                info["missing_columns"] = [
+                    name for name in MIGRATED_COLUMNS if name not in columns
+                ]
+                info["summary"] = _summarise(conn)
+            info["schema_ready"] = not info["missing_tables"] and not info["missing_columns"]
+        except sqlite3.Error as exc:
+            raise BugReportStoreError(self._unreachable(exc)) from exc
+        finally:
+            conn.close()
+        return info

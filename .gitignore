@@ -1,5 +1,10 @@
 accesscontrol.db
 accesscontrol.db-journal
+# The bug reports database. It lives on the shared drive in a deployment, but
+# a checkout that points GREMLIN_BUGS_DB_PATH at the working directory -- or
+# runs tools/init_bugs_db.py --db auxillary.db -- makes one right here.
+auxillary.db
+auxillary.db-journal
 .venv/
 __pycache__/
 *.pyc

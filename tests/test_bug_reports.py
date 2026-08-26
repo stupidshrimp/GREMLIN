@@ -14,6 +14,7 @@ import pytest
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
     LIST_LIMIT,
+    SCHEMA_TABLES,
     SEVERITIES,
     SUBMISSION_LIMIT_PER_WINDOW,
     BugReportConflictError,
@@ -875,3 +876,159 @@ def test_a_database_written_before_revisions_existed_is_migrated(tmp_path):
     # And the guard works from there on.
     assert reopened.set_status(stored["id"], "resolved", actor="root",
                                expected_revision=1)["revision"] == 2
+
+
+
+# ---------------------------------------------------------------------------
+# The status check: what is on the share, without putting anything there
+# ---------------------------------------------------------------------------
+
+
+def test_describe_reports_a_missing_database_without_creating_it(tmp_path):
+    """The whole point of the check: looking must not be what makes the file.
+
+    Every other method creates on the way past, which is right when the caller
+    came to file a report. Here the caller came to ask whether the share has one
+    yet, and a check that answers "yes" because it just made it is no answer.
+    """
+
+    path = tmp_path / "GREMLIN Global DB" / "auxillary.db"
+    store = BugReportStore(path)
+
+    info = store.describe()
+
+    assert info["exists"] is False
+    assert info["parent_exists"] is False
+    assert info["schema_ready"] is False
+    assert info["summary"] is None
+    assert sorted(info["missing_tables"]) == sorted(SCHEMA_TABLES)
+    assert str(path) == info["path"]
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_describe_reports_a_ready_database_and_its_counts(tmp_path):
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+    store.submit(title="Charts blank", description="No bars.", severity="blocking")
+    resolved = store.submit(title="Typo", description="Says 'teh'.")
+    store.set_status(resolved, "resolved", actor="root")
+
+    info = store.describe()
+
+    assert info["exists"] is True
+    assert info["parent_exists"] is True
+    assert info["schema_ready"] is True
+    assert info["missing_tables"] == []
+    assert info["size_bytes"] > 0
+    assert info["summary"]["total"] == 2
+    assert info["summary"]["open"] == 1
+    assert info["summary"]["open_blocking"] == 1
+    assert info["summary"]["resolved"] == 1
+
+
+def test_describe_hides_sqlite_own_tables(tmp_path):
+    """AUTOINCREMENT creates sqlite_sequence, which is not GREMLIN's to report."""
+
+    store = BugReportStore(tmp_path / "auxillary.db")
+    store.submit(title="Broken", description="It broke.")
+
+    assert sorted(store.describe()["tables"]) == sorted(SCHEMA_TABLES)
+
+
+def test_describe_names_the_table_an_incomplete_database_is_missing(tmp_path):
+    """A file that opens and then fails on use is the case worth naming.
+
+    A copy taken before the limiter's table existed looks installed from the
+    outside. Saying which table is missing is what turns "the bug page is
+    broken" into something an administrator can act on -- and the counts are
+    still reported, because the reports themselves are readable.
+    """
+
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+    store.submit(title="Filed earlier", description="Detail.")
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE submission_attempts")
+
+    info = BugReportStore(path).describe()
+
+    assert info["exists"] is True
+    assert info["schema_ready"] is False
+    assert info["missing_tables"] == ["submission_attempts"]
+    assert info["summary"]["total"] == 1
+
+
+def test_describe_names_a_migrated_column_an_older_database_is_missing(tmp_path):
+    """Both tables present is not the same as complete.
+
+    A database from before revisions existed opens, lists both tables and reads
+    its reports back. What it cannot do is the concurrency guard, and a check
+    that stopped at the table names would have called it ready.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).submit(title="Filed earlier", description="Detail.")
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN revision")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_tables"] == []
+    assert info["missing_columns"] == ["revision"]
+    assert info["schema_ready"] is False
+    assert info["summary"]["total"] == 1
+
+
+def test_describe_repairs_nothing_by_itself(tmp_path):
+    """It reports; ensure_schema fixes. A check with a side effect is not a check."""
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).submit(title="Filed earlier", description="Detail.")
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE submission_attempts")
+
+    store = BugReportStore(path)
+    store.describe()
+    assert store.describe()["missing_tables"] == ["submission_attempts"]
+
+    store.ensure_schema()
+    assert store.describe()["missing_tables"] == []
+
+
+def test_describe_reports_a_file_that_is_not_a_database_as_a_store_error(tmp_path):
+    """Present but unreadable is the case an administrator has to act on."""
+
+    path = tmp_path / "auxillary.db"
+    path.write_bytes(b"this is not a database")
+    store = BugReportStore(path)
+
+    with pytest.raises(BugReportStoreError) as caught:
+        store.describe()
+    assert str(path) in str(caught.value)
+    assert not isinstance(caught.value, sqlite3.Error)
+
+
+def test_the_status_check_reads_through_a_connection_that_cannot_write(tmp_path):
+    """Asserted on the connection itself, because permissions cannot assert it.
+
+    The check opens the file read-only so that it works from a machine with
+    read access to the share and no write access -- which is the machine whose
+    administrator most wants an answer. A test that made the file unwritable
+    would prove nothing when the suite runs as a user who may write it anyway,
+    so the guarantee is asserted where it is made.
+    """
+
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+    store.submit(title="Charts blank", description="No bars.")
+
+    conn = store._connect_readonly()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("DELETE FROM bug_reports")
+    finally:
+        conn.close()
+
+    # And the reports are still all there to be counted.
+    assert store.describe()["summary"]["total"] == 1
