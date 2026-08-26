@@ -152,6 +152,44 @@ def _check_credential_bounds(username: str, pin: str) -> None:
         raise ValueError(f"PIN must be {MAX_PIN_CHARS} characters or fewer.")
 
 
+# The columns an account is made of, as one statement rather than two copies.
+# Rebuilding the table to move a CHECK constraint forward (see
+# _align_account_catalogs) has to produce exactly what a fresh install would, so
+# there is one definition and the table name is the only thing that varies.
+def _users_table_sql(table: str = "users") -> str:
+    return f"""
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN {ROLES!r}),
+            department TEXT NOT NULL DEFAULT '{DEFAULT_DEPARTMENT}'
+                CHECK(department IN {DEPARTMENTS!r}),
+            staff_level TEXT NOT NULL DEFAULT '{DEFAULT_STAFF_LEVEL}'
+                CHECK(staff_level IN {STAFF_LEVELS!r}),
+            credential_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+
+
+def _catalog_values(column: str) -> tuple[str, ...]:
+    """The values one catalog-backed column may hold."""
+
+    return {"role": ROLES, "department": DEPARTMENTS, "staff_level": STAFF_LEVELS}[column]
+
+
+# What a stored users table must say for its constraints to be today's. Compared
+# as text against sqlite_master, which holds the CREATE statement verbatim.
+def _catalog_constraints() -> dict[str, str]:
+    return {
+        "role": f"CHECK(role IN {ROLES!r})",
+        "department": f"CHECK(department IN {DEPARTMENTS!r})",
+        "staff_level": f"CHECK(staff_level IN {STAFF_LEVELS!r})",
+    }
+
+
 def department_scope(department: str) -> tuple[str, ...]:
     """The single-department values a stored department stands for.
 
@@ -204,27 +242,16 @@ class AccessControl:
             # later workers observe its committed row rather than racing into a
             # uniqueness error during module import.
             conn.execute("BEGIN IMMEDIATE")
-            # `department` and `staff_level` are written from this module's own
-            # tuples rather than spelled out, so the column and the code that
-            # validates it cannot drift apart. The permitted values live in the
-            # schema, which is the point: the accounts file states what a
-            # department may be, and a hand-edited row that says otherwise is
-            # refused by sqlite rather than discovered later by a page.
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('viewer','editor','admin')),
-                    department TEXT NOT NULL DEFAULT '{DEFAULT_DEPARTMENT}'
-                        CHECK(department IN {DEPARTMENTS!r}),
-                    staff_level TEXT NOT NULL DEFAULT '{DEFAULT_STAFF_LEVEL}'
-                        CHECK(staff_level IN {STAFF_LEVELS!r}),
-                    credential_version INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # `role`, `department` and `staff_level` are written from this
+            # module's own tuples rather than spelled out, so the column and the
+            # code that validates it cannot drift apart. The permitted values
+            # live in the schema, which is the point: the accounts file states
+            # what a department may be, and a hand-edited row that says
+            # otherwise is refused by sqlite rather than discovered later by a
+            # page. _align_account_catalogs below is what keeps that true across
+            # a release that changes one of the tuples.
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+                conn.execute(_users_table_sql())
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
             if "credential_version" not in columns:
                 conn.execute("ALTER TABLE users ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1")
@@ -243,6 +270,7 @@ class AccessControl:
                     f"""ALTER TABLE users ADD COLUMN staff_level TEXT NOT NULL
                         DEFAULT '{DEFAULT_STAFF_LEVEL}' CHECK(staff_level IN {STAFF_LEVELS!r})"""
                 )
+            self._align_account_catalogs(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,6 +414,101 @@ class AccessControl:
                         "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
                         (bootstrap_username, generate_password_hash(initial_pin)),
                     )
+    def _align_account_catalogs(self, conn: sqlite3.Connection) -> None:
+        """Move the users table's CHECK constraints onto today's catalogs.
+
+        Adding a value to ROLES, DEPARTMENTS or STAFF_LEVELS changes what this
+        module accepts, but it does not change a database that already exists:
+        CREATE TABLE IF NOT EXISTS does not revise a table that is already
+        there, and sqlite's ALTER TABLE cannot alter a constraint. Left alone,
+        every deployed accounts file would keep refusing the new value while
+        save_user happily accepted it -- an administrator picking the new
+        department off the dropdown would get a bad request out of sqlite and no
+        way to explain it. The catalogs are written into the schema so that the
+        two cannot disagree, and that only stays true if the schema is carried
+        forward when they change.
+
+        Rebuilding the table is sqlite's documented way to change a constraint.
+        It runs inside the caller's transaction, and neither branch below lets a
+        difficulty here stop GREMLIN from starting: this is a file people sign in
+        with, and coming up on the constraints it already has costs the new
+        values until an operator reads the log, while refusing to start costs the
+        plant its reliability tooling outright.
+        """
+
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()
+        if not stored:
+            return
+        constraints = _catalog_constraints()
+        missing = [column for column, clause in constraints.items() if clause not in stored["sql"]]
+        if not missing:
+            return
+
+        # A value that is *stored* but no longer in the catalog -- a department
+        # renamed or dropped by the same release that added the new one -- would
+        # fail the copy below and take the deployment down at startup. Neither
+        # is this migration's decision to make: moving those accounts to the
+        # unrestricted default would silently widen what they reach, and picking
+        # some other department for them would be a guess about a real person.
+        # So the old constraint is left in place, which accepts every row the
+        # file already holds, and the accounts needing a human are named. The
+        # deployment keeps working exactly as it did; what it cannot do until
+        # somebody reassigns them is store the newly added value.
+        orphans = []
+        for column in constraints:
+            allowed = _catalog_values(column)
+            rows = conn.execute(
+                f"SELECT username, {column} AS value FROM users"
+                f" WHERE {column} NOT IN ({','.join('?' * len(allowed))})",
+                allowed,
+            )
+            orphans += [f"{row['username']} ({column}={row['value']})" for row in rows]
+        if orphans:
+            logger.warning(
+                "The accounts file still refuses %s because these accounts hold values that are no "
+                "longer offered: %s. Reassign them from the developer access page and restart.",
+                ", ".join(missing),
+                "; ".join(orphans),
+            )
+            return
+
+        # sqlite's 12-step procedure for changing a constraint, minus the steps
+        # that do not arise here: nothing references users by foreign key (see
+        # login_events), and it carries no index, trigger or view of its own --
+        # `username` is unique by an inline constraint, which the rebuilt
+        # definition brings with it.
+        columns = ("id,username,password_hash,role,department,staff_level"
+                   ",credential_version,created_at,updated_at")
+        # The timestamps are the one thing read back looser than it is written.
+        # A table hand-made early enough has them nullable and unset, and the
+        # current definition does not: "when this account was created is not
+        # recorded, and this is when we noticed" is the only answer available,
+        # and it is better than refusing to migrate over a column nothing
+        # authenticates with. Everything else is copied as it stands.
+        source = ("id,username,password_hash,role,department,staff_level,credential_version"
+                  ",COALESCE(created_at,CURRENT_TIMESTAMP),COALESCE(updated_at,CURRENT_TIMESTAMP)")
+        try:
+            conn.execute(_users_table_sql("users_rebuilt"))
+            conn.execute(f"INSERT INTO users_rebuilt({columns}) SELECT {source} FROM users")
+            conn.execute("DROP TABLE users")
+            conn.execute("ALTER TABLE users_rebuilt RENAME TO users")
+        except sqlite3.Error:
+            # Whatever shape this file is in, it is one people sign in with. Say
+            # so and leave it alone rather than failing the start: the old
+            # constraint still accepts every row already stored, so GREMLIN
+            # comes up working and short of the newly added values, which is the
+            # same place the orphan branch above leaves it.
+            logger.exception(
+                "The accounts table could not be rebuilt for the current %s catalog(s); "
+                "it keeps the constraints it has, and the new values cannot be assigned yet.",
+                ", ".join(missing),
+            )
+            conn.execute("DROP TABLE IF EXISTS users_rebuilt")
+            return
+        logger.info("Rebuilt the accounts table onto the current schema (%s).", ", ".join(missing))
+
     def _restrict_permissions(self) -> None:
         """Keep the file readable only by the account GREMLIN runs as.
 
