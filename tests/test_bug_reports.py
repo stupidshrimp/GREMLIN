@@ -907,6 +907,7 @@ def test_describe_reports_a_missing_database_without_creating_it(tmp_path):
     # The tables are reported missing whole; their columns are not listed
     # underneath, which would bury the one fact that matters.
     assert info["missing_columns"] == []
+    assert info["altered_columns"] == []
     assert str(path) == info["path"]
     assert not path.exists()
     assert not path.parent.exists()
@@ -1056,6 +1057,53 @@ def test_the_expected_columns_come_from_the_statements_that_create_them(tmp_path
     info = store.describe()
 
     assert info["missing_tables"] == []
+    assert info["missing_columns"] == []
+    assert info["schema_ready"] is True
+
+
+def test_describe_catches_a_column_that_kept_its_name_and_lost_its_shape(tmp_path):
+    """Comparing names alone lets through the damage that costs reports.
+
+    A table rebuilt by hand can keep every column name and lose
+    ``id INTEGER PRIMARY KEY``. Reports then file, return an id, and store NULL
+    in the id column -- so nothing can find them again to resolve or delete, and
+    a check that counted names would have called that database complete.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        columns = [(r[1], r[2]) for r in conn.execute("PRAGMA table_info(bug_reports)")]
+        conn.execute("DROP TABLE bug_reports")
+        body = ", ".join(f"{name} {kind}" for name, kind in columns)
+        conn.execute(f"CREATE TABLE bug_reports ({body})")
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_columns"] == []  # every name is still there
+    assert info["schema_ready"] is False
+    assert "bug_reports.id (expected INTEGER PRIMARY KEY, found INTEGER)" in (
+        info["altered_columns"]
+    )
+
+
+def test_a_database_the_schema_migrated_is_not_called_altered(tmp_path):
+    """The shape check must not condemn the databases it exists to serve.
+
+    A column added by ALTER has to come out identical to the same column created
+    by the CREATE TABLE, or every database that has been through a migration
+    would be reported damaged -- with nothing able to mend what was never wrong.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN revision")
+    BugReportStore(path).ensure_schema()  # puts it back the way an upgrade does
+
+    info = BugReportStore(path).describe()
+
+    assert info["altered_columns"] == []
     assert info["missing_columns"] == []
     assert info["schema_ready"] is True
 

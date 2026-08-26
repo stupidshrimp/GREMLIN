@@ -182,7 +182,7 @@ def test_it_adds_a_column_an_older_database_is_missing(tool, db_path, capsys):
     capsys.readouterr()
 
     assert tool.main(["--check", "--db", str(db_path)]) == 1
-    assert "missing the bug_reports.revision column" in capsys.readouterr().out
+    assert "missing column:  bug_reports.revision" in capsys.readouterr().out
 
     assert tool.main(["--db", str(db_path)]) == 0
     assert "Schema:   complete" in capsys.readouterr().out
@@ -230,6 +230,92 @@ def test_what_the_schema_cannot_mend_is_not_promised_as_mendable(tool, db_path, 
     assert "DAMAGED" in out
     assert "Run this without --check" not in out
     assert "Move it aside" in out
+
+
+def test_a_schema_that_will_not_apply_is_reported_rather_than_blamed_on_the_drive(
+    tool, db_path, capsys
+):
+    """The path an administrator reaches by doing what --check just told them to.
+
+    A column can be dropped once the index over it is gone, and then the schema
+    cannot be reapplied -- recreating that index needs the column. The store can
+    only say the file could not be opened, which sends them to check a drive
+    that is working, about a file sitting right there. What has to come out is
+    what is actually wrong with it.
+    """
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP INDEX idx_bug_reports_status_created")
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN status")
+    capsys.readouterr()
+
+    assert tool.main(["--db", str(db_path)]) == 1
+    captured = capsys.readouterr()
+    assert "DAMAGED" in captured.out
+    assert "no such column: status" in captured.out
+    assert "Move it aside" in captured.out
+    # Not the store's message about the drive, which is what used to come out.
+    assert "drive is mapped" not in captured.out + captured.err
+
+
+def test_a_column_that_kept_its_name_and_lost_its_shape_is_caught(tool, db_path, capsys):
+    """Names alone are not a schema, and this one costs reports.
+
+    A table rebuilt by hand can keep every column name and lose
+    `id INTEGER PRIMARY KEY`. Reports then file, return an id, and store NULL --
+    so nothing can find them again to resolve or delete.
+    """
+
+    import sqlite3
+
+    from services.bug_reports import BugReportStore
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        columns = [(r[1], r[2]) for r in conn.execute("PRAGMA table_info(bug_reports)")]
+        conn.execute("DROP TABLE bug_reports")
+        body = ", ".join(f"{name} {kind}" for name, kind in columns)
+        conn.execute(f"CREATE TABLE bug_reports ({body})")
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "complete (" not in out
+    assert "bug_reports.id (expected INTEGER PRIMARY KEY, found INTEGER)" in out
+
+    # And the failure it stands for is real: the report cannot be found again.
+    store = BugReportStore(db_path)
+    report_id = store.submit(title="Charts blank", description="No bars.")
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT id FROM bug_reports").fetchone()[0] is None
+    with pytest.raises(Exception, match=f"No bug report has id {report_id}"):
+        store.set_status(report_id, "resolved", actor="root")
+
+
+def test_a_wall_of_faults_is_bounded_and_leads_with_the_worst(tool, db_path, capsys):
+    """A table rebuilt by hand is wrong in every column, and unreadable if listed."""
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        columns = [(r[1], r[2]) for r in conn.execute("PRAGMA table_info(bug_reports)")]
+        conn.execute("DROP TABLE bug_reports")
+        body = ", ".join(f"{name} {kind}" for name, kind in columns)
+        conn.execute(f"CREATE TABLE bug_reports ({body})")
+    capsys.readouterr()
+
+    tool.main(["--check", "--db", str(db_path)])
+    out = capsys.readouterr().out
+
+    listed = [line for line in out.splitlines() if line.strip().startswith("- ")]
+    assert len(listed) == tool.MAX_GAPS_LISTED
+    assert "... and 6 more" in out
+    # Declaration order, so the cap trims the far end and id survives it.
+    assert "bug_reports.id" in listed[0]
 
 
 # ---------------------------------------------------------------------------

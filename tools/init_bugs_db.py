@@ -66,7 +66,47 @@ def _format_bytes(size: int | None) -> str:
     return f"{value:.1f} GB"
 
 
-def build_report(info: dict, *, created: bool, schema_applied: bool) -> str:
+# How many individual faults are spelled out before the rest are counted. A
+# table rebuilt by hand is wrong in every column at once, and fourteen of those
+# run together is a wall nobody reads -- which buries the one that matters.
+# They are listed in the order the schema declares them, so the cap trims the
+# far end rather than the id column at the front.
+MAX_GAPS_LISTED = 8
+
+
+def _count_gaps(info: dict) -> str:
+    """The faults as a count, for the one line that has to summarise them."""
+
+    counts = []
+    for label, items in (
+        ("table", info["missing_tables"]),
+        ("column", info["missing_columns"]),
+    ):
+        if items:
+            counts.append(f"{len(items)} {label}{'s' if len(items) != 1 else ''} missing")
+    altered = info["altered_columns"]
+    if altered:
+        counts.append(f"{len(altered)} column{'s' if len(altered) != 1 else ''} altered")
+    return ", ".join(counts)
+
+
+def _gaps(info: dict) -> list[str]:
+    """Each fault on its own line, bounded, or nothing when the schema is whole."""
+
+    gaps = (
+        [f"missing table:   {name}" for name in info["missing_tables"]]
+        + [f"missing column:  {name}" for name in info["missing_columns"]]
+        + [f"altered column:  {change}" for change in info["altered_columns"]]
+    )
+    lines = [f"            - {gap}" for gap in gaps[:MAX_GAPS_LISTED]]
+    if len(gaps) > MAX_GAPS_LISTED:
+        lines.append(f"            ... and {len(gaps) - MAX_GAPS_LISTED} more")
+    return lines
+
+
+def build_report(
+    info: dict, *, created: bool, schema_applied: bool, schema_error: str | None = None
+) -> str:
     """The status, as the lines printed to the terminal."""
 
     lines = ["Bug reports database", f"  Path:     {info['path']}"]
@@ -94,27 +134,44 @@ def build_report(info: dict, *, created: bool, schema_applied: bool) -> str:
     # against it -- with a message about the drive, because that is what a
     # failed write looks like from the outside. So say which piece is missing,
     # and say honestly what will and will not mend it.
-    gaps = list(info["missing_tables"]) + [
-        f"the {name} column" for name in info["missing_columns"]
-    ]
-    if gaps and not schema_applied:
+    gaps = _gaps(info)
+    damaged = (
+        "This file cannot serve reports. Move it aside and run this again to make "
+        "a fresh one; keep it if the reports in it still matter."
+    )
+    if schema_error is not None:
+        # The schema would not go on. This is the case worth getting right,
+        # because it is reached by an administrator doing what --check just told
+        # them to do: exiting on the store's own message here would tell them to
+        # check the drive is mapped, about a file sitting right there and
+        # readable. Say what is actually wrong with it instead.
+        lines.append("  Schema:   DAMAGED -- the schema could not be applied.")
+        lines.append(f"  Reason:   {schema_error}")
+        lines.append(f"            {damaged}")
+    elif gaps and not schema_applied:
+        lines.append(f"  Schema:   INCOMPLETE -- {_count_gaps(info)}.")
+        # Deliberately not "run this to fix it": whether these are things the
+        # schema adds is ensure_schema's to answer, and predicting it here would
+        # mean keeping a second opinion about what it repairs. Under-promising
+        # costs an administrator one command; over-promising sent them round a
+        # loop.
         lines.append(
-            f"  Schema:   INCOMPLETE -- missing {', '.join(gaps)}. "
-            "Run this without --check to add what can be added."
+            "            Run this without --check to apply the schema; whatever it "
+            "cannot add is reported then."
         )
     elif gaps:
-        # The schema has just been applied and these are still missing, so they
-        # are not things it adds: CREATE TABLE IF NOT EXISTS leaves an existing
-        # table alone however little of it is left. Promising another run would
-        # fix it would send an administrator round the same loop.
+        # The schema has just been applied and these are still there, so they are
+        # not things it adds: CREATE TABLE IF NOT EXISTS leaves an existing table
+        # alone however little of it is left, and nothing here rewrites a column
+        # that is the wrong shape. Promising another run would fix it would send
+        # an administrator round the same loop.
         lines.append(
-            f"  Schema:   DAMAGED -- still missing {', '.join(gaps)} after applying the "
-            "schema, which only ever adds what is absent whole. This file cannot serve "
-            "reports. Move it aside and run this again to make a fresh one; keep it if "
-            "the reports in it still matter."
+            f"  Schema:   DAMAGED -- {_count_gaps(info)}, after applying the schema. "
+            f"{damaged}"
         )
     else:
         lines.append(f"  Schema:   complete ({len(SCHEMA_TABLES)} tables)")
+    lines += gaps
 
     summary = info["summary"]
     if summary:
@@ -150,8 +207,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         before = store.describe()
-        created = False
-        if not args.check:
+    except BugReportStoreError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    created = False
+    schema_error: str | None = None
+    if not args.check:
+        try:
             # Unconditionally, rather than only when describe() reports a gap:
             # ensure_schema is idempotent, and deciding here which databases
             # need it would mean keeping a second opinion about what a complete
@@ -161,15 +224,33 @@ def main(argv: list[str] | None = None) -> int:
             # the CREATE TABLE statements living here. A schema written twice is
             # a schema that drifts.
             store.ensure_schema()
+        except BugReportStoreError as exc:
+            # Not fatal, and not reported in the store's words. A database
+            # damaged enough that the schema will not go on is exactly the one
+            # whose administrator was just told by --check to run this, and the
+            # store can only say the file could not be opened -- which sends
+            # them to the drive, about a file sitting right there. Carry the
+            # sqlite cause into the report below, which can say what it means.
+            schema_error = str(exc.__cause__ or exc)
+        else:
             created = not before["exists"]
+
+    try:
         info = store.describe()
     except BugReportStoreError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(build_report(info, created=created, schema_applied=not args.check))
+    print(
+        build_report(
+            info,
+            created=created,
+            schema_applied=not args.check,
+            schema_error=schema_error,
+        )
+    )
 
-    if not info["exists"] or not info["schema_ready"]:
+    if not info["exists"] or not info["schema_ready"] or schema_error is not None:
         return 1
     if created:
         print("\nCreated. The Report a Bug page and the developer dashboard can both use it now.")

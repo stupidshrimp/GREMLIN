@@ -310,16 +310,43 @@ def _sqlite_file_uri(uri: str) -> str:
     return uri
 
 
+def _column_shapes(conn: sqlite3.Connection, table: str) -> dict[str, str]:
+    """One table's columns, each rendered as the shape the check compares.
+
+    Name alone is not enough. A table rebuilt by hand can keep every column name
+    and lose ``id INTEGER PRIMARY KEY``, and then reports file successfully,
+    return an id, and store NULL in the id column -- so the report can never be
+    resolved, reopened or deleted, because nothing can find it again. That
+    passes any check that only counts names.
+
+    AUTOINCREMENT is not in what sqlite reports here and so is not compared; it
+    governs whether an id is reused after a deletion, not whether a report can
+    be addressed at all.
+    """
+
+    shapes: dict[str, str] = {}
+    for row in conn.execute(f"PRAGMA table_info({table})").fetchall():
+        parts = [row["type"]]
+        if row["pk"]:
+            parts.append("PRIMARY KEY")
+        if row["notnull"]:
+            parts.append("NOT NULL")
+        if row["dflt_value"] is not None:
+            parts.append(f"DEFAULT {row['dflt_value']}")
+        shapes[row["name"]] = " ".join(part for part in parts if part)
+    return shapes
+
+
 @lru_cache(maxsize=1)
-def _expected_columns() -> dict[str, tuple[str, ...]]:
-    """Which columns each table should have, in the order they are declared.
+def _expected_columns() -> dict[str, dict[str, str]]:
+    """The shape every table should have, in the order the columns are declared.
 
     Read back off SCHEMA_DDL by running it into an empty in-memory database and
-    asking sqlite what it made, rather than by listing the column names a second
-    time here. A hand-kept list would drift from the CREATE TABLE, and a check
-    that disagrees with what is actually created is worse than no check at all:
-    it would call a healthy database incomplete, and nothing would be able to
-    mend what it claims is wrong.
+    asking sqlite what it made, rather than by listing the columns a second time
+    here. A hand-kept list would drift from the CREATE TABLE, and a check that
+    disagrees with what is actually created is worse than no check at all: it
+    would call a healthy database incomplete, and nothing would be able to mend
+    what it claims is wrong.
 
     Cached because it is the same answer every time, and computed on first use
     rather than at import, so this module still does nothing when it is loaded.
@@ -330,13 +357,7 @@ def _expected_columns() -> dict[str, tuple[str, ...]]:
         conn.row_factory = sqlite3.Row
         for statement in SCHEMA_DDL.values():
             conn.execute(statement)
-        return {
-            table: tuple(
-                row["name"]
-                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            )
-            for table in SCHEMA_DDL
-        }
+        return {table: _column_shapes(conn, table) for table in SCHEMA_DDL}
     finally:
         conn.close()
 
@@ -856,10 +877,12 @@ class BugReportStore:
             "size_bytes": None,
             "tables": [],
             "missing_tables": list(SCHEMA_TABLES),
-            # Left empty when the tables are missing whole, for the same reason
-            # the loop below skips them: missing_tables already says everything
-            # is absent, and every column listed under it would bury that.
+            # Both left empty when the tables are missing whole, for the same
+            # reason the loop below skips them: missing_tables already says
+            # everything is absent, and every column listed under it would bury
+            # that.
             "missing_columns": [],
+            "altered_columns": [],
             "schema_ready": False,
             "summary": None,
         }
@@ -886,30 +909,34 @@ class BugReportStore:
             info["tables"] = tables
             info["missing_tables"] = [name for name in SCHEMA_TABLES if name not in tables]
 
-            # Every column the schema declares, not only the ones ensure_schema
-            # migrates. A table that is present but has had a column taken off
-            # it opens, lists, and counts exactly like a healthy one, and then
-            # refuses the first report filed against it -- with a message about
-            # the drive, because that is what a failed write looks like from the
+            # Every column the schema declares, and the shape of each -- not
+            # only the ones ensure_schema migrates. A table that is present but
+            # damaged opens, lists, and counts exactly like a healthy one, and
+            # then fails the first report filed against it, with a message about
+            # the drive because that is what a failed write looks like from the
             # outside. Reported here instead, while somebody is asking.
             missing_columns: list[str] = []
+            altered_columns: list[str] = []
             present: dict[str, set[str]] = {}
             for table in SCHEMA_TABLES:
                 if table not in tables:
                     # Already reported whole in missing_tables; listing each of
                     # its columns underneath would bury that.
                     continue
-                present[table] = {
-                    row["name"]
-                    for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-                }
-                missing_columns += [
-                    f"{table}.{name}"
-                    for name in _expected_columns()[table]
-                    if name not in present[table]
-                ]
+                found = _column_shapes(conn, table)
+                present[table] = set(found)
+                for name, shape in _expected_columns()[table].items():
+                    if name not in found:
+                        missing_columns.append(f"{table}.{name}")
+                    elif found[name] != shape:
+                        altered_columns.append(
+                            f"{table}.{name} (expected {shape}, found {found[name]})"
+                        )
             info["missing_columns"] = missing_columns
-            info["schema_ready"] = not info["missing_tables"] and not info["missing_columns"]
+            info["altered_columns"] = altered_columns
+            info["schema_ready"] = not (
+                info["missing_tables"] or missing_columns or altered_columns
+            )
 
             # Counted last, and only when the columns it reads are all there.
             # Otherwise the count is what fails, and "unreadable" is what gets
