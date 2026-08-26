@@ -45,7 +45,18 @@ from services.bug_reports import (
 )
 from services.patch_notes_service import build_reader as build_patch_notes_reader
 from services.schema_service import SchemaService, SchemaServiceError
-from services.access_control import ACTIVITY_DEFAULT_DAYS, ACTIVITY_MAX_DAYS, AccessControl, ROLES
+from services.access_control import (
+    ACTIVITY_DEFAULT_DAYS,
+    ACTIVITY_MAX_DAYS,
+    DEFAULT_DEPARTMENT,
+    DEFAULT_STAFF_LEVEL,
+    DEPARTMENTS,
+    ROLES,
+    STAFF_LEVELS,
+    AccessControl,
+    department_label,
+    staff_level_label,
+)
 from services.sync_service import (
     APP_ENV_KEYS,
     LimbleSyncRunner,
@@ -138,6 +149,22 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
+
+# The two account fields that are *not* ranked. ROLE_LEVEL above orders the
+# three permission roles because a write gate has to ask "at least an editor?";
+# a department and a staff level answer "which one?", never "how much?", so they
+# get label lookups and no ordering. Registered as template globals rather than
+# passed page by page: the account dialog on every page and the developer roster
+# both write them out, and neither should carry its own copy of the wording.
+#
+# Nothing in GREMLIN filters on either one yet. When something does, the rule
+# belongs with the navigation it hides -- PAGES and NAV_LINKS below -- and reads
+# the stored value; see services/access_control.py for why the module that
+# stores them deliberately enforces nothing.
+app.jinja_env.globals.update(
+    department_label=department_label,
+    staff_level_label=staff_level_label,
+)
 
 
 def current_user() -> dict | None:
@@ -653,7 +680,13 @@ SEARCH_ENTRIES = [
         "kind": "page",
         "context": "Developer",
         "role": "admin",
-        "keywords": ["user", "role", "pin", "account", "permission", "editor", "admin"],
+        "keywords": [
+            "user", "role", "pin", "account", "permission", "editor", "admin",
+            # An administrator looking for where somebody's department or level
+            # is set has this page in mind and not its name.
+            "department", "level", "facilities", "operations", "maintenance",
+            "engineer", "leadership", "associate",
+        ],
     },
     {
         "label": "User activity",
@@ -2050,6 +2083,18 @@ def developer_access():
             access_db_path=str(ACCESS_DB_PATH),
             users=access_control.list_users(),
             roles=ROLES,
+            # The catalogs come from the accounts module rather than the
+            # template, so the dropdowns can only offer what the column's CHECK
+            # constraint would accept.
+            departments=DEPARTMENTS,
+            staff_levels=STAFF_LEVELS,
+            # What the "add user" row starts on. Unrestricted, matching what an
+            # account migrated from before these fields existed carries: an
+            # administrator adding somebody has not said where they work until
+            # they pick, and a dropdown that lands on a real department would
+            # record a guess as though it were an answer.
+            default_department=DEFAULT_DEPARTMENT,
+            default_staff_level=DEFAULT_STAFF_LEVEL,
             csrf_token=csrf_token(),
         ),
     )
@@ -2061,7 +2106,18 @@ def developer_access():
 def developer_save_user():
     try:
         raw_id = request.form.get("user_id", "").strip()
-        access_control.save_user(int(raw_id) if raw_id else None, request.form.get("username", ""), request.form.get("pin", ""), request.form.get("role", ""))
+        # Department and level are read the same way the role is: taken from the
+        # form and validated by save_user, never defaulted here. A form that
+        # somehow arrives without one is a bad request rather than a silent
+        # widening to "all", which is the least restrictive value either can hold.
+        access_control.save_user(
+            int(raw_id) if raw_id else None,
+            request.form.get("username", ""),
+            request.form.get("pin", ""),
+            request.form.get("role", ""),
+            request.form.get("department", ""),
+            request.form.get("staff_level", ""),
+        )
     except (ValueError, sqlite3.IntegrityError) as exc:
         return jsonify({"error": str(exc)}), 400
     return redirect(url_for("developer_access"))

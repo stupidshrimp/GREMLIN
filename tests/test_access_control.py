@@ -6,7 +6,22 @@ from threading import Barrier
 
 import pytest
 
-from services.access_control import LOGIN_FAILURE_LIMIT, AccessControl
+import sqlite3
+
+from werkzeug.security import generate_password_hash
+
+from services.access_control import (
+    DEFAULT_DEPARTMENT,
+    DEFAULT_STAFF_LEVEL,
+    DEPARTMENT_ALL,
+    DEPARTMENTS,
+    LOGIN_FAILURE_LIMIT,
+    STAFF_LEVELS,
+    AccessControl,
+    department_label,
+    department_scope,
+    staff_level_label,
+)
 
 
 def test_users_are_hashed_and_authenticate(tmp_path):
@@ -46,8 +61,6 @@ def test_account_credentials_obey_login_input_bounds(tmp_path):
 
 
 def test_existing_user_schema_gains_credential_version(tmp_path):
-    import sqlite3
-
     path = tmp_path / "legacy-accesscontrol.db"
     with sqlite3.connect(path) as conn:
         conn.execute("""CREATE TABLE users (
@@ -408,3 +421,364 @@ def test_locked_scopes_are_capped_too(tmp_path, monkeypatch):
     assert locked > 0, "the flood should be producing lockouts, or this proves nothing"
     # cap, plus the one real account that is held back, plus this request's two.
     assert total <= 20 + 1 + 2
+
+
+# -- department and staff level ------------------------------------------------
+#
+# Two fields recorded against each account that gate nothing: which pages and
+# sidebar entries each department and level should see has not been decided.
+# What is worth pinning down until it is, is that the values survive a round
+# trip, that the column refuses anything outside the catalog, and that adding
+# the columns to an existing accounts file cannot narrow an account that is
+# already in it.
+
+
+def test_department_and_level_round_trip(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "operations_maintenance", "engineer")
+
+    assert control.authenticate("planner", "2468")["department"] == "operations_maintenance"
+    stored = next(user for user in control.list_users() if user["username"] == "planner")
+    assert (stored["department"], stored["staff_level"]) == ("operations_maintenance", "engineer")
+
+    # Editing without a new PIN keeps the hash and still moves both fields, which
+    # is the case the developer page's Save button submits most often.
+    control.save_user(stored["id"], "planner", "", "editor", "facilities", "leadership")
+    moved = control.authenticate("planner", "2468")
+    assert (moved["department"], moved["staff_level"]) == ("facilities", "leadership")
+    assert moved["credential_version"] == 1, "moving somebody between departments is not a credential change"
+
+
+def test_an_account_defaults_to_the_unrestricted_values(tmp_path):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "viewer", "1111", "viewer")
+    for username in ("root", "viewer"):
+        user = next(row for row in control.list_users() if row["username"] == username)
+        assert (user["department"], user["staff_level"]) == (DEFAULT_DEPARTMENT, DEFAULT_STAFF_LEVEL)
+
+
+@pytest.mark.parametrize(
+    "department,staff_level,message",
+    [
+        ("engineering", "engineer", "Department must be one of"),
+        ("", "engineer", "Department must be one of"),
+        ("operations", "manager", "Level must be one of"),
+        ("operations", "", "Level must be one of"),
+    ],
+)
+def test_a_value_outside_the_catalog_is_refused(tmp_path, department, staff_level, message):
+    """Never coerced to the default: both defaults are the *widest* values, so a
+    misspelling that fell through to one would quietly hand out more access than
+    was asked for once these fields do filter pages."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with pytest.raises(ValueError, match=message):
+        control.save_user(None, "somebody", "2468", "editor", department, staff_level)
+    assert control.authenticate("somebody", "2468") is None
+
+
+def test_the_column_itself_refuses_a_value_outside_the_catalog(tmp_path):
+    """The catalog is in the schema, not only in save_user's argument checks."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with control._connect() as conn:
+        for column, value in (("department", "engineering"), ("staff_level", "manager")):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(f"UPDATE users SET {column}=? WHERE username='root'", (value,))
+
+
+def test_an_existing_accounts_file_gains_both_columns_unrestricted(tmp_path):
+    """Migration must not narrow anybody: an account that predates these fields
+    has no recorded department, and guessing one would take pages away from a
+    real person the first time something filters on it."""
+
+    path = tmp_path / "legacy-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, role TEXT,
+            created_at TEXT, updated_at TEXT)""")
+        conn.execute("INSERT INTO users(username,password_hash,role) VALUES ('incumbent','x','admin')")
+    control = AccessControl(path)
+    control.ensure_schema()
+
+    with control._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    assert {"department", "staff_level"} <= columns
+    incumbent = control.list_users()[0]
+    assert (incumbent["department"], incumbent["staff_level"]) == (DEFAULT_DEPARTMENT, DEFAULT_STAFF_LEVEL)
+
+
+def test_a_department_reports_the_single_departments_it_stands_for():
+    """The only thing that reads the combined value, so that whatever eventually
+    filters by department does not parse the string for itself."""
+
+    assert department_scope("facilities") == ("facilities",)
+    assert department_scope("operations_maintenance") == ("operations", "maintenance")
+    assert set(department_scope(DEPARTMENT_ALL)) == {"facilities", "operations", "maintenance"}
+    # Every stored value resolves to real departments, including the combined
+    # ones -- so a department added to the catalog and forgotten here shows up.
+    for department in DEPARTMENTS:
+        assert set(department_scope(department)) <= {"facilities", "operations", "maintenance"}
+        assert department_scope(department), department
+
+
+def test_the_catalogs_carry_a_label_for_every_value():
+    """The developer page's dropdowns draw these; a value with no label would be
+    offered to an administrator as its raw column value."""
+
+    for department in DEPARTMENTS:
+        assert department_label(department) != department
+    for level in STAFF_LEVELS:
+        assert staff_level_label(level) != level
+
+
+# -- keeping the stored catalogs current ---------------------------------------
+#
+# The catalogs are written into the users table's CHECK constraints, which is
+# what makes the accounts file state for itself what a department may be. sqlite
+# will not revise a table that already exists, though, so a release that adds a
+# value has to carry the constraint forward or every deployed file keeps
+# refusing it while save_user accepts it -- the administrator picks the new
+# department off the dropdown and gets a bad request out of sqlite.
+
+
+def _later_release(monkeypatch, departments=None, staff_levels=None):
+    """Stand in for a release that edits one of the catalog tuples."""
+
+    if departments is not None:
+        monkeypatch.setattr("services.access_control.DEPARTMENTS", departments)
+    if staff_levels is not None:
+        monkeypatch.setattr("services.access_control.STAFF_LEVELS", staff_levels)
+
+
+def test_a_value_added_to_a_catalog_reaches_an_existing_accounts_file(tmp_path, monkeypatch):
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "maintenance", "engineer")
+
+    _later_release(
+        monkeypatch,
+        departments=("facilities", "operations", "maintenance", "operations_maintenance", "engineering", "all"),
+        staff_levels=("engineer", "leadership", "associate", "technician", "all"),
+    )
+    control.ensure_schema()
+
+    control.save_user(None, "newhire", "1111", "editor", "engineering", "technician")
+    stored = control.authenticate("newhire", "1111")
+    assert (stored["department"], stored["staff_level"]) == ("engineering", "technician")
+
+
+def test_the_rebuild_keeps_every_account_intact(tmp_path, monkeypatch):
+    """Rebuilding the table moves password hashes and ids; losing either would
+    sign the whole plant out, or hand a removed account's sign-in history to
+    whoever is added next."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "maintenance", "leadership")
+    control.save_user(None, "temp", "0000", "viewer")
+    temp_id = control.authenticate("temp", "0000")["id"]
+    control.delete_user(temp_id, 1)
+    before = {user["username"]: user["id"] for user in control.list_users()}
+    assert temp_id > max(before.values()), "the removed account must be the most recent allocation"
+
+    _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
+    control.ensure_schema()
+
+    assert {user["username"]: user["id"] for user in control.list_users()} == before
+    assert control.authenticate("planner", "2468")["department"] == "maintenance"
+    assert control.authenticate("root", "secret") is not None
+    # sqlite keeps the next id in sqlite_sequence, and dropping the table drops
+    # it; the copy then sets it only as high as the highest id still stored. The
+    # removed account was the highest, so without carrying the mark across, the
+    # next account takes its id -- and with it its sign-in history in
+    # login_events and its entries in audit_log, neither of which is a foreign
+    # key precisely so that removing somebody leaves the record alone.
+    control.save_user(None, "newhire", "1111", "viewer")
+    assert control.authenticate("newhire", "1111")["id"] != temp_id
+    assert control.authenticate("newhire", "1111")["id"] not in before.values()
+    with control._connect() as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='users_rebuilt'").fetchone()
+
+
+def test_a_stored_value_the_catalog_dropped_holds_the_migration_rather_than_the_start(tmp_path, monkeypatch, caplog):
+    """A department renamed out of the catalog leaves accounts pointing at it.
+
+    Reassigning them is a decision about a real person: moving them to the
+    unrestricted default silently widens what they reach, and any other guess is
+    just as much a guess. So the old constraint stays -- it accepts every row
+    already stored -- the accounts are named, and the plant keeps working.
+    """
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "facilities", "engineer")
+
+    _later_release(monkeypatch, departments=("engineering", "operations", "maintenance", "operations_maintenance", "all"))
+    with caplog.at_level("WARNING"):
+        control.ensure_schema()
+    assert "planner" in caplog.text and "facilities" in caplog.text
+
+    signed_in = control.authenticate("planner", "2468")
+    assert signed_in["department"] == "facilities", "nobody is moved, and nobody is locked out"
+
+    # Once an administrator reassigns the account, the next start finishes the job.
+    control.save_user(signed_in["id"], "planner", "", "editor", "operations", "engineer")
+    control.ensure_schema()
+    control.save_user(None, "newhire", "1111", "editor", "engineering", "engineer")
+    assert control.authenticate("newhire", "1111")["department"] == "engineering"
+
+
+def test_an_unchanged_catalog_leaves_the_table_alone(tmp_path):
+    """The rebuild is a migration, not something every start pays for."""
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    with control._connect() as conn:
+        before = conn.execute("SELECT sql FROM sqlite_master WHERE name='users'").fetchone()["sql"]
+    control.ensure_schema()
+    control.ensure_schema()
+    with control._connect() as conn:
+        assert conn.execute("SELECT sql FROM sqlite_master WHERE name='users'").fetchone()["sql"] == before
+
+
+def test_an_accounts_file_with_loose_timestamps_still_migrates(tmp_path):
+    """A users table made by hand early enough has nullable created_at/updated_at
+    and rows that never filled them; the current definition has neither. Refusing
+    to migrate over a column nothing authenticates with would strand the file."""
+
+    path = tmp_path / "loose-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT, role TEXT,
+            created_at TEXT, updated_at TEXT)""")
+        conn.execute("INSERT INTO users(username,password_hash,role) VALUES ('incumbent','x','admin')")
+    control = AccessControl(path)
+    control.ensure_schema()
+
+    incumbent = control.list_users()[0]
+    assert incumbent["username"] == "incumbent"
+    assert incumbent["created_at"] and incumbent["updated_at"], "stamped rather than left null"
+    with control._connect() as conn:
+        stored = conn.execute("SELECT sql FROM sqlite_master WHERE name='users'").fetchone()["sql"]
+    assert f"CHECK(department IN {DEPARTMENTS!r})" in stored
+
+
+def test_the_released_accounts_file_upgrades_in_place(tmp_path):
+    """The upgrade every existing deployment actually performs.
+
+    The users table as the released code builds it: the three roles spelled out
+    rather than written from ROLES, and neither new column. Everyone in it must
+    come out the other side able to sign in, holding the id their sign-in history
+    is filed under, and unrestricted rather than assigned a department nobody
+    chose for them.
+    """
+
+    path = tmp_path / "released-accesscontrol.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('viewer','editor','admin')),
+            credential_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute(
+            "INSERT INTO users(id,username,password_hash,role) VALUES (7,'incumbent',?,'admin')",
+            (generate_password_hash("secret"),),
+        )
+    control = AccessControl(path)
+    control.ensure_schema()
+
+    incumbent = control.authenticate("incumbent", "secret")
+    assert incumbent is not None, "an upgrade that signs the plant out is not an upgrade"
+    assert incumbent["id"] == 7
+    assert (incumbent["department"], incumbent["staff_level"]) == (DEFAULT_DEPARTMENT, DEFAULT_STAFF_LEVEL)
+    # And the file now states the catalogs for itself, so the next release that
+    # edits one of them is a rebuild rather than a puzzle.
+    control.save_user(None, "newhire", "1111", "editor", "operations_maintenance", "leadership")
+    assert control.authenticate("newhire", "1111")["department"] == "operations_maintenance"
+
+
+def test_a_rebuild_that_fails_part_way_leaves_every_account_where_it_was(tmp_path, monkeypatch, caplog):
+    """Standing down has to actually stand down.
+
+    The rebuild drops the original table before renaming the copy over it, so a
+    failure in between is the one moment the accounts exist under a name nothing
+    looks for. Rolling back only the rebuild puts them back; without that, the
+    handler's own cleanup would drop the copy that still held every account, and
+    the start would go on to fail against a users table that no longer exists.
+    """
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "planner", "2468", "editor", "maintenance", "engineer")
+    before = {user["username"]: user["id"] for user in control.list_users()}
+
+    real_connect = AccessControl._connect
+
+    class FailsTheRename:
+        """The connection, with the last step of the rebuild broken."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if "RENAME TO" in sql:
+                raise sqlite3.OperationalError("simulated I/O error during rename")
+            return self._conn.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+    monkeypatch.setattr(AccessControl, "_connect", lambda self: FailsTheRename(real_connect(self)))
+    _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
+    with caplog.at_level("ERROR"):
+        control.ensure_schema()
+    assert "could not be rebuilt" in caplog.text
+    monkeypatch.setattr(AccessControl, "_connect", real_connect)
+
+    assert {user["username"]: user["id"] for user in control.list_users()} == before
+    assert control.authenticate("planner", "2468") is not None
+    assert control.authenticate("root", "secret") is not None
+    with control._connect() as conn:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='users_rebuilt'").fetchone()
+    # And the file is still on its old constraints, which is what the log said:
+    # the deployment runs, short of the value the release added.
+    with pytest.raises(sqlite3.IntegrityError):
+        control.save_user(None, "newhire", "1111", "editor", "engineering", "engineer")
+
+
+def test_the_id_counter_survives_a_rebuild_of_an_emptied_table(tmp_path, monkeypatch):
+    """The counter has no row to raise when the copy inserts nothing.
+
+    delete_user will not empty the roster -- the last administrator cannot be
+    removed -- so an accounts file in this state got there some other way, and
+    the rebuild still must not start handing out ids that history is filed
+    under. Emptied here the same way: directly.
+    """
+
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+    control.save_user(None, "temp", "0000", "viewer")
+    highest = control.authenticate("temp", "0000")["id"]
+    with control._connect() as conn:
+        conn.execute("DELETE FROM users")
+
+    _later_release(monkeypatch, departments=(*DEPARTMENTS[:-1], "engineering", DEPARTMENT_ALL))
+    control.ensure_schema()
+
+    control.save_user(None, "newhire", "1111", "admin")
+    assert control.authenticate("newhire", "1111")["id"] > highest

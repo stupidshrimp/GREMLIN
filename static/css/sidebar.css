@@ -25,6 +25,10 @@
 .account-dialog form, .account-dialog label { display:grid; gap:8px; }
 .account-dialog form { gap:16px; }
 .account-dialog input { font:inherit; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
+/* Department and level, under the username they belong to. Quiet, because the
+   line above it is the one that governs what the account may do -- these two
+   record where its holder works and decide nothing yet. */
+.account-dialog-scope { margin:-8px 0 12px; color:var(--muted); font-size:.9rem; }
 /* The developer area is entered from this dialog and nowhere else, so its link
    is given a line of its own rather than sitting inside the sign-out prose. */
 .account-dialog-dev { margin:0 0 16px; }

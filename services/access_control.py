@@ -15,6 +15,75 @@ from pathlib import Path
 from werkzeug.security import check_password_hash, generate_password_hash
 
 ROLES = ("viewer", "editor", "admin")
+
+# Departments and staff levels sit alongside the role above, and are a different
+# kind of fact about an account. `role` says what the account may do to stored
+# data -- read it, change it, administer it -- and every protected write is
+# gated on it. These two say where in the plant the person sits, and gate
+# nothing at all: which pages and sidebar entries each department or level
+# should be shown has not been decided yet, so this module records the answer
+# and enforces none of it. When those rules do arrive they belong wherever the
+# navigation is assembled, not here -- nothing below should grow a notion of
+# which department outranks which, because none of them does.
+#
+# Both sets carry an explicit "all" member meaning "not narrowed to anything",
+# and that is what every account gets by default. Accounts created before these
+# columns existed are migrated onto it, so adding them cannot take a page away
+# from somebody who can reach it today; the first deployment to write a
+# filtering rule decides who stops being "all", not this migration.
+DEPARTMENT_ALL = "all"
+# One value rather than two rows against the account: somebody who covers both
+# shifts is common enough here to be worth a word of its own, and a
+# single-valued column is what the dropdown on the developer page edits.
+DEPARTMENT_OPERATIONS_MAINTENANCE = "operations_maintenance"
+DEPARTMENTS = (
+    "facilities",
+    "operations",
+    "maintenance",
+    DEPARTMENT_OPERATIONS_MAINTENANCE,
+    DEPARTMENT_ALL,
+)
+DEFAULT_DEPARTMENT = DEPARTMENT_ALL
+# Which single departments a combined value stands for. Only combined values
+# belong here; anything absent stands for itself, and DEPARTMENT_ALL stands for
+# every single one. Kept as data so that adding a department -- or a second
+# combination -- is an edit to these two structures rather than a hunt through
+# string comparisons; department_scope() below is the only reader.
+DEPARTMENT_COMPOSITES = {DEPARTMENT_OPERATIONS_MAINTENANCE: ("operations", "maintenance")}
+DEPARTMENT_SINGLES = tuple(
+    name for name in DEPARTMENTS if name != DEPARTMENT_ALL and name not in DEPARTMENT_COMPOSITES
+)
+DEPARTMENT_LABELS = {
+    "facilities": "Facilities",
+    "operations": "Operations",
+    "maintenance": "Maintenance",
+    "operations_maintenance": "Operations & Maintenance",
+    DEPARTMENT_ALL: "All departments",
+}
+
+STAFF_LEVEL_ALL = "all"
+# Spelled `staff_level` everywhere rather than plain "level": app.py already
+# ranks the three permission roles as ROLE_LEVEL, and two unrelated things
+# called "level" in one request get read as each other sooner or later.
+#
+# The order here is the order the dropdown draws, and nothing more. These are
+# three kinds of job, not a ladder: nothing in GREMLIN compares two staff
+# levels, and the tuple is deliberately not written so that it could.
+STAFF_LEVELS = ("engineer", "leadership", "associate", STAFF_LEVEL_ALL)
+DEFAULT_STAFF_LEVEL = STAFF_LEVEL_ALL
+STAFF_LEVEL_LABELS = {
+    "engineer": "Engineer",
+    "leadership": "Leadership",
+    "associate": "Associate",
+    STAFF_LEVEL_ALL: "All levels",
+}
+
+# Every read of an account is projected onto this list -- the session snapshot,
+# the login response, the developer roster -- so a column added here reaches all
+# of them at once instead of being remembered in three places.
+ACCOUNT_FIELDS = ("id", "username", "role", "department", "staff_level", "credential_version")
+_ACCOUNT_COLUMNS = ",".join(ACCOUNT_FIELDS)
+
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
 LOGIN_LOCK_SECONDS = 15 * 60
@@ -83,6 +152,72 @@ def _check_credential_bounds(username: str, pin: str) -> None:
         raise ValueError(f"PIN must be {MAX_PIN_CHARS} characters or fewer.")
 
 
+# The columns an account is made of, as one statement rather than two copies.
+# Rebuilding the table to move a CHECK constraint forward (see
+# _align_account_catalogs) has to produce exactly what a fresh install would, so
+# there is one definition and the table name is the only thing that varies.
+def _users_table_sql(table: str = "users") -> str:
+    return f"""
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN {ROLES!r}),
+            department TEXT NOT NULL DEFAULT '{DEFAULT_DEPARTMENT}'
+                CHECK(department IN {DEPARTMENTS!r}),
+            staff_level TEXT NOT NULL DEFAULT '{DEFAULT_STAFF_LEVEL}'
+                CHECK(staff_level IN {STAFF_LEVELS!r}),
+            credential_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+
+
+def _catalog_values(column: str) -> tuple[str, ...]:
+    """The values one catalog-backed column may hold."""
+
+    return {"role": ROLES, "department": DEPARTMENTS, "staff_level": STAFF_LEVELS}[column]
+
+
+# What a stored users table must say for its constraints to be today's. Compared
+# as text against sqlite_master, which holds the CREATE statement verbatim.
+def _catalog_constraints() -> dict[str, str]:
+    return {
+        "role": f"CHECK(role IN {ROLES!r})",
+        "department": f"CHECK(department IN {DEPARTMENTS!r})",
+        "staff_level": f"CHECK(staff_level IN {STAFF_LEVELS!r})",
+    }
+
+
+def department_scope(department: str) -> tuple[str, ...]:
+    """The single-department values a stored department stands for.
+
+    Only unpacks the value; it decides nothing. "operations_maintenance" is one
+    string in the column but names two parts of the plant, and "all" names every
+    part, so anything that eventually filters by department needs a set rather
+    than the string it was given. Returning it here means that filtering, when
+    it is written, does not re-derive what the combined values mean each time it
+    is asked. An unrecognised value stands only for itself.
+    """
+
+    if department == DEPARTMENT_ALL:
+        return DEPARTMENT_SINGLES
+    return DEPARTMENT_COMPOSITES.get(department, (department,))
+
+
+def department_label(department: str) -> str:
+    """How a stored department is written on screen."""
+
+    return DEPARTMENT_LABELS.get(department, department)
+
+
+def staff_level_label(staff_level: str) -> str:
+    """How a stored staff level is written on screen."""
+
+    return STAFF_LEVEL_LABELS.get(staff_level, staff_level)
+
+
 class AccessControl:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -107,20 +242,35 @@ class AccessControl:
             # later workers observe its committed row rather than racing into a
             # uniqueness error during module import.
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('viewer','editor','admin')),
-                    credential_version INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # `role`, `department` and `staff_level` are written from this
+            # module's own tuples rather than spelled out, so the column and the
+            # code that validates it cannot drift apart. The permitted values
+            # live in the schema, which is the point: the accounts file states
+            # what a department may be, and a hand-edited row that says
+            # otherwise is refused by sqlite rather than discovered later by a
+            # page. _align_account_catalogs below is what keeps that true across
+            # a release that changes one of the tuples.
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+                conn.execute(_users_table_sql())
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
             if "credential_version" not in columns:
                 conn.execute("ALTER TABLE users ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1")
+            # Added rather than rebuilt, so nobody's PIN is disturbed by a
+            # migration. Every account that predates these columns lands on the
+            # unrestricted default: the roster does not know where anyone works
+            # yet, and guessing would quietly narrow what a real person can
+            # reach. An administrator sets them from the developer page.
+            if "department" not in columns:
+                conn.execute(
+                    f"""ALTER TABLE users ADD COLUMN department TEXT NOT NULL
+                        DEFAULT '{DEFAULT_DEPARTMENT}' CHECK(department IN {DEPARTMENTS!r})"""
+                )
+            if "staff_level" not in columns:
+                conn.execute(
+                    f"""ALTER TABLE users ADD COLUMN staff_level TEXT NOT NULL
+                        DEFAULT '{DEFAULT_STAFF_LEVEL}' CHECK(staff_level IN {STAFF_LEVELS!r})"""
+                )
+            self._align_account_catalogs(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,6 +414,146 @@ class AccessControl:
                         "INSERT INTO users(username,password_hash,role) VALUES (?,?, 'admin')",
                         (bootstrap_username, generate_password_hash(initial_pin)),
                     )
+    def _align_account_catalogs(self, conn: sqlite3.Connection) -> None:
+        """Move the users table's CHECK constraints onto today's catalogs.
+
+        Adding a value to ROLES, DEPARTMENTS or STAFF_LEVELS changes what this
+        module accepts, but it does not change a database that already exists:
+        CREATE TABLE IF NOT EXISTS does not revise a table that is already
+        there, and sqlite's ALTER TABLE cannot alter a constraint. Left alone,
+        every deployed accounts file would keep refusing the new value while
+        save_user happily accepted it -- an administrator picking the new
+        department off the dropdown would get a bad request out of sqlite and no
+        way to explain it. The catalogs are written into the schema so that the
+        two cannot disagree, and that only stays true if the schema is carried
+        forward when they change.
+
+        Rebuilding the table is sqlite's documented way to change a constraint.
+        It runs inside the caller's transaction, and neither branch below lets a
+        difficulty here stop GREMLIN from starting: this is a file people sign in
+        with, and coming up on the constraints it already has costs the new
+        values until an operator reads the log, while refusing to start costs the
+        plant its reliability tooling outright.
+        """
+
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()
+        if not stored:
+            return
+        constraints = _catalog_constraints()
+        missing = [column for column, clause in constraints.items() if clause not in stored["sql"]]
+        if not missing:
+            return
+
+        # A value that is *stored* but no longer in the catalog -- a department
+        # renamed or dropped by the same release that added the new one -- would
+        # fail the copy below and take the deployment down at startup. Neither
+        # is this migration's decision to make: moving those accounts to the
+        # unrestricted default would silently widen what they reach, and picking
+        # some other department for them would be a guess about a real person.
+        # So the old constraint is left in place, which accepts every row the
+        # file already holds, and the accounts needing a human are named. The
+        # deployment keeps working exactly as it did; what it cannot do until
+        # somebody reassigns them is store the newly added value.
+        orphans = []
+        for column in constraints:
+            allowed = _catalog_values(column)
+            rows = conn.execute(
+                f"SELECT username, {column} AS value FROM users"
+                f" WHERE {column} NOT IN ({','.join('?' * len(allowed))})",
+                allowed,
+            )
+            orphans += [f"{row['username']} ({column}={row['value']})" for row in rows]
+        if orphans:
+            logger.warning(
+                "The accounts file still refuses %s because these accounts hold values that are no "
+                "longer offered: %s. Reassign them from the developer access page and restart.",
+                ", ".join(missing),
+                "; ".join(orphans),
+            )
+            return
+
+        # sqlite's 12-step procedure for changing a constraint, minus the steps
+        # that do not arise here: nothing references users by foreign key (see
+        # login_events), and it carries no index, trigger or view of its own --
+        # `username` is unique by an inline constraint, which the rebuilt
+        # definition brings with it.
+        columns = ("id,username,password_hash,role,department,staff_level"
+                   ",credential_version,created_at,updated_at")
+        # The timestamps are the one thing read back looser than it is written.
+        # A table hand-made early enough has them nullable and unset, and the
+        # current definition does not: "when this account was created is not
+        # recorded, and this is when we noticed" is the only answer available,
+        # and it is better than refusing to migrate over a column nothing
+        # authenticates with. Everything else is copied as it stands.
+        source = ("id,username,password_hash,role,department,staff_level,credential_version"
+                  ",COALESCE(created_at,CURRENT_TIMESTAMP),COALESCE(updated_at,CURRENT_TIMESTAMP)")
+        # The id AUTOINCREMENT would hand out next, which is not recoverable from
+        # the surviving rows. sqlite keeps it in sqlite_sequence, and dropping
+        # the table drops that row with it; copying explicit ids then sets it
+        # back only as high as the highest id still stored. Delete the most
+        # recently added account and rebuild, and the next account created takes
+        # the id that account had -- inheriting its sign-in history in
+        # login_events and its entries in audit_log, both of which file by
+        # user_id and neither of which is a foreign key, precisely so that
+        # removing somebody does not rewrite what was recorded about them.
+        sequenced = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'"
+        ).fetchone()
+        row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='users'").fetchone() if sequenced else None
+        high_water = row["seq"] if row else None
+
+        # One savepoint around the whole rebuild, so that standing down is
+        # actually standing down. Without it a failure in the rename -- after
+        # the original table has already been dropped -- would leave the
+        # accounts file with no users table at all, and the handler's own
+        # cleanup would drop the copy that still held every account. Rolling
+        # back to here undoes the drop as well, so the file is exactly as it was
+        # and GREMLIN comes up on the constraints it already had.
+        conn.execute("SAVEPOINT catalog_rebuild")
+        try:
+            conn.execute(_users_table_sql("users_rebuilt"))
+            conn.execute(f"INSERT INTO users_rebuilt({columns}) SELECT {source} FROM users")
+            conn.execute("DROP TABLE users")
+            conn.execute("ALTER TABLE users_rebuilt RENAME TO users")
+            self._restore_high_water(conn, high_water)
+        except sqlite3.Error:
+            # Whatever shape this file is in, it is one people sign in with. Say
+            # so and leave it alone rather than failing the start: the old
+            # constraint still accepts every row already stored, so GREMLIN
+            # comes up working and short of the newly added values, which is the
+            # same place the orphan branch above leaves it.
+            conn.execute("ROLLBACK TO catalog_rebuild")
+            conn.execute("RELEASE catalog_rebuild")
+            logger.exception(
+                "The accounts table could not be rebuilt for the current %s catalog(s); "
+                "it keeps the constraints it has, and the new values cannot be assigned yet.",
+                ", ".join(missing),
+            )
+            return
+        conn.execute("RELEASE catalog_rebuild")
+        logger.info("Rebuilt the accounts table onto the current schema (%s).", ", ".join(missing))
+
+    @staticmethod
+    def _restore_high_water(conn: sqlite3.Connection, high_water: int | None) -> None:
+        """Put the rebuilt table's id counter back where the old one had it.
+
+        Only ever raises the counter. The rebuilt table sets it to the highest id
+        copied, which is right whenever nothing was deleted and too low the
+        moment something was.
+        """
+
+        if high_water is None:
+            return
+        current = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='users'").fetchone()
+        if current is None:
+            # No row to raise: every account had been removed before the
+            # rebuild, so the copy inserted nothing and sqlite recorded nothing.
+            conn.execute("INSERT INTO sqlite_sequence(name,seq) VALUES ('users',?)", (high_water,))
+        elif current["seq"] < high_water:
+            conn.execute("UPDATE sqlite_sequence SET seq=? WHERE name='users'", (high_water,))
+
     def _restrict_permissions(self) -> None:
         """Keep the file readable only by the account GREMLIN runs as.
 
@@ -379,7 +669,7 @@ class AccessControl:
 
     def get_user(self, user_id: int) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT id,username,role,credential_version FROM users WHERE id=?", (user_id,)).fetchone()
+            row = conn.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM users WHERE id=?", (user_id,)).fetchone()
         return dict(row) if row else None
 
     def has_users(self) -> bool:
@@ -388,9 +678,9 @@ class AccessControl:
 
     def authenticate(self, username: str, pin: str) -> dict | None:
         with self._connect() as conn:
-            row = conn.execute("SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)).fetchone()
+            row = conn.execute(f"SELECT password_hash,{_ACCOUNT_COLUMNS} FROM users WHERE username=?", (username,)).fetchone()
         if row and check_password_hash(row["password_hash"], pin):
-            return {key: row[key] for key in ("id", "username", "role", "credential_version")}
+            return {key: row[key] for key in ACCOUNT_FIELDS}
         return None
 
     def authenticate_limited(self, username: str, pin: str, client_key: str) -> tuple[dict | None, int]:
@@ -491,12 +781,12 @@ class AccessControl:
                 self._record_login_event(conn, account, LOGIN_BLOCKED, origin_digest)
                 return None, max(1, int(locked_until - now + 0.999))
             row = conn.execute(
-                "SELECT id,username,password_hash,role,credential_version FROM users WHERE username=?", (username,)
+                f"SELECT password_hash,{_ACCOUNT_COLUMNS} FROM users WHERE username=?", (username,)
             ).fetchone() if searchable else None
             if row and checkable and check_password_hash(row["password_hash"], pin):
                 conn.executemany("DELETE FROM login_attempts WHERE scope_key=?", ((scope,) for scope in scopes))
                 self._record_login_event(conn, row, LOGIN_SUCCESS, origin_digest)
-                return {key: row[key] for key in ("id", "username", "role", "credential_version")}, 0
+                return {key: row[key] for key in ACCOUNT_FIELDS}, 0
             retry_after = 0
             for scope in scopes:
                 previous = attempts.get(scope)
@@ -654,12 +944,40 @@ class AccessControl:
 
     def list_users(self) -> list[dict]:
         with self._connect() as conn:
-            return [dict(row) for row in conn.execute("SELECT id,username,role,created_at,updated_at FROM users ORDER BY username")]
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id,username,role,department,staff_level,created_at,updated_at"
+                    " FROM users ORDER BY username"
+                )
+            ]
 
-    def save_user(self, user_id: int | None, username: str, pin: str, role: str) -> None:
+    def save_user(
+        self,
+        user_id: int | None,
+        username: str,
+        pin: str,
+        role: str,
+        department: str = DEFAULT_DEPARTMENT,
+        staff_level: str = DEFAULT_STAFF_LEVEL,
+    ) -> None:
+        """Create or update one account, including where its holder works.
+
+        ``department`` and ``staff_level`` default to the unrestricted values, so
+        a caller that has no opinion -- the bootstrap admin, a test -- creates an
+        account narrowed to nothing. They are validated rather than coerced: the
+        two defaults are the *widest* values, and quietly substituting one for a
+        misspelling would hand an account more of GREMLIN than was asked for
+        once these do filter pages.
+        """
+
         username = username.strip()
         if not username or role not in ROLES or (user_id is None and not pin):
             raise ValueError("Username, a valid role, and a PIN for new users are required.")
+        if department not in DEPARTMENTS:
+            raise ValueError(f"Department must be one of: {', '.join(DEPARTMENTS)}.")
+        if staff_level not in STAFF_LEVELS:
+            raise ValueError(f"Level must be one of: {', '.join(STAFF_LEVELS)}.")
         _check_credential_bounds(username, pin)
         with self._connect() as conn:
             # The last-admin count and the mutation are one serialized decision.
@@ -673,13 +991,24 @@ class AccessControl:
                 if conn.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0] <= 1:
                     raise ValueError("The last administrator cannot be demoted.")
             if user_id is None:
-                conn.execute("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)", (username, generate_password_hash(pin), role))
+                conn.execute(
+                    "INSERT INTO users(username,password_hash,role,department,staff_level) VALUES (?,?,?,?,?)",
+                    (username, generate_password_hash(pin), role, department, staff_level),
+                )
             elif pin:
-                conn.execute("""UPDATE users SET username=?,password_hash=?,role=?,
+                conn.execute("""UPDATE users SET username=?,password_hash=?,role=?,department=?,staff_level=?,
                              credential_version=credential_version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                             (username, generate_password_hash(pin), role, user_id))
+                             (username, generate_password_hash(pin), role, department, staff_level, user_id))
             else:
-                conn.execute("UPDATE users SET username=?,role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (username, role, user_id))
+                # No credential_version bump: department and staff level are
+                # re-read from this table on every request, so a change to
+                # either reaches the account on its next page load without
+                # ending the session the way a replaced PIN does.
+                conn.execute(
+                    """UPDATE users SET username=?,role=?,department=?,staff_level=?,
+                       updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (username, role, department, staff_level, user_id),
+                )
 
     def delete_user(self, user_id: int, current_user_id: int) -> None:
         if user_id == current_user_id:
