@@ -629,6 +629,14 @@ table.availability-table thead th:first-child { background: var(--forest-100); z
    to forget to change. */
 .availability-summary-row td { font-weight: 600; }
 
+/* The editable months -- OT hours and Goal % -- carry an input rather than a
+   number, so the cell has nothing to right-align on its own. Pushing the box to
+   the same edge keeps every month column reading down to one edge whichever mode
+   the table is in, and puts the input under its heading instead of a column
+   away. Written `table.metrics-table td.<class>` to out-specify the shared
+   `td { text-align: left }` above -- see the note there. */
+table.metrics-table td.availability-input-cell { text-align: right; }
+
 .availability-input {
   width: 5.2rem;
   padding: 0.25rem 0.4rem;

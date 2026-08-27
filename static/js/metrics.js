@@ -2686,8 +2686,15 @@
       byKey[`${row.asset_number}|${row.month}`] = row;
     });
 
-    const head = el("tr", {}, [el("th", { text: mode === "ot" ? "Asset — OT hours" : "Asset" })].concat(
-      labels.map((label) => el("th", { text: label }))
+    // The month headings sit over right-aligned numbers -- the availability
+    // percentages, the summary rows, and the OT/goal inputs alike -- so they are
+    // marked numeric and follow their column to the same edge. Left-aligned they
+    // drift a whole column away from their values once the table is stretched to
+    // fill the card.
+    const head = el("tr", {}, [
+      el("th", { scope: "col", text: mode === "ot" ? "Asset — OT hours" : "Asset" }),
+    ].concat(
+      labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label }))
     ));
 
     const body = group.assets.map((asset) =>
@@ -2710,20 +2717,28 @@
               refreshAvailability
             );
           });
-          return el("td", {}, [input]);
+          return el("td", { class: "availability-input-cell" }, [input]);
         })
       ))
     );
 
     const averageRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Average" })].concat(
       (group.average || []).map((value) =>
-        el("td", { text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%` })
+        el("td", {
+          class: "availability-cell",
+          text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`,
+        })
       )
     ));
 
     const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
       months.map((month, index) => {
-        if (!CAN_EDIT) return el("td", { text: `${(((group.goal || [])[index] ?? 0.95) * 100).toFixed(2)}%` });
+        if (!CAN_EDIT) {
+          return el("td", {
+            class: "availability-cell",
+            text: `${(((group.goal || [])[index] ?? 0.95) * 100).toFixed(2)}%`,
+          });
+        }
         const input = el("input", {
           type: "number",
           min: "0",
@@ -2739,7 +2754,7 @@
             refreshAvailability
           );
         });
-        return el("td", {}, [input]);
+        return el("td", { class: "availability-input-cell" }, [input]);
       })
     ));
 
