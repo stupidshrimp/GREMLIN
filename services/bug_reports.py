@@ -35,7 +35,7 @@ from pathlib import Path
 # GREMLIN_BUGS_DB_PATH environment variable -- which is what the tests do, and
 # what a deployment that maps the share to a different letter would set.
 DEFAULT_BUG_DB_PATH = Path(
-    r"Z:\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects"
+    r"Z:\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects"
     r"\GREMLIN Program\GREMLIN Global DB\auxillary.db"
 )
 

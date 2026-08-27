@@ -2,7 +2,7 @@
 
 Every test points GREMLIN_BUGS_DB_PATH at a tmp_path. That is not only isolation:
 the real default is a Windows path on the shared drive, and on a POSIX test
-runner ``Path(r"Z:\\FACIL\\...")`` is a *relative* path, so a test that let the
+runner ``Path(r"Z:\\Facilities\\...")`` is a *relative* path, so a test that let the
 default stand would create that name as a folder in the working tree.
 """
 
@@ -94,7 +94,7 @@ def test_the_default_location_is_the_shared_drive():
     """
 
     written = str(DEFAULT_BUG_DB_PATH)
-    assert written.startswith(r"Z:\FACIL\MAIN-ENG")
+    assert written.startswith(r"Z:\Facilities\FACIL\MAIN-ENG")
     assert written.endswith(r"GREMLIN Program\GREMLIN Global DB\auxillary.db")
 
 
