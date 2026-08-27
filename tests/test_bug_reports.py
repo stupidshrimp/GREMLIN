@@ -1247,7 +1247,14 @@ def test_describe_catches_an_added_column_that_no_report_can_satisfy(tmp_path):
 
 @pytest.mark.parametrize(
     "addition",
-    ["site TEXT", "line TEXT NOT NULL DEFAULT ''", "seq INTEGER DEFAULT 0"],
+    [
+        "site TEXT",
+        "line TEXT NOT NULL DEFAULT ''",
+        "seq INTEGER DEFAULT 0",
+        # A quoted 'NULL' is a real string default, and keeps its quotes in
+        # table_info -- which is what distinguishes it from a bare DEFAULT NULL.
+        "label TEXT NOT NULL DEFAULT 'NULL'",
+    ],
 )
 def test_describe_leaves_a_column_somebody_added_on_purpose_alone(tmp_path, addition):
     """Extras are not faults, and condemning one nothing here can drop would be.
@@ -1267,6 +1274,38 @@ def test_describe_leaves_a_column_somebody_added_on_purpose_alone(tmp_path, addi
     assert info["blocking_columns"] == []
     assert info["schema_ready"] is True
     assert BugReportStore(path).submit(title="Still fine", description="Detail.") == 1
+
+
+@pytest.mark.parametrize(
+    ("addition", "reason"),
+    [
+        ("tenant TEXT NOT NULL", "no default"),
+        ("tenant TEXT NOT NULL DEFAULT NULL", "DEFAULT NULL"),
+        ("tenant TEXT NOT NULL DEFAULT null", "DEFAULT NULL"),
+    ],
+)
+def test_describe_catches_every_added_column_no_report_can_satisfy(tmp_path, addition, reason):
+    """Both spellings of "nothing to fall back on", which do not look alike.
+
+    sqlite reports DEFAULT NULL as the string "NULL" rather than as no default,
+    so a check testing only for the absence of a default walks past it while the
+    insert fails in exactly the same way.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"ALTER TABLE bug_reports ADD COLUMN {addition}")
+
+    info = BugReportStore(path).describe()
+
+    assert info["schema_ready"] is False
+    assert info["blocking_columns"] == [
+        f"bug_reports.tenant (added, NOT NULL with {reason} -- "
+        "every report filed is refused)"
+    ]
+    with pytest.raises(BugReportStoreError):
+        BugReportStore(path).submit(title="Charts blank", description="No bars.")
 
 
 def test_describe_repairs_nothing_by_itself(tmp_path):

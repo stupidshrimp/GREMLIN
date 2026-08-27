@@ -72,7 +72,10 @@ def test_the_path_is_resolved_the_way_the_app_resolves_it(tool, monkeypatch, tmp
 
     # Stubbed so that whoever runs the suite cannot decide this from their own
     # .env: what is under test is that nothing configured means the default.
-    monkeypatch.setattr(tool, "load_dotenv_files", lambda **kwargs: None)
+    # Patched where it lives, since resolve_db_path imports it at call time.
+    import services.sync_service as sync_service
+
+    monkeypatch.setattr(sync_service, "load_dotenv_files", lambda **kwargs: None)
     monkeypatch.delenv("GREMLIN_BUGS_DB_PATH", raising=False)
     assert tool.resolve_db_path(None) == Path(DEFAULT_BUG_DB_PATH)
 
@@ -122,14 +125,69 @@ def test_an_exported_variable_still_beats_the_file(
     assert tool.resolve_db_path(None) == tmp_path / "from-env.db"
 
 
-def test_db_needs_no_file_read_to_outrank_everything(tool, monkeypatch, tmp_path):
-    """--db is answered without touching .env at all."""
+def test_db_needs_no_file_read_or_import_to_outrank_everything(tool, monkeypatch, tmp_path):
+    """--db is answered before any of it, so it works where nothing else would.
+
+    Not only without reading .env: without importing sync_service either, which
+    reaches the Limble client's HTTP dependencies. An administrator on a machine
+    that has a checkout and nothing installed can still make the database.
+    """
+
+    import services.sync_service as sync_service
 
     def fail(**kwargs):
         raise AssertionError("resolve_db_path read .env despite --db")
 
-    monkeypatch.setattr(tool, "load_dotenv_files", fail)
+    monkeypatch.setattr(sync_service, "load_dotenv_files", fail)
+    monkeypatch.setitem(sys.modules, "services.sync_service", None)  # import would raise
+
     assert tool.resolve_db_path(str(tmp_path / "explicit.db")) == tmp_path / "explicit.db"
+
+
+def test_missing_dependencies_stop_the_command_rather_than_guessing(
+    tool, monkeypatch, tmp_path
+):
+    """Falling back to the default is the one outcome that does real harm.
+
+    Without the .env load the command cannot know which database is configured,
+    and the path it would fall back to is the shared drive -- where a database
+    nobody asked for is worst. So it says what is missing and stops.
+    """
+
+    monkeypatch.setitem(sys.modules, "services.sync_service", None)
+
+    with pytest.raises(tool.ConfigurationError) as caught:
+        tool.resolve_db_path(None)
+    assert "--db" in str(caught.value)
+
+
+def test_an_unreadable_dotenv_is_explained_not_traced(
+    tool, monkeypatch, tmp_path, capsys, fresh_dotenv
+):
+    """A .env holds credentials, so being unreadable to this account is normal.
+
+    And it is exactly the file that may name the database, so guessing past it
+    would risk checking one the app never opens.
+    """
+
+    (tmp_path / ".env").write_text("GREMLIN_BUGS_DB_PATH=/configured.db\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GREMLIN_BUGS_DB_PATH", raising=False)
+
+    real = Path.read_text
+
+    def denied(self, *args, **kwargs):
+        if self.name == ".env":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    assert tool.main(["--check"]) == 1
+    captured = capsys.readouterr()
+    assert "could not be read" in captured.err
+    assert "--db" in captured.err
+    assert "Traceback" not in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +520,47 @@ def test_a_column_somebody_added_on_purpose_is_left_alone(tool, db_path, capsys)
     assert "complete (" in capsys.readouterr().out
     # And the check is right that it still works.
     assert BugReportStore(db_path).submit(title="Still fine", description="Detail.") == 1
+
+
+def test_a_folder_that_cannot_be_written_says_why(tool, db_path, capsys, monkeypatch):
+    """The install-time case, and the one where advice must not be a loop.
+
+    The operator has just run this without --check. Telling them to run it
+    without --check is not only useless, it hides the permission error that is
+    the only thing explaining what happened.
+    """
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    db_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(type(db_path), "mkdir", denied)
+
+    assert tool.main(["--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "Reason:" in out
+    assert "Permission denied" in out
+    assert "run this without --check" not in out
+
+
+def test_an_added_column_defaulting_to_null_is_caught(tool, db_path, capsys):
+    """sqlite reports DEFAULT NULL as the string "NULL", not as no default.
+
+    So a test for "no default" walks straight past it while the insert fails in
+    exactly the same way.
+    """
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE bug_reports ADD COLUMN tenant TEXT NOT NULL DEFAULT NULL")
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "complete (" not in out
+    assert "bug_reports.tenant (added, NOT NULL with DEFAULT NULL" in out
 
 
 # ---------------------------------------------------------------------------

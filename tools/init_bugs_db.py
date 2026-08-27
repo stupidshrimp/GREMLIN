@@ -24,7 +24,9 @@ default -- the same order the web app resolves it in, so what this creates is
 what the app will open.
 
 Exit status is 0 when the database is there and complete, and 1 when it is not:
-missing under --check, or unreachable either way.
+missing under --check, damaged, unreachable, or when the configured path cannot
+be established at all. --db needs no .env read and no imports beyond the store
+itself, so it still works where nothing else here does.
 """
 
 from __future__ import annotations
@@ -42,7 +44,16 @@ from services.bug_reports import (  # noqa: E402
     BugReportStore,
     BugReportStoreError,
 )
-from services.sync_service import APP_ENV_KEYS, load_dotenv_files  # noqa: E402
+
+
+class ConfigurationError(RuntimeError):
+    """The command could not work out which database it was being asked about.
+
+    Kept apart from BugReportStoreError, which means a database that could not
+    be reached. This one means not knowing which database to reach for -- and
+    conflating them would have the command blame the share for a .env it could
+    not read. Both end the same way: a message, and a non-zero exit.
+    """
 
 
 def resolve_db_path(explicit: str | None) -> Path:
@@ -61,15 +72,45 @@ def resolve_db_path(explicit: str | None) -> Path:
     default instead -- then report success over the wrong database. Same
     function and same keys as app.py, so the two cannot come to disagree.
 
-    Skipped entirely when --db is given, which outranks both and needs no file
-    read to say so.
+    Skipped entirely when --db is given, which outranks both and needs neither a
+    file read nor an import to say so -- so the command still names a database
+    on a machine where nothing else here would run.
     """
 
     if explicit:
         return Path(explicit)
-    # An exported variable still beats the file, which is load_dotenv_files'
-    # own rule and therefore the app's.
-    load_dotenv_files(only_keys=APP_ENV_KEYS)
+
+    # Imported here rather than at the top because sync_service reaches the
+    # Limble client and its HTTP dependencies, while the store this command is
+    # about is pure standard library. A command for setting a database up should
+    # not refuse to start because the API client's dependencies are absent --
+    # and if they are, it says so and stops rather than guessing a path.
+    try:
+        from services.sync_service import APP_ENV_KEYS, load_dotenv_files
+    except ImportError as exc:
+        raise ConfigurationError(
+            f"The .env override cannot be read here: {exc}. Install GREMLIN's "
+            "dependencies (pip install -r requirements.txt), or pass --db to "
+            "name the database directly, which needs nothing installed. "
+            "Carrying on would risk setting up a database the app never opens."
+        ) from exc
+
+    try:
+        # An exported variable still beats the file, which is load_dotenv_files'
+        # own rule and therefore the app's.
+        load_dotenv_files(only_keys=APP_ENV_KEYS)
+    except OSError as exc:
+        # A .env holds credentials, so being readable only by the account that
+        # owns it is the sensible state, not a broken one -- and it is exactly
+        # the file that may name the database. Refusing beats falling back:
+        # the default path is the one place a stray database does real harm.
+        raise ConfigurationError(
+            f"A .env file is present but could not be read: {exc}. It may carry "
+            "the GREMLIN_BUGS_DB_PATH override, so carrying on would risk "
+            "checking a different database from the one the app opens. Fix its "
+            "permissions, or pass --db to name the database directly."
+        ) from exc
+
     return Path(os.environ.get("GREMLIN_BUGS_DB_PATH") or DEFAULT_BUG_DB_PATH)
 
 
@@ -138,7 +179,17 @@ def build_report(
 
     if not info["exists"]:
         lines.append("  Status:   MISSING -- nothing has been filed and no file has been made")
-        if not info["parent_exists"]:
+        if schema_error is not None:
+            # The command has just tried to make it and could not -- an install
+            # -time folder that is present but not writable is the ordinary way
+            # here. Falling through to the advice below would name the very
+            # command that just failed and bury the only line explaining why.
+            lines.append(f"  Reason:   {schema_error}")
+            lines.append(
+                "            The database could not be created here. Put right what that "
+                "names, or pass --db to make it somewhere this account can write."
+            )
+        elif not info["parent_exists"]:
             # The distinction that decides what to do next: a missing folder on
             # a mapped drive is made by running this without --check, while a
             # missing drive is not this tool's to fix.
@@ -228,7 +279,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    store = BugReportStore(resolve_db_path(args.db))
+    try:
+        store = BugReportStore(resolve_db_path(args.db))
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     try:
         before = store.describe()

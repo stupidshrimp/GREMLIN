@@ -366,23 +366,35 @@ def _blocking_extra_columns(
     when nothing here can drop it again, is the failure this whole check has
     been careful to avoid.
 
-    One kind is different in kind rather than degree: NOT NULL with no default.
-    Every insert the application makes omits it, so every report filed is
-    refused -- and refused as a write failure, which reaches the reporter as a
-    message about the drive. sqlite accepts ``ADD COLUMN ... NOT NULL`` without
-    a default on an empty table, so this needs no rebuilt table to happen; one
-    ALTER on a fresh database is enough.
+    One kind is different in kind rather than degree: NOT NULL with nothing
+    usable to fall back on. Every insert the application makes omits the column,
+    so every report filed is refused -- and refused as a write failure, which
+    reaches the reporter as a message about the drive. sqlite accepts
+    ``ADD COLUMN ... NOT NULL`` without a default on an empty table, so this
+    needs no rebuilt table to happen; one ALTER on a fresh database is enough.
+
+    ``DEFAULT NULL`` counts as nothing to fall back on, and does not look like
+    it: sqlite reports it as the *string* ``NULL`` rather than as no default, so
+    a test for "no default" misses it while the insert fails exactly the same
+    way. A quoted ``DEFAULT 'NULL'`` is a real string default and keeps its
+    quotes here, which is what tells the two apart.
     """
 
     blocking = []
     for row in conn.execute(f"PRAGMA table_info({table})").fetchall():
-        if row["name"] in expected:
+        if row["name"] in expected or not row["notnull"]:
             continue
-        if row["notnull"] and row["dflt_value"] is None:
-            blocking.append(
-                f"{table}.{row['name']} (added, NOT NULL with no default -- "
-                "every report filed is refused)"
-            )
+        default = row["dflt_value"]
+        if default is None:
+            reason = "no default"
+        elif default.strip().upper() == "NULL":
+            reason = "DEFAULT NULL"
+        else:
+            continue
+        blocking.append(
+            f"{table}.{row['name']} (added, NOT NULL with {reason} -- "
+            "every report filed is refused)"
+        )
     return blocking
 
 
