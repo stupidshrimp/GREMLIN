@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import re
 import sqlite3
 import time
 from functools import lru_cache
@@ -396,6 +397,71 @@ def _blocking_extra_columns(
             "every report filed is refused)"
         )
     return blocking
+
+
+def _check_clauses(sql: str) -> set[str]:
+    """The CHECK(...) constraints in one CREATE TABLE, as normalised text.
+
+    Extracted rather than compared as whole statement text, which cannot be done
+    safely: sqlite stores that text verbatim and ALTER TABLE rewrites it, so a
+    database that has been through the revision migration keeps a stored
+    definition that differs from a freshly created one by a space -- and
+    comparing the two would condemn every migrated database, with nothing able
+    to mend what was never wrong. The clauses themselves survive the rewrite
+    untouched, which is what makes this comparison safe where that one is not.
+
+    Matched by counting parentheses rather than by a regex, because a clause
+    contains them -- ``CHECK(status IN ('open', 'resolved'))`` -- and skipping
+    quoted strings while counting, so a default or a literal carrying its own
+    bracket cannot end the clause early.
+    """
+
+    clauses = set()
+    for match in re.finditer(r"\bCHECK\s*\(", sql, re.IGNORECASE):
+        start = match.end() - 1
+        depth = 0
+        quoted = False
+        index = start
+        while index < len(sql):
+            char = sql[index]
+            if quoted:
+                if char == "'":
+                    # '' inside a string is an escaped quote, not its end.
+                    if sql[index + 1 : index + 2] == "'":
+                        index += 1
+                    else:
+                        quoted = False
+            elif char == "'":
+                quoted = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    clauses.add(" ".join(sql[start : index + 1].split()))
+                    break
+            index += 1
+    return clauses
+
+
+@lru_cache(maxsize=1)
+def _expected_checks() -> dict[str, frozenset[str]]:
+    """The constraints each table should carry, read off the schema itself."""
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        for statement in SCHEMA_DDL.values():
+            conn.execute(statement)
+        return {
+            table: frozenset(_check_clauses(row[0] or ""))
+            for table in SCHEMA_DDL
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
 
 
 @lru_cache(maxsize=1)
@@ -885,45 +951,57 @@ class BugReportStore:
         by having somebody's report refused.
         """
 
-        uri = self._readonly_uri()
-        if uri is not None:
+        # Read-only first, then read-write -- and nothing else. Both are URI
+        # opens, so neither creates; a plain sqlite3.connect() does, and that is
+        # the trap. describe() reaches here having seen the file, but on a share
+        # it can be gone a moment later, and the fallback would then *make* a
+        # new empty database -- from the one command whose whole promise is that
+        # it creates nothing, leaving a zero-byte file where the reports were.
+        #
+        # Read-write is still worth trying: a share mounted read-write refuses
+        # nothing, and this keeps the original point of the fallback, which was
+        # never to report a reachable database as unreachable over the form of a
+        # URI. It just can no longer conjure one.
+        failure: sqlite3.Error | None = None
+        for mode in ("ro", "rw"):
+            uri = self._readonly_uri(mode)
+            if uri is None:
+                break
             try:
                 conn = sqlite3.connect(uri, uri=True, timeout=DB_BUSY_TIMEOUT_SECONDS)
-            except sqlite3.Error:
-                # Read-only is worth having but not worth failing over: the file
-                # is known to exist by the time this is called, and nothing here
-                # writes to it. So a URI sqlite will not take falls back to the
-                # ordinary connection, which answers the question either way,
-                # rather than reporting a reachable database as unreachable.
-                uri = None
-        if uri is None:
-            try:
-                conn = sqlite3.connect(self.path, timeout=DB_BUSY_TIMEOUT_SECONDS)
             except sqlite3.Error as exc:
-                raise BugReportStoreError(self._unreachable(exc)) from exc
-        conn.row_factory = sqlite3.Row
-        return conn
+                failure = exc
+                continue
+            conn.row_factory = sqlite3.Row
+            return conn
+        if failure is None:
+            failure = sqlite3.OperationalError(
+                f"no file URI could be built for {self.path}"
+            )
+        raise BugReportStoreError(self._unreachable(failure)) from failure
 
-    def _readonly_uri(self) -> str | None:
-        """``self.path`` as a read-only sqlite URI, or None if it cannot be one."""
+    def _readonly_uri(self, mode: str = "ro") -> str | None:
+        """``self.path`` as a sqlite URI in ``mode``, or None if it cannot be one.
 
+        Only ``ro`` and ``rw`` are ever passed, and neither creates the file --
+        which is the property the caller depends on.
+        """
+
+        # absolute() rather than resolve(): this only has to name the file, and
+        # resolve() walks it to do that -- touching a share a second time after
+        # describe() has already looked, so it can fail on a path that is
+        # perfectly openable, and answers a symlink loop with RuntimeError
+        # rather than OSError. absolute() only prepends the working directory,
+        # which is all as_uri() needs, and cannot fail on the file itself.
         try:
-            uri = self.path.resolve().as_uri()
-        except ValueError:
-            # as_uri() refuses a path that is not absolute on this platform --
-            # the Windows default read on a POSIX runner, for one.
+            uri = self.path.absolute().as_uri()
+        except (ValueError, OSError):
+            # A working directory that has been deleted out from under the
+            # process is the one way left for this to fail. There is no URI to
+            # be had then, and the caller reports that rather than reaching for
+            # a connection that would create the file.
             return None
-        except (OSError, RuntimeError):
-            # resolve() walks the path again, and this one is on a share: the
-            # caller has already had a good stat() of it, but between that and
-            # here it can go away, and resolve() answers a symlink loop with
-            # RuntimeError rather than OSError. Not fatal either way -- giving
-            # up the URI falls back to the ordinary connection, which is the
-            # degradation this method is allowed to make. Defensive rather than
-            # demonstrated: is_file() catches every case that can be built
-            # deliberately, and what is left is the race.
-            return None
-        return f"{_sqlite_file_uri(uri)}?mode=ro"
+        return f"{_sqlite_file_uri(uri)}?mode={mode}"
 
     def describe(self) -> dict:
         """Where the database stands right now, creating nothing.
@@ -967,6 +1045,7 @@ class BugReportStore:
             "missing_columns": [],
             "altered_columns": [],
             "blocking_columns": [],
+            "missing_constraints": [],
             "schema_ready": False,
             "summary": None,
         }
@@ -1002,6 +1081,7 @@ class BugReportStore:
             missing_columns: list[str] = []
             altered_columns: list[str] = []
             blocking_columns: list[str] = []
+            missing_constraints: list[str] = []
             present: dict[str, set[str]] = {}
             for table in SCHEMA_TABLES:
                 if table not in tables:
@@ -1019,14 +1099,32 @@ class BugReportStore:
                             f"{table}.{name} (expected {shape}, found {found[name]})"
                         )
                 blocking_columns += _blocking_extra_columns(conn, table, expected)
+
+                # Table-level constraints, which PRAGMA table_info does not
+                # carry at all. A table rebuilt with the status CHECK narrowed
+                # matches on every column and then refuses to resolve anything.
+                # Only the schema's own clauses are looked for: an extra one is
+                # somebody's own addition, the same as an extra column, and
+                # nothing here could drop it anyway.
+                declaration = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                found_checks = _check_clauses((declaration["sql"] or "") if declaration else "")
+                missing_constraints += [
+                    f"{table}: CHECK{clause}"
+                    for clause in sorted(_expected_checks()[table] - found_checks)
+                ]
             info["missing_columns"] = missing_columns
             info["altered_columns"] = altered_columns
             info["blocking_columns"] = blocking_columns
+            info["missing_constraints"] = missing_constraints
             info["schema_ready"] = not (
                 info["missing_tables"]
                 or missing_columns
                 or altered_columns
                 or blocking_columns
+                or missing_constraints
             )
 
             # Counted last, and only when the columns it reads are all there.

@@ -23,6 +23,7 @@ from services.bug_reports import (
     BugReportStore,
     BugReportStoreError,
     BugReportValidationError,
+    _check_clauses,
     _sqlite_file_uri,
 )
 
@@ -1188,33 +1189,61 @@ def test_describe_explains_a_path_it_is_not_allowed_to_look_at(tmp_path, monkeyp
     assert not isinstance(caught.value, OSError)
 
 
-@pytest.mark.parametrize("failure", [OSError(5, "I/O error"), RuntimeError("Symlink loop")])
-def test_the_status_check_survives_a_path_that_stops_resolving(tmp_path, failure):
-    """The share can go away between the probe and the connection.
+def test_the_status_check_names_the_file_without_walking_the_share(tmp_path, monkeypatch):
+    """Naming the file must not need a second look at it.
 
-    resolve() walks the path a second time, after is_file() has already had a
-    good look at it, and answers a symlink loop with RuntimeError rather than
-    OSError. Neither is worth failing the check over: dropping the read-only URI
-    falls back to the ordinary connection, which reads the same answer.
+    resolve() walks the path to normalise it, touching a share describe() has
+    already looked at once -- so it can fail on a file that opens perfectly
+    well. absolute() only prepends the working directory, which is all a URI
+    needs. Asserted by making resolve() raise: nothing here may call it.
     """
 
     path = tmp_path / "auxillary.db"
     store = BugReportStore(path)
     store.submit(title="Charts blank", description="No bars.")
 
-    def gone(self, *args, **kwargs):
-        raise failure
+    def walked(self, *args, **kwargs):
+        raise AssertionError("the status check walked the share to build a URI")
 
-    monkeypatched = pytest.MonkeyPatch()
-    monkeypatched.setattr(type(path), "resolve", gone)
-    try:
-        assert store._readonly_uri() is None
-        info = store.describe()
-    finally:
-        monkeypatched.undo()
+    monkeypatch.setattr(type(path), "resolve", walked)
 
+    assert store._readonly_uri().endswith("?mode=ro")
+    info = store.describe()
     assert info["schema_ready"] is True
     assert info["summary"]["total"] == 1
+
+
+def test_the_status_check_reports_rather_than_creating_what_vanished(tmp_path):
+    """The trap in a fallback: the thing that rescues the read can also make it.
+
+    describe() reaches the connection having seen the file, but on a share it
+    can be gone a moment later. A plain sqlite3.connect() creates, so the
+    fallback would answer a vanished database by making a new empty one -- from
+    the command whose whole promise is that it creates nothing, and over the top
+    of where the reports used to be.
+    """
+
+    path = tmp_path / "auxillary.db"
+    store = BugReportStore(path)
+
+    with pytest.raises(BugReportStoreError) as caught:
+        store._connect_readonly()
+
+    assert str(path) in str(caught.value)
+    assert not path.exists()
+
+
+def test_neither_connection_the_status_check_makes_can_create(tmp_path):
+    """Asserted on the URIs themselves, since both modes have to hold the line."""
+
+    store = BugReportStore(tmp_path / "auxillary.db")
+    modes = [store._readonly_uri(mode) for mode in ("ro", "rw")]
+
+    assert [uri.rsplit("?", 1)[1] for uri in modes] == ["mode=ro", "mode=rw"]
+    for uri in modes:
+        with pytest.raises(sqlite3.OperationalError):
+            sqlite3.connect(uri, uri=True)
+    assert not (tmp_path / "auxillary.db").exists()
 
 
 def test_describe_catches_an_added_column_that_no_report_can_satisfy(tmp_path):
@@ -1306,6 +1335,95 @@ def test_describe_catches_every_added_column_no_report_can_satisfy(tmp_path, add
     ]
     with pytest.raises(BugReportStoreError):
         BugReportStore(path).submit(title="Charts blank", description="No bars.")
+
+
+def test_describe_catches_a_constraint_table_info_cannot_see(tmp_path):
+    """A narrowed CHECK matches on every column and then refuses resolutions."""
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(
+            declaration.replace(
+                "CHECK(status IN ('open', 'resolved'))", "CHECK(status = 'open')"
+            )
+        )
+
+    info = BugReportStore(path).describe()
+
+    assert info["altered_columns"] == []  # every column still matches
+    assert info["schema_ready"] is False
+    assert info["missing_constraints"] == [
+        "bug_reports: CHECK(status IN ('open', 'resolved'))"
+    ]
+
+    # The harm it stands for: filing works, resolving does not.
+    store = BugReportStore(path)
+    report_id = store.submit(title="Charts blank", description="No bars.")
+    with pytest.raises(BugReportStoreError):
+        store.set_status(report_id, "resolved", actor="root")
+
+
+def test_a_migrated_database_is_not_reported_as_having_lost_a_constraint(tmp_path):
+    """The reason whole-statement comparison was not an option.
+
+    sqlite stores the CREATE TABLE verbatim and ALTER rewrites it, so a database
+    that has been through the revision migration differs from a fresh one by a
+    space. Comparing statements would condemn every one of them; the clauses
+    themselves survive untouched, which is what makes this comparison safe.
+    """
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE bug_reports DROP COLUMN revision")
+    BugReportStore(path).ensure_schema()
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_constraints"] == []
+    assert info["schema_ready"] is True
+
+
+def test_a_constraint_somebody_added_on_purpose_is_left_alone(tmp_path):
+    """Extras are not faults here either -- nothing could drop one anyway."""
+
+    path = tmp_path / "auxillary.db"
+    BugReportStore(path).ensure_schema()
+    with sqlite3.connect(path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(declaration.replace(
+            "revision INTEGER NOT NULL DEFAULT 1",
+            "revision INTEGER NOT NULL DEFAULT 1, CHECK(length(title) > 0)",
+        ))
+
+    info = BugReportStore(path).describe()
+
+    assert info["missing_constraints"] == []
+    assert info["schema_ready"] is True
+    assert BugReportStore(path).submit(title="Still fine", description="Detail.") == 1
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("CHECK(x IN ('a', 'b'))", {"(x IN ('a', 'b'))"}),
+        # A bracket inside a literal must not end the clause early.
+        ("CHECK(x != 'a)b')", {"(x != 'a)b')"}),
+        ("CHECK(x != 'it''s )')", {"(x != 'it''s )')"}),
+        ("check ( x > 0 )", {"( x > 0 )"}),
+        ("no constraints here", set()),
+    ],
+)
+def test_constraint_extraction_counts_brackets_and_skips_literals(sql, expected):
+    assert _check_clauses(sql) == expected
 
 
 def test_describe_repairs_nothing_by_itself(tmp_path):

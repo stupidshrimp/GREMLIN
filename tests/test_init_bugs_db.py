@@ -440,7 +440,11 @@ def test_a_wall_of_faults_is_bounded_and_leads_with_the_worst(tool, db_path, cap
 
     listed = [line for line in out.splitlines() if line.strip().startswith("- ")]
     assert len(listed) == tool.MAX_GAPS_LISTED
-    assert "... and 6 more" in out
+    # The remainder is whatever is left over, not a number fixed here: the
+    # checks grow, and a test pinning the total would only ever be a chore.
+    overflow = [line for line in out.splitlines() if "more" in line and "..." in line]
+    assert len(overflow) == 1
+    assert int(overflow[0].split("and")[1].split()[0]) > 0
     # Declaration order, so the cap trims the far end and id survives it.
     assert "bug_reports.id" in listed[0]
 
@@ -561,6 +565,44 @@ def test_an_added_column_defaulting_to_null_is_caught(tool, db_path, capsys):
     out = capsys.readouterr().out
     assert "complete (" not in out
     assert "bug_reports.tenant (added, NOT NULL with DEFAULT NULL" in out
+
+
+def test_a_lost_constraint_is_reported(tool, db_path, capsys):
+    """Invisible to table_info, and it stops any report being resolved."""
+
+    import sqlite3
+
+    tool.main(["--db", str(db_path)])
+    with sqlite3.connect(db_path) as conn:
+        declaration = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'bug_reports'"
+        ).fetchone()[0]
+        conn.execute("DROP TABLE bug_reports")
+        conn.execute(declaration.replace(
+            "CHECK(status IN ('open', 'resolved'))", "CHECK(status = 'open')"
+        ))
+    capsys.readouterr()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    out = capsys.readouterr().out
+    assert "complete (" not in out
+    assert "lost constraint: bug_reports: CHECK(status IN ('open', 'resolved'))" in out
+
+
+def test_the_check_never_leaves_a_database_where_there_was_none(tool, db_path, capsys):
+    """--check promises to create nothing, and that has to survive a race.
+
+    The file is gone by the time the connection is made -- the share dropping
+    between the probe and the open. A create-capable fallback would answer that
+    by leaving a zero-byte database behind, over the top of where the reports
+    used to be.
+    """
+
+    tool.main(["--db", str(db_path)])
+    db_path.unlink()
+
+    assert tool.main(["--check", "--db", str(db_path)]) == 1
+    assert not db_path.exists()
 
 
 # ---------------------------------------------------------------------------

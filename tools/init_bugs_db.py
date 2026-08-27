@@ -152,6 +152,9 @@ def _count_gaps(info: dict) -> str:
             f"{len(blocking)} added column{'s' if len(blocking) != 1 else ''} "
             "that no report can satisfy"
         )
+    lost = info["missing_constraints"]
+    if lost:
+        counts.append(f"{len(lost)} constraint{'s' if len(lost) != 1 else ''} lost")
     return ", ".join(counts)
 
 
@@ -163,6 +166,7 @@ def _gaps(info: dict) -> list[str]:
         + [f"missing column:  {name}" for name in info["missing_columns"]]
         + [f"altered column:  {change}" for change in info["altered_columns"]]
         + [f"blocking column: {name}" for name in info["blocking_columns"]]
+        + [f"lost constraint: {name}" for name in info["missing_constraints"]]
     )
     lines = [f"            - {gap}" for gap in gaps[:MAX_GAPS_LISTED]]
     if len(gaps) > MAX_GAPS_LISTED:
