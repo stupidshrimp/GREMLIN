@@ -43,7 +43,7 @@ from services.sync_service import (
     SyncOptions,
     load_dotenv_files,
 )
-
+from services.pm_calendar_service import PmCalendarService
 # Read the app's own settings out of .env before anything below looks at them.
 # This is the one safe moment to do it: nothing has been built yet, so there is
 # no service holding a value that this could contradict. Only the names in
@@ -313,6 +313,10 @@ def _on_sync_succeeded() -> None:
 # is visible (and un-duplicatable) from every other. The nightly Task Scheduler
 # job is a separate process and is not covered by it; see services/sync_service.py.
 sync_runner = LimbleSyncRunner(on_success=_on_sync_succeeded)
+
+# One shared PmCalendarService for the whole process, same reasoning as
+# sync_runner above: every request needs to see the same sync status.
+pm_calendar_service = PmCalendarService()
 
 # The release history lives in a Word document on the engineering share, not in
 # this repository: a team member edits it and the change is live on the next page
@@ -1717,6 +1721,60 @@ def pm_calendar():
         page_title="PM Calendar",
         nav_links=NAV_LINKS,
     )
+
+def _pm_calendar_asset_ids() -> list[str] | None:
+    """Parse ?assets=1,2,3 from the query string.
+
+    Omitted entirely -> None (no filter, every asset). Present but empty
+    (?assets=) -> [] (explicitly zero assets selected, matches nothing).
+    """
+
+    raw = request.values.get("assets")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+@app.route("/pm-calendar/api/assets")
+def api_pm_calendar_assets():
+    return jsonify({"assets": pm_calendar_service.asset_options()})
+
+
+@app.route("/pm-calendar/api/events")
+def api_pm_calendar_events():
+    start = request.values.get("start")
+    end = request.values.get("end")
+    if not start or not end:
+        return jsonify({"error": "'start' and 'end' query parameters are required (YYYY-MM-DD)."}), 400
+    events = pm_calendar_service.events(
+        asset_ids=_pm_calendar_asset_ids(), start_date=start, end_date=end
+    )
+    return jsonify({"events": events})
+
+
+@app.route("/pm-calendar/api/summary")
+def api_pm_calendar_summary():
+    summary = pm_calendar_service.summary(asset_ids=_pm_calendar_asset_ids())
+    return jsonify({"summary": summary})
+
+
+@app.route("/pm-calendar/api/sync")
+def api_pm_calendar_sync_status():
+    return jsonify(pm_calendar_service.status())
+
+
+@app.route("/pm-calendar/api/sync", methods=["POST"])
+@requires_role("editor")
+def api_pm_calendar_sync_start():
+    # Same CSRF reasoning as /developer/api/sync (POST): a cross-site page
+    # can't set this content type without a preflight, so requiring it keeps
+    # a drive-by page from triggering a Limble pull in an unlocked session.
+    if not request.is_json:
+        return jsonify({"error": "Sync requests must be sent as JSON."}), 415
+    return jsonify(pm_calendar_service.start_sync())
 # ---------------------------------------------------------------------------
 # Developer area
 #

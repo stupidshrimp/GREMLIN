@@ -6,3 +6,4 @@ __pycache__/
 .env
 .vscode/
 .pytest_cache/
+PM_Calendar_local.db
