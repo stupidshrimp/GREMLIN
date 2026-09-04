@@ -512,12 +512,16 @@ QUICK_LINKS = [
         "host": "sandc4.sharepoint.com",
     },
     {
+        "label": "People Search",
+        "url": "https://sandc4.sharepoint.com/sites/SourceOne/SitePages/People-Search.aspx",
+        "host": "sandc4.sharepoint.com",
+    },
+    {
         "label": "M.O.M",
         "url": "https://mom.sandc.ws/",
         "host": "mom.sandc.ws",
     },
 ]
-
 
 @app.context_processor
 def footer_context():
