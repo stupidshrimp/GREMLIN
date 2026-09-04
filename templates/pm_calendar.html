@@ -21,8 +21,8 @@
             PMs Scheduled YTD
         </div>
 
-        <div class="pm-summary-value">
-            2,431
+        <div class="pm-summary-value" id="pm-summary-scheduled">
+            –
         </div>
     </div>
 
@@ -31,8 +31,8 @@
             PMs Completed YTD
         </div>
 
-        <div class="pm-summary-value">
-            2,348
+        <div class="pm-summary-value" id="pm-summary-completed">
+            –
         </div>
     </div>
 
@@ -41,8 +41,8 @@
             PMs Overdue YTD
         </div>
 
-        <div class="pm-summary-value">
-            83
+        <div class="pm-summary-value" id="pm-summary-overdue">
+            –
         </div>
     </div>
 
@@ -51,11 +51,22 @@
             PM Compliance
         </div>
 
-        <div class="pm-summary-value">
-            96.6%
+        <div class="pm-summary-value" id="pm-summary-compliance">
+            –
         </div>
     </div>
 
+</div>
+
+<!-- ==========================
+     SYNC
+=========================== -->
+
+<div class="pm-sync-row">
+    <button id="pm-sync-btn" class="btn-secondary" type="button">
+        Sync from Limble
+    </button>
+    <span id="pm-sync-status" class="pm-sync-status"></span>
 </div>
 
 <!-- ==========================
@@ -70,16 +81,6 @@
 
         <div class="asset-chip-container" id="selected-assets">
 
-            <div class="asset-chip">
-                S4 Laser
-                <span class="asset-remove">✕</span>
-            </div>
-
-            <div class="asset-chip">
-                Press Line 3
-                <span class="asset-remove">✕</span>
-            </div>
-
             <button
                 id="open-asset-picker"
                 class="asset-add-btn"
@@ -90,6 +91,10 @@
         </div>
 
     </div>
+
+    <p class="pm-calendar-empty-hint" id="pm-empty-hint">
+        Add an asset above to see its PM schedule.
+    </p>
 
     <div class="calendar-topbar">
 
@@ -129,8 +134,6 @@
             <div
                 id="calendar-title"
                 class="calendar-title">
-
-                September 2026
 
             </div>
 
@@ -179,7 +182,7 @@
     </div>
 
     <!-- ==========================
-         WEEK VIEW
+         WEEK VIEW (still a placeholder -- not wired to real data yet)
     =========================== -->
 
     <div id="week-view" style="display:none;">
@@ -251,27 +254,7 @@
         >
 
         <div id="asset-list">
-
-            <div class="asset-option">
-                S4 Laser
-            </div>
-
-            <div class="asset-option">
-                Salvagnini Panel Bender
-            </div>
-
-            <div class="asset-option">
-                Press Line 3
-            </div>
-
-            <div class="asset-option">
-                Press Line 4
-            </div>
-
-            <div class="asset-option">
-                HVAC System
-            </div>
-
+            <!-- populated from /pm-calendar/api/assets -->
         </div>
 
     </div>
@@ -292,262 +275,357 @@ document.addEventListener('DOMContentLoaded', function () {
     const monthView = document.getElementById('month-view');
     const weekView = document.getElementById('week-view');
 
-    const title =
-        document.getElementById('calendar-title');
-
-    const grid =
-        document.getElementById('calendar-grid-body');
-
-    const modal =
-        document.getElementById('asset-modal');
+    const title = document.getElementById('calendar-title');
+    const grid = document.getElementById('calendar-grid-body');
+    const modal = document.getElementById('asset-modal');
+    const emptyHint = document.getElementById('pm-empty-hint');
 
     const months = [
-        'January',
-        'February',
-        'March',
-        'April',
-        'May',
-        'June',
-        'July',
-        'August',
-        'September',
-        'October',
-        'November',
-        'December'
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
     ];
 
-    let currentMonth = 8;
-    let currentYear = 2026;
+    const today = new Date();
+    let currentMonth = today.getMonth();
+    let currentYear = today.getFullYear();
 
-    function buildCalendar(month, year)
-    {
-        title.textContent =
-            months[month] + ' ' + year;
+    // Every asset the picker knows about: [{id, number, name}, ...]
+    let allAssets = [];
+    // Assets currently chipped in: same shape as allAssets.
+    let selectedAssets = [];
+    // PM events for the visible month, keyed by "YYYY-MM-DD".
+    let eventsByDate = {};
 
+    function pad(n) {
+        return String(n).padStart(2, '0');
+    }
+
+    function isoDate(year, month, day) {
+        // month is 0-based here, matching JS Date -- add 1 for the ISO string.
+        return year + '-' + pad(month + 1) + '-' + pad(day);
+    }
+
+    function selectedAssetIdsCsv() {
+        return selectedAssets.map(a => a.id).join(',');
+    }
+
+    // ------------------------------------------------------------------
+    // Data loading
+    // ------------------------------------------------------------------
+
+    function loadAssetOptions() {
+        fetch('/pm-calendar/api/assets')
+            .then(r => r.json())
+            .then(data => {
+                allAssets = data.assets || [];
+                renderAssetOptions(allAssets);
+            })
+            .catch(() => {
+                // Leave the picker empty rather than throwing; the user can
+                // still use the rest of the page, and a sync will populate
+                // this once it succeeds.
+            });
+    }
+
+    function refreshSummary() {
+        // Always send `assets=`, even empty -- an omitted param means "no
+        // filter" to the API, but an empty one means "nothing selected,"
+        // which is the behaviour we want here.
+        const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv());
+        fetch(url)
+            .then(r => r.json())
+            .then(data => {
+                const summary = data.summary || {};
+                document.getElementById('pm-summary-scheduled').textContent = summary.scheduled ?? '–';
+                document.getElementById('pm-summary-completed').textContent = summary.completed ?? '–';
+                document.getElementById('pm-summary-overdue').textContent = summary.overdue ?? '–';
+                document.getElementById('pm-summary-compliance').textContent =
+                    (summary.compliance ?? 0) + '%';
+            });
+    }
+
+    function refreshEvents() {
+        eventsByDate = {};
+
+        if (selectedAssets.length === 0) {
+            renderCalendarBody();
+            return;
+        }
+
+        const start = isoDate(currentYear, currentMonth, 1);
+        const lastDay = new Date(currentYear, currentMonth + 1, 0).getDate();
+        const end = isoDate(currentYear, currentMonth, lastDay);
+
+        const url = '/pm-calendar/api/events?assets=' + encodeURIComponent(selectedAssetIdsCsv()) +
+            '&start=' + start + '&end=' + end;
+
+        fetch(url)
+            .then(r => r.json())
+            .then(data => {
+                (data.events || []).forEach(event => {
+                    if (!event.due_date) return;
+                    const day = event.due_date.slice(0, 10); // "YYYY-MM-DD"
+                    if (!eventsByDate[day]) eventsByDate[day] = [];
+                    eventsByDate[day].push(event);
+                });
+                renderCalendarBody();
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // Calendar rendering
+    // ------------------------------------------------------------------
+
+    function eventClass(event) {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        if (event.completed_date) return 'is-completed';
+        if (event.due_date && event.due_date.slice(0, 10) < todayIso) return 'is-overdue';
+        return 'is-upcoming';
+    }
+
+    function buildCalendar(month, year) {
+        title.textContent = months[month] + ' ' + year;
+        renderCalendarBody();
+    }
+
+    function renderCalendarBody() {
         grid.innerHTML = '';
 
-        const firstDay =
-            new Date(year, month, 1).getDay();
+        const firstDay = new Date(currentYear, currentMonth, 1).getDay();
+        const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
 
-        const daysInMonth =
-            new Date(year, month + 1, 0).getDate();
-
-        for (let i = 0; i < firstDay; i++)
-        {
-            const cell =
-                document.createElement('div');
-
-            cell.className =
-                'calendar-day empty';
-
+        for (let i = 0; i < firstDay; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'calendar-day empty';
             grid.appendChild(cell);
         }
 
-        for (let day = 1; day <= daysInMonth; day++)
-        {
-            const cell =
-                document.createElement('div');
+        for (let day = 1; day <= daysInMonth; day++) {
+            const cell = document.createElement('div');
+            cell.className = 'calendar-day';
 
-            cell.className =
-                'calendar-day';
+            const label = document.createElement('strong');
+            label.textContent = String(day);
+            cell.appendChild(label);
 
-            cell.innerHTML =
-                `<strong>${day}</strong>`;
+            const dayEvents = eventsByDate[isoDate(currentYear, currentMonth, day)] || [];
+            const shown = dayEvents.slice(0, 3);
+
+            shown.forEach(event => {
+                const pill = document.createElement('div');
+                pill.className = 'calendar-event ' + eventClass(event);
+                pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '');
+                pill.textContent = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM');
+                cell.appendChild(pill);
+            });
+
+            if (dayEvents.length > shown.length) {
+                const more = document.createElement('div');
+                more.className = 'calendar-event-more';
+                more.textContent = '+' + (dayEvents.length - shown.length) + ' more';
+                cell.appendChild(more);
+            }
 
             grid.appendChild(cell);
         }
     }
 
-    buildCalendar(currentMonth, currentYear);
+    // ------------------------------------------------------------------
+    // Chips (selected assets)
+    // ------------------------------------------------------------------
+
+    function renderChips() {
+        const container = document.getElementById('selected-assets');
+        const addButton = document.getElementById('open-asset-picker');
+
+        container.querySelectorAll('.asset-chip').forEach(chip => chip.remove());
+
+        selectedAssets.forEach(asset => {
+            const chip = document.createElement('div');
+            chip.className = 'asset-chip';
+            chip.dataset.assetId = asset.id;
+
+            const label = document.createTextNode((asset.name || asset.number || asset.id) + ' ');
+            chip.appendChild(label);
+
+            const remove = document.createElement('span');
+            remove.className = 'asset-remove';
+            remove.textContent = '✕';
+            remove.addEventListener('click', () => {
+                selectedAssets = selectedAssets.filter(a => a.id !== asset.id);
+                renderChips();
+                refreshSummary();
+                refreshEvents();
+            });
+            chip.appendChild(remove);
+
+            container.insertBefore(chip, addButton);
+        });
+
+        emptyHint.hidden = selectedAssets.length > 0;
+    }
+
+    function addAsset(asset) {
+        if (selectedAssets.some(a => a.id === asset.id)) return;
+        selectedAssets.push(asset);
+        renderChips();
+        refreshSummary();
+        refreshEvents();
+    }
+
+    // ------------------------------------------------------------------
+    // Asset picker modal
+    // ------------------------------------------------------------------
+
+    function renderAssetOptions(assets) {
+        const list = document.getElementById('asset-list');
+        list.innerHTML = '';
+
+        assets.forEach(asset => {
+            const option = document.createElement('div');
+            option.className = 'asset-option';
+            option.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
+            option.dataset.assetId = asset.asset_id;
+            option.dataset.assetNumber = asset.asset_number || '';
+            option.dataset.assetName = asset.asset_name || '';
+
+            option.addEventListener('click', () => {
+                addAsset({ id: asset.asset_id, number: asset.asset_number, name: asset.asset_name });
+                modal.style.display = 'none';
+            });
+
+            list.appendChild(option);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Sync button
+    // ------------------------------------------------------------------
+
+    function pollSyncStatus() {
+        fetch('/pm-calendar/api/sync')
+            .then(r => r.json())
+            .then(status => {
+                const statusEl = document.getElementById('pm-sync-status');
+                const button = document.getElementById('pm-sync-btn');
+
+                if (status.state === 'running') {
+                    statusEl.textContent = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    button.disabled = true;
+                    setTimeout(pollSyncStatus, 2000);
+                    return;
+                }
+
+                button.disabled = false;
+
+                if (status.state === 'succeeded') {
+                    statusEl.textContent = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
+                    loadAssetOptions();
+                    refreshSummary();
+                    refreshEvents();
+                } else if (status.state === 'failed') {
+                    statusEl.textContent = 'Sync failed: ' + (status.error || 'unknown error');
+                } else {
+                    statusEl.textContent = '';
+                }
+            });
+    }
+
+    document.getElementById('pm-sync-btn').addEventListener('click', () => {
+        fetch('/pm-calendar/api/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+        })
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    document.getElementById('pm-sync-status').textContent =
+                        data.error || 'Could not start sync.';
+                    return;
+                }
+                pollSyncStatus();
+            });
+    });
+
+    // ------------------------------------------------------------------
+    // Wiring: view toggle, nav, modal open/close, search
+    // ------------------------------------------------------------------
 
     monthBtn.addEventListener('click', () => {
-
         monthView.style.display = 'block';
         weekView.style.display = 'none';
-
         monthBtn.classList.add('active');
         weekBtn.classList.remove('active');
-
     });
 
     weekBtn.addEventListener('click', () => {
-
         monthView.style.display = 'none';
         weekView.style.display = 'block';
-
         weekBtn.classList.add('active');
         monthBtn.classList.remove('active');
-
     });
 
-    document
-        .getElementById('next-btn')
-        .addEventListener('click', () => {
+    document.getElementById('next-btn').addEventListener('click', () => {
+        currentMonth++;
+        if (currentMonth > 11) {
+            currentMonth = 0;
+            currentYear++;
+        }
+        buildCalendar(currentMonth, currentYear);
+        refreshEvents();
+    });
 
-            currentMonth++;
+    document.getElementById('previous-btn').addEventListener('click', () => {
+        currentMonth--;
+        if (currentMonth < 0) {
+            currentMonth = 11;
+            currentYear--;
+        }
+        buildCalendar(currentMonth, currentYear);
+        refreshEvents();
+    });
 
-            if (currentMonth > 11)
-            {
-                currentMonth = 0;
-                currentYear++;
-            }
+    document.getElementById('today-btn').addEventListener('click', () => {
+        const now = new Date();
+        currentMonth = now.getMonth();
+        currentYear = now.getFullYear();
+        buildCalendar(currentMonth, currentYear);
+        refreshEvents();
+    });
 
-            buildCalendar(
-                currentMonth,
-                currentYear
-            );
+    document.getElementById('open-asset-picker').addEventListener('click', () => {
+        modal.style.display = 'flex';
+    });
 
-        });
+    document.getElementById('close-asset-picker').addEventListener('click', () => {
+        modal.style.display = 'none';
+    });
 
-    document
-        .getElementById('previous-btn')
-        .addEventListener('click', () => {
-
-            currentMonth--;
-
-            if (currentMonth < 0)
-            {
-                currentMonth = 11;
-                currentYear--;
-            }
-
-            buildCalendar(
-                currentMonth,
-                currentYear
-            );
-
-        });
-
-    document
-        .getElementById('today-btn')
-        .addEventListener('click', () => {
-
-            const today = new Date();
-
-            currentMonth = today.getMonth();
-            currentYear = today.getFullYear();
-
-            buildCalendar(
-                currentMonth,
-                currentYear
-            );
-
-        });
-
-    function initializeChipRemoval()
-    {
-        document
-            .querySelectorAll('.asset-remove')
-            .forEach(removeBtn => {
-
-                removeBtn.onclick = function()
-                {
-                    this.parentElement.remove();
-                };
-
-            });
-    }
-
-    initializeChipRemoval();
-
-    document
-        .getElementById('open-asset-picker')
-        .addEventListener('click', () => {
-
-            modal.style.display = 'flex';
-
-        });
-
-    document
-        .getElementById('close-asset-picker')
-        .addEventListener('click', () => {
-
-            modal.style.display = 'none';
-
-        });
-
-    window.addEventListener('click', function(event) {
-
-        if (event.target === modal)
-        {
+    window.addEventListener('click', function (event) {
+        if (event.target === modal) {
             modal.style.display = 'none';
         }
-
     });
 
-    const searchBox =
-        document.getElementById('asset-search');
-
+    const searchBox = document.getElementById('asset-search');
     searchBox.addEventListener('keyup', () => {
-
-        const value =
-            searchBox.value.toLowerCase();
-
-        document
-            .querySelectorAll('.asset-option')
-            .forEach(option => {
-
-                option.style.display =
-                    option.textContent
-                        .toLowerCase()
-                        .includes(value)
-                        ? ''
-                        : 'none';
-
-            });
-
+        const value = searchBox.value.toLowerCase();
+        document.querySelectorAll('#asset-list .asset-option').forEach(option => {
+            option.style.display = option.textContent.toLowerCase().includes(value) ? '' : 'none';
+        });
     });
 
-    document
-        .querySelectorAll('.asset-option')
-        .forEach(option => {
+    // ------------------------------------------------------------------
+    // Startup
+    // ------------------------------------------------------------------
 
-            option.addEventListener('click', function() {
-
-                const assetName =
-                    this.textContent.trim();
-
-                const container =
-                    document.getElementById(
-                        'selected-assets'
-                    );
-
-                const exists =
-                    [...document.querySelectorAll('.asset-chip')]
-                    .some(chip =>
-                        chip.textContent.includes(assetName)
-                    );
-
-                if (exists)
-                    return;
-
-                const chip =
-                    document.createElement('div');
-
-                chip.className =
-                    'asset-chip';
-
-                chip.innerHTML =
-                    assetName +
-                    ' <span class="asset-remove">✕</span>';
-
-                const addButton =
-                    document.getElementById(
-                        'open-asset-picker'
-                    );
-
-                container.insertBefore(
-                    chip,
-                    addButton
-                );
-
-                initializeChipRemoval();
-
-                modal.style.display = 'none';
-
-            });
-
-        });
+    buildCalendar(currentMonth, currentYear);
+    renderChips();
+    loadAssetOptions();
+    refreshSummary();
+    refreshEvents();
+    pollSyncStatus();
 
 });
 
