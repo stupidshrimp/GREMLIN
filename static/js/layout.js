@@ -57,7 +57,17 @@
 })();
 
 (function () {
-  window.gremlinToast = function (message) {
+  // `kind` names a variant in sidebar.css and is optional. Left off, the toast
+  // keeps the alarmed look that bare `.gremlin-toast` carries, which is what
+  // every caller predating this argument wants -- all of them are reporting a
+  // write the server refused. Pass "info" for one that is merely telling you
+  // something, so a note about a feature that does not exist yet does not
+  // arrive in the same red as a rejected save.
+  //
+  // Returns the toast so a caller that can fire repeatedly has something to ask
+  // whether the last one it put up is still on screen -- see the notifications
+  // button in topbar_tools.js. Nothing is obliged to use it.
+  window.gremlinToast = function (message, kind) {
     let host = document.getElementById("gremlinToastHost");
     if (!host) {
       host = document.createElement("div");
@@ -66,12 +76,13 @@
       document.body.appendChild(host);
     }
     const toast = document.createElement("div");
-    toast.className = "gremlin-toast";
+    toast.className = "gremlin-toast" + (kind ? " is-" + kind : "");
     toast.setAttribute("role", "status");
     toast.textContent = message;
     host.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add("is-visible"));
     setTimeout(() => { toast.classList.remove("is-visible"); setTimeout(() => toast.remove(), 250); }, 5000);
+    return toast;
   };
 
   const dialog = document.getElementById("accountDialog");
@@ -100,4 +111,26 @@
     if (!response.ok) { error.textContent = payload.error; error.hidden = false; return; }
     window.location.reload();
   });
+})();
+
+// The help contacts, which are read from a dialog in both of the places they
+// are offered. Wired up on its own rather than inside the account dialog's
+// block above, because that block gives up early on a page without an account
+// button and neither of these dialogs should disappear with it.
+(function () {
+  const wire = (buttonId, dialogId, closeId) => {
+    const dialog = document.getElementById(dialogId);
+    const open = document.getElementById(buttonId);
+    // Either half can be legitimately absent: the login help button is drawn
+    // only for a visitor who is not signed in.
+    if (!dialog || !open) return;
+    open.addEventListener("click", () => dialog.showModal());
+    document.getElementById(closeId)?.addEventListener("click", () => dialog.close());
+  };
+
+  // Under the login form. Opened over the account dialog, which stays where it
+  // is: closing this one hands the login form straight back, still filled in.
+  wire("accountHelpButton", "supportDialog", "supportClose");
+  // In the footer, on every page and whether or not anybody is signed in.
+  wire("footerHelpButton", "footerHelpDialog", "footerHelpClose");
 })();

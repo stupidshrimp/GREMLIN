@@ -59,7 +59,7 @@ from pathlib import Path
 # share to a different letter -- or a workstation testing against a local copy --
 # should set.
 DEFAULT_PATCH_NOTES_PATH = Path(
-    r"Z:\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects"
+    r"Z:\Facilities\FACIL\MAIN-ENG\901 Reliability Projects\901 Reliability Projects"
     r"\GREMLIN Program\GREMLIN Documentation\GREMLIN_patchnotes.docx"
 )
 

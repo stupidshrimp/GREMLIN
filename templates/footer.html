@@ -25,5 +25,33 @@
 
   <div class="site-footer-legal">
     <p>&copy; {{ current_year }} GREMLIN</p>
+    {#- Who to ask, one click away rather than spelled out here. The contacts are
+        read rarely and the footer is on every page, so as prose they were three
+        rows of height charged to every visitor for the sake of the few who
+        wanted them. As a button they cost one line and say the same thing. -#}
+    <button
+      type="button"
+      class="site-footer-help-button"
+      id="footerHelpButton"
+      aria-haspopup="dialog"
+      aria-controls="footerHelpDialog"
+    >
+      <span class="site-footer-help-icon" aria-hidden="true">?</span>
+      Help
+    </button>
   </div>
 </footer>
+
+{#- A sibling of the footer rather than a child of it, the way the account
+    dialog sits beside the sidebar that opens it: a modal belongs to the page it
+    covers, not to the strip of markup holding its button.
+
+    Drawn for everybody, signed in or not -- this one answers questions in
+    general, unlike the login form's help button, which exists only for somebody
+    who cannot get in. -#}
+<dialog id="footerHelpDialog" class="account-dialog support-dialog" aria-labelledby="footerHelpHeading">
+  <button type="button" class="account-close" id="footerHelpClose" aria-label="Close">&times;</button>
+  <h2 id="footerHelpHeading">Help</h2>
+  <p>If you have any questions, please contact:</p>
+  {% include "support_contacts.html" %}
+</dialog>

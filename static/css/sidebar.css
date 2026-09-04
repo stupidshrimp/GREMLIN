@@ -25,14 +25,39 @@
 .account-dialog form, .account-dialog label { display:grid; gap:8px; }
 .account-dialog form { gap:16px; }
 .account-dialog input { font:inherit; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
+/* Department and level, under the username they belong to. Quiet, because the
+   line above it is the one that governs what the account may do -- these two
+   record where its holder works and decide nothing yet. */
+.account-dialog-scope { margin:-8px 0 12px; color:var(--muted); font-size:.9rem; }
 /* The developer area is entered from this dialog and nowhere else, so its link
    is given a line of its own rather than sitting inside the sign-out prose. */
 .account-dialog-dev { margin:0 0 16px; }
 .account-close { float:right; border:0; background:none; color:inherit; font-size:1.6rem; cursor:pointer; }
 .account-error { color:var(--danger-strong); margin:0; }
+/* The help button under the login form. Set as quiet prose rather than a third
+   button competing with "Log in": it is the way out for somebody the form
+   cannot help, not an alternative to filling the form in. */
+.account-help-line { margin:16px 0 0; }
+.account-help-button { display:inline-flex; align-items:center; gap:.5rem; border:0; background:none; padding:0; font:inherit; font-size:.9rem; font-weight:600; color:var(--forest-700); cursor:pointer; border-bottom:1px solid transparent; }
+.account-help-button:hover { color:var(--forest-950); border-bottom-color:var(--forest-500); }
+.account-help-button:focus-visible { outline:2px solid var(--forest-700); outline-offset:3px; border-radius:4px; }
+.account-help-icon { display:inline-grid; place-items:center; width:1.25rem; height:1.25rem; border-radius:50%; border:1px solid currentColor; font-size:.75rem; line-height:1; }
+/* The contacts dialog -- opened from the login form here, and from the footer's
+   Help button on every page -- is the account dialog's twin, so it keeps that
+   box and only changes what it has to. Narrower, because over the login dialog
+   it has to read as the sheet on top rather than as the same sheet with
+   different words on it, and because a name and an address want nothing like
+   the width a login form does. */
+.support-dialog { width:min(360px, calc(100vw - 32px)); }
+.support-dialog .support-contacts { margin-top:16px; gap:.7rem; }
+.support-dialog .support-contacts li { line-height:1.45; }
 .gremlin-toast-host { position:fixed; top:1rem; right:1rem; z-index:2000; display:grid; gap:.6rem; max-width:min(380px,calc(100vw - 2rem)); pointer-events:none; }
 .gremlin-toast { padding:.85rem 1.1rem; border-radius:12px; border:1px solid var(--danger-border); background:var(--danger-bg); color:var(--danger-ink); box-shadow:var(--shadow-sm); font-weight:600; pointer-events:auto; opacity:0; transform:translateX(12px); transition:opacity .2s,transform .2s; }
 .gremlin-toast.is-visible { opacity:1; transform:none; }
+/* For a toast that is telling you something rather than reporting a refused
+   write. The bare rule above is dressed as an alarm, and a note about a
+   feature that is not built yet arriving in that red reads as a failure. */
+.gremlin-toast.is-info { border-color:var(--forest-200); background:var(--forest-100); color:var(--forest-800); }
 
 .sidebar-header {
   display: flex;

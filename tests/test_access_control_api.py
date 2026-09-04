@@ -147,7 +147,17 @@ def test_account_management_requires_session_csrf_token(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     client = module.app.test_client()
     assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
-    form = {"username": "attacker", "pin": "known-pin", "role": "admin"}
+    # Department and level are part of the account form now, and save_user
+    # validates them rather than defaulting them, so a post that omits either is
+    # rejected before CSRF is reached -- which would make this test pass for the
+    # wrong reason.
+    form = {
+        "username": "attacker",
+        "pin": "known-pin",
+        "role": "admin",
+        "department": "all",
+        "staff_level": "all",
+    }
 
     assert client.post("/developer/access/users", data=form).status_code == 403
     assert client.post(
@@ -384,3 +394,104 @@ def test_a_nonsense_proxy_hop_count_is_refused_rather_than_ignored(monkeypatch, 
     assert module._parse_trusted_proxy_hops(None) == 0
     assert module._parse_trusted_proxy_hops("   ") == 0
     assert module._parse_trusted_proxy_hops(" 2 ") == 2
+
+
+# -- department and staff level ------------------------------------------------
+
+
+def _admin_client(module):
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+    assert client.get("/developer").status_code == 200
+    with client.session_transaction() as session:
+        return client, session["csrf_token"]
+
+
+def test_the_access_page_offers_every_department_and_level(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client, _token = _admin_client(module)
+    body = client.get("/developer/access").get_data(as_text=True)
+
+    assert 'name="department"' in body
+    assert 'name="staff_level"' in body
+    for department in module.DEPARTMENTS:
+        assert f'value="{department}"' in body, department
+    for level in module.STAFF_LEVELS:
+        assert f'value="{level}"' in body, level
+    assert "Operations &amp; Maintenance" in body, "the combined department is drawn by its label"
+
+
+def test_an_administrator_can_set_and_then_change_them(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client, token = _admin_client(module)
+
+    created = client.post("/developer/access/users", data={
+        "csrf_token": token, "username": "planner", "pin": "2468",
+        "role": "editor", "department": "maintenance", "staff_level": "associate",
+    })
+    assert created.status_code == 302
+    stored = module.access_control.authenticate("planner", "2468")
+    assert (stored["department"], stored["staff_level"]) == ("maintenance", "associate")
+
+    # The Save button on an existing row: no new PIN, both fields moved.
+    changed = client.post("/developer/access/users", data={
+        "csrf_token": token, "user_id": str(stored["id"]), "username": "planner", "pin": "",
+        "role": "editor", "department": "operations_maintenance", "staff_level": "leadership",
+    })
+    assert changed.status_code == 302
+    moved = module.access_control.authenticate("planner", "2468")
+    assert (moved["department"], moved["staff_level"]) == ("operations_maintenance", "leadership")
+
+
+@pytest.mark.parametrize("field,value", [("department", "engineering"), ("staff_level", "manager")])
+def test_a_value_outside_the_catalog_is_a_bad_request(monkeypatch, tmp_path, field, value):
+    module = _app(monkeypatch, tmp_path)
+    client, token = _admin_client(module)
+    form = {
+        "csrf_token": token, "username": "planner", "pin": "2468",
+        "role": "editor", "department": "operations", "staff_level": "engineer",
+        field: value,
+    }
+    response = client.post("/developer/access/users", data=form)
+    assert response.status_code == 400
+    assert module.access_control.authenticate("planner", "2468") is None
+
+
+def test_neither_field_changes_what_an_account_may_reach(monkeypatch, tmp_path):
+    """Nothing is gated on department or level yet, and this is what says so.
+
+    Whichever page these two eventually hide, it is not hidden today: an editor
+    in one department reaches exactly what an editor in another does. Expect to
+    rewrite this test the day a filtering rule is written -- that is its job.
+    """
+
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "one", "1111", "editor", "facilities", "associate")
+    module.access_control.save_user(None, "two", "2222", "editor", "operations", "leadership")
+
+    pages = ["/", "/life-data-analysis/perform-analysis", "/life-data-analysis/disposition"]
+    seen = []
+    for username, pin in (("one", "1111"), ("two", "2222")):
+        client = module.app.test_client()
+        user = module.access_control.authenticate(username, pin)
+        with client.session_transaction() as session:
+            session["user"] = user
+        seen.append([client.get(page).status_code for page in pages])
+    assert seen[0] == seen[1]
+    assert 403 not in seen[0], "an editor is turned away from none of these"
+
+
+def test_the_account_dialog_shows_what_the_account_records(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "planner", "2468", "editor", "operations_maintenance", "engineer")
+    client = module.app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = module.access_control.authenticate("planner", "2468")
+
+    # Asserted on the dialog's own line rather than on the page: "Engineer" is a
+    # common enough word on Home that searching the whole body would pass whether
+    # or not the dialog drew anything.
+    body = client.get("/").get_data(as_text=True)
+    line = next(part for part in body.split("<p") if 'class="account-dialog-scope"' in part)
+    assert "Operations &amp; Maintenance" in line
+    assert "Engineer" in line

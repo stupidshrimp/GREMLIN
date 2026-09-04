@@ -192,6 +192,12 @@ APP_ENV_KEYS = frozenset({
     # the rest: it is read once at import, and unlike GREMLIN_DB_PATH it is the
     # web app's own setting -- no scheduled job shares it.
     "GREMLIN_PATCH_NOTES_PATH",
+    # Where auxillary.db is, for a deployment that maps the shared drive to a
+    # different letter. Same reasoning as the patch notes path above: read once
+    # at import and owned by the web app alone. Without it here, a deployment
+    # that sets the documented override in .env would be ignored and fall back
+    # to the hard-coded Z: path.
+    "GREMLIN_BUGS_DB_PATH",
 })
 
 
