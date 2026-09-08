@@ -1,266 +1,136 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pm_calendar.css') }}">
+{% endblock %}
+
 {% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Maintenance</p>
+  <h1>Preventive maintenance, month by month.</h1>
+  <p class="hero-copy">
+    Pick the assets you look after and the calendar fills with their PM
+    schedule — what is coming, what is done, and what has gone past its due
+    date. The year-to-date figures follow the same selection.
+  </p>
+</section>
 
-<div class="page-header">
-    <h1>📅 PM Calendar</h1>
+{# Selection first, results after: the summary and the calendar below are both
+   drawn from whatever is chipped in here, and a page that opens on numbers
+   whose filter is further down reads as though the numbers are the whole
+   picture. Same order the metrics dashboard puts its filter bar in. #}
+<section class="glass-card slide-in" aria-labelledby="pm-assets-heading">
+  <h2 id="pm-assets-heading">Assets</h2>
 
-    <p>
-        View upcoming preventive maintenance activities by asset.
-    </p>
-</div>
+  <div class="pm-controls">
+    <div class="pm-field">
+      <span class="pm-field-label" id="pm-assets-label">Selected assets</span>
 
-<!-- ==========================
-     YTD SUMMARY
-=========================== -->
+      <div class="pm-asset-chips" id="pm-selected-assets" role="group" aria-labelledby="pm-assets-label">
+        <button id="pm-open-picker" class="pm-asset-add" type="button">+ Add asset</button>
+      </div>
 
-<div class="pm-summary-grid">
+      <p class="pm-hint" id="pm-empty-hint">Add an asset above to see its PM schedule.</p>
+    </div>
+
+    <div class="pm-sync-row">
+      <button id="pm-sync-btn" class="btn-secondary" type="button">Sync from Limble</button>
+      <span id="pm-sync-status" class="pm-sync-status" role="status"></span>
+    </div>
+  </div>
+</section>
+
+<section class="glass-card slide-in" aria-labelledby="pm-ytd-heading">
+  <h2 id="pm-ytd-heading">Year to date</h2>
+
+  <div class="pm-summary-grid">
+    <div class="pm-summary-card">
+      <span class="pm-summary-label">PMs scheduled</span>
+      <span class="pm-summary-value" id="pm-summary-scheduled">–</span>
+    </div>
 
     <div class="pm-summary-card">
-        <div class="pm-summary-label">
-            PMs Scheduled YTD
-        </div>
-
-        <div class="pm-summary-value" id="pm-summary-scheduled">
-            –
-        </div>
+      <span class="pm-summary-label">PMs completed</span>
+      <span class="pm-summary-value" id="pm-summary-completed">–</span>
     </div>
 
     <div class="pm-summary-card">
-        <div class="pm-summary-label">
-            PMs Completed YTD
-        </div>
-
-        <div class="pm-summary-value" id="pm-summary-completed">
-            –
-        </div>
+      <span class="pm-summary-label">PMs overdue</span>
+      <span class="pm-summary-value" id="pm-summary-overdue">–</span>
     </div>
 
     <div class="pm-summary-card">
-        <div class="pm-summary-label">
-            PMs Overdue YTD
-        </div>
+      <span class="pm-summary-label">PM compliance</span>
+      <span class="pm-summary-value" id="pm-summary-compliance">–</span>
+    </div>
+  </div>
+</section>
 
-        <div class="pm-summary-value" id="pm-summary-overdue">
-            –
-        </div>
+<section class="glass-card slide-in pm-calendar-card" aria-label="PM schedule">
+  <div class="pm-calendar-topbar">
+    <div class="pm-view-switch" role="group" aria-label="Calendar view">
+      <button id="pm-month-btn" class="pm-view-btn is-active" type="button" aria-pressed="true">Month</button>
+      <button id="pm-week-btn" class="pm-view-btn" type="button" aria-pressed="false">Week</button>
     </div>
 
-    <div class="pm-summary-card">
-        <div class="pm-summary-label">
-            PM Compliance
-        </div>
+    <div class="pm-calendar-nav">
+      <button id="pm-prev-btn" class="pm-nav-btn" type="button">◄ Previous</button>
+      {# aria-live so moving between months is announced: the month name is the
+         only thing on the page that says which one is being shown. #}
+      <div id="pm-calendar-title" class="pm-calendar-title" aria-live="polite"></div>
+      <button id="pm-today-btn" class="pm-nav-btn" type="button">Today</button>
+      <button id="pm-next-btn" class="pm-nav-btn" type="button">Next ►</button>
+    </div>
+  </div>
 
-        <div class="pm-summary-value" id="pm-summary-compliance">
-            –
-        </div>
+  <!-- Month view -->
+  <div id="pm-month-view">
+    <div class="pm-calendar-scroll">
+      <div class="pm-calendar-grid">
+        <div class="pm-weekday">Sun</div>
+        <div class="pm-weekday">Mon</div>
+        <div class="pm-weekday">Tue</div>
+        <div class="pm-weekday">Wed</div>
+        <div class="pm-weekday">Thu</div>
+        <div class="pm-weekday">Fri</div>
+        <div class="pm-weekday">Sat</div>
+
+        <div id="pm-calendar-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Week view (still a placeholder -- not wired to real data yet) -->
+  <div id="pm-week-view" hidden>
+    <div class="pm-calendar-scroll">
+      <div class="pm-week-grid">
+        <div class="pm-week-day"><div class="pm-week-header">Monday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Tuesday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Wednesday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Thursday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Friday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Saturday</div></div>
+        <div class="pm-week-day"><div class="pm-week-header">Sunday</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Asset picker -->
+<div id="pm-asset-modal" class="pm-modal-backdrop">
+  <div class="pm-modal" role="dialog" aria-modal="true" aria-labelledby="pm-picker-heading">
+    <div class="pm-modal-head">
+      <h2 id="pm-picker-heading">Select assets</h2>
+      <button id="pm-close-picker" class="pm-modal-close" type="button" aria-label="Close">✕</button>
     </div>
 
+    <input type="text" id="pm-asset-search" class="pm-asset-search" placeholder="Search assets…" autocomplete="off">
+
+    <div id="pm-asset-list" class="pm-asset-list">
+      <!-- populated from /pm-calendar/api/assets -->
+    </div>
+  </div>
 </div>
-
-<!-- ==========================
-     SYNC
-=========================== -->
-
-<div class="pm-sync-row">
-    <button id="pm-sync-btn" class="btn-secondary" type="button">
-        Sync from Limble
-    </button>
-    <span id="pm-sync-status" class="pm-sync-status"></span>
-</div>
-
-<!-- ==========================
-     MAIN CARD
-=========================== -->
-
-<div class="card">
-
-    <div class="toolbar-group">
-
-        <label>Select Assets</label>
-
-        <div class="asset-chip-container" id="selected-assets">
-
-            <button
-                id="open-asset-picker"
-                class="asset-add-btn"
-                type="button">
-                + Add Asset
-            </button>
-
-        </div>
-
-    </div>
-
-    <p class="pm-calendar-empty-hint" id="pm-empty-hint">
-        Add an asset above to see its PM schedule.
-    </p>
-
-    <div class="calendar-topbar">
-
-        <div class="calendar-view-selector">
-
-            <button
-                id="month-btn"
-                class="view-btn active"
-                type="button">
-
-                Month View
-
-            </button>
-
-            <button
-                id="week-btn"
-                class="view-btn"
-                type="button">
-
-                Week View
-
-            </button>
-
-        </div>
-
-        <div class="calendar-navigation">
-
-            <button
-                id="previous-btn"
-                class="calendar-btn"
-                type="button">
-
-                ◄ Previous
-
-            </button>
-
-            <div
-                id="calendar-title"
-                class="calendar-title">
-
-            </div>
-
-            <button
-                id="today-btn"
-                class="calendar-btn"
-                type="button">
-
-                Today
-
-            </button>
-
-            <button
-                id="next-btn"
-                class="calendar-btn"
-                type="button">
-
-                Next ►
-
-            </button>
-
-        </div>
-
-    </div>
-
-    <!-- ==========================
-         MONTH VIEW
-    =========================== -->
-
-    <div id="month-view">
-
-        <div class="calendar-grid">
-
-            <div class="calendar-header">Sun</div>
-            <div class="calendar-header">Mon</div>
-            <div class="calendar-header">Tue</div>
-            <div class="calendar-header">Wed</div>
-            <div class="calendar-header">Thu</div>
-            <div class="calendar-header">Fri</div>
-            <div class="calendar-header">Sat</div>
-
-            <div id="calendar-grid-body"></div>
-
-        </div>
-
-    </div>
-
-    <!-- ==========================
-         WEEK VIEW (still a placeholder -- not wired to real data yet)
-    =========================== -->
-
-    <div id="week-view" style="display:none;">
-
-        <div class="week-grid">
-
-            <div class="week-day">
-                <div class="week-header">Monday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Tuesday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Wednesday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Thursday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Friday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Saturday</div>
-            </div>
-
-            <div class="week-day">
-                <div class="week-header">Sunday</div>
-            </div>
-
-        </div>
-
-    </div>
-
-</div>
-
-<!-- ==========================
-     ASSET MODAL
-=========================== -->
-
-<div id="asset-modal" class="asset-modal">
-
-    <div class="asset-modal-content">
-
-        <div class="asset-modal-header">
-
-            <h3>Select Assets</h3>
-
-            <button
-                id="close-asset-picker"
-                class="modal-close"
-                type="button">
-
-                ✕
-
-            </button>
-
-        </div>
-
-        <input
-            type="text"
-            id="asset-search"
-            class="asset-search"
-            placeholder="Search assets..."
-        >
-
-        <div id="asset-list">
-            <!-- populated from /pm-calendar/api/assets -->
-        </div>
-
-    </div>
-
-</div>
-
 {% endblock %}
 
 {% block scripts %}
@@ -269,15 +139,15 @@
 
 document.addEventListener('DOMContentLoaded', function () {
 
-    const monthBtn = document.getElementById('month-btn');
-    const weekBtn = document.getElementById('week-btn');
+    const monthBtn = document.getElementById('pm-month-btn');
+    const weekBtn = document.getElementById('pm-week-btn');
 
-    const monthView = document.getElementById('month-view');
-    const weekView = document.getElementById('week-view');
+    const monthView = document.getElementById('pm-month-view');
+    const weekView = document.getElementById('pm-week-view');
 
-    const title = document.getElementById('calendar-title');
-    const grid = document.getElementById('calendar-grid-body');
-    const modal = document.getElementById('asset-modal');
+    const title = document.getElementById('pm-calendar-title');
+    const grid = document.getElementById('pm-calendar-body');
+    const modal = document.getElementById('pm-asset-modal');
     const emptyHint = document.getElementById('pm-empty-hint');
 
     const months = [
@@ -308,9 +178,18 @@ document.addEventListener('DOMContentLoaded', function () {
     // database behind the whole page cannot be read.
     let databaseError = '';
     let syncMessage = '';
+    // Whether the sync message currently held is a failure rather than
+    // progress, which is all `is-error` below is deciding.
+    let syncFailed = false;
 
     function renderStatus() {
-        document.getElementById('pm-sync-status').textContent = databaseError || syncMessage;
+        const status = document.getElementById('pm-sync-status');
+        status.textContent = databaseError || syncMessage;
+        // Two of the messages this line carries report something to act on --
+        // an unreadable database, and a sync that did not run. They get the
+        // danger ink the banners elsewhere use so they do not read as one more
+        // progress update.
+        status.classList.toggle('is-error', Boolean(databaseError) || (!databaseError && syncFailed));
     }
 
     // Three requests read the same database, and any of them can be the one
@@ -461,15 +340,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
         for (let i = 0; i < firstDay; i++) {
             const cell = document.createElement('div');
-            cell.className = 'calendar-day empty';
+            cell.className = 'pm-day is-empty';
             grid.appendChild(cell);
         }
 
         for (let day = 1; day <= daysInMonth; day++) {
             const cell = document.createElement('div');
-            cell.className = 'calendar-day';
+            cell.className = 'pm-day';
 
-            const label = document.createElement('strong');
+            const label = document.createElement('span');
+            label.className = 'pm-day-number';
             label.textContent = String(day);
             cell.appendChild(label);
 
@@ -478,7 +358,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             shown.forEach(event => {
                 const pill = document.createElement('div');
-                pill.className = 'calendar-event ' + eventClass(event);
+                pill.className = 'pm-event ' + eventClass(event);
                 pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '');
                 pill.textContent = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM');
                 cell.appendChild(pill);
@@ -486,7 +366,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             if (dayEvents.length > shown.length) {
                 const more = document.createElement('div');
-                more.className = 'calendar-event-more';
+                more.className = 'pm-event-more';
                 more.textContent = '+' + (dayEvents.length - shown.length) + ' more';
                 cell.appendChild(more);
             }
@@ -500,22 +380,27 @@ document.addEventListener('DOMContentLoaded', function () {
     // ------------------------------------------------------------------
 
     function renderChips() {
-        const container = document.getElementById('selected-assets');
-        const addButton = document.getElementById('open-asset-picker');
+        const container = document.getElementById('pm-selected-assets');
+        const addButton = document.getElementById('pm-open-picker');
 
-        container.querySelectorAll('.asset-chip').forEach(chip => chip.remove());
+        container.querySelectorAll('.pm-asset-chip').forEach(chip => chip.remove());
 
         selectedAssets.forEach(asset => {
             const chip = document.createElement('div');
-            chip.className = 'asset-chip';
+            chip.className = 'pm-asset-chip';
             chip.dataset.assetId = asset.id;
 
-            const label = document.createTextNode((asset.name || asset.number || asset.id) + ' ');
-            chip.appendChild(label);
+            const name = asset.name || asset.number || asset.id;
+            chip.appendChild(document.createTextNode(name));
 
-            const remove = document.createElement('span');
-            remove.className = 'asset-remove';
+            // A button, not a clickable <span>: taking a chip back off is the
+            // only thing you can do to it, and it has to be reachable from the
+            // keyboard like every other control on the page.
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'pm-asset-remove';
             remove.textContent = '✕';
+            remove.setAttribute('aria-label', 'Remove ' + name);
             remove.addEventListener('click', () => {
                 selectedAssets = selectedAssets.filter(a => a.id !== asset.id);
                 renderChips();
@@ -543,12 +428,16 @@ document.addEventListener('DOMContentLoaded', function () {
     // ------------------------------------------------------------------
 
     function renderAssetOptions(assets) {
-        const list = document.getElementById('asset-list');
+        const list = document.getElementById('pm-asset-list');
         list.innerHTML = '';
 
         assets.forEach(asset => {
-            const option = document.createElement('div');
-            option.className = 'asset-option';
+            // Buttons for the same reason the chip's ✕ is one -- the picker is
+            // a list of things to press, and a <div> with a click handler on it
+            // cannot be tabbed to or pressed with a key.
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'pm-asset-option';
             option.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
             option.dataset.assetId = asset.asset_id;
             option.dataset.assetNumber = asset.asset_number || '';
@@ -556,11 +445,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
             option.addEventListener('click', () => {
                 addAsset({ id: asset.asset_id, number: asset.asset_number, name: asset.asset_name });
-                modal.style.display = 'none';
+                closePicker();
             });
 
             list.appendChild(option);
         });
+    }
+
+    function openPicker() {
+        modal.classList.add('is-open');
+    }
+
+    function closePicker() {
+        modal.classList.remove('is-open');
     }
 
     // ------------------------------------------------------------------
@@ -575,6 +472,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 if (status.state === 'running') {
                     syncMessage = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    syncFailed = false;
                     renderStatus();
                     button.disabled = true;
                     setTimeout(pollSyncStatus, 2000);
@@ -585,12 +483,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 if (status.state === 'succeeded') {
                     syncMessage = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
+                    syncFailed = false;
                     refreshSummary();
                     refreshEvents();
                 } else if (status.state === 'failed') {
                     syncMessage = 'Sync failed: ' + (status.error || 'unknown error');
+                    syncFailed = true;
                 } else {
                     syncMessage = '';
+                    syncFailed = false;
                 }
 
                 // A finished sync -- either outcome -- is the moment to re-read
@@ -619,6 +520,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(({ ok, data }) => {
                 if (!ok) {
                     syncMessage = data.error || 'Could not start sync.';
+                    syncFailed = true;
                     renderStatus();
                     return;
                 }
@@ -631,20 +533,24 @@ document.addEventListener('DOMContentLoaded', function () {
     // ------------------------------------------------------------------
 
     monthBtn.addEventListener('click', () => {
-        monthView.style.display = 'block';
-        weekView.style.display = 'none';
-        monthBtn.classList.add('active');
-        weekBtn.classList.remove('active');
+        monthView.hidden = false;
+        weekView.hidden = true;
+        monthBtn.classList.add('is-active');
+        weekBtn.classList.remove('is-active');
+        monthBtn.setAttribute('aria-pressed', 'true');
+        weekBtn.setAttribute('aria-pressed', 'false');
     });
 
     weekBtn.addEventListener('click', () => {
-        monthView.style.display = 'none';
-        weekView.style.display = 'block';
-        weekBtn.classList.add('active');
-        monthBtn.classList.remove('active');
+        monthView.hidden = true;
+        weekView.hidden = false;
+        weekBtn.classList.add('is-active');
+        monthBtn.classList.remove('is-active');
+        weekBtn.setAttribute('aria-pressed', 'true');
+        monthBtn.setAttribute('aria-pressed', 'false');
     });
 
-    document.getElementById('next-btn').addEventListener('click', () => {
+    document.getElementById('pm-next-btn').addEventListener('click', () => {
         currentMonth++;
         if (currentMonth > 11) {
             currentMonth = 0;
@@ -654,7 +560,7 @@ document.addEventListener('DOMContentLoaded', function () {
         refreshEvents();
     });
 
-    document.getElementById('previous-btn').addEventListener('click', () => {
+    document.getElementById('pm-prev-btn').addEventListener('click', () => {
         currentMonth--;
         if (currentMonth < 0) {
             currentMonth = 11;
@@ -664,7 +570,7 @@ document.addEventListener('DOMContentLoaded', function () {
         refreshEvents();
     });
 
-    document.getElementById('today-btn').addEventListener('click', () => {
+    document.getElementById('pm-today-btn').addEventListener('click', () => {
         const now = new Date();
         currentMonth = now.getMonth();
         currentYear = now.getFullYear();
@@ -672,25 +578,27 @@ document.addEventListener('DOMContentLoaded', function () {
         refreshEvents();
     });
 
-    document.getElementById('open-asset-picker').addEventListener('click', () => {
-        modal.style.display = 'flex';
-    });
-
-    document.getElementById('close-asset-picker').addEventListener('click', () => {
-        modal.style.display = 'none';
-    });
+    document.getElementById('pm-open-picker').addEventListener('click', openPicker);
+    document.getElementById('pm-close-picker').addEventListener('click', closePicker);
 
     window.addEventListener('click', function (event) {
         if (event.target === modal) {
-            modal.style.display = 'none';
+            closePicker();
         }
     });
 
-    const searchBox = document.getElementById('asset-search');
+    // Escape closes it, the way the other dialogs in the application do.
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && modal.classList.contains('is-open')) {
+            closePicker();
+        }
+    });
+
+    const searchBox = document.getElementById('pm-asset-search');
     searchBox.addEventListener('keyup', () => {
         const value = searchBox.value.toLowerCase();
-        document.querySelectorAll('#asset-list .asset-option').forEach(option => {
-            option.style.display = option.textContent.toLowerCase().includes(value) ? '' : 'none';
+        document.querySelectorAll('#pm-asset-list .pm-asset-option').forEach(option => {
+            option.hidden = !option.textContent.toLowerCase().includes(value);
         });
     });
 
