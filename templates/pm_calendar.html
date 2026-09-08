@@ -315,8 +315,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function loadAssetOptions() {
         fetch('/pm-calendar/api/assets')
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // A 503 means the database itself could not be opened, and
+                    // the message names the path and the setting that moves it.
+                    // Showing it beats an empty picker that looks like "no PMs
+                    // have been synced yet" -- the two need different fixes.
+                    document.getElementById('pm-sync-status').textContent =
+                        data.error || 'The PM calendar database could not be opened.';
+                    return;
+                }
                 allAssets = data.assets || [];
                 renderAssetOptions(allAssets);
             })

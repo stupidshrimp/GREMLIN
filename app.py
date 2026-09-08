@@ -66,6 +66,10 @@ from services.sync_service import (
     load_dotenv_files,
 )
 from services.pm_calendar_service import PmCalendarService
+from repositories.pm_calendar_repo import (
+    PM_CALENDAR_DB_FILENAME,
+    PmCalendarUnavailableError,
+)
 # Read the app's own settings out of .env before anything below looks at them.
 # This is the one safe moment to do it: nothing has been built yet, so there is
 # no service holding a value that this could contradict. Only the names in
@@ -361,9 +365,23 @@ def _on_sync_succeeded() -> None:
 # job is a separate process and is not covered by it; see services/sync_service.py.
 sync_runner = LimbleSyncRunner(on_success=_on_sync_succeeded)
 
+# The PM calendar keeps its own database, so it needs its own path. Derived
+# from the configured GREMLIN_DB_PATH the same way accesscontrol.db is above,
+# which means a deployment that has already pointed GREMLIN at its database
+# gets this file beside it with nothing further to set. A deployment that wants
+# it elsewhere -- a developer working off a copy, a machine where that folder
+# belongs to someone else -- sets GREMLIN_PM_CALENDAR_DB_PATH.
+PM_CALENDAR_DB_PATH = Path(
+    os.environ.get("GREMLIN_PM_CALENDAR_DB_PATH")
+    or _gremlin_db_for_access.with_name(PM_CALENDAR_DB_FILENAME)
+)
+
 # One shared PmCalendarService for the whole process, same reasoning as
 # sync_runner above: every request needs to see the same sync status.
-pm_calendar_service = PmCalendarService()
+# Constructing it touches no disk, deliberately -- like bug_reports above, the
+# folder and the file are created the first time the calendar is actually used,
+# so a path this machine cannot write to costs one page rather than startup.
+pm_calendar_service = PmCalendarService(PM_CALENDAR_DB_PATH)
 
 # The release history lives in a Word document on the engineering share, not in
 # this repository: a team member edits it and the change is live on the next page
@@ -1952,7 +1970,14 @@ def _pm_calendar_asset_ids() -> list[str] | None:
 
 @app.route("/pm-calendar/api/assets")
 def api_pm_calendar_assets():
-    return jsonify({"assets": pm_calendar_service.asset_options()})
+    # 503, not 500, for the same reason the bug dashboard does it: the code is
+    # fine and the database is somewhere this account cannot open, and the page
+    # can only tell an administrator that if the message reaches it.
+    try:
+        assets = pm_calendar_service.asset_options()
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"assets": assets})
 
 
 @app.route("/pm-calendar/api/events")
@@ -1961,15 +1986,21 @@ def api_pm_calendar_events():
     end = request.values.get("end")
     if not start or not end:
         return jsonify({"error": "'start' and 'end' query parameters are required (YYYY-MM-DD)."}), 400
-    events = pm_calendar_service.events(
-        asset_ids=_pm_calendar_asset_ids(), start_date=start, end_date=end
-    )
+    try:
+        events = pm_calendar_service.events(
+            asset_ids=_pm_calendar_asset_ids(), start_date=start, end_date=end
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
     return jsonify({"events": events})
 
 
 @app.route("/pm-calendar/api/summary")
 def api_pm_calendar_summary():
-    summary = pm_calendar_service.summary(asset_ids=_pm_calendar_asset_ids())
+    try:
+        summary = pm_calendar_service.summary(asset_ids=_pm_calendar_asset_ids())
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
     return jsonify({"summary": summary})
 
 
