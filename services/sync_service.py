@@ -198,6 +198,11 @@ APP_ENV_KEYS = frozenset({
     # that sets the documented override in .env would be ignored and fall back
     # to the hard-coded Z: path.
     "GREMLIN_BUGS_DB_PATH",
+    # Where the PM calendar's own database is. Same reasoning again: read once
+    # at import, owned by the web app alone, and no scheduled job shares it.
+    # Without it here, a deployment that sets the documented override in .env
+    # would be ignored and fall back to the path beside GREMLIN.db.
+    "GREMLIN_PM_CALENDAR_DB_PATH",
 })
 
 

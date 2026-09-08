@@ -35,11 +35,35 @@ class PmCalendarService:
 
     def __init__(self, db_path: str | Path = DEFAULT_PM_CALENDAR_DB_PATH) -> None:
         self.repo = PmCalendarRepository(db_path)
-        self.repo.ensure_schema()
         # Guards self._job, which the background sync thread writes to and
         # web requests (status polls) read from at the same time.
         self._lock = threading.Lock()
         self._job: dict[str, Any] = {"state": STATE_IDLE}
+        # The schema is created on first use, not here. This service is built
+        # while app.py is still importing, and the calendar page may never be
+        # opened in a given run -- so a database path this machine cannot write
+        # to has to degrade to one page reporting it, not to the app failing to
+        # start. Same reasoning, and the same first-use pattern, as
+        # BugReportStore; app.py builds both and says so there.
+        self._schema_ready = False
+
+    def _ensure_schema(self) -> None:
+        """Create the table the first time something actually needs it.
+
+        Only success is remembered, so a path that was unreachable at startup
+        is retried on the next request rather than being written off for the
+        life of the process.
+
+        Not guarded by self._lock: that lock exists to keep status polls cheap
+        while a sync runs, and holding it across a disk write would block them.
+        Two threads racing here both run CREATE TABLE IF NOT EXISTS, which is
+        idempotent, so the race costs a redundant statement and nothing else.
+        """
+
+        if self._schema_ready:
+            return
+        self.repo.ensure_schema()
+        self._schema_ready = True
 
     # ------------------------------------------------------------------
     # Sync (background)
@@ -64,6 +88,11 @@ class PmCalendarService:
 
     def _run_sync(self) -> None:
         try:
+            # First, before anything slow: a database this process cannot write
+            # to should be reported in seconds, not after a full Limble pull has
+            # spent several minutes earning a row it has nowhere to put.
+            self._ensure_schema()
+
             # Only reads LIMBLE_* variables, the same restricted load the main
             # sync dashboard uses -- see services/sync_service.py's own notes
             # on why the web process must not pick up GREMLIN_DB_PATH here.
@@ -153,6 +182,7 @@ class PmCalendarService:
     # Reads for the page
     # ------------------------------------------------------------------
     def asset_options(self) -> list[dict[str, Any]]:
+        self._ensure_schema()
         return self.repo.asset_options()
 
     def events(
@@ -163,6 +193,7 @@ class PmCalendarService:
     ) -> list[dict[str, Any]]:
         if asset_ids is not None and len(asset_ids) == 0:
             return []
+        self._ensure_schema()
         return self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
     def summary(self, asset_ids: list[str] | None = None) -> dict[str, Any]:
@@ -170,6 +201,7 @@ class PmCalendarService:
         if asset_ids is not None and len(asset_ids) == 0:
             return empty
 
+        self._ensure_schema()
         today = date.today().isoformat()
         year_start = date.today().replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)

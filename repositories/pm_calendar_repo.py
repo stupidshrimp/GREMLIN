@@ -17,11 +17,24 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-# Default location the app looks for the PM calendar database, matching the
-# convention DEFAULT_DB_PATH uses for GREMLIN.db (services/life_data_service.py):
-# a fixed path on the deployment machine, overridable by an environment
-# variable so a dev/test run can point somewhere else entirely.
-DEFAULT_PM_CALENDAR_DB_PATH = Path(r"C:\Users\billy.trinh\OneDrive - S & C Electric Company\Documents\GREMLINVM\PM_Calendar_local.db")
+# Default location for the PM calendar database: beside GREMLIN.db, the same
+# way accesscontrol.db sits beside it (see app.py). A deployment that already
+# points GREMLIN_DB_PATH at its database therefore gets this file in the same
+# folder with nothing else to configure, and app.py derives it from that
+# override rather than from this constant. Set GREMLIN_PM_CALENDAR_DB_PATH to
+# put it somewhere else entirely.
+#
+# This deliberately does not live in anyone's user profile. It used to point
+# at one developer's OneDrive folder, which no other account can create or
+# write to -- on every other machine that raised PermissionError from the
+# mkdir in connect() below, during app startup, taking the whole app down
+# rather than one page.
+# The file name is named separately because app.py builds the real path by
+# putting it beside the *configured* GREMLIN.db, rather than using the constant
+# below. The constant is written out in full, in the same style as
+# DEFAULT_DB_PATH, so the two read as the pair they are.
+PM_CALENDAR_DB_FILENAME = "PM_Calendar_local.db"
+DEFAULT_PM_CALENDAR_DB_PATH = Path(r"C:\GREMLIN\PM_Calendar_local.db")
 
 # How long a write will wait for the database file to become free before
 # giving up. SQLite only allows one writer at a time; this keeps a second
@@ -70,6 +83,17 @@ _TASK_COLUMNS = (
 )
 
 
+class PmCalendarUnavailableError(RuntimeError):
+    """The PM calendar database could not be opened.
+
+    Raised instead of the underlying PermissionError/sqlite3.Error so a caller
+    has one type to catch and a message that names the path it tried and the
+    setting that moves it. The distinction that matters to a caller is that
+    nothing is wrong with the code or the data -- the file is somewhere this
+    account cannot reach -- so the page says so and the app keeps running.
+    """
+
+
 class PmCalendarRepository:
     """Reads and writes the pm_task table in its own SQLite database file."""
 
@@ -83,12 +107,61 @@ class PmCalendarRepository:
         # SQLite creates the database *file* on first open, but not missing
         # parent folders -- create the folder ourselves so a fresh machine
         # (or a path override that doesn't exist yet) doesn't fail here.
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        conn = sqlite3.connect(self.db_path, timeout=DB_WRITE_TIMEOUT_SECONDS)
-        conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout = {DB_WRITE_TIMEOUT_SECONDS * 1000}")
+        #
+        # Both steps are wrapped. Creating the folder is the step that fails on
+        # a path belonging to another machine's user profile, and it raises
+        # PermissionError -- an OSError, not anything sqlite3 defines -- so
+        # catching sqlite3.Error alone would let it through. Opening the file
+        # then fails for the ordinary reasons: an unmapped drive, a read-only
+        # share, a corrupt file.
+        with self._reporting_failures():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.db_path, timeout=DB_WRITE_TIMEOUT_SECONDS)
+            try:
+                conn.row_factory = sqlite3.Row
+                # A connection-level setting: it configures how long this
+                # connection waits for a lock and never reads the file, so a
+                # corrupt database does *not* fail here. The first statement
+                # that reads the header is PRAGMA journal_mode in
+                # write_connection(), or the caller's own query on a read.
+                conn.execute(f"PRAGMA busy_timeout = {DB_WRITE_TIMEOUT_SECONDS * 1000}")
+            except BaseException:
+                # Hand back a connection only when it is fully set up. Anything
+                # that fails in between has to close what was opened, or the
+                # handle is left to the garbage collector -- and the retry this
+                # error path invites means one leak per attempt.
+                conn.close()
+                raise
         return conn
+
+    def _unreachable(self, exc: Exception) -> str:
+        return (
+            f"The PM calendar database at {self.db_path} could not be opened. "
+            f"Check that the folder exists, that the account GREMLIN runs as can "
+            f"write to it, and that the file is a valid database -- or set "
+            f"GREMLIN_PM_CALENDAR_DB_PATH to another location. Details: {exc}"
+        )
+
+    @contextmanager
+    def _reporting_failures(self) -> Iterator[None]:
+        """Report any failure to reach or use the database as one error type.
+
+        Wrapping the open alone is not enough, because sqlite3.connect() is
+        lazy: it does not read the file, so it succeeds against a corrupt
+        database or one on a read-only share and the failure surfaces later --
+        on the first PRAGMA, on BEGIN IMMEDIATE, or on a statement. Those are
+        exactly the cases an operator most needs explained, and left untranslated
+        they reach the endpoints as raw sqlite3.Error, which those handlers do
+        not catch, so the page shows a 500 instead of the path and the setting.
+
+        Every public method routes through here for that reason, rather than
+        each one guarding the single call it happens to make.
+        """
+
+        try:
+            yield
+        except (OSError, sqlite3.Error) as exc:
+            raise PmCalendarUnavailableError(self._unreachable(exc)) from exc
 
     @contextmanager
     def write_connection(self) -> Iterator[sqlite3.Connection]:
@@ -98,20 +171,21 @@ class PmCalendarRepository:
         in that block is rolled back rather than left half-applied.
         """
 
-        conn = self.connect()
-        try:
-            # Rollback-journal mode rather than WAL: safe on a shared network
-            # drive, which is where this file is expected to live (same
-            # reasoning as raw_repo.py's write_connection).
-            conn.execute("PRAGMA journal_mode = DELETE")
-            conn.execute("BEGIN IMMEDIATE")
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                # Rollback-journal mode rather than WAL: safe on a shared network
+                # drive, which is where this file is expected to live (same
+                # reasoning as raw_repo.py's write_connection).
+                conn.execute("PRAGMA journal_mode = DELETE")
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     # ------------------------------------------------------------------
     # Schema
@@ -196,11 +270,12 @@ class PmCalendarRepository:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY due_date"
 
-        conn = self.connect()
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        finally:
-            conn.close()
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            finally:
+                conn.close()
         return [_row_to_dict(row) for row in rows]
 
     def asset_options(self) -> list[dict[str, Any]]:
@@ -210,11 +285,12 @@ class PmCalendarRepository:
             "SELECT DISTINCT asset_id, asset_number, asset_name "
             "FROM pm_task ORDER BY asset_name"
         )
-        conn = self.connect()
-        try:
-            rows = conn.execute(sql).fetchall()
-        finally:
-            conn.close()
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(sql).fetchall()
+            finally:
+                conn.close()
         return [_row_to_dict(row) for row in rows]
 
 

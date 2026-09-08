@@ -296,6 +296,41 @@ document.addEventListener('DOMContentLoaded', function () {
     // PM events for the visible month, keyed by "YYYY-MM-DD".
     let eventsByDate = {};
 
+    // The status line had three writers -- the asset load, the sync poll and
+    // the sync button -- and they overwrote each other. On every page load both
+    // the load and the poll fire at once, and the poll's "idle" branch blanked
+    // the element, so a database error written by the load survived only if the
+    // poll's response happened to land first. On the single-threaded dev server
+    // it never does, and the user got an empty picker with no explanation.
+    //
+    // Both messages go through renderStatus() instead, and the database error
+    // wins: a sync job's state is transient and says nothing useful while the
+    // database behind the whole page cannot be read.
+    let databaseError = '';
+    let syncMessage = '';
+
+    function renderStatus() {
+        document.getElementById('pm-sync-status').textContent = databaseError || syncMessage;
+    }
+
+    // Three requests read the same database, and any of them can be the one
+    // that finds it gone. The asset load only runs at startup and after a
+    // successful sync, so a share that drops mid-session is discovered by a
+    // summary or events request instead -- and those two used to read an error
+    // payload as "no PMs", leaving dashes and an empty month with nothing said.
+    //
+    // Each records its own outcome rather than assigning databaseError
+    // directly: the three run concurrently, so a single shared value would
+    // show or hide the error depending on which response happened to land
+    // last. The page reports a problem while any of them is still failing.
+    const dbFailures = { assets: '', summary: '', events: '' };
+
+    function reportDatabase(source, message) {
+        dbFailures[source] = message || '';
+        databaseError = dbFailures.assets || dbFailures.summary || dbFailures.events;
+        renderStatus();
+    }
+
     function pad(n) {
         return String(n).padStart(2, '0');
     }
@@ -315,8 +350,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function loadAssetOptions() {
         fetch('/pm-calendar/api/assets')
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // A 503 means the database itself could not be opened, and
+                    // the message names the path and the setting that moves it.
+                    // Showing it beats an empty picker that looks like "no PMs
+                    // have been synced yet" -- the two need different fixes.
+                    reportDatabase('assets', data.error);
+                    return;
+                }
+                // Cleared on success, so a share that was down when the page
+                // opened stops being reported once it comes back.
+                reportDatabase('assets', '');
                 allAssets = data.assets || [];
                 renderAssetOptions(allAssets);
             })
@@ -333,8 +379,16 @@ document.addEventListener('DOMContentLoaded', function () {
         // which is the behaviour we want here.
         const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv());
         fetch(url)
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // Without this the error payload reads as a summary with no
+                    // fields, and the tiles fall back to dashes -- which looks
+                    // like a database that simply has no PMs in it.
+                    reportDatabase('summary', data.error);
+                    return;
+                }
+                reportDatabase('summary', '');
                 const summary = data.summary || {};
                 document.getElementById('pm-summary-scheduled').textContent = summary.scheduled ?? '–';
                 document.getElementById('pm-summary-completed').textContent = summary.completed ?? '–';
@@ -348,6 +402,9 @@ document.addEventListener('DOMContentLoaded', function () {
         eventsByDate = {};
 
         if (selectedAssets.length === 0) {
+            // No request is made, so this source has nothing to report -- clear
+            // it rather than leaving a stale error from an earlier selection.
+            reportDatabase('events', '');
             renderCalendarBody();
             return;
         }
@@ -360,8 +417,16 @@ document.addEventListener('DOMContentLoaded', function () {
             '&start=' + start + '&end=' + end;
 
         fetch(url)
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // Same trap as the summary above: an error payload has no
+                    // events, so the month would render empty and look correct.
+                    reportDatabase('events', data.error);
+                    renderCalendarBody();
+                    return;
+                }
+                reportDatabase('events', '');
                 (data.events || []).forEach(event => {
                     if (!event.due_date) return;
                     const day = event.due_date.slice(0, 10); // "YYYY-MM-DD"
@@ -506,11 +571,11 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch('/pm-calendar/api/sync')
             .then(r => r.json())
             .then(status => {
-                const statusEl = document.getElementById('pm-sync-status');
                 const button = document.getElementById('pm-sync-btn');
 
                 if (status.state === 'running') {
-                    statusEl.textContent = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    syncMessage = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    renderStatus();
                     button.disabled = true;
                     setTimeout(pollSyncStatus, 2000);
                     return;
@@ -519,15 +584,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 button.disabled = false;
 
                 if (status.state === 'succeeded') {
-                    statusEl.textContent = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
-                    loadAssetOptions();
+                    syncMessage = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
                     refreshSummary();
                     refreshEvents();
                 } else if (status.state === 'failed') {
-                    statusEl.textContent = 'Sync failed: ' + (status.error || 'unknown error');
+                    syncMessage = 'Sync failed: ' + (status.error || 'unknown error');
                 } else {
-                    statusEl.textContent = '';
+                    syncMessage = '';
                 }
+
+                // A finished sync -- either outcome -- is the moment to re-read
+                // whether the database is reachable, because loadAssetOptions()
+                // is what decides that and nothing else calls it after startup.
+                // Only the success path used to, so a sync that failed for its
+                // own reasons (missing Limble credentials, say) against a
+                // database that had since recovered left the stale database
+                // error standing. Since that error outranks the sync message by
+                // design, it hid the one saying what actually went wrong, and
+                // kept hiding it until someone reloaded the page.
+                if (status.state === 'succeeded' || status.state === 'failed') {
+                    loadAssetOptions();
+                }
+                renderStatus();
             });
     }
 
@@ -540,8 +618,8 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
                 if (!ok) {
-                    document.getElementById('pm-sync-status').textContent =
-                        data.error || 'Could not start sync.';
+                    syncMessage = data.error || 'Could not start sync.';
+                    renderStatus();
                     return;
                 }
                 pollSyncStatus();
