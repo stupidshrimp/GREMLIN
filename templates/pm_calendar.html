@@ -585,15 +585,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 if (status.state === 'succeeded') {
                     syncMessage = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
-                    // loadAssetOptions() decides whether the database is
-                    // readable again, so it is what clears databaseError.
-                    loadAssetOptions();
                     refreshSummary();
                     refreshEvents();
                 } else if (status.state === 'failed') {
                     syncMessage = 'Sync failed: ' + (status.error || 'unknown error');
                 } else {
                     syncMessage = '';
+                }
+
+                // A finished sync -- either outcome -- is the moment to re-read
+                // whether the database is reachable, because loadAssetOptions()
+                // is what decides that and nothing else calls it after startup.
+                // Only the success path used to, so a sync that failed for its
+                // own reasons (missing Limble credentials, say) against a
+                // database that had since recovered left the stale database
+                // error standing. Since that error outranks the sync message by
+                // design, it hid the one saying what actually went wrong, and
+                // kept hiding it until someone reloaded the page.
+                if (status.state === 'succeeded' || status.state === 'failed') {
+                    loadAssetOptions();
                 }
                 renderStatus();
             });
