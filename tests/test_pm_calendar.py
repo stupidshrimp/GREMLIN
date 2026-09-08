@@ -157,6 +157,65 @@ def test_the_error_names_the_setting_rather_than_leaking_a_winerror(tmp_path):
     assert isinstance(caught.value.__cause__, (OSError, sqlite3.Error))
 
 
+def test_a_corrupt_database_is_reported_rather_than_raised(monkeypatch, tmp_path):
+    """sqlite3.connect() is lazy, so this is not caught by guarding the open.
+
+    Nothing reads the file until the first statement, so connect() succeeds
+    against a file that is not a database at all and the error arrives from
+    ``PRAGMA journal_mode`` inside write_connection(). This is the same handler
+    a read-only share reaches, which fails at that PRAGMA or at BEGIN IMMEDIATE
+    for the same reason: the open is not the thing that touches the file.
+    """
+
+    corrupt = tmp_path / "PM_Calendar_local.db"
+    corrupt.write_bytes(b"this is not a sqlite database")
+    module = _app(monkeypatch, tmp_path, pm_db=corrupt)
+    client = module.app.test_client()
+
+    for url in (
+        "/pm-calendar/api/assets",
+        "/pm-calendar/api/summary?assets=7",
+        "/pm-calendar/api/events?assets=7&start=2026-01-01&end=2026-01-31",
+    ):
+        response = client.get(url)
+        assert response.status_code == 503, url
+        assert "GREMLIN_PM_CALENDAR_DB_PATH" in response.get_json()["error"]
+
+
+def test_a_database_that_breaks_mid_session_is_still_reported(tmp_path):
+    """The schema check is cached after it succeeds, so only the read runs.
+
+    A share that drops after the first successful request would otherwise reach
+    the endpoint as a raw sqlite3.Error -- past the point any guard on the open
+    or on the schema could have translated it.
+    """
+
+    db = tmp_path / "pm.db"
+    service = PmCalendarService(db)
+    assert service.asset_options() == []
+
+    db.write_bytes(b"clobbered while the app was running")
+
+    with pytest.raises(PmCalendarUnavailableError):
+        service.events(asset_ids=["7"], start_date="2026-01-01", end_date="2026-12-31")
+    with pytest.raises(PmCalendarUnavailableError):
+        service.asset_options()
+
+
+def test_a_sync_reports_a_broken_database_instead_of_dying_in_the_thread(tmp_path):
+    """The sync thread's own error handling should show the actionable message."""
+
+    corrupt = tmp_path / "pm.db"
+    corrupt.write_bytes(b"not a database")
+    service = PmCalendarService(corrupt)
+
+    service._run_sync()  # synchronously, so the test does not race the thread
+
+    status = service.status()
+    assert status["state"] == "failed"
+    assert "GREMLIN_PM_CALENDAR_DB_PATH" in status["error"]
+
+
 def test_a_path_that_becomes_reachable_later_is_retried(tmp_path):
     """Only success is cached, so a share that was down at startup recovers."""
 
