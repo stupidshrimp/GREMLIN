@@ -313,6 +313,24 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('pm-sync-status').textContent = databaseError || syncMessage;
     }
 
+    // Three requests read the same database, and any of them can be the one
+    // that finds it gone. The asset load only runs at startup and after a
+    // successful sync, so a share that drops mid-session is discovered by a
+    // summary or events request instead -- and those two used to read an error
+    // payload as "no PMs", leaving dashes and an empty month with nothing said.
+    //
+    // Each records its own outcome rather than assigning databaseError
+    // directly: the three run concurrently, so a single shared value would
+    // show or hide the error depending on which response happened to land
+    // last. The page reports a problem while any of them is still failing.
+    const dbFailures = { assets: '', summary: '', events: '' };
+
+    function reportDatabase(source, message) {
+        dbFailures[source] = message || '';
+        databaseError = dbFailures.assets || dbFailures.summary || dbFailures.events;
+        renderStatus();
+    }
+
     function pad(n) {
         return String(n).padStart(2, '0');
     }
@@ -339,17 +357,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     // the message names the path and the setting that moves it.
                     // Showing it beats an empty picker that looks like "no PMs
                     // have been synced yet" -- the two need different fixes.
-                    databaseError =
-                        data.error || 'The PM calendar database could not be opened.';
-                    renderStatus();
+                    reportDatabase('assets', data.error);
                     return;
                 }
                 // Cleared on success, so a share that was down when the page
                 // opened stops being reported once it comes back.
-                databaseError = '';
+                reportDatabase('assets', '');
                 allAssets = data.assets || [];
                 renderAssetOptions(allAssets);
-                renderStatus();
             })
             .catch(() => {
                 // Leave the picker empty rather than throwing; the user can
@@ -364,8 +379,16 @@ document.addEventListener('DOMContentLoaded', function () {
         // which is the behaviour we want here.
         const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv());
         fetch(url)
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // Without this the error payload reads as a summary with no
+                    // fields, and the tiles fall back to dashes -- which looks
+                    // like a database that simply has no PMs in it.
+                    reportDatabase('summary', data.error);
+                    return;
+                }
+                reportDatabase('summary', '');
                 const summary = data.summary || {};
                 document.getElementById('pm-summary-scheduled').textContent = summary.scheduled ?? '–';
                 document.getElementById('pm-summary-completed').textContent = summary.completed ?? '–';
@@ -379,6 +402,9 @@ document.addEventListener('DOMContentLoaded', function () {
         eventsByDate = {};
 
         if (selectedAssets.length === 0) {
+            // No request is made, so this source has nothing to report -- clear
+            // it rather than leaving a stale error from an earlier selection.
+            reportDatabase('events', '');
             renderCalendarBody();
             return;
         }
@@ -391,8 +417,16 @@ document.addEventListener('DOMContentLoaded', function () {
             '&start=' + start + '&end=' + end;
 
         fetch(url)
-            .then(r => r.json())
-            .then(data => {
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    // Same trap as the summary above: an error payload has no
+                    // events, so the month would render empty and look correct.
+                    reportDatabase('events', data.error);
+                    renderCalendarBody();
+                    return;
+                }
+                reportDatabase('events', '');
                 (data.events || []).forEach(event => {
                     if (!event.due_date) return;
                     const day = event.due_date.slice(0, 10); // "YYYY-MM-DD"
