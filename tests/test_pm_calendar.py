@@ -216,6 +216,42 @@ def test_a_sync_reports_a_broken_database_instead_of_dying_in_the_thread(tmp_pat
     assert "GREMLIN_PM_CALENDAR_DB_PATH" in status["error"]
 
 
+def test_a_connection_that_fails_to_initialise_is_closed(tmp_path, monkeypatch):
+    """connect() must not leak the handle when a step after the open fails.
+
+    Forced rather than found: the two steps between opening and returning are a
+    row_factory assignment and PRAGMA busy_timeout, which is a connection-level
+    setting that never reads the file -- so no ordinary bad database reaches
+    this path. It is guarded anyway because the failure it would cause is
+    invisible: the retry this error path invites would leak one handle per
+    attempt, with nothing in the message to say so.
+    """
+
+    import repositories.pm_calendar_repo as repo_module
+
+    closes: list[str] = []
+    real_connect = sqlite3.connect
+
+    class _Spy(sqlite3.Connection):
+        def execute(self, *args, **kwargs):  # noqa: D102 - the failure under test
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def close(self):
+            closes.append("closed")
+            super().close()
+
+    monkeypatch.setattr(
+        repo_module.sqlite3,
+        "connect",
+        lambda path, **kwargs: real_connect(path, factory=_Spy, **kwargs),
+    )
+
+    with pytest.raises(PmCalendarUnavailableError):
+        PmCalendarRepository(tmp_path / "pm.db").connect()
+
+    assert closes == ["closed"]
+
+
 def test_a_path_that_becomes_reachable_later_is_retried(tmp_path):
     """Only success is cached, so a share that was down at startup recovers."""
 

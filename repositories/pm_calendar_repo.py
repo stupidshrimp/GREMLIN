@@ -117,10 +117,21 @@ class PmCalendarRepository:
         with self._reporting_failures():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.db_path, timeout=DB_WRITE_TIMEOUT_SECONDS)
-            conn.row_factory = sqlite3.Row
-            # The first statement on the connection, and so the first thing that
-            # actually reads the file -- a corrupt database fails here, not above.
-            conn.execute(f"PRAGMA busy_timeout = {DB_WRITE_TIMEOUT_SECONDS * 1000}")
+            try:
+                conn.row_factory = sqlite3.Row
+                # A connection-level setting: it configures how long this
+                # connection waits for a lock and never reads the file, so a
+                # corrupt database does *not* fail here. The first statement
+                # that reads the header is PRAGMA journal_mode in
+                # write_connection(), or the caller's own query on a read.
+                conn.execute(f"PRAGMA busy_timeout = {DB_WRITE_TIMEOUT_SECONDS * 1000}")
+            except BaseException:
+                # Hand back a connection only when it is fully set up. Anything
+                # that fails in between has to close what was opened, or the
+                # handle is left to the garbage collector -- and the retry this
+                # error path invites means one leak per attempt.
+                conn.close()
+                raise
         return conn
 
     def _unreachable(self, exc: Exception) -> str:
