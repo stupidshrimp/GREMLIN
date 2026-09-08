@@ -1,0 +1,561 @@
+/* PM Calendar styling. Builds on the shared GREMLIN theme (theme.css): the same
+   glass cards, forest palette, pill buttons and modal box as the metrics and
+   life-data pages, so the calendar reads as one more GREMLIN page rather than
+   as something bolted onto the side of one.
+ *
+ * Two things this sheet is deliberately doing differently from the rules it
+ * replaces, both of which are why the page looked like a visitor:
+ *
+ * Everything is scoped under a .pm- prefix, the way developer_dashboard.css
+ * scopes .dev-, metrics.css .metrics- and life_data_analysis.css .lda-. The
+ * names this page used before -- .card, .calendar-header, .view-btn,
+ * .modal-close, .asset-search -- are general enough to belong to any page in
+ * the application, and they were sitting in theme.css where every page could
+ * reach them.
+ *
+ * And every colour is a token. The old rules painted in white, slate greys and
+ * a #2563eb blue that appears nowhere else here; hard-coded colours cannot
+ * follow the theme toggle, so the whole page stayed light -- white cards and
+ * near-black text -- on top of the dark theme's near-black page.
+ */
+
+/* ---- year-to-date summary ------------------------------------------------ */
+/* The same strip the analysis pages put above their charts: a quiet label over
+   a large number, on a veil panel inside the card rather than a card each. */
+.pm-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.pm-summary-card {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-veil);
+}
+
+.pm-summary-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pm-summary-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--forest-900);
+}
+
+/* ---- asset selection and sync -------------------------------------------- */
+.pm-controls {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.pm-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.pm-field-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--forest-700);
+}
+
+.pm-hint {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.pm-asset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pm-asset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: var(--forest-100);
+  color: var(--forest-800);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* A real button rather than a clickable <span>: it is the only way off a chip,
+   and every other control on this page can be reached from the keyboard. */
+.pm-asset-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.pm-asset-remove:hover {
+  background: var(--forest-200);
+  color: var(--forest-900);
+}
+
+/* Dashed, and the one control on the page that is not solid: it adds a chip to
+   the row it sits in rather than acting on what is already there. */
+.pm-asset-add {
+  padding: 0.3rem 0.85rem;
+  border: 1px dashed var(--forest-500);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.pm-asset-add:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-700);
+  color: var(--forest-900);
+}
+
+.pm-sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+}
+
+/* The shared pill button does not dim itself, and this one spends most of a
+   sync disabled. Same treatment the metrics filter bar gives its buttons. */
+.pm-sync-row .btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.pm-sync-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Three of the messages this line carries are progress and two are failures --
+   a database that cannot be read, and a sync that did not run. The failures get
+   the same danger ink the banners on the other pages use, so a message worth
+   acting on does not read as one more status update. */
+.pm-sync-status.is-error {
+  font-weight: 600;
+  color: var(--danger-ink);
+}
+
+/* ---- calendar chrome ----------------------------------------------------- */
+.pm-calendar-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem 1rem;
+  margin-bottom: 1rem;
+}
+
+/* Two buttons in one pill, one of them filled: the segmented control the
+   developer sub-navigation uses, at toolbar size. */
+.pm-view-switch {
+  display: inline-flex;
+  gap: 0.3rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+}
+
+.pm-view-btn {
+  padding: 0.35rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.pm-view-btn:hover {
+  background: var(--forest-100);
+}
+
+.pm-view-btn.is-active {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
+}
+
+.pm-calendar-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pm-nav-btn {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.pm-nav-btn:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+.pm-calendar-title {
+  min-width: 11rem;
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--forest-900);
+}
+
+/* ---- month view ---------------------------------------------------------- */
+/* Seven columns have a width below which a day cell stops being able to hold a
+   PM's name at all, so the grid keeps its own and scrolls inside this box. The
+   page body stays at viewport width either way -- the same rule the wide tables
+   on the developer and metrics pages follow.
+ *
+ * .content is a grid, and a grid item's `min-width` resolves to `auto`, which
+ * is its min-content size -- the 44rem below, straight through the scroll
+ * container, which on its own does not stop it. The track then sizes to that
+ * and every other card on the page is dragged out to the same width, so the
+ * whole page scrolls sideways rather than the calendar. Naming a zero minimum
+ * on the one card that holds something wider than the window is what keeps the
+ * scrollbar inside the box it belongs to. */
+.pm-calendar-card {
+  min-width: 0;
+}
+
+.pm-calendar-scroll {
+  overflow-x: auto;
+}
+
+.pm-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.4rem;
+  min-width: 44rem;
+}
+
+.pm-weekday {
+  padding: 0.45rem 0.3rem;
+  border-radius: 10px;
+  background: var(--forest-100);
+  color: var(--forest-700);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+/* The cells are appended to one container so the rendering code has a single
+   thing to empty; `display: contents` is what puts them back into the seven
+   columns their parent would otherwise have kept to itself. */
+#pm-calendar-body {
+  display: contents;
+}
+
+.pm-day {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 8.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.pm-day:hover {
+  border-color: var(--forest-500);
+  box-shadow: var(--shadow-sm);
+}
+
+.pm-day-number {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--forest-800);
+}
+
+/* The run-up to the first of the month. Nothing is there, so nothing is drawn:
+   no border, and no hover -- these cells do not answer to the pointer. */
+.pm-day.is-empty,
+.pm-day.is-empty:hover {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Two lines rather than one. A pill reads "<asset>: <task>", and a day column
+   is about six characters wider than an asset name -- on one line the ellipsis
+   landed on the colon every time, so every pill said the asset and none of them
+   said which PM. Clamped at two so a cell with the full three pills in it stays
+   roughly the height of an empty one; the title attribute still carries the
+   whole string for anything that does not fit. */
+.pm-event {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* The three states a PM can be in, in the status colours the rest of the
+   application already reads as done / wrong / neither. */
+.pm-event.is-completed {
+  background: var(--success-bg);
+  border-left-color: var(--brand-accent);
+  color: var(--success-ink);
+}
+
+.pm-event.is-overdue {
+  background: var(--danger-bg);
+  border-left-color: var(--danger-strong);
+  color: var(--danger-ink);
+}
+
+.pm-event.is-upcoming {
+  background: var(--forest-100);
+  border-left-color: var(--forest-500);
+  color: var(--forest-800);
+}
+
+.pm-event-more {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* ---- week view ----------------------------------------------------------- */
+/* Still the placeholder the page shipped with -- seven empty columns -- but
+   built from the same day cell as the month above it, so switching views does
+   not switch design languages. */
+.pm-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-width: 44rem;
+}
+
+.pm-week-day {
+  min-height: 20rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil);
+}
+
+.pm-week-header {
+  margin-bottom: 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--forest-700);
+}
+
+/* ---- asset picker -------------------------------------------------------- */
+/* The dialog box the metrics drill-down and the life-data pickers use: a
+   surface panel over a tinted scrim, not a white card over 40% black. */
+.pm-modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  /* Above the page and its own chrome, below nothing else on this page. The
+     other dialogs in the application sit in the same 70-90 band. */
+  z-index: 90;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.75rem, 3vw, 2rem);
+  background: rgba(29, 39, 49, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.pm-modal-backdrop.is-open {
+  display: flex;
+}
+
+.pm-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  width: min(520px, 100%);
+  max-height: min(86vh, 40rem);
+  padding: 1.2rem 1.3rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(var(--shadow-ink), 0.28);
+}
+
+.pm-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.pm-modal-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  color: var(--forest-900);
+}
+
+.pm-modal-close {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pm-modal-close:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+.pm-asset-search {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-veil);
+  color: var(--text);
+  font: inherit;
+}
+
+/* The one band of the dialog that scrolls; min-height is what lets it shrink
+   below its content instead of pushing the dialog past its own max-height. */
+.pm-asset-list {
+  display: grid;
+  gap: 0.3rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pm-asset-option {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.pm-asset-option:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* ---- focus --------------------------------------------------------------- */
+/* One ring for every control on the page, the same one the rest of GREMLIN
+   draws. Worth stating once here: several of these are buttons with their
+   border removed, and a browser's own focus ring on a transparent pill is easy
+   to lose. */
+.pm-asset-remove:focus-visible,
+.pm-asset-add:focus-visible,
+.pm-view-btn:focus-visible,
+.pm-nav-btn:focus-visible,
+.pm-modal-close:focus-visible,
+.pm-asset-search:focus-visible,
+.pm-asset-option:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
+/* ---- responsive ---------------------------------------------------------- */
+@media (max-width: 1100px) {
+  .pm-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .pm-calendar-topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pm-view-switch,
+  .pm-calendar-nav {
+    justify-content: center;
+  }
+
+  .pm-day {
+    min-height: 6.5rem;
+  }
+}
+
+/* ---- reduced motion ------------------------------------------------------ */
+/* Nothing here animates on its own; these are all hover and focus transitions,
+   and somebody who has asked for less motion gets the same colours without the
+   fade between them. */
+@media (prefers-reduced-motion: reduce) {
+  .pm-asset-remove,
+  .pm-asset-add,
+  .pm-view-btn,
+  .pm-nav-btn,
+  .pm-day,
+  .pm-asset-option {
+    transition: none;
+  }
+}
