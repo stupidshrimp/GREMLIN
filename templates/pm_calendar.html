@@ -296,6 +296,23 @@ document.addEventListener('DOMContentLoaded', function () {
     // PM events for the visible month, keyed by "YYYY-MM-DD".
     let eventsByDate = {};
 
+    // The status line had three writers -- the asset load, the sync poll and
+    // the sync button -- and they overwrote each other. On every page load both
+    // the load and the poll fire at once, and the poll's "idle" branch blanked
+    // the element, so a database error written by the load survived only if the
+    // poll's response happened to land first. On the single-threaded dev server
+    // it never does, and the user got an empty picker with no explanation.
+    //
+    // Both messages go through renderStatus() instead, and the database error
+    // wins: a sync job's state is transient and says nothing useful while the
+    // database behind the whole page cannot be read.
+    let databaseError = '';
+    let syncMessage = '';
+
+    function renderStatus() {
+        document.getElementById('pm-sync-status').textContent = databaseError || syncMessage;
+    }
+
     function pad(n) {
         return String(n).padStart(2, '0');
     }
@@ -322,12 +339,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     // the message names the path and the setting that moves it.
                     // Showing it beats an empty picker that looks like "no PMs
                     // have been synced yet" -- the two need different fixes.
-                    document.getElementById('pm-sync-status').textContent =
+                    databaseError =
                         data.error || 'The PM calendar database could not be opened.';
+                    renderStatus();
                     return;
                 }
+                // Cleared on success, so a share that was down when the page
+                // opened stops being reported once it comes back.
+                databaseError = '';
                 allAssets = data.assets || [];
                 renderAssetOptions(allAssets);
+                renderStatus();
             })
             .catch(() => {
                 // Leave the picker empty rather than throwing; the user can
@@ -515,11 +537,11 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch('/pm-calendar/api/sync')
             .then(r => r.json())
             .then(status => {
-                const statusEl = document.getElementById('pm-sync-status');
                 const button = document.getElementById('pm-sync-btn');
 
                 if (status.state === 'running') {
-                    statusEl.textContent = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    syncMessage = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
+                    renderStatus();
                     button.disabled = true;
                     setTimeout(pollSyncStatus, 2000);
                     return;
@@ -528,15 +550,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 button.disabled = false;
 
                 if (status.state === 'succeeded') {
-                    statusEl.textContent = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
+                    syncMessage = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
+                    // loadAssetOptions() decides whether the database is
+                    // readable again, so it is what clears databaseError.
                     loadAssetOptions();
                     refreshSummary();
                     refreshEvents();
                 } else if (status.state === 'failed') {
-                    statusEl.textContent = 'Sync failed: ' + (status.error || 'unknown error');
+                    syncMessage = 'Sync failed: ' + (status.error || 'unknown error');
                 } else {
-                    statusEl.textContent = '';
+                    syncMessage = '';
                 }
+                renderStatus();
             });
     }
 
@@ -549,8 +574,8 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
                 if (!ok) {
-                    document.getElementById('pm-sync-status').textContent =
-                        data.error || 'Could not start sync.';
+                    syncMessage = data.error || 'Could not start sync.';
+                    renderStatus();
                     return;
                 }
                 pollSyncStatus();
