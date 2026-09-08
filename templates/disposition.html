@@ -58,6 +58,102 @@
 <div id="lda-disposition-root" hidden></div>
 <div id="lda-workspace" class="lda-workspace"></div>
 
+{# The Excel explainer for the two buttons under the disposition table. The
+   editor itself is built in JS, but this stays markup so the wording is
+   reviewable in the template -- the same shape as the availability explainer on
+   Metrics: a native <dialog>, opened by the Life Data Analysis client script. #}
+<dialog class="lda-help-dialog" id="lda-excel-help-dialog"
+        aria-labelledby="lda-excel-help-title" aria-describedby="lda-excel-help-summary">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Dispositioning explained</p>
+        <h2 id="lda-excel-help-title">How dispositioning on Excel works</h2>
+      </div>
+      <button type="button" class="lda-help-close" id="lda-excel-help-close"
+              aria-label="Close the Excel dispositioning explanation">&times;</button>
+    </header>
+
+    <div class="lda-help-body">
+      <p id="lda-excel-help-summary">Excel is the offline version of the table on this page. Download the
+        entries for the asset you selected, fill in the disposition columns in Excel, then upload the same
+        workbook to save them all at once. Nothing reaches the database until you upload it back.</p>
+
+      <div class="lda-help-flow" aria-label="Excel dispositioning flow">
+        <span>Download Excel</span>
+        <span class="lda-help-flow-arrow" aria-hidden="true">→</span>
+        <span>Fill in the disposition columns</span>
+        <span class="lda-help-flow-arrow" aria-hidden="true">→</span>
+        <span>Disposition via Excel</span>
+      </div>
+
+      <ol class="lda-help-steps">
+        <li><strong>Select the asset and record type first.</strong> The workbook is built from the Asset
+          Number and Record Type chosen in Step 1, and it holds every eligible entry for that selection —
+          the Rows selector, the search box, and the page you are on do not narrow it.</li>
+        <li><strong>Click Download Excel.</strong> You get
+          <code>&lt;asset&gt;_wo_dispositions.xlsx</code> (or <code>_pm_</code> for PM reset events). The
+          first sheet is one row per record; the second sheet, <strong>Lookup Lists</strong>, feeds the
+          dropdowns, so leave it in the file.</li>
+        <li><strong>Fill in the disposition columns.</strong> They are the last columns on the sheet, and
+          most of them are dropdowns:
+          <div class="lda-help-columns">
+            <div>
+              <h3>Both record types</h3>
+              <ul>
+                <li><code>disposition_notes</code> — free text. Required for
+                  <code>HELD_AMBIGUOUS</code> and <code>EXCLUDED_MIXED_CONTAMINATING</code>.</li>
+                <li><code>disposition_category</code> — dropdown.</li>
+                <li><code>record_class</code> — dropdown.</li>
+                <li><code>include_in_weibull_candidate</code> — <code>TRUE</code> or <code>FALSE</code>.</li>
+              </ul>
+            </div>
+            <div>
+              <h3>Work orders</h3>
+              <ul>
+                <li><code>failure_mode</code> and <code>failure_mechanism</code> — pick from the dropdown,
+                  or type a brand-new name and it is created for this asset on import. Only
+                  <code>INCLUDED_FAILURE</code> rows become Weibull-usable.</li>
+              </ul>
+              <h3>PM reset events</h3>
+              <ul>
+                <li><code>pm_reset_decision</code>, <code>reset_target_failure_mode</code>,
+                  <code>reset_target_failure_mechanism</code>, <code>pm_reset_renewal_rationale</code>.
+                  A PM becomes Weibull-usable only as <code>INCLUDED_PM_RESET_EVENT</code> with
+                  <code>APPROVED_RESET</code>, a reset target, and a rationale.</li>
+              </ul>
+            </div>
+          </div>
+        </li>
+        <li><strong>Leave the rest of the sheet alone.</strong> <code>mapped_record_id</code> is how each
+          row finds its record: never edit it, delete a row, or add one. The task, date, downtime, note and
+          failure-narrative columns are read-only — edits there are ignored on import, so the workbook can
+          never overwrite what the maintenance team recorded in Limble.</li>
+        <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
+          <code>mapped_record_id</code>, rows you did not change are skipped, and the rest are saved as the
+          current disposition — the same result as editing them on this page and clicking Save
+          Dispositions. The page then reloads with the imported values in place.</li>
+      </ol>
+
+      <div class="lda-help-note">
+        <strong>Worth knowing</strong>
+        <p><strong>Changing a failure mode or mechanism?</strong> Clear the matching
+          <code>failure_mode_id</code> / <code>failure_mechanism_id</code> cell (or
+          <code>reset_target_…_id</code> for PMs) in the same row. Those id columns win when they are
+          filled in, so a new name typed beside an old id is read as no change at all.</p>
+        <p><strong>PMs cannot invent taxonomy.</strong> A reset target has to be an existing work-order
+          failure mode/mechanism, so choose those from the dropdown. Work orders are the only place a new
+          mode or mechanism can be named.</p>
+        <p><strong>One wrong row stops the whole import.</strong> A <code>mapped_record_id</code> that does
+          not belong to the selected asset and record type is refused and nothing is saved — usually a sign
+          the workbook was downloaded for a different asset or record type.</p>
+        <p><strong>Downloading is open to everyone; importing writes,</strong> so it needs an editor
+          account. Re-uploading the same file twice is safe: the second pass finds nothing changed.</p>
+      </div>
+    </div>
+  </div>
+</dialog>
+
 <div id="lda-loading" class="lda-loading" hidden>
   <div class="lda-spinner" aria-hidden="true"></div>
   <span id="lda-loading-text">Working…</span>

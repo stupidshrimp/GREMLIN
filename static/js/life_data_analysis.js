@@ -359,6 +359,23 @@
     setTimeout(remove, 5000);
   }
 
+  // ---- help tooltips ---------------------------------------------------------
+  // Wraps a control in a bubble that opens on hover and on keyboard focus, for
+  // buttons whose label has no room to say what the button actually does. The
+  // cascade drives both states (see .lda-tip in the stylesheet), so re-rendering
+  // the editor can never strand an open bubble on the page. The bubble
+  // *describes* the control rather than naming it, so a screen reader still
+  // announces the button's own text first.
+  let tooltipSeq = 0;
+  function withTooltip(control, text) {
+    const id = `lda-tip-${++tooltipSeq}`;
+    control.setAttribute("aria-describedby", id);
+    return el("span", { class: "lda-tip-wrap" }, [
+      control,
+      el("span", { class: "lda-tip", id, role: "tooltip", text }),
+    ]);
+  }
+
   // ---- modal ----------------------------------------------------------------
   function openModal({ title, bodyNodes, actions }) {
     return new Promise((resolve) => {
@@ -2328,6 +2345,7 @@
       next,
     ]);
 
+    const recordWord = isPm ? "PM reset event" : "work order";
     const download = el("button", {
       class: "btn-secondary",
       text: "Download Excel",
@@ -2359,7 +2377,20 @@
       el("p", { class: "lda-hint", text: "Use the ▾ menu in any column header to sort or filter the rows shown on this page." }),
       el("div", { class: "lda-table-scroll" }, [table]),
       pager,
-      el("div", { class: "lda-row-actions" }, [download, upload, save]),
+      el("div", { class: "lda-row-actions" }, [
+        excelHelpButton(),
+        withTooltip(
+          download,
+          `Downloads the entries you selected — every eligible ${recordWord} row for this asset — as an ` +
+            ".xlsx workbook with the disposition dropdowns built in, so you can fill them in offline."
+        ),
+        withTooltip(
+          upload,
+          "Uploads that filled-in workbook back. Rows are matched by mapped_record_id and only the ones you " +
+            "changed are saved, exactly as if you had typed them into this table."
+        ),
+        save,
+      ]),
     ]);
     $("lda-workspace").appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2677,6 +2708,39 @@
     } finally {
       endLoading();
     }
+  }
+
+  // ---- Excel dispositioning -------------------------------------------------
+  // The "how it works" explainer is markup in disposition.html rather than an
+  // openModal() call: it is static prose, so a native <dialog> gives it the
+  // browser's own focus trap and Escape handling for free. The button that opens
+  // it is built here because it belongs with the two Excel buttons, which the
+  // disposition editor renders. A page without the dialog (Perform Analysis)
+  // simply gets no button -- el() drops a null child.
+  function excelHelpButton() {
+    const dialog = $("lda-excel-help-dialog");
+    if (!dialog || typeof dialog.showModal !== "function") return null;
+    return el("button", {
+      class: "btn-secondary lda-help-button",
+      text: "How dispositioning on Excel works",
+      "aria-haspopup": "dialog",
+      "aria-controls": "lda-excel-help-dialog",
+      onclick: () => dialog.showModal(),
+    });
+  }
+
+  // Wired once at page init, since the dialog is part of the page rather than of
+  // the editor that re-renders under it.
+  function wireExcelHelpDialog() {
+    const dialog = $("lda-excel-help-dialog");
+    if (!dialog) return;
+    const close = $("lda-excel-help-close");
+    if (close) close.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", (event) => {
+      // A native dialog reports a click on its backdrop as a click on itself.
+      // Only that closes it, never a click on the content inside.
+      if (event.target === dialog) dialog.close();
+    });
   }
 
   function downloadExcel(kind) {
@@ -4680,6 +4744,7 @@
 
   function initDispositionPage() {
     state.pageMode = "disposition";
+    wireExcelHelpDialog();
     const params = new URLSearchParams(window.location.search);
     state.dispositionKind = (params.get("kind") || "wo").toLowerCase() === "pm" ? "pm" : "wo";
     state.dispositionScope = "all";
