@@ -105,22 +105,27 @@
                   <code>HELD_AMBIGUOUS</code> and <code>EXCLUDED_MIXED_CONTAMINATING</code>.</li>
                 <li><code>disposition_category</code> — dropdown.</li>
                 <li><code>record_class</code> — dropdown.</li>
-                <li><code>include_in_weibull_candidate</code> — <code>TRUE</code> or <code>FALSE</code>.</li>
+                <li><code>include_in_weibull_candidate</code> — <strong>set this to <code>TRUE</code> on
+                  every row the analysis should use.</strong> It arrives <code>FALSE</code> on any row nobody
+                  has dispositioned yet, and the import keeps whatever the cell says, so a row left at
+                  <code>FALSE</code> saves fine and is still left out of the Weibull.</li>
               </ul>
             </div>
             <div>
               <h3>Work orders</h3>
               <ul>
                 <li><code>failure_mode</code> and <code>failure_mechanism</code> — pick from the dropdown,
-                  or type a brand-new name and it is created for this asset on import. Only
-                  <code>INCLUDED_FAILURE</code> rows become Weibull-usable.</li>
+                  or type a brand-new name and it is created for this asset on import. A WO becomes
+                  Weibull-usable only as <code>INCLUDED_FAILURE</code> with a failure mode and
+                  <code>include_in_weibull_candidate</code> at <code>TRUE</code>.</li>
               </ul>
               <h3>PM reset events</h3>
               <ul>
                 <li><code>pm_reset_decision</code>, <code>reset_target_failure_mode</code>,
                   <code>reset_target_failure_mechanism</code>, <code>pm_reset_renewal_rationale</code>.
                   A PM becomes Weibull-usable only as <code>INCLUDED_PM_RESET_EVENT</code> with
-                  <code>APPROVED_RESET</code>, a reset target, and a rationale.</li>
+                  <code>APPROVED_RESET</code>, a reset target, a rationale, and
+                  <code>include_in_weibull_candidate</code> at <code>TRUE</code>.</li>
               </ul>
             </div>
           </div>

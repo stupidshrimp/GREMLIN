@@ -45,6 +45,35 @@ def test_the_explainer_names_the_buttons_it_explains():
         assert label in TEMPLATE, label
 
 
+def test_the_explainer_says_the_weibull_inclusion_flag_has_to_be_set():
+    """The one step the workbook makes easy to miss.
+
+    An exported row always carries an explicit TRUE/FALSE in
+    include_in_weibull_candidate, so the import never falls back to the default
+    the category would otherwise imply (see _save_disposition_with_conn: the
+    default only applies when the value arrives as None). A row dispositioned
+    entirely in Excel and left at the FALSE it came with saves happily and is
+    then excluded by every analysis query, so the explainer has to say to set it.
+    """
+    columns = re.search(r"<h3>Both record types</h3>(.*?)</ul>", TEMPLATE, re.S)
+    assert columns, "the explainer no longer lists the shared disposition columns"
+    flag = re.search(r"<li><code>include_in_weibull_candidate</code>.*?</li>", columns.group(1), re.S)
+    assert flag, "the explainer no longer describes include_in_weibull_candidate"
+    # Naming the two allowed values is not enough: the bullet has to tell the
+    # reader to set it, which is the part a spreadsheet full of FALSE hides.
+    assert "set" in flag.group(0).lower(), flag.group(0)
+    assert "TRUE" in flag.group(0) and "FALSE" in flag.group(0)
+
+    # And both "what makes a row usable" sentences count the flag among the
+    # conditions, rather than stopping at the category.
+    for condition in ("INCLUDED_FAILURE", "INCLUDED_PM_RESET_EVENT"):
+        usable = re.search(
+            r"[^<]*Weibull-usable only as <code>" + condition + r"</code>.*?</li>", TEMPLATE, re.S
+        )
+        assert usable, condition
+        assert "include_in_weibull_candidate" in usable.group(0), condition
+
+
 def test_both_excel_buttons_are_wrapped_in_a_tooltip():
     # The call sites, not the helper's own one-line declaration: each wraps its
     # button on the line after the opening bracket.
