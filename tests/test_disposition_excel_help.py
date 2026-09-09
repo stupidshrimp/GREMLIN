@@ -119,6 +119,23 @@ def test_the_explainer_warns_that_a_stale_workbook_overwrites():
     assert "stale" in tooltip, tooltip
 
 
+def test_uploading_a_workbook_asks_before_discarding_unsaved_edits():
+    """Upload reloads the editor, so it owes the same question as every other
+    path that reloads it.
+
+    A successful import calls loadDispositionPage, which rebuilds the table and
+    drops whatever is half-typed in it. Paging, the Record Type and Rows
+    selectors, and the search box all route through
+    confirmDiscardUnsavedChanges first; upload used to be the one that did not.
+    The order is the point -- asking after the import has been written would be a
+    question with no answer left -- so this pins the guard ahead of the picker.
+    """
+    body = re.search(r"async function uploadExcel\(.*?\n  \}\n", SCRIPT, re.S)
+    assert body, "uploadExcel is no longer shaped the way this test reads it"
+    assert "confirmDiscardUnsavedChanges" in body.group(0)
+    assert body.group(0).index("confirmDiscardUnsavedChanges") < body.group(0).index('type: "file"')
+
+
 def test_both_excel_buttons_are_wrapped_in_a_tooltip():
     # The call sites, not the helper's own one-line declaration: each wraps its
     # button on the line after the opening bracket.

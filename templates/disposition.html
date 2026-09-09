@@ -135,10 +135,11 @@
           failure-narrative columns are read-only — edits there are ignored on import, so the workbook can
           never overwrite what the maintenance team recorded in Limble.</li>
         <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
-          <code>mapped_record_id</code>. Every row whose values differ from what the page holds at that
-          moment is saved as the current disposition — the same result as editing it here and clicking Save
-          Dispositions — and rows that already match are skipped. The page then reloads with the imported
-          values in place.</li>
+          <code>mapped_record_id</code>. Every row whose values differ from the saved disposition is written
+          as the current one — the same result as editing it here and clicking Save Dispositions — and rows
+          that already match are skipped. What the workbook is compared against is the database, not
+          anything half-typed in the table below: the page reloads on a successful import, so it asks before
+          discarding unsaved edits, the same way paging and the selectors do.</li>
       </ol>
 
       <div class="lda-help-note">

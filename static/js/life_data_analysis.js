@@ -2387,8 +2387,8 @@
         withTooltip(
           upload,
           "Uploads that filled-in workbook back. Rows are matched by mapped_record_id, and every row that " +
-            "differs from what this page holds now is written — so an old workbook can put stale values " +
-            "back over someone else's newer edits."
+            "differs from the saved disposition is written — so an old workbook can put stale values back " +
+            "over someone else's newer edits."
         ),
         save,
       ]),
@@ -2749,7 +2749,14 @@
     window.location.href = url;
   }
 
-  function uploadExcel(kind, scope) {
+  async function uploadExcel(kind, scope) {
+    // A successful import reloads the editor, which throws away whatever is
+    // half-typed in the table. Every other path that reloads it -- paging, the
+    // Record Type and Rows selectors, the search box -- asks first, so this one
+    // does too, before the file picker rather than after the upload: being asked
+    // once the import has already been written would be a question with no
+    // answer left.
+    if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) return;
     const fileInput = el("input", { type: "file", accept: ".xlsx" });
     fileInput.style.display = "none";
     document.body.appendChild(fileInput);
