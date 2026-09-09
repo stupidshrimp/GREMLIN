@@ -602,6 +602,178 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
 .lda-modal-option:hover { border-color: var(--forest-500); background: var(--forest-100); }
 .lda-modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap; }
 
+/* Button help tooltips -------------------------------------------------------
+   For a control whose label has no room to say what it does -- the two Excel
+   buttons under the disposition table. Hover and keyboard focus both open it
+   from the cascade, so a re-render of the editor can never strand a bubble on
+   the page. :focus-visible rather than :focus-within, so clicking Download
+   (which leaves the button focused) does not pin the bubble open afterwards.
+
+   Anchored to the wrapper's right edge because these buttons sit at the right
+   edge of the card: a centred bubble would hang off the side of the page. */
+.lda-tip-wrap { position: relative; display: inline-flex; }
+.lda-tip {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  right: 0;
+  z-index: 30;
+  width: max-content;
+  max-width: min(320px, 78vw);
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  background: rgba(23, 33, 28, 0.96);
+  color: #f3f7f4;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms;
+  pointer-events: none;
+}
+.lda-tip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 1.6rem;
+  border: 6px solid transparent;
+  border-top-color: rgba(23, 33, 28, 0.96);
+}
+.lda-tip-wrap:hover .lda-tip,
+.lda-tip-wrap:has(:focus-visible) .lda-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* The Excel explainer sits at the left of the action row, away from the three
+   buttons that actually do something. */
+.lda-row-actions .lda-help-button { margin-right: auto; }
+
+/* "How dispositioning on Excel works" dialog ---------------------------------
+   A native <dialog> (markup in disposition.html) rather than the .lda-modal
+   above: it is static explanatory text, so it gets the browser's own focus trap
+   and Escape handling instead of this file's promise-returning modal. */
+.lda-help-dialog {
+  width: min(720px, calc(100% - 2rem));
+  max-height: min(88vh, 780px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 28px 70px rgba(var(--shadow-ink), 0.34);
+}
+.lda-help-dialog[open] { animation: ldaHelpIn 200ms ease-out both; }
+.lda-help-dialog::backdrop {
+  background: rgba(29, 39, 49, 0.48);
+  backdrop-filter: blur(2px);
+}
+.lda-help-content { overflow-y: auto; max-height: min(88vh, 780px); }
+.lda-help-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem 1.3rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--forest-100), var(--surface));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.lda-help-head h2 { margin: 0.1rem 0 0; color: var(--forest-900); font-size: 1.25rem; }
+.lda-help-close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lda-help-close:hover { border-color: var(--forest-500); color: var(--forest-900); }
+.lda-help-close:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.lda-help-body { display: grid; gap: 1.1rem; padding: 1.2rem 1.3rem 1.35rem; }
+.lda-help-body > p { margin: 0; line-height: 1.6; }
+.lda-help-body code {
+  font-size: 0.86em;
+  padding: 0.05rem 0.22rem;
+  border-radius: 5px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  overflow-wrap: anywhere;
+}
+.lda-help-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.65rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 12px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-weight: 600;
+  text-align: center;
+}
+.lda-help-flow-arrow { color: var(--forest-700); }
+.lda-help-steps { display: grid; gap: 0.85rem; margin: 0; padding-left: 1.4rem; color: var(--text); }
+.lda-help-steps li { padding-left: 0.25rem; line-height: 1.55; }
+.lda-help-steps li::marker { color: var(--forest-700); font-weight: 700; }
+.lda-help-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.9rem;
+  margin-top: 0.6rem;
+}
+.lda-help-columns h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lda-help-columns h3 + ul + h3 { margin-top: 0.7rem; }
+.lda-help-columns ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.35rem; }
+.lda-help-columns li { line-height: 1.5; }
+.lda-help-note {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.9rem 1rem;
+  border-left: 4px solid var(--forest-500);
+  border-radius: 0 10px 10px 0;
+  background: var(--surface-veil);
+}
+.lda-help-note p { margin: 0; line-height: 1.55; color: var(--text); }
+@keyframes ldaHelpIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+@media (max-width: 700px) {
+  /* Not enough room beside a button for a bubble anchored to it -- the one on
+     the leftmost button would be cut off by the edge of the screen. Hand the tip
+     the whole action row instead: it spans the row above the buttons, and the
+     arrow is dropped, since it no longer has one button to point at. */
+  .lda-row-actions { position: relative; }
+  .lda-tip-wrap { position: static; }
+  .lda-tip { left: 0; right: 0; width: auto; max-width: none; }
+  .lda-tip::after { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lda-tip { transition: none; }
+  .lda-help-dialog[open] { animation: none; }
+}
+
 @media (max-width: 1100px) {
   .lda-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lda-subgrid { grid-template-columns: 1fr; }
