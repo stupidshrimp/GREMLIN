@@ -74,6 +74,24 @@ def test_the_explainer_says_the_weibull_inclusion_flag_has_to_be_set():
         assert "include_in_weibull_candidate" in usable.group(0), condition
 
 
+def test_the_explainer_says_to_clear_both_taxonomy_ids():
+    """Clearing one id is not enough, and the wrong advice costs the whole file.
+
+    import_disposition_excel prefers an id cell over the name beside it, so a row
+    that keeps its old failure_mechanism_id lands that mechanism under the newly
+    resolved mode -- which _save_disposition_with_conn rejects ("belongs to a
+    different failure mode"), and the ValueError rolls back write_connection, so
+    the entire workbook is refused rather than that one row. Reproduced against a
+    temp database: clearing only failure_mode_id raises, and so does clearing both
+    ids while leaving the old mode's mechanism name in place.
+    """
+    note = re.search(r"<strong>Changing a failure mode or mechanism\?</strong>.*?</p>", TEMPLATE, re.S)
+    assert note, "the explainer no longer covers changing a mode or mechanism"
+    for column in ("failure_mode_id", "failure_mechanism_id"):
+        assert column in note.group(0), column
+    assert "both" in note.group(0).lower(), note.group(0)
+
+
 def test_both_excel_buttons_are_wrapped_in_a_tooltip():
     # The call sites, not the helper's own one-line declaration: each wraps its
     # button on the line after the opening bracket.

@@ -142,16 +142,21 @@
 
       <div class="lda-help-note">
         <strong>Worth knowing</strong>
-        <p><strong>Changing a failure mode or mechanism?</strong> Clear the matching
-          <code>failure_mode_id</code> / <code>failure_mechanism_id</code> cell (or
-          <code>reset_target_…_id</code> for PMs) in the same row. Those id columns win when they are
-          filled in, so a new name typed beside an old id is read as no change at all.</p>
+        <p><strong>Changing a failure mode or mechanism?</strong> Clear <em>both</em> of that row's
+          <code>failure_mode_id</code> and <code>failure_mechanism_id</code> cells (or the
+          <code>reset_target_…_id</code> pair for PMs). The id columns win whenever they are filled in, so
+          a new name typed beside an old id is read as no change at all.</p>
+        <p><strong>Moving a row to another failure mode moves its mechanism too.</strong> Clearing the ids
+          is not enough on its own — the mechanism has to be one that belongs to the new mode, so pick one
+          of its mechanisms, type a new name for it, or leave the mechanism cell empty. A mechanism carried
+          over from the old mode is refused, and refusing one row is refusing the file.</p>
         <p><strong>PMs cannot invent taxonomy.</strong> A reset target has to be an existing work-order
           failure mode/mechanism, so choose those from the dropdown. Work orders are the only place a new
           mode or mechanism can be named.</p>
-        <p><strong>One wrong row stops the whole import.</strong> A <code>mapped_record_id</code> that does
-          not belong to the selected asset and record type is refused and nothing is saved — usually a sign
-          the workbook was downloaded for a different asset or record type.</p>
+        <p><strong>One wrong row stops the whole import.</strong> Nothing at all is saved when a single row
+          is refused — a <code>mapped_record_id</code> that does not belong to the selected asset and record
+          type (usually a workbook downloaded for a different one), or a mechanism sitting under the wrong
+          failure mode. Fix that row and upload the file again.</p>
         <p><strong>Downloading is open to everyone; importing writes,</strong> so it needs an editor
           account. Re-uploading the same file twice is safe: the second pass finds nothing changed.</p>
       </div>
