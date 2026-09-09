@@ -105,6 +105,12 @@
     // Free-text filter applied to the disposition table (matched server-side
     // across every record column, so it spans all pages, not just the visible one).
     dispositionSearch: "",
+    // Column ordering for the disposition table, applied server-side for the
+    // same reason the search is: the table is paginated, so ordering has to
+    // cover every eligible row or "oldest first" only means oldest of the 50 on
+    // screen. `key` is a column name the server advertised; "" is its own
+    // default order.
+    dispositionSort: { key: "", dir: "asc" },
     // Monotonic token for disposition reloads. Overlapping debounced searches /
     // page changes can resolve out of order on a slow endpoint; only the load
     // whose token still matches is allowed to render, so a stale response never
@@ -195,6 +201,57 @@
     return narrativeLines(row, prefix, fields)
       .map((line) => `${line.label}: ${line.text}`)
       .join(" · ");
+  }
+
+  // ---- record dates ---------------------------------------------------------
+  // The CMMS dates arrive as text in whichever shape the source system wrote
+  // them -- "2026-01-15T15:00:00+00:00" from the Limble sync, "1/15/2026 15:00"
+  // from an older import -- because SQLite has no date type to have normalised
+  // them on the way through. Parsed to a UTC instant here so a date column can
+  // be shown, sorted and filtered as a date rather than as the string it is
+  // stored as. Mirrors LifeDataService._parse_datetime; keep the two in step.
+  //
+  // Returns { ms, hasTime } or null for a value that is not a date at all.
+  function parseRecordDate(value) {
+    if (value == null) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text);
+    if (iso) {
+      const [, year, month, day, hour, minute, second, zone] = iso;
+      const hasTime = hour !== undefined;
+      if (zone) {
+        const ms = Date.parse(
+          `${year}-${month}-${day}T${hour || "00"}:${minute || "00"}:${second || "00"}${zone === "Z" ? "Z" : zone}`
+        );
+        return isFinite(ms) ? { ms, hasTime } : null;
+      }
+      // No offset means UTC, which is how the server reads the same value.
+      return { ms: Date.UTC(+year, +month - 1, +day, +(hour || 0), +(minute || 0), +(second || 0)), hasTime };
+    }
+    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+    if (us) {
+      const [, month, day, year, hour, minute, second] = us;
+      // Two-digit years the way Python's strptime reads them: 00-68 is 2000s.
+      const fullYear = year.length === 2 ? (+year < 69 ? 2000 + +year : 1900 + +year) : +year;
+      return {
+        ms: Date.UTC(fullYear, +month - 1, +day, +(hour || 0), +(minute || 0), +(second || 0)),
+        hasTime: hour !== undefined,
+      };
+    }
+    return null;
+  }
+
+  // A record date in the one shape the tables show it in (UTC). A value that
+  // carried no clock time keeps none, and a value that is not a date at all is
+  // shown as it was stored rather than blanked.
+  function formatRecordDate(value) {
+    const parsed = parseRecordDate(value);
+    if (!parsed) return value == null ? "" : String(value).trim();
+    const pad = (n) => String(n).padStart(2, "0");
+    const when = new Date(parsed.ms);
+    const day = `${when.getUTCFullYear()}-${pad(when.getUTCMonth() + 1)}-${pad(when.getUTCDate())}`;
+    return parsed.hasTime ? `${day} ${pad(when.getUTCHours())}:${pad(when.getUTCMinutes())}` : day;
   }
 
   function fmt(value, sig) {
@@ -2101,7 +2158,10 @@
     beginLoading("Loading disposition editor…");
     try {
       const search = state.dispositionSearch ? `&search=${encodeURIComponent(state.dispositionSearch)}` : "";
-      const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}${search}`;
+      const sort = state.dispositionSort.key
+        ? `&sort=${encodeURIComponent(state.dispositionSort.key)}&dir=${state.dispositionSort.dir}`
+        : "";
+      const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}${search}${sort}`;
       const data = await getJson(url);
       if (token !== state.dispositionToken) return;
       renderDispositionEditor(data);
@@ -2172,12 +2232,43 @@
       data.mechanism_options.map((o) => [mechKey(o.failure_mechanism_name, o.failure_mode_id), o.failure_mechanism_id])
     );
 
-    const extraHeaders = isPm
-      ? ["Disposition Notes", "Disposition Category", "Record Class", "PM Reset Decision",
-         "Reset Target Failure Mode", "Reset Target Failure Mechanism", "Modeled Population",
-         "Include in Weibull Candidate", "PM Reset Renewal Rationale / Evidence"]
-      : ["Disposition Notes", "Disposition Category", "Record Class", "Failure Mode",
-         "Failure Mechanism", "Modeled Population", "Include in Weibull Candidate"];
+    // Every column of the table, in the order it is drawn, each named by the key
+    // the server orders that column by and typed by what its values really are.
+    // The header row, the cells and the column menus are all built from this, so
+    // a header can never offer a sort the server does not have -- and the two
+    // date columns and the two numeric ones are compared as dates and numbers
+    // rather than as the text they are stored and rendered as.
+    const columnTypes = data.sortable_columns || {};
+    const typed = (column) => Object.assign({}, column, { type: columnTypes[column.key] || "text" });
+    // The read-only source columns are named by the server; it labels them with
+    // their own keys, which is what the Excel workbook calls them too.
+    const sourceColumns = data.display_columns.map((key) =>
+      typed({ key, label: key, cls: key === "name" ? "lda-col-name" : null })
+    );
+    const narrativeColumn = typed({ key: "failure_narrative", label: "Failure Narrative" });
+    const extraColumns = (isPm
+      ? [
+          { key: "disposition_notes", label: "Disposition Notes" },
+          { key: "disposition_category", label: "Disposition Category" },
+          { key: "effective_record_class", label: "Record Class" },
+          { key: "pm_reset_inclusion_decision", label: "PM Reset Decision" },
+          { key: "reset_target_failure_mode", label: "Reset Target Failure Mode" },
+          { key: "reset_target_failure_mechanism", label: "Reset Target Failure Mechanism" },
+          { key: "modeled_population_name", label: "Modeled Population" },
+          { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
+          { key: "pm_reset_renewal_rationale", label: "PM Reset Renewal Rationale / Evidence" },
+        ]
+      : [
+          { key: "disposition_notes", label: "Disposition Notes" },
+          { key: "disposition_category", label: "Disposition Category" },
+          { key: "effective_record_class", label: "Record Class" },
+          { key: "failure_mode", label: "Failure Mode" },
+          { key: "failure_mechanism", label: "Failure Mechanism" },
+          { key: "modeled_population_name", label: "Modeled Population" },
+          { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
+        ]
+    ).map(typed);
+    const columns = sourceColumns.concat([narrativeColumn], extraColumns);
 
     const startRow = data.rows.length ? data.offset + 1 : 0;
     const endRow = data.offset + data.rows.length;
@@ -2196,19 +2287,20 @@
     // The narrative reports what the maintenance team recorded, so it belongs with
     // the other read-only source columns rather than among the editable ones.
     const narrativeFields = data.narrative_columns || NARRATIVE_FIELDS;
-    const readOnlyHeaders = data.display_columns.concat(["Failure Narrative"]);
     const thead = el("thead", {}, [
-      el("tr", {}, readOnlyHeaders.concat(extraHeaders).map((h) =>
-        el("th", { class: h === "name" ? "lda-col-name" : null, text: h })
-      )),
+      el("tr", {}, columns.map((column) => el("th", { class: column.cls || null, text: column.label }))),
     ]);
     const tbody = el("tbody");
 
     data.rows.forEach((row, index) => {
       const tr = el("tr");
-      data.display_columns.forEach((key) => {
-        const cls = key === "name" ? "lda-readonly lda-col-name" : "lda-readonly";
-        tr.appendChild(el("td", { class: cls, text: row[key] == null ? "" : String(row[key]) }));
+      sourceColumns.forEach((column) => {
+        const value = row[column.key];
+        // A date column is shown in one normalised shape rather than in whatever
+        // the source system wrote, so the column reads (and filters) as a date.
+        const text =
+          column.type === "datetime" ? formatRecordDate(value) : value == null ? "" : String(value);
+        tr.appendChild(el("td", { class: ["lda-readonly", column.cls].filter(Boolean).join(" "), text }));
       });
       tr.appendChild(
         narrativeCell(row, {
@@ -2296,7 +2388,7 @@
     });
 
     if (!data.rows.length) {
-      const colCount = readOnlyHeaders.length + extraHeaders.length;
+      const colCount = columns.length;
       const emptyText = data.search
         ? `No rows match "${data.search}". Clear or change the search to see more.`
         : "No eligible rows for this selection.";
@@ -2307,12 +2399,30 @@
 
     table.appendChild(thead);
     table.appendChild(tbody);
-    enableTableColumnTools(table);
 
     const changed = () => rowStates.filter((rs) => JSON.stringify(dispositionPayloadFromRow(rs, data.kind)) !== rs.initial);
     // Exposed so the Rows/Scope selectors on the dedicated disposition page can
     // confirm before discarding unsaved edits, the same way page navigation does.
     state.dispositionChangedFn = changed;
+
+    // The server did the ordering, so trust what it says it applied: a column
+    // that does not exist for this record type (a WO sort still selected when
+    // the Record Type switches to PM) comes back cleared.
+    state.dispositionSort = { key: data.sort || "", dir: data.sort_dir === "desc" ? "desc" : "asc" };
+    enableTableColumnTools(table, {
+      columns,
+      sort: state.dispositionSort,
+      // Re-asks for the selection ordered by this column, from its first page:
+      // the point of sorting is to bring the top of the whole selection into
+      // view, which a page that stayed put would not do. A reload, so it asks
+      // before dropping unsaved edits the way paging does.
+      onSort: async (key, dir) => {
+        if (!(await confirmDiscardUnsavedChanges(changed))) return;
+        state.dispositionSort = { key, dir };
+        state.dispositionPageIndex = 0;
+        loadDispositionPage(data.kind, data.scope, 0);
+      },
+    });
 
     const checkAllButton = el("button", {
       class: "btn-secondary",
@@ -2374,7 +2484,13 @@
         }),
       ]),
       el("div", { class: "lda-row-actions", style: "justify-content:flex-start" }, [checkAllButton]),
-      el("p", { class: "lda-hint", text: "Use the ▾ menu in any column header to sort or filter the rows shown on this page." }),
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Use the ▾ menu in any column header to sort or filter. Sorting is applied to every row in this " +
+          "selection, not just this page, so the first page holds the top of the sort; the value filter " +
+          "applies to the rows on this page.",
+      }),
       el("div", { class: "lda-table-scroll" }, [table]),
       pager,
       el("div", { class: "lda-row-actions" }, [
@@ -3694,18 +3810,21 @@
     // Task ID / Work Title / Downtime / Request Description / Completion Notes columns
     // come from the source CMMS work order that closed the life interval (joined in
     // perform_weibull_analysis); they are blank for trailing current-life rows.
+    // `type` is what the column header's sort compares by: without it a date
+    // column would be ordered by the digits its text happens to start with and
+    // "10" would land before "9".
     const columns = [
-      { label: "#", get: (obs) => String(obs.ordered_index ?? "") },
-      { label: "Observation ID", get: (obs) => String(obs.weibull_observation_id ?? "") },
-      { label: "Task ID", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : "") },
+      { label: "#", type: "number", get: (obs) => String(obs.ordered_index ?? "") },
+      { label: "Observation ID", type: "number", get: (obs) => String(obs.weibull_observation_id ?? "") },
+      { label: "Task ID", type: "number", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : "") },
       { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
-      { label: "Downtime (h)", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
+      { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
       { label: "Type", get: (obs) => obs.observation_type || "" },
-      { label: "Life Hours", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
-      { label: "Failure", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
-      { label: "Right Censored", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
-      { label: "Start Datetime", get: (obs) => obs.start_datetime || "" },
-      { label: "End/Cutoff Datetime", get: (obs) => obs.end_datetime || obs.analysis_cutoff_datetime || "" },
+      { label: "Life Hours", type: "number", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
+      { label: "Failure", type: "boolean", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
+      { label: "Right Censored", type: "boolean", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
+      { label: "Start Datetime", type: "datetime", get: (obs) => obs.start_datetime || "" },
+      { label: "End/Cutoff Datetime", type: "datetime", get: (obs) => obs.end_datetime || obs.analysis_cutoff_datetime || "" },
       { label: "Request Description", cls: "lda-data-text", get: (obs) => obs.source_request_description || "" },
       { label: "Completion Notes", cls: "lda-data-text", get: (obs) => obs.source_completion_notes || "" },
       {
@@ -3742,7 +3861,7 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    const tableTools = enableTableColumnTools(table);
+    const tableTools = enableTableColumnTools(table, { columns });
     const node = el("div", { class: "lda-data-scroll" }, [table]);
     function markRow(tr) {
       tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
@@ -4354,14 +4473,24 @@
   }
 
   // ---- Excel-style column sort / filter ------------------------------------
-  // Adds a per-column header dropdown (Sort A→Z / Z→A plus a checkable value
-  // filter, like Excel's column filter) to a rendered table. It works on the rows
-  // currently in the table: for the Weibull data table that is every observation,
-  // and for the paginated disposition editor it is the visible page (complementing
-  // the cross-page server-side search box). Sorting reorders the existing <tr>
-  // nodes so editable controls keep their state; filtering hides non-matching
-  // rows. The dropdown is attached to <body> so the table's scroll containers and
-  // sticky headers never clip it.
+  // Adds a per-column header dropdown (a sort pair plus a checkable value filter,
+  // like Excel's column filter) to a rendered table.
+  //
+  // Callers describe their columns (`options.columns`, one entry per header cell,
+  // each `{ key, type }`) so a column is compared as what it holds rather than as
+  // the text it renders: dates chronologically, numbers numerically. An
+  // undeclared column falls back to the mixed number/text compare, which is what
+  // every table did before any of them declared types.
+  //
+  // Where the sort runs depends on the table. The Weibull data table holds every
+  // observation, so it sorts in place: the existing <tr> nodes are reordered,
+  // which keeps editable controls and row handlers alive. The disposition editor
+  // is paginated, and sorting its 50 visible rows would answer a different
+  // question from the one asked, so it passes `options.onSort` and the server
+  // orders the whole selection instead (`options.sort` then says which column and
+  // direction came back, so the header can show it). Filtering hides non-matching
+  // rows either way. The dropdown is attached to <body> so the table's scroll
+  // containers and sticky headers never clip it.
   let openColumnMenu = null;
   function closeColumnMenu() {
     if (openColumnMenu) {
@@ -4421,12 +4550,61 @@
     return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
   }
 
-  function enableTableColumnTools(table) {
+  // The value a typed column really holds, as a number to compare: the number
+  // itself, or a date's UTC instant. NaN means "this cell holds nothing of that
+  // type", which sorts and groups as a blank.
+  function columnTypedValue(type, text) {
+    if (type === "number") return columnNumericValue(text);
+    if (type === "datetime") {
+      const parsed = parseRecordDate(text);
+      return parsed ? parsed.ms : NaN;
+    }
+    return NaN;
+  }
+
+  function columnCompareFor(type) {
+    if (type !== "number" && type !== "datetime") return columnCompare;
+    return (a, b) => {
+      const na = columnTypedValue(type, a);
+      const nb = columnTypedValue(type, b);
+      if (isFinite(na) && isFinite(nb)) return na - nb;
+      // Neither is a value of this type, so fall back rather than call them equal.
+      return columnCompare(a, b);
+    };
+  }
+
+  // A cell holding nothing of the column's type -- blank, or free text where a
+  // number or a date belongs -- sits at the bottom whichever way the column is
+  // pointed, the way a spreadsheet leaves blanks last. Mirrors the ORDER BY the
+  // server builds for the disposition table (LifeDataService._disposition_order_by).
+  function columnIsBlank(type, text) {
+    if (text === "") return true;
+    if (type === "number" || type === "datetime") return !isFinite(columnTypedValue(type, text));
+    return false;
+  }
+
+  // What the two sort buttons say, so the menu names the ordering the column
+  // actually has instead of calling every column alphabetical.
+  const COLUMN_SORT_LABELS = {
+    text: ["Sort A → Z", "Sort Z → A"],
+    number: ["Sort 0 → 9", "Sort 9 → 0"],
+    datetime: ["Sort Oldest → Newest", "Sort Newest → Oldest"],
+    boolean: ["Sort No → Yes", "Sort Yes → No"],
+  };
+
+  function enableTableColumnTools(table, options) {
+    const settings = options || {};
     const thead = table.tHead;
     const tbody = table.tBodies[0];
     if (!thead || !tbody || !thead.rows.length) return;
     const headerRow = thead.rows[thead.rows.length - 1];
     const ths = Array.from(headerRow.cells);
+    // One entry per header cell, or {} for a column the caller did not describe.
+    const columns = ths.map((_, i) => (settings.columns && settings.columns[i]) || {});
+    const typeOfColumn = (col) => columns[col].type || "text";
+    // Set by a caller that sorts elsewhere (the disposition editor, which has the
+    // server order every row in the selection rather than the page on screen).
+    const onSort = typeof settings.onSort === "function" ? settings.onSort : null;
     // Active value filter per column: a Set of allowed display values, or null
     // (no filter, every value shown).
     const filters = ths.map(() => null);
@@ -4443,17 +4621,36 @@
       });
     }
 
-    function sortBy(col, dir) {
-      const rows = dataRows();
-      rows.sort((ra, rb) => {
-        const cmp = columnCompare(columnCellText(ra.cells[col]), columnCellText(rb.cells[col]));
-        return dir === "desc" ? -cmp : cmp;
-      });
-      rows.forEach((tr) => tbody.appendChild(tr));
+    function markSorted(col, dir) {
       ths.forEach((th, i) => {
         th.classList.remove("is-sorted-asc", "is-sorted-desc");
         if (i === col) th.classList.add(dir === "desc" ? "is-sorted-desc" : "is-sorted-asc");
       });
+    }
+
+    function sortBy(col, dir) {
+      const type = typeOfColumn(col);
+      const compare = columnCompareFor(type);
+      const sign = dir === "desc" ? -1 : 1;
+      const rows = dataRows();
+      rows.sort((ra, rb) => {
+        const a = columnCellText(ra.cells[col]);
+        const b = columnCellText(rb.cells[col]);
+        const aBlank = columnIsBlank(type, a);
+        const bBlank = columnIsBlank(type, b);
+        if (aBlank || bBlank) return aBlank && bBlank ? 0 : aBlank ? 1 : -1;
+        return sign * compare(a, b);
+      });
+      rows.forEach((tr) => tbody.appendChild(tr));
+      markSorted(col, dir);
+    }
+
+    // Sorting a table the caller paginates belongs to the caller: it reloads the
+    // page ordered by this column, so every row in the selection takes part
+    // rather than only the ones already rendered.
+    function requestSort(col, dir) {
+      if (onSort && columns[col].key) onSort(columns[col].key, dir);
+      else sortBy(col, dir);
     }
 
     function openMenu(col, anchorBtn) {
@@ -4461,10 +4658,11 @@
       const menu = el("div", { class: "lda-col-menu" });
       menu.dataset.col = String(col);
 
-      const sortAsc = el("button", { type: "button", class: "lda-col-menu-sort", text: "Sort A → Z" });
-      const sortDesc = el("button", { type: "button", class: "lda-col-menu-sort", text: "Sort Z → A" });
-      sortAsc.addEventListener("click", () => { sortBy(col, "asc"); closeColumnMenu(); });
-      sortDesc.addEventListener("click", () => { sortBy(col, "desc"); closeColumnMenu(); });
+      const labels = COLUMN_SORT_LABELS[typeOfColumn(col)] || COLUMN_SORT_LABELS.text;
+      const sortAsc = el("button", { type: "button", class: "lda-col-menu-sort", text: labels[0] });
+      const sortDesc = el("button", { type: "button", class: "lda-col-menu-sort", text: labels[1] });
+      sortAsc.addEventListener("click", () => { requestSort(col, "asc"); closeColumnMenu(); });
+      sortDesc.addEventListener("click", () => { requestSort(col, "desc"); closeColumnMenu(); });
       menu.appendChild(el("div", { class: "lda-col-menu-sorts" }, [sortAsc, sortDesc]));
 
       // Distinct values across every data row (not just the rows other filters
@@ -4475,7 +4673,7 @@
         const text = columnCellText(tr.cells[col]);
         values.add(text === "" ? BLANK : text);
       });
-      const sortedValues = Array.from(values).sort(columnCompare);
+      const sortedValues = Array.from(values).sort(columnCompareFor(typeOfColumn(col)));
 
       const search = el("input", { type: "search", class: "lda-col-menu-search", placeholder: "Search values…" });
       menu.appendChild(search);
@@ -4569,6 +4767,13 @@
       });
       th.appendChild(el("div", { class: "lda-col-head" }, [el("span", { class: "lda-col-label", text: label }), btn]));
     });
+
+    // A sort the caller ran (the server ordering a disposition page) still has to
+    // show on the header it was run from.
+    if (settings.sort && settings.sort.key) {
+      const sortedCol = columns.findIndex((column) => column.key === settings.sort.key);
+      if (sortedCol >= 0) markSorted(sortedCol, settings.sort.dir);
+    }
 
     // Drop every active value filter and re-show all rows. Returned so callers
     // (e.g. the chart click-to-row jump) can reveal a row that an active filter
@@ -4758,6 +4963,7 @@
     state.dispositionScope = "all";
     state.dispositionPageIndex = 0;
     state.dispositionSearch = "";
+    state.dispositionSort = { key: "", dir: "asc" };
 
     const kindSelect = $("lda-disp-kind");
     if (kindSelect) {

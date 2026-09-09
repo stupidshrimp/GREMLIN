@@ -1619,6 +1619,16 @@ def api_dispositions():
     except (TypeError, ValueError):
         page_index = 0
 
+    # The table is paginated, so the chosen column has to be ordered here across
+    # every eligible row -- sorting the 50 rows already on screen would answer a
+    # different question. An unrecognised column name is dropped rather than
+    # trusted: it names an ORDER BY expression, so only the known set is allowed.
+    sortable_columns = service.disposition_sort_columns(kind)
+    sort = (request.values.get("sort") or "").strip()
+    if sort not in sortable_columns:
+        sort = ""
+    sort_dir = "desc" if (request.values.get("dir") or "").strip().lower() == "desc" else "asc"
+
     all_count = service.disposition_row_count(asset_number, kind)
     displayed_count = service.disposition_row_count(
         asset_number, kind, only_needing_disposition=only_needing, search=search or None
@@ -1633,6 +1643,8 @@ def api_dispositions():
         limit=page_size,
         offset=offset,
         search=search or None,
+        sort=sort or None,
+        sort_dir=sort_dir,
     )
 
     wo_record_classes = ["CORRECTIVE_WO", "PM", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN"]
@@ -1643,6 +1655,12 @@ def api_dispositions():
             "kind": kind,
             "scope": scope,
             "search": search,
+            # Echoed back rather than assumed by the browser: an unknown column
+            # is dropped above, and the table has to show the sort that was
+            # actually applied.
+            "sort": sort,
+            "sort_dir": sort_dir,
+            "sortable_columns": sortable_columns,
             "rows": rows,
             "display_columns": list(DISPLAY_COLUMNS),
             # The narrative boxes travel with their labels rather than as bare
