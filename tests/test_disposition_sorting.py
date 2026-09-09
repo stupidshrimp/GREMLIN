@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.life_data_service import LifeDataService
+from services.life_data_service import MODELED_POPULATION_PLACEHOLDER, LifeDataService
 
 
 class DispositionSortTestCase(unittest.TestCase):
@@ -224,6 +224,52 @@ class ImpossibleDateTests(DispositionSortTestCase):
         self.assertEqual(self.task_ids(sort="completedDate_Final", sort_dir="desc"), ["1", "2"])
 
 
+class ModeledPopulationSortTests(DispositionSortTestCase):
+    """The Modeled Population placeholder is a value on that column, not a blank.
+
+    A row with no population yet still reads something -- the population is
+    created on save -- so ordering it as NULL pinned a visibly non-blank cell to
+    the bottom in both directions, with the column sorting by something the
+    screen does not say.
+    """
+
+    def name_population(self, task_id, population_id, population_name):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            mapped = conn.execute(
+                "SELECT mapped_record_id FROM mapped_cmms_record WHERE task_id = ?", (str(task_id),)
+            ).fetchone()["mapped_record_id"]
+            conn.execute(
+                "INSERT INTO modeled_population (modeled_population_id, asset_number, population_name)"
+                " VALUES (?, ?, ?)",
+                (population_id, self.ASSET, population_name),
+            )
+            conn.execute(
+                "INSERT INTO event_disposition (mapped_record_id, disposition_category, is_current,"
+                " modeled_population_id) VALUES (?, 'INCLUDED_FAILURE', 1, ?)",
+                (mapped, population_id),
+            )
+            conn.commit()
+
+    def setUp(self):
+        super().setUp()
+        self.add_wo("1")
+        self.add_wo("2")  # no population, so its cell reads the placeholder
+        self.add_wo("3")
+        self.name_population("1", 99, "Zulu")
+        self.name_population("3", 98, "Alpha")
+
+    def shown(self, sort_dir):
+        rows = self.service.disposition_rows(self.ASSET, "wo", sort="modeled_population_name", sort_dir=sort_dir)
+        return [row["modeled_population_name"] or MODELED_POPULATION_PLACEHOLDER for row in rows]
+
+    def test_the_placeholder_sorts_where_its_text_belongs(self):
+        self.assertEqual(self.shown("asc"), ["Alpha", MODELED_POPULATION_PLACEHOLDER, "Zulu"])
+
+    def test_descending_reverses_it_rather_than_pinning_it_last(self):
+        self.assertEqual(self.shown("desc"), ["Zulu", MODELED_POPULATION_PLACEHOLDER, "Alpha"])
+
+
 class SortColumnContractTests(DispositionSortTestCase):
     def test_every_advertised_column_can_actually_be_ordered_by(self):
         """The names handed to the browser are the names the SQL accepts."""
@@ -292,6 +338,13 @@ def test_the_payload_advertises_the_sortable_columns_and_their_types(monkeypatch
     # header offers a sort that does nothing.
     for column in payload["display_columns"]:
         assert column in columns, column
+
+
+def test_the_payload_names_the_modeled_population_placeholder(monkeypatch, tmp_path):
+    """The screen renders it and the ORDER BY sorts by it, so there is one copy."""
+
+    payload = _disposition(_client(monkeypatch, tmp_path)).get_json()
+    assert payload["modeled_population_placeholder"] == MODELED_POPULATION_PLACEHOLDER
 
 
 def test_a_requested_sort_is_echoed_back(monkeypatch, tmp_path):
@@ -384,6 +437,13 @@ def test_the_table_says_so_when_a_filter_hides_every_row_on_the_page():
     """
 
     assert "Every row on this page is hidden by a column filter" in SCRIPT
+
+
+def test_the_script_renders_the_population_placeholder_the_server_named():
+    """A second copy in the client would drift from the one the SQL sorts by."""
+
+    assert "row.modeled_population_name || data.modeled_population_placeholder" in SCRIPT
+    assert MODELED_POPULATION_PLACEHOLDER not in SCRIPT
 
 
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():

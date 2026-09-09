@@ -2379,7 +2379,12 @@
       }
 
       tr.appendChild(
-        el("td", { class: "lda-readonly", text: row.modeled_population_name || "Auto-create from selected asset + mode/mechanism on save" })
+        el("td", {
+          class: "lda-readonly",
+          // Named by the server, which also orders this column by it, so the two
+          // cannot drift into sorting by something the cell does not say.
+          text: row.modeled_population_name || data.modeled_population_placeholder,
+        })
       );
 
       const currentCategory = row.disposition_category || "UNKNOWN";

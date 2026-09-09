@@ -25,6 +25,7 @@ from services.reliability_service import ReliabilityService
 from services.life_data_service import (
     DEFAULT_DB_PATH,
     DISPLAY_COLUMNS,
+    MODELED_POPULATION_PLACEHOLDER,
     NARRATIVE_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
@@ -1667,6 +1668,9 @@ def api_dispositions():
             # column keys: the table renders them as one stacked cell, so it needs
             # to caption each line it draws.
             "narrative_columns": [dict(column) for column in NARRATIVE_COLUMNS],
+            # The Modeled Population cell for a row that has none yet. The screen
+            # renders it, so the ORDER BY sorts by it; both read this one copy.
+            "modeled_population_placeholder": MODELED_POPULATION_PLACEHOLDER,
             "mode_options": service.get_asset_failure_mode_options(asset_number),
             "mechanism_options": service.get_asset_failure_mechanism_options(asset_number),
             "categories": list(PM_DISPOSITION_CATEGORIES if kind == "pm" else WO_DISPOSITION_CATEGORIES),

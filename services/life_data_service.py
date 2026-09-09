@@ -245,6 +245,15 @@ DISPLAY_COLUMN_SOURCES = {
 # them as four columns of their own so each can be sorted and filtered.
 NARRATIVE_COLUMNS = tuple({"key": field.key, "label": field.label} for field in NARRATIVE_FIELDS)
 
+# What the disposition table shows in Modeled Population for a row that has none
+# yet -- the population is created on save, from the asset and the mode/mechanism
+# being assigned. It lives here rather than in the client script because it is a
+# real value on that column: the cell reads it, the value filter lists it, and
+# the ORDER BY has to sort by it, or the column reads "Auto-create..." while
+# ordering as though the cell were empty. The screen is handed this over the API
+# so there is one copy of it.
+MODELED_POPULATION_PLACEHOLDER = "Auto-create from selected asset + mode/mechanism on save"
+
 EXCEL_BASE_COLUMNS = ("mapped_record_id",) + DISPLAY_COLUMNS + NARRATIVE_KEYS
 EXCEL_COMMON_DISPOSITION_COLUMNS = (
     "disposition_notes",
@@ -2742,7 +2751,12 @@ class LifeDataService:
             "disposition_notes": ("COALESCE(NULLIF(TRIM(d.disposition_notes), ''), d.disposition_text)", COLUMN_TYPE_TEXT),
             "disposition_category": ("COALESCE(NULLIF(TRIM(d.disposition_category), ''), 'UNKNOWN')", COLUMN_TYPE_TEXT),
             "effective_record_class": ("COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto)", COLUMN_TYPE_TEXT),
-            "modeled_population_name": ("mp.population_name", COLUMN_TYPE_TEXT),
+            "modeled_population_name": (
+                "COALESCE(NULLIF(TRIM(mp.population_name), ''), '{}')".format(
+                    MODELED_POPULATION_PLACEHOLDER.replace("'", "''")
+                ),
+                COLUMN_TYPE_TEXT,
+            ),
             "include_in_weibull_candidate": (
                 f"(CASE WHEN COALESCE(d.include_in_weibull_candidate, 0) = 1 OR ({implied_include}) THEN 1 ELSE 0 END)",
                 COLUMN_TYPE_BOOLEAN,
