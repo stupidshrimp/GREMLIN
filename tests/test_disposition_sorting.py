@@ -160,6 +160,70 @@ class SortSpansEveryPageTests(DispositionSortTestCase):
         self.assertEqual(sorted(seen), sorted(["1", "2", "3", "4", "5", "6"]))
 
 
+class NarrativeSortTests(DispositionSortTestCase):
+    """The Failure Narrative column orders what the cell actually reads.
+
+    The cell shows only the boxes that were filled in, each captioned. Ordering
+    the four raw values run together orders something else entirely: a row whose
+    only box is Area Affected "Z" would sort before one whose only box is
+    Condition "A", while the two cells read the other way round.
+    """
+
+    def rendered(self, row):
+        labels = (("area_affected", "Area Affected"), ("condition_found", "Condition"),
+                  ("cause", "Cause"), ("action_taken", "Action"))
+        return " · ".join(f"{label}: {row[key].strip()}" for key, label in labels if row.get(key))
+
+    def setUp(self):
+        super().setUp()
+        self.add_wo("1", **{"Area Affected": "Z drive end"})
+        self.add_wo("2", **{"Condition": "A bearing hot"})
+        self.add_wo("3", **{"Area Affected": "A infeed", "Cause": "Seal wear"})
+
+    def narrative_order(self, sort_dir):
+        rows = self.service.disposition_rows(self.ASSET, "wo", sort="failure_narrative", sort_dir=sort_dir)
+        return [self.rendered(row) for row in rows]
+
+    def test_the_order_is_the_order_of_the_rendered_cells(self):
+        shown = self.narrative_order("asc")
+        self.assertEqual(shown, sorted(shown, key=str.casefold))
+        # The row whose caption sorts first, not the row whose raw value does.
+        self.assertEqual(self.task_ids(sort="failure_narrative", sort_dir="asc"), ["3", "1", "2"])
+
+    def test_descending_reverses_it(self):
+        self.assertEqual(self.narrative_order("desc"), sorted(self.narrative_order("asc"), key=str.casefold, reverse=True))
+
+    def test_a_record_with_no_narrative_sorts_last_in_both_directions(self):
+        self.add_wo("4")
+        self.assertEqual(self.task_ids(sort="failure_narrative", sort_dir="asc")[-1], "4")
+        self.assertEqual(self.task_ids(sort="failure_narrative", sort_dir="desc")[-1], "4")
+
+
+class ImpossibleDateTests(DispositionSortTestCase):
+    """A day that does not exist is not a date.
+
+    The browser builds its dates with Date.UTC/Date.parse, which roll an
+    impossible one forward -- 2025-02-31 becomes March 3 -- so both halves have
+    to refuse them, or the screen shows a day the record does not have and the
+    search box cannot find it.
+    """
+
+    def test_the_sort_key_refuses_a_date_that_does_not_exist(self):
+        for value in ("2025-02-31", "2025-02-31T00:00:00Z", "2/31/2025", "13/45/2025",
+                      "2026-01-15 25:00", "2025-02-29", "not a date", "", None):
+            with self.subTest(value=value):
+                self.assertIsNone(self.service._datetime_sort_key(value))
+
+    def test_a_real_leap_day_is_still_a_date(self):
+        self.assertEqual(self.service._datetime_sort_key("2024-02-29"), "2024-02-29 00:00:00")
+
+    def test_such_a_row_sorts_last_rather_than_under_an_invented_date(self):
+        self.add_wo("1", completedDate_Final="2026-01-05T00:00:00+00:00")
+        self.add_wo("2", completedDate_Final="2025-02-31")
+        self.assertEqual(self.task_ids(sort="completedDate_Final", sort_dir="asc"), ["1", "2"])
+        self.assertEqual(self.task_ids(sort="completedDate_Final", sort_dir="desc"), ["1", "2"])
+
+
 class SortColumnContractTests(DispositionSortTestCase):
     def test_every_advertised_column_can_actually_be_ordered_by(self):
         """The names handed to the browser are the names the SQL accepts."""
@@ -293,6 +357,20 @@ def test_the_script_reads_the_date_columns_as_dates():
 
     assert "function parseRecordDate" in SCRIPT
     assert 'column.type === "datetime" ? formatRecordDate(value)' in SCRIPT
+
+
+def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
+    """Date.UTC and Date.parse both roll 2025-02-31 forward to March 3.
+
+    ImpossibleDateTests pins the server half; this pins that the browser still
+    reads its instants back rather than displaying the rolled-over day.
+    """
+
+    assert "function utcInstant" in SCRIPT
+    parser = re.search(r"function parseRecordDate\(value\)(.*?)\n  }\n", SCRIPT, re.S)
+    assert parser, "the date parser is no longer where the test can read it"
+    # Both shapes it parses -- ISO and the m/d/y one -- have to go through it.
+    assert parser.group(1).count("utcInstant(") == 2
 
 
 if __name__ == "__main__":

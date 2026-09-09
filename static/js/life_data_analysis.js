@@ -212,6 +212,27 @@
   // stored as. Mirrors LifeDataService._parse_datetime; keep the two in step.
   //
   // Returns { ms, hasTime } or null for a value that is not a date at all.
+  //
+  // A day that does not exist is not a date. Both Date.UTC and Date.parse roll
+  // an impossible one forward -- 2025-02-31 becomes March 3, an hour of 25
+  // becomes the next morning -- which would put a day on screen that the record
+  // does not have, leave it unfindable by searching for what the cell shows
+  // (the server's parser refuses the original outright), and sort it under a
+  // date nobody wrote. So every instant is read back and checked against the
+  // digits it was built from.
+  function utcInstant(year, month, day, hour, minute, second) {
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+    const when = new Date(ms);
+    const rolled =
+      when.getUTCFullYear() !== year ||
+      when.getUTCMonth() !== month - 1 ||
+      when.getUTCDate() !== day ||
+      when.getUTCHours() !== hour ||
+      when.getUTCMinutes() !== minute ||
+      when.getUTCSeconds() !== second;
+    return rolled ? NaN : ms;
+  }
+
   function parseRecordDate(value) {
     if (value == null) return null;
     const text = String(value).trim();
@@ -220,6 +241,9 @@
     if (iso) {
       const [, year, month, day, hour, minute, second, zone] = iso;
       const hasTime = hour !== undefined;
+      // Checked before the offset is applied, since shifting a rolled-over date
+      // by a few hours only hides that it rolled over.
+      if (!isFinite(utcInstant(+year, +month, +day, +(hour || 0), +(minute || 0), +(second || 0)))) return null;
       if (zone) {
         const ms = Date.parse(
           `${year}-${month}-${day}T${hour || "00"}:${minute || "00"}:${second || "00"}${zone === "Z" ? "Z" : zone}`
@@ -234,10 +258,8 @@
       const [, month, day, year, hour, minute, second] = us;
       // Two-digit years the way Python's strptime reads them: 00-68 is 2000s.
       const fullYear = year.length === 2 ? (+year < 69 ? 2000 + +year : 1900 + +year) : +year;
-      return {
-        ms: Date.UTC(fullYear, +month - 1, +day, +(hour || 0), +(minute || 0), +(second || 0)),
-        hasTime: hour !== undefined,
-      };
+      const ms = utcInstant(fullYear, +month, +day, +(hour || 0), +(minute || 0), +(second || 0));
+      return isFinite(ms) ? { ms, hasTime: hour !== undefined } : null;
     }
     return null;
   }

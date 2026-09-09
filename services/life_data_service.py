@@ -2709,9 +2709,22 @@ class LifeDataService:
     def _disposition_sort_expressions(self, kind: str) -> dict[str, tuple[str, str]]:
         if kind not in ("wo", "pm"):
             raise ValueError("Disposition kind must be 'wo' or 'pm'.")
-        # The narrative is four boxes rendered as one cell, so it orders on the
-        # four run together, in the order the cell stacks them.
-        narrative = " || ' ' || ".join(f"COALESCE(m.{key}, '')" for key in NARRATIVE_KEYS)
+        # The narrative is four boxes rendered as one cell, and the cell shows only
+        # the boxes that were filled in, each captioned, joined by " · "
+        # (narrativeText in life_data_analysis.js). The sort key is built the same
+        # way, because ordering the raw values run together orders something the
+        # screen does not show: a row reading "Area Affected: Z" would sort before
+        # one reading "Condition: A" on the "Z", while the cells read the other way
+        # round. The separator trails the last entry instead of sitting between
+        # them, which is the same order with less SQL -- every key carries the same
+        # suffix, so it can never decide a comparison.
+        narrative = " || ".join(
+            "CASE WHEN NULLIF(TRIM(m.{key}), '') IS NOT NULL "
+            "THEN '{label}: ' || TRIM(m.{key}) || ' · ' ELSE '' END".format(
+                key=field.key, label=field.label.replace("'", "''")
+            )
+            for field in NARRATIVE_FIELDS
+        )
         # The screen's checkbox is ticked either because a saved disposition says
         # so or because the saved category implies it (see renderDispositionEditor),
         # so the ordering has to read the same rule or it disagrees with the
