@@ -92,6 +92,33 @@ def test_the_explainer_says_to_clear_both_taxonomy_ids():
     assert "both" in note.group(0).lower(), note.group(0)
 
 
+def test_the_explainer_warns_that_a_stale_workbook_overwrites():
+    """An upload is last-write-wins, and neither the tooltip nor the steps may
+    imply otherwise.
+
+    import_disposition_excel compares each uploaded row against the database as
+    it stands at upload time (_excel_disposition_matches_current reads
+    disposition_rows there and then), not against the workbook as downloaded. A
+    row the uploader never touched therefore counts as a difference once someone
+    else has re-dispositioned that record, and writes the older values back over
+    theirs -- reproduced with two services on one temp database.
+    """
+    note = re.search(r"<strong>A workbook is a snapshot[^<]*</strong>.*?</p>", TEMPLATE, re.S)
+    assert note, "the explainer no longer warns that an old workbook overwrites newer edits"
+    assert "not against the sheet as it was downloaded" in " ".join(note.group(0).split())
+
+    # The explainer's step 5 used to promise only-what-you-changed.
+    assert "rows you did not change are skipped" not in TEMPLATE
+
+    # So did the upload tooltip, whose text is split across concatenated string
+    # literals -- so match on the call, with the JS quoting collapsed out.
+    call = re.search(r"withTooltip\(\n\s+upload,(.*?)\n\s+\),", SCRIPT, re.S)
+    assert call, "the upload button no longer carries a tooltip"
+    tooltip = re.sub(r'"\s*\+\s*"', "", call.group(1))
+    assert "only the ones you changed are saved" not in tooltip
+    assert "stale" in tooltip, tooltip
+
+
 def test_both_excel_buttons_are_wrapped_in_a_tooltip():
     # The call sites, not the helper's own one-line declaration: each wraps its
     # button on the line after the opening bracket.

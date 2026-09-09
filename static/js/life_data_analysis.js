@@ -2386,8 +2386,9 @@
         ),
         withTooltip(
           upload,
-          "Uploads that filled-in workbook back. Rows are matched by mapped_record_id and only the ones you " +
-            "changed are saved, exactly as if you had typed them into this table."
+          "Uploads that filled-in workbook back. Rows are matched by mapped_record_id, and every row that " +
+            "differs from what this page holds now is written — so an old workbook can put stale values " +
+            "back over someone else's newer edits."
         ),
         save,
       ]),

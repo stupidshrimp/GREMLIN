@@ -135,9 +135,10 @@
           failure-narrative columns are read-only — edits there are ignored on import, so the workbook can
           never overwrite what the maintenance team recorded in Limble.</li>
         <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
-          <code>mapped_record_id</code>, rows you did not change are skipped, and the rest are saved as the
-          current disposition — the same result as editing them on this page and clicking Save
-          Dispositions. The page then reloads with the imported values in place.</li>
+          <code>mapped_record_id</code>. Every row whose values differ from what the page holds at that
+          moment is saved as the current disposition — the same result as editing it here and clicking Save
+          Dispositions — and rows that already match are skipped. The page then reloads with the imported
+          values in place.</li>
       </ol>
 
       <div class="lda-help-note">
@@ -157,8 +158,15 @@
           is refused — a <code>mapped_record_id</code> that does not belong to the selected asset and record
           type (usually a workbook downloaded for a different one), or a mechanism sitting under the wrong
           failure mode. Fix that row and upload the file again.</p>
+        <p><strong>A workbook is a snapshot, and uploading it does not merge.</strong> Each row is compared
+          against the database as it stands when you upload, not against the sheet as it was downloaded. So
+          if somebody else dispositioned one of these records while your copy sat on your desktop, your
+          untouched row still counts as a difference and puts the older values back over theirs. Download a
+          fresh workbook if yours has been sitting around, and try not to have two people on one asset at
+          the same time.</p>
         <p><strong>Downloading is open to everyone; importing writes,</strong> so it needs an editor
-          account. Re-uploading the same file twice is safe: the second pass finds nothing changed.</p>
+          account. Uploading the same file twice in a row is harmless: the second pass finds the database
+          already matching.</p>
       </div>
     </div>
   </div>
