@@ -227,8 +227,8 @@
   // (the server's parser refuses the original outright), and sort it under a
   // date nobody wrote. So every instant is read back and checked against the
   // digits it was built from.
-  function utcInstant(year, month, day, hour, minute, second) {
-    const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+  function utcInstant(year, month, day, hour, minute, second, milli) {
+    const ms = Date.UTC(year, month - 1, day, hour, minute, second, milli || 0);
     const when = new Date(ms);
     const rolled =
       when.getUTCFullYear() !== year ||
@@ -240,25 +240,39 @@
     return rolled ? NaN : ms;
   }
 
+  // "123000" or "5" after the decimal point, as whole milliseconds.
+  function fractionMillis(fraction) {
+    return fraction ? Math.floor(Number("0." + fraction) * 1000) : 0;
+  }
+
   function parseRecordDate(value) {
     if (value == null) return null;
     const text = String(value).trim();
     if (!text) return null;
-    const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text);
+    // The fractional second is optional but common: the ingestion path converts a
+    // millisecond timestamp by dividing, so every date it writes from one carries
+    // ".123000". Python's parser takes it, so this has to as well -- rejecting it
+    // would leave those values shown raw and sorted as though they were blank.
+    const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text);
     if (iso) {
-      const [, year, month, day, hour, minute, second, zone] = iso;
+      const [, year, month, day, hour, minute, second, fraction, zone] = iso;
       const hasTime = hour !== undefined;
+      const milli = fractionMillis(fraction);
       // Checked before the offset is applied, since shifting a rolled-over date
       // by a few hours only hides that it rolled over.
-      if (!isFinite(utcInstant(+year, +month, +day, +(hour || 0), +(minute || 0), +(second || 0)))) return null;
+      if (!isFinite(utcInstant(+year, +month, +day, +(hour || 0), +(minute || 0), +(second || 0), milli))) return null;
       if (zone) {
         const ms = Date.parse(
-          `${year}-${month}-${day}T${hour || "00"}:${minute || "00"}:${second || "00"}${zone === "Z" ? "Z" : zone}`
+          `${year}-${month}-${day}T${hour || "00"}:${minute || "00"}:${second || "00"}` +
+            `${fraction ? "." + fraction : ""}${zone === "Z" ? "Z" : zone}`
         );
         return isFinite(ms) ? { ms, hasTime } : null;
       }
       // No offset means UTC, which is how the server reads the same value.
-      return { ms: Date.UTC(+year, +month - 1, +day, +(hour || 0), +(minute || 0), +(second || 0)), hasTime };
+      return {
+        ms: Date.UTC(+year, +month - 1, +day, +(hour || 0), +(minute || 0), +(second || 0), milli),
+        hasTime,
+      };
     }
     const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
     if (us) {
@@ -2513,10 +2527,28 @@
       text: "Disposition via Excel",
       onclick: () => uploadExcel(data.kind, data.scope),
     });
+    // Columns whose values a save can change. Sorting by one of them means the
+    // saved rows may have just moved in the ordering the next page will be cut
+    // from -- see the reload below.
+    const editableKeys = new Set(extraColumns.map((column) => column.key));
     const save = el("button", {
       class: "btn-primary",
       text: "Save Dispositions",
-      onclick: () => saveDispositions(data.kind, changed),
+      onclick: () =>
+        saveDispositions(data.kind, changed, () => {
+          // A page is a slice of a global ordering, so saving a value the
+          // ordering is built from moves rows across the page boundaries while
+          // the screen still shows the slice from before the write. Paging on
+          // from there cuts the next page out of an order that no longer
+          // matches: a row already dispositioned comes round again, and one
+          // that moved up past the offset is never shown at all -- silently, on
+          // the screen whose whole job is to visit every record once. Reloading
+          // the current page puts the view back in step with the order the next
+          // OFFSET will be taken from. mapped_record_id cannot help here: it
+          // breaks ties within one ordering, not between two different ones.
+          if (!editableKeys.has(state.dispositionSort.key)) return;
+          loadDispositionPage(data.kind, data.scope, data.page_index);
+        }),
     });
     const card = el("section", { class: "glass-card lda-card" }, [
       el("h2", { text: isPm ? "Disposition PMs" : "Disposition Work Orders" }),
@@ -2854,7 +2886,7 @@
     loadDispositionPage(data.kind, data.scope, targetPage);
   }
 
-  async function saveDispositions(kind, changedFn) {
+  async function saveDispositions(kind, changedFn, afterSave) {
     const changed = changedFn();
     if (!changed.length) {
       showToast("No disposition rows changed, so nothing needed to be saved.", "info");
@@ -2862,16 +2894,21 @@
     }
     const payloads = changed.map((rs) => dispositionPayloadFromRow(rs, kind));
     beginLoading("Saving dispositions…");
+    let saved = false;
     try {
       const result = await postJson(`${API}/dispositions/save`, { dispositions: payloads });
       changed.forEach((rs) => (rs.initial = JSON.stringify(dispositionPayloadFromRow(rs, kind))));
       showToast(`Saved ${result.saved} changed REL disposition row(s) to event_disposition.`, "success");
+      saved = true;
       refreshSummary();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
       endLoading();
     }
+    // Only once the write actually landed: a failed save leaves the rows on
+    // screen as the user typed them, which is what they need to fix and retry.
+    if (saved && typeof afterSave === "function") afterSave();
   }
 
   // ---- Excel dispositioning -------------------------------------------------

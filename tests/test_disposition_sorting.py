@@ -270,6 +270,77 @@ class ModeledPopulationSortTests(DispositionSortTestCase):
         self.assertEqual(self.shown("desc"), ["Zulu", MODELED_POPULATION_PLACEHOLDER, "Alpha"])
 
 
+class FractionalSecondTests(DispositionSortTestCase):
+    """Timestamps carrying milliseconds are dates like any other.
+
+    The ingestion path converts a millisecond Unix timestamp by dividing it, so
+    every date it writes from one carries a ".123000" fraction. Both parsers have
+    to take those or the column silently stops being a date for most of its rows.
+    """
+
+    def test_the_sort_key_reads_a_fractional_second(self):
+        for value in ("2023-11-14T22:13:19.123000+00:00", "2023-11-14T22:13:19.5Z", "2023-11-14 22:13:19.123"):
+            with self.subTest(value=value):
+                self.assertEqual(self.service._datetime_sort_key(value), "2023-11-14 22:13:19")
+
+    def test_rows_with_fractional_timestamps_still_sort_chronologically(self):
+        self.add_wo("1", completedDate_Final="2026-03-01T09:15:00.500000+00:00")
+        self.add_wo("2", completedDate_Final="2025-12-31T08:00:00.250000+00:00")
+        self.add_wo("3", completedDate_Final="2026-01-15T00:00:00.001000+00:00")
+        self.assertEqual(self.task_ids(sort="completedDate_Final", sort_dir="asc"), ["2", "3", "1"])
+
+
+class OrderChangedBySavingTests(DispositionSortTestCase):
+    """Saving into the column being sorted by moves rows between pages.
+
+    A page is a slice of a global ordering. Saving a value that ordering is built
+    from re-cuts every page, so a screen still showing the pre-save slice can page
+    on into a different order -- showing a row it already showed and skipping one
+    it never did. mapped_record_id breaks ties within one ordering, not between
+    two of them, so the client reloads the current page after such a save.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for task_id in ("1", "2", "3", "4"):
+            self.add_wo(task_id)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            self.mapped = {
+                row["task_id"]: row["mapped_record_id"]
+                for row in conn.execute("SELECT mapped_record_id, task_id FROM mapped_cmms_record")
+            }
+        for task_id in ("3", "4"):
+            self.disposition(task_id, "EXCLUDED_NON_FAILURE")
+
+    def disposition(self, task_id, category):
+        self.service.save_disposition(
+            self.mapped[task_id], kind="wo", disposition_category=category,
+            disposition_text="reviewed", record_class_final="CORRECTIVE_WO",
+        )
+
+    def page(self, index, size=2):
+        return self.task_ids(sort="disposition_category", sort_dir="asc", limit=size, offset=index * size)
+
+    def test_a_save_really_does_re_cut_the_pages(self):
+        """The precondition for the reload: without it the fix would be noise."""
+
+        self.assertEqual(self.page(0), ["3", "4"])
+        self.disposition("3", "UNKNOWN")
+        # Row 3 has moved to the end, so the same offsets now describe other rows.
+        self.assertEqual(self.task_ids(sort="disposition_category", sort_dir="asc"), ["4", "1", "2", "3"])
+
+    def test_paging_on_from_a_stale_page_repeats_one_row_and_skips_another(self):
+        seen = self.page(0)
+        self.disposition("3", "UNKNOWN")
+        seen += self.page(1)
+        self.assertEqual(seen, ["3", "4", "2", "3"])
+        repeated = sorted({task for task in seen if seen.count(task) > 1})
+        never_shown = sorted({"1", "2", "3", "4"} - set(seen))
+        self.assertEqual(repeated, ["3"])
+        self.assertEqual(never_shown, ["1"])
+
+
 class SortColumnContractTests(DispositionSortTestCase):
     def test_every_advertised_column_can_actually_be_ordered_by(self):
         """The names handed to the browser are the names the SQL accepts."""
@@ -444,6 +515,22 @@ def test_the_script_renders_the_population_placeholder_the_server_named():
 
     assert "row.modeled_population_name || data.modeled_population_placeholder" in SCRIPT
     assert MODELED_POPULATION_PLACEHOLDER not in SCRIPT
+
+
+def test_the_script_reloads_the_page_after_saving_into_the_sorted_column():
+    """OrderChangedBySavingTests shows what the reload is for."""
+
+    assert "const editableKeys = new Set(extraColumns.map((column) => column.key));" in SCRIPT
+    assert "if (!editableKeys.has(state.dispositionSort.key)) return;" in SCRIPT
+    assert "loadDispositionPage(data.kind, data.scope, data.page_index);" in SCRIPT
+
+
+def test_the_script_accepts_a_fractional_second():
+    """Python's parser takes them, so the browser's has to as well."""
+
+    parser = re.search(r"function parseRecordDate\(value\)(.*?)\n  }\n", SCRIPT, re.S)
+    assert parser, "the date parser is no longer where the test can read it"
+    assert r"(?::(\d{2})(?:\.(\d+))?)?" in parser.group(1)
 
 
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
