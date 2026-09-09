@@ -359,6 +359,33 @@ def test_the_script_reads_the_date_columns_as_dates():
     assert 'column.type === "datetime" ? formatRecordDate(value)' in SCRIPT
 
 
+def test_a_column_filter_survives_the_reload_that_sorting_now_costs():
+    """Sorting used to reorder the rows in place, which left filters alone.
+
+    It reloads the table from the server now, so the filter state has to be
+    handed back in or an active filter would silently disappear and the rows it
+    was hiding would return.
+    """
+
+    assert "onFiltersChanged" in SCRIPT
+    assert "filters: state.dispositionFilters" in SCRIPT
+    # Keyed by column, because the two record types do not draw the same columns
+    # in the same positions.
+    assert "active[columns[col].key] = Array.from(set)" in SCRIPT
+    # And dropped when the selection changes, since the rows change with it.
+    assert "state.dispositionFilters = {};" in SCRIPT
+
+
+def test_the_table_says_so_when_a_filter_hides_every_row_on_the_page():
+    """A carried-over filter can match nothing on the page it lands on.
+
+    A header sitting over an empty table reads as a page that failed to load,
+    and on a table this wide the column doing the hiding is offscreen.
+    """
+
+    assert "Every row on this page is hidden by a column filter" in SCRIPT
+
+
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
     """Date.UTC and Date.parse both roll 2025-02-31 forward to March 3.
 

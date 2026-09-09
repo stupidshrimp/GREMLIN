@@ -111,6 +111,13 @@
     // screen. `key` is a column name the server advertised; "" is its own
     // default order.
     dispositionSort: { key: "", dir: "asc" },
+    // Active column value filters for the disposition table, keyed by column, so
+    // paging and sorting -- both of which rebuild the table from the server --
+    // land on the view they left instead of quietly dropping the filter.
+    // dispositionFilterSelection is the selection they were chosen against;
+    // when that changes the rows do too, and the filter goes with them.
+    dispositionFilters: {},
+    dispositionFilterSelection: "",
     // Monotonic token for disposition reloads. Overlapping debounced searches /
     // page changes can resolve out of order on a slow endpoint; only the load
     // whose token still matches is allowed to render, so a stale response never
@@ -2431,9 +2438,22 @@
     // that does not exist for this record type (a WO sort still selected when
     // the Record Type switches to PM) comes back cleared.
     state.dispositionSort = { key: data.sort || "", dir: data.sort_dir === "desc" ? "desc" : "asc" };
+
+    // A value filter narrows what is on screen, so it is kept while the same
+    // selection is paged and sorted, and dropped when the selection itself
+    // changes: a different asset, record type, scope or search shows a different
+    // set of records, and values picked out of the old one would hide most of it.
+    const selection = [data.asset_number, data.kind, data.scope, data.search || ""].join("\u0000");
+    if (state.dispositionFilterSelection !== selection) {
+      state.dispositionFilters = {};
+      state.dispositionFilterSelection = selection;
+    }
+
     enableTableColumnTools(table, {
       columns,
       sort: state.dispositionSort,
+      filters: state.dispositionFilters,
+      onFiltersChanged: (active) => { state.dispositionFilters = active; },
       // Re-asks for the selection ordered by this column, from its first page:
       // the point of sorting is to bring the top of the whole selection into
       // view, which a page that stayed put would not do. A reload, so it asks
@@ -2509,9 +2529,9 @@
       el("p", {
         class: "lda-hint",
         text:
-          "Use the ▾ menu in any column header to sort or filter. Sorting is applied to every row in this " +
-          "selection, not just this page, so the first page holds the top of the sort; the value filter " +
-          "applies to the rows on this page.",
+          "Use the ▾ menu in any column header to sort or filter. Sorting covers every row in this " +
+          "selection, not just this page, so the first page holds the top of the sort. A value filter is " +
+          "picked from the values on the current page and stays on while you sort and page.",
       }),
       el("div", { class: "lda-table-scroll" }, [table]),
       pager,
@@ -4629,18 +4649,70 @@
     const onSort = typeof settings.onSort === "function" ? settings.onSort : null;
     // Active value filter per column: a Set of allowed display values, or null
     // (no filter, every value shown).
-    const filters = ths.map(() => null);
+    //
+    // A caller whose table is rebuilt from the server keeps this between renders
+    // (`settings.filters`, keyed by column rather than by position, and reported
+    // back through `settings.onFiltersChanged`). Without it, sorting -- which is
+    // a reload -- would silently drop an active filter and bring the hidden rows
+    // back, which is not what pointing a column at a different order asks for.
+    const onFiltersChanged = typeof settings.onFiltersChanged === "function" ? settings.onFiltersChanged : null;
+    const restored = settings.filters || {};
+    const filters = columns.map((column) =>
+      column.key && Array.isArray(restored[column.key]) ? new Set(restored[column.key]) : null
+    );
+
+    // The active filters keyed by column, for a caller to hand back on the next
+    // render. Columns are named rather than numbered because the two record
+    // types do not draw the same ones in the same places.
+    function activeFilters() {
+      const active = {};
+      filters.forEach((set, col) => {
+        if (set && columns[col].key) active[columns[col].key] = Array.from(set);
+      });
+      return active;
+    }
+
+    function filtersChanged() {
+      if (onFiltersChanged) onFiltersChanged(activeFilters());
+    }
 
     const dataRows = () =>
       Array.from(tbody.rows).filter(
         (tr) => tr.cells.length === ths.length && !tr.querySelector(".lda-empty-row")
       );
 
+    // Shown when the filters hide every row on the page -- which a filter carried
+    // across a reload can easily do, since it was picked from values the new page
+    // may not have. A header sitting over nothing otherwise reads as a page that
+    // failed to load, and on a table this wide the marked column that is doing
+    // the hiding is offscreen.
+    let allHiddenRow = null;
+    function showAllHidden(show) {
+      if (!show && !allHiddenRow) return;
+      if (!allHiddenRow) {
+        allHiddenRow = el("tr", {}, [
+          el("td", {
+            class: "lda-readonly lda-empty-row",
+            colspan: String(ths.length),
+            text:
+              "Every row on this page is hidden by a column filter. Clear the filter from the ▾ menu of the " +
+              "highlighted column headers to bring them back.",
+          }),
+        ]);
+        tbody.appendChild(allHiddenRow);
+      }
+      allHiddenRow.style.display = show ? "" : "none";
+    }
+
     function applyFilters() {
-      dataRows().forEach((tr) => {
+      const rows = dataRows();
+      let shown = 0;
+      rows.forEach((tr) => {
         const hidden = filters.some((set, col) => set && !set.has(columnCellText(tr.cells[col])));
         tr.style.display = hidden ? "none" : "";
+        if (!hidden) shown += 1;
       });
+      showAllHidden(rows.length > 0 && shown === 0);
     }
 
     function markSorted(col, dir) {
@@ -4742,6 +4814,7 @@
         filters[col] = null;
         anchorBtn.classList.remove("is-active");
         applyFilters();
+        filtersChanged();
         closeColumnMenu();
       });
       apply.addEventListener("click", () => {
@@ -4754,6 +4827,7 @@
           anchorBtn.classList.add("is-active");
         }
         applyFilters();
+        filtersChanged();
         closeColumnMenu();
       });
       menu.appendChild(el("div", { class: "lda-col-menu-actions" }, [clear, apply]));
@@ -4790,6 +4864,16 @@
       th.appendChild(el("div", { class: "lda-col-head" }, [el("span", { class: "lda-col-label", text: label }), btn]));
     });
 
+    // A filter carried over from the previous render hides its rows and marks its
+    // header now, so a reload lands on the same view it left.
+    if (filters.some(Boolean)) {
+      ths.forEach((th, col) => {
+        const btn = th.querySelector(".lda-col-tool");
+        if (btn && filters[col]) btn.classList.add("is-active");
+      });
+      applyFilters();
+    }
+
     // A sort the caller ran (the server ordering a disposition page) still has to
     // show on the header it was run from.
     if (settings.sort && settings.sort.key) {
@@ -4807,6 +4891,7 @@
         if (btn) btn.classList.remove("is-active");
       });
       applyFilters();
+      filtersChanged();
     }
 
     return { clearFilters };
@@ -4986,6 +5071,8 @@
     state.dispositionPageIndex = 0;
     state.dispositionSearch = "";
     state.dispositionSort = { key: "", dir: "asc" };
+    state.dispositionFilters = {};
+    state.dispositionFilterSelection = "";
 
     const kindSelect = $("lda-disp-kind");
     if (kindSelect) {
