@@ -970,6 +970,62 @@ button.life-data-card {
   }
 }
 
+/* Under construction.
+   ---------------------------------------------------------------------------
+   The mark a page or a card wears while the thing behind it is still being
+   built. It started life in metrics.css as .metrics-construction-badge and is
+   shared furniture now that three places wear it: the metrics cards, the PM
+   calendar's hero, and the Reliability Links card that leads there. One rule
+   rather than a copy per sheet, so the pill cannot come to mean three slightly
+   different things.
+
+   The wrapper carries the label for a screen reader and the inner <span> the
+   same words for everyone else, so the svg can be aria-hidden. */
+.construction-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid var(--warning-tint);
+  border-radius: 999px;
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* The hard hat: filled in the warning yellow, outlined in the badge's own ink
+   so it holds its shape against either theme's tint. Bobbing from its base
+   rather than its middle keeps the brim on the same line as the words. */
+.construction-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: #f6b900;
+  stroke: var(--warning-ink);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-origin: 50% 100%;
+  animation: constructionBob 1.8s ease-in-out infinite;
+}
+
+@keyframes constructionBob {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  35% { transform: translateY(-2px) rotate(-5deg); }
+  65% { transform: translateY(-1px) rotate(4deg); }
+}
+
+/* An animation that loops for as long as the page is open is exactly what the
+   preference is asking us not to run. The badge still reads without it. */
+@media (prefers-reduced-motion: reduce) {
+  .construction-icon {
+    animation: none;
+  }
+}
+
 /* Reliability Links. Each category is its own .glass-card section, laid out the
    way .documentation-tabs is, so the heading and its grid space themselves
    rather than relying on a margin the card cannot see. */
@@ -1015,6 +1071,17 @@ button.life-data-card {
 .link-card:focus-visible {
   outline: 2px solid var(--forest-700);
   outline-offset: 3px;
+}
+
+/* A card pointing at an unfinished page carries the same pill the page does.
+   The row is what wraps, so a badge with no room beside the title drops under
+   it -- which is what happens at the grid's own 280px track -- rather than
+   pushing the card wider than the track and the page sideways with it. */
+.link-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
 }
 
 .link-title {

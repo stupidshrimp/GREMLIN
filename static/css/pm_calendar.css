@@ -19,6 +19,21 @@
  * near-black text -- on top of the dark theme's near-black page.
  */
 
+/* ---- hero ---------------------------------------------------------------- */
+/* The eyebrow and theme.css's .construction-badge share a line, which is where
+   the badge fits: the h1 under it is fluid (clamp up to 2.5rem) and wide enough
+   at any viewport that a pill beside it would wrap onto a line of its own and
+   sit orphaned between the heading and the copy. Next to the small label the
+   two read as one caption, the way the metrics cards read with theirs beside
+   the card heading. Still wrapping, for a viewport narrow enough that even
+   these two do not fit. */
+.pm-hero-label-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+}
+
 /* ---- year-to-date summary ------------------------------------------------ */
 /* The same strip the analysis pages put above their charts: a quiet label over
    a large number, on a veil panel inside the card rather than a card each. */
