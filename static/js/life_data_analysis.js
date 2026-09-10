@@ -253,7 +253,19 @@
     // millisecond timestamp by dividing, so every date it writes from one carries
     // ".123000". Python's parser takes it, so this has to as well -- rejecting it
     // would leave those values shown raw and sorted as though they were blank.
-    const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(text);
+    //
+    // No whitespace at all before the offset. The server's answer there is not a
+    // rule so much as a set of accidents -- it takes "...T15:00:00 -05:00" and
+    // "...15:00:00.123000  +0000" but refuses "...T15:00:00  -05:00" and
+    // "...15:00:00.5 +00:00", because fromisoformat is picky about how many
+    // fractional digits it will tolerate alongside a spaced offset. Trying to
+    // trace that line is what kept putting values on the wrong side of it, and
+    // being wrong in this direction is the harmful one: a value this side reads
+    // and the other refuses is drawn as a normalised date while the ORDER BY
+    // files it with the blanks. So the offset must follow the time directly.
+    // Anything looser the server happens to accept is simply shown as stored,
+    // which costs nothing but the tidier rendering.
+    const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(text);
     if (iso) {
       const [, year, month, day, hour, minute, second, fraction, zone] = iso;
       const hasTime = hour !== undefined;

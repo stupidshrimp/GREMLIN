@@ -565,21 +565,31 @@ def test_the_script_accepts_a_fractional_second():
 
 
 def _date_corpus():
+    """Every shape, crossed, rather than the ones anyone thought to write down.
+
+    The separator and the run of spaces before the offset are their own axes
+    because both produced findings: a "T" where the server wants a space, and
+    "\\s*" where the server allows exactly one.
+    """
+
     dates = [
         "2026-01-15", "2026-1-15", "1/15/2026", "01/15/2026", "1/15/26",
         "2025-02-31", "2/31/2025", "2024-02-29", "2025-02-29", "13/45/2025",
     ]
-    separators = ["", " ", "T"]
+    separators = ["", " ", "  ", "T"]
     times = ["", "15:00", "15:00:30", "15:00:00.123000", "15:00:00.5", "25:00", "9:05"]
+    zone_gaps = ["", " ", "  "]
     zones = ["", "Z", "+00:00", "-05:00", "+0000"]
     values = set()
-    for date, separator, time, zone in itertools.product(dates, separators, times, zones):
+    for date, separator, time, gap, zone in itertools.product(dates, separators, times, zone_gaps, zones):
         if bool(separator) != bool(time):
             continue  # a separator needs a time, and a time needs a separator
         if not time and zone:
             continue  # a zone with no clock time is not a shape either side sees
-        values.add(f"{date}{separator}{time}{zone}")
-    values.update(["", "   ", "not a date", "TBD", "2026", "15:00", "1699999999", "2026-01-15  15:00"])
+        if gap and not zone:
+            continue  # a gap is only a gap when something follows it
+        values.add(f"{date}{separator}{time}{gap}{zone}")
+    values.update(["", "   ", "not a date", "TBD", "2026", "15:00", "1699999999"])
     return sorted(values)
 
 
@@ -590,7 +600,27 @@ DATE_CORPUS = _date_corpus()
 # Both are unpadded ISO, which strptime takes through "%Y-%m-%d" and
 # "%Y-%m-%d %H:%M:%S" -- and only through those, which is why the browser does
 # not try to guess at them.
-BROWSER_IS_STRICTER = ["2026-1-15", "2026-1-15 15:00:30"]
+# The three ways the server reads a shape the browser will not. Listing the
+# values themselves does not survive the corpus growing, and the point is not
+# which strings they are -- it is that each one is explained by a known leniency
+# rather than being a new kind of divergence.
+_SERVER_LENIENCIES = (
+    ("repeated whitespace", lambda value: "  " in value),
+    ("a gap before the offset", lambda value: re.search(r"\d\s+(?:Z|[+-]\d{2}:?\d{2})$", value) is not None),
+    (
+        "an unpadded month or day",
+        lambda value: re.match(r"^\d{4}-\d{1,2}-\d{1,2}(?:\D|$)", value) is not None
+        and re.match(r"^\d{4}-\d{2}-\d{2}(?:\D|$)", value) is None,
+    ),
+)
+
+
+def _server_leniency(value):
+    for name, matches in _SERVER_LENIENCIES:
+        if matches(value):
+            return name
+    return None
+
 
 _READ_CLIENT_PARSER = """
 const fs = require("fs");
@@ -646,15 +676,24 @@ def test_the_browser_never_calls_a_date_what_the_server_refuses(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the client parser")
-def test_the_values_only_the_server_reads_are_the_ones_we_know_about(tmp_path):
-    """Cosmetic rather than broken, but a new one should still be noticed."""
+def test_every_value_only_the_server_reads_is_a_known_leniency(tmp_path):
+    """Cosmetic rather than broken, but a new *kind* should still be noticed.
+
+    Being stricter costs the tidier rendering on that cell and nothing else, so
+    what matters is not how many of these there are but that each one is the
+    server being loose about whitespace or zero-padding, not the two sides
+    disagreeing about something that matters.
+    """
 
     server, browser = _parser_verdicts(tmp_path)
-    stricter = [
+    unexplained = [
         value for value, on_server, in_browser in zip(DATE_CORPUS, server, browser)
-        if on_server and not in_browser
+        if on_server and not in_browser and _server_leniency(value) is None
     ]
-    assert stricter == BROWSER_IS_STRICTER
+    assert not unexplained, (
+        "the server reads these and the browser does not, and it is not one of the "
+        f"known leniencies: {unexplained}"
+    )
 
 
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
