@@ -16,10 +16,14 @@ row it is.
 import importlib
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+import pytest
 
 from services.life_data_service import MODELED_POPULATION_PLACEHOLDER, LifeDataService
 
@@ -531,6 +535,82 @@ def test_the_script_accepts_a_fractional_second():
     parser = re.search(r"function parseRecordDate\(value\)(.*?)\n  }\n", SCRIPT, re.S)
     assert parser, "the date parser is no longer where the test can read it"
     assert r"(?::(\d{2})(?:\.(\d+))?)?" in parser.group(1)
+
+
+# The two parsers, run against the same values.
+#
+# Three separate review findings on this change were the same fault: the browser
+# and the server disagreeing about whether some string is a date. Each one showed
+# up the same way -- a value rendered as a normalised date on screen while the
+# ORDER BY sorted it with the blanks, unfindable by searching for the text in its
+# own cell. Checking one shape at a time is how the third one got in, so this
+# runs the real client parser over a corpus and compares it to the real server
+# parser, value for value.
+#
+# It needs node, which a contributor may not have; the assertions above still
+# pin the shapes structurally when it is skipped.
+DATE_CORPUS = [
+    # ISO, with and without time, zone and fractional seconds
+    "2026-01-15", "2026-01-15 15:00:00", "2026-01-15T15:00:00", "2026-01-15T15:00",
+    "2026-01-15T15:00:00Z", "2026-01-15T15:00:00+00:00", "2026-01-15T15:00:00-05:00",
+    "2026-01-15T15:00:00.123000+00:00", "2026-01-15T15:00:00.5Z", "2026-01-15 15:00:00.123",
+    "2026-01-15T15:00:00.123", "2026-01-15T15:00Z", "2026-01-15 15:00",
+    # slash dates -- the server reads these through strptime, which has no
+    # seconds format for them
+    "1/15/2026", "01/15/2026", "1/15/2026 15:00", "1/15/2026 15:00:30",
+    "01/15/2026 15:00:30", "1/15/26", "1/15/26 15:00", "1/15/26 15:00:30",
+    "12/31/2025", "11/14/23",
+    # days that do not exist, and malformed ones
+    "2025-02-31", "2025-02-29", "2024-02-29", "2026-01-15 25:00", "2025-13-01",
+    "2/31/2025", "13/45/2025", "2025-02-31T00:00:00.500Z",
+    # not dates at all
+    "", "   ", "not a date", "TBD", "2026", "15:00", "1699999999",
+]
+
+_READ_CLIENT_PARSER = """
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+// The script is one big IIFE that touches `document` as it loads, so the three
+// functions under test are lifted out by brace matching rather than required.
+const grab = (name) => {
+  const start = src.indexOf("function " + name + "(");
+  if (start < 0) throw new Error("missing " + name);
+  let depth = 0;
+  for (let i = src.indexOf("{", start); i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error("unbalanced " + name);
+};
+eval(grab("utcInstant") + ";" + grab("fractionMillis") + ";" + grab("parseRecordDate"));
+const corpus = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+console.log(JSON.stringify(corpus.map((value) => Boolean(parseRecordDate(value)))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the client parser")
+def test_both_parsers_agree_on_what_counts_as_a_date(tmp_path):
+    service = LifeDataService.__new__(LifeDataService)
+    runner = tmp_path / "parse.js"
+    runner.write_text(_READ_CLIENT_PARSER)
+    corpus_json = tmp_path / "corpus.json"
+    corpus_json.write_text(json.dumps(DATE_CORPUS))
+    script = Path(__file__).resolve().parent.parent / "static" / "js" / "life_data_analysis.js"
+    result = subprocess.run(
+        ["node", str(runner), str(script), str(corpus_json)],
+        capture_output=True, text=True, check=True,
+    )
+    browser = json.loads(result.stdout)
+    server = [service._datetime_sort_key(value) is not None for value in DATE_CORPUS]
+    disagreements = [
+        (value, "server" if on_server else "browser")
+        for value, on_server, in_browser in zip(DATE_CORPUS, server, browser)
+        if on_server != in_browser
+    ]
+    assert not disagreements, (
+        "these values are a date to one side and not the other, which shows them "
+        f"normalised on screen while sorting them with the blanks: {disagreements}"
+    )
 
 
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
