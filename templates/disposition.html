@@ -88,13 +88,18 @@
       </div>
 
       <ol class="lda-help-steps">
-        <li><strong>Select the asset and record type first.</strong> The workbook is built from the Asset
-          Number and Record Type chosen in Step 1, and it holds every eligible entry for that selection —
-          the Rows selector, the search box, and the page you are on do not narrow it.</li>
+        <li><strong>Select the asset, record type and rows first.</strong> The workbook is built from the
+          Asset Number, Record Type and Rows chosen in Step 1: leave Rows on <em>All eligible rows</em> for
+          every entry, or set it to <em>Only new / undispositioned</em> to get just the backlog. The search
+          box and the page you are on do not narrow it — those change what you are looking at, while Rows
+          says which records are outstanding.</li>
         <li><strong>Click Download Excel.</strong> You get
-          <code>&lt;asset&gt;_wo_dispositions.xlsx</code> (or <code>_pm_</code> for PM reset events). The
-          first sheet is one row per record; the second sheet, <strong>Lookup Lists</strong>, feeds the
-          dropdowns, so leave it in the file.</li>
+          <code>&lt;asset&gt;_wo_dispositions.xlsx</code> (or <code>_pm_</code> for PM reset events, and
+          <code>_new_</code> in the name when you asked for only the new rows, so the two are told apart on
+          your desktop). The first sheet is one row per record; the second sheet,
+          <strong>Lookup Lists</strong>, feeds the dropdowns, so leave it in the file. Dates, task IDs and
+          downtime arrive as real dates and numbers, so Sort and Filter on the header row order them the way
+          the table does rather than alphabetically.</li>
         <li><strong>Fill in the disposition columns.</strong> They are the last columns on the sheet, and
           most of them are dropdowns:
           <div class="lda-help-columns">

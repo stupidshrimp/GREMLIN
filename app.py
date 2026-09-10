@@ -1705,13 +1705,21 @@ def api_download_disposition_excel():
     service = _service_or_api_error()
     asset_number = _required_asset()
     kind = _disposition_kind()
+    # The Rows selector, read exactly as /api/dispositions reads it: the workbook
+    # is the offline copy of the table, so "Only new / undispositioned" on screen
+    # has to mean the same rows in the file. Anything else is the full selection,
+    # which is what an unset or unknown value already meant.
+    only_needing = (request.values.get("scope") or "all").strip().lower() == "new"
     safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
+    # In the name, so the two workbooks for one asset are told apart on disk and
+    # the narrower one is not mistaken for the full record set months later.
+    scope_token = "new_" if only_needing else ""
     # Build the workbook in a temp file, then serve it from memory and delete the
     # temp file immediately so repeated downloads never orphan files on disk.
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_{kind}_")
     os.close(fd)
     try:
-        service.export_disposition_excel(asset_number, kind, path)
+        service.export_disposition_excel(asset_number, kind, path, only_needing_disposition=only_needing)
         with open(path, "rb") as handle:
             workbook_bytes = handle.read()
     finally:
@@ -1722,7 +1730,7 @@ def api_download_disposition_excel():
     return send_file(
         io.BytesIO(workbook_bytes),
         as_attachment=True,
-        download_name=f"{safe_asset}_{kind}_dispositions.xlsx",
+        download_name=f"{safe_asset}_{kind}_{scope_token}dispositions.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
