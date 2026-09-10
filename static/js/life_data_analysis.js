@@ -274,15 +274,16 @@
         hasTime,
       };
     }
-    // Deliberately no seconds here. The server reads slash dates with the four
-    // strptime formats "%m/%d/%Y", "%m/%d/%Y %H:%M", "%m/%d/%y" and
-    // "%m/%d/%y %H:%M", none of which take them, so accepting "1/15/2026
-    // 15:00:30" would have this side call a value a date that the other side
-    // refuses -- shown normalised on screen, sorted with the blanks, and
-    // unfindable by searching for the text in its own cell. This mirrors that
-    // list; widening it belongs in _parse_datetime, which the whole analysis
-    // pipeline reads, not here.
-    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2}))?$/.exec(text);
+    // Deliberately no seconds here, and a space rather than [ T]. The server
+    // reads slash dates with the four strptime formats "%m/%d/%Y",
+    // "%m/%d/%Y %H:%M", "%m/%d/%y" and "%m/%d/%y %H:%M" -- no seconds in any of
+    // them, and a literal space in the two that carry a time. Accepting
+    // "1/15/2026 15:00:30" or "1/15/2026T15:00" would have this side call a
+    // value a date that the other side refuses: shown normalised on screen,
+    // sorted with the blanks, and unfindable by searching for the text in its
+    // own cell. This mirrors that list exactly; widening it belongs in
+    // _parse_datetime, which the whole analysis pipeline reads, not here.
+    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?: (\d{1,2}):(\d{2}))?$/.exec(text);
     if (us) {
       const [, month, day, year, hour, minute] = us;
       // Two-digit years the way Python's strptime reads them: 00-68 is 2000s.

@@ -14,6 +14,7 @@ row it is.
 """
 
 import importlib
+import itertools
 import json
 import re
 import shutil
@@ -539,33 +540,57 @@ def test_the_script_accepts_a_fractional_second():
 
 # The two parsers, run against the same values.
 #
-# Three separate review findings on this change were the same fault: the browser
-# and the server disagreeing about whether some string is a date. Each one showed
-# up the same way -- a value rendered as a normalised date on screen while the
-# ORDER BY sorted it with the blanks, unfindable by searching for the text in its
-# own cell. Checking one shape at a time is how the third one got in, so this
-# runs the real client parser over a corpus and compares it to the real server
-# parser, value for value.
+# Four separate review findings on this change were the same fault: the browser
+# calling something a date that the server refuses. Each showed up the same way
+# -- a value rendered as a normalised date on screen while the ORDER BY sorted it
+# with the blanks, unfindable by searching for the text in its own cell.
 #
-# It needs node, which a contributor may not have; the assertions above still
-# pin the shapes structurally when it is skipped.
-DATE_CORPUS = [
-    # ISO, with and without time, zone and fractional seconds
-    "2026-01-15", "2026-01-15 15:00:00", "2026-01-15T15:00:00", "2026-01-15T15:00",
-    "2026-01-15T15:00:00Z", "2026-01-15T15:00:00+00:00", "2026-01-15T15:00:00-05:00",
-    "2026-01-15T15:00:00.123000+00:00", "2026-01-15T15:00:00.5Z", "2026-01-15 15:00:00.123",
-    "2026-01-15T15:00:00.123", "2026-01-15T15:00Z", "2026-01-15 15:00",
-    # slash dates -- the server reads these through strptime, which has no
-    # seconds format for them
-    "1/15/2026", "01/15/2026", "1/15/2026 15:00", "1/15/2026 15:00:30",
-    "01/15/2026 15:00:30", "1/15/26", "1/15/26 15:00", "1/15/26 15:00:30",
-    "12/31/2025", "11/14/23",
-    # days that do not exist, and malformed ones
-    "2025-02-31", "2025-02-29", "2024-02-29", "2026-01-15 25:00", "2025-13-01",
-    "2/31/2025", "13/45/2025", "2025-02-31T00:00:00.500Z",
-    # not dates at all
-    "", "   ", "not a date", "TBD", "2026", "15:00", "1699999999",
-]
+# The two directions are not equally bad, which is what this asserts:
+#
+#   browser accepts, server refuses  -- the bug above. Never allowed.
+#   server accepts, browser refuses  -- the cell shows the stored text as-is and
+#                                       the server still orders the row
+#                                       correctly, so it is cosmetic. Allowed,
+#                                       but listed, so a new one is visible.
+#
+# The asymmetry is deliberate rather than laziness. The server's accepted set is
+# strptime's, and strptime has quirks a regex cannot mirror without becoming a
+# bug factory itself: it takes "2026-1-15" and "2026-1-15 15:00:30" but not
+# "2026-1-15T15:00". Chasing that exactly is how three of the four findings
+# happened. Being stricter than the server is safe; being looser is not.
+#
+# The corpus is generated rather than written out, because the fourth finding was
+# a shape nobody thought to list ("1/15/2026T15:00" -- the separator, not the
+# time). A cross-product does not depend on anyone's imagination.
+
+
+def _date_corpus():
+    dates = [
+        "2026-01-15", "2026-1-15", "1/15/2026", "01/15/2026", "1/15/26",
+        "2025-02-31", "2/31/2025", "2024-02-29", "2025-02-29", "13/45/2025",
+    ]
+    separators = ["", " ", "T"]
+    times = ["", "15:00", "15:00:30", "15:00:00.123000", "15:00:00.5", "25:00", "9:05"]
+    zones = ["", "Z", "+00:00", "-05:00", "+0000"]
+    values = set()
+    for date, separator, time, zone in itertools.product(dates, separators, times, zones):
+        if bool(separator) != bool(time):
+            continue  # a separator needs a time, and a time needs a separator
+        if not time and zone:
+            continue  # a zone with no clock time is not a shape either side sees
+        values.add(f"{date}{separator}{time}{zone}")
+    values.update(["", "   ", "not a date", "TBD", "2026", "15:00", "1699999999", "2026-01-15  15:00"])
+    return sorted(values)
+
+
+DATE_CORPUS = _date_corpus()
+
+# Values the server reads and the browser does not. Safe, because the cell then
+# shows what is stored and the server still orders the row; see the note above.
+# Both are unpadded ISO, which strptime takes through "%Y-%m-%d" and
+# "%Y-%m-%d %H:%M:%S" -- and only through those, which is why the browser does
+# not try to guess at them.
+BROWSER_IS_STRICTER = ["2026-1-15", "2026-1-15 15:00:30"]
 
 _READ_CLIENT_PARSER = """
 const fs = require("fs");
@@ -588,8 +613,9 @@ console.log(JSON.stringify(corpus.map((value) => Boolean(parseRecordDate(value))
 """
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the client parser")
-def test_both_parsers_agree_on_what_counts_as_a_date(tmp_path):
+def _parser_verdicts(tmp_path):
+    """What each side says about every value in the corpus."""
+
     service = LifeDataService.__new__(LifeDataService)
     runner = tmp_path / "parse.js"
     runner.write_text(_READ_CLIENT_PARSER)
@@ -602,15 +628,33 @@ def test_both_parsers_agree_on_what_counts_as_a_date(tmp_path):
     )
     browser = json.loads(result.stdout)
     server = [service._datetime_sort_key(value) is not None for value in DATE_CORPUS]
-    disagreements = [
-        (value, "server" if on_server else "browser")
-        for value, on_server, in_browser in zip(DATE_CORPUS, server, browser)
-        if on_server != in_browser
+    return server, browser
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the client parser")
+def test_the_browser_never_calls_a_date_what_the_server_refuses(tmp_path):
+    server, browser = _parser_verdicts(tmp_path)
+    looser = [
+        value for value, on_server, in_browser in zip(DATE_CORPUS, server, browser)
+        if in_browser and not on_server
     ]
-    assert not disagreements, (
-        "these values are a date to one side and not the other, which shows them "
-        f"normalised on screen while sorting them with the blanks: {disagreements}"
+    assert not looser, (
+        "the browser reads these as dates and the server does not, so each would render "
+        "normalised on screen, sort with the blanks, and be unfindable by searching for "
+        f"the text in its own cell: {looser}"
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the client parser")
+def test_the_values_only_the_server_reads_are_the_ones_we_know_about(tmp_path):
+    """Cosmetic rather than broken, but a new one should still be noticed."""
+
+    server, browser = _parser_verdicts(tmp_path)
+    stricter = [
+        value for value, on_server, in_browser in zip(DATE_CORPUS, server, browser)
+        if on_server and not in_browser
+    ]
+    assert stricter == BROWSER_IS_STRICTER
 
 
 def test_the_script_checks_a_date_it_builds_against_the_digits_it_came_from():
