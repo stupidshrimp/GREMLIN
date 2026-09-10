@@ -212,6 +212,31 @@ DISPLAY_COLUMNS = (
     "requestorDescription",
 )
 
+# What each of those columns actually holds, and where it comes from. Every one
+# of them reaches the screen as text -- SQLite has no date type, and the CMMS
+# hands over task ids as strings -- so a screen that is not told the real type
+# compares them all as text, which puts 10 before 9 and orders dates by the
+# digits they happen to start with. Both halves read this: the ORDER BY built in
+# _disposition_sort_expressions, and the column menus in life_data_analysis.js,
+# which are handed the types over the API.
+COLUMN_TYPE_TEXT = "text"
+COLUMN_TYPE_NUMBER = "number"
+COLUMN_TYPE_DATETIME = "datetime"
+COLUMN_TYPE_BOOLEAN = "boolean"
+
+# Keyed by DISPLAY_COLUMNS, so every column the table draws is one it can be
+# sorted by (test_disposition_sorting holds the two together).
+DISPLAY_COLUMN_SOURCES = {
+    "name": ("m.task_name", COLUMN_TYPE_TEXT),
+    "taskID": ("m.task_id", COLUMN_TYPE_NUMBER),
+    "createdDate_Final": ("m.created_date_final", COLUMN_TYPE_DATETIME),
+    "completedDate_Final": ("m.completed_date_final", COLUMN_TYPE_DATETIME),
+    "downtime": ("m.downtime_hours", COLUMN_TYPE_NUMBER),
+    "completionNotes": ("m.completion_notes", COLUMN_TYPE_TEXT),
+    "requestTitle": ("m.request_title", COLUMN_TYPE_TEXT),
+    "requestorDescription": ("m.requestor_description", COLUMN_TYPE_TEXT),
+}
+
 # The four structured text boxes the maintenance teams fill out on a work order,
 # as the screens address them. They are carried separately from DISPLAY_COLUMNS
 # because the two are consumed differently: the tables render these four as one
@@ -219,6 +244,15 @@ DISPLAY_COLUMNS = (
 # disposition table costs about 900px of horizontal scrolling), while Excel keeps
 # them as four columns of their own so each can be sorted and filtered.
 NARRATIVE_COLUMNS = tuple({"key": field.key, "label": field.label} for field in NARRATIVE_FIELDS)
+
+# What the disposition table shows in Modeled Population for a row that has none
+# yet -- the population is created on save, from the asset and the mode/mechanism
+# being assigned. It lives here rather than in the client script because it is a
+# real value on that column: the cell reads it, the value filter lists it, and
+# the ORDER BY has to sort by it, or the column reads "Auto-create..." while
+# ordering as though the cell were empty. The screen is handed this over the API
+# so there is one copy of it.
+MODELED_POPULATION_PLACEHOLDER = "Auto-create from selected asset + mode/mechanism on save"
 
 EXCEL_BASE_COLUMNS = ("mapped_record_id",) + DISPLAY_COLUMNS + NARRATIVE_KEYS
 EXCEL_COMMON_DISPOSITION_COLUMNS = (
@@ -310,6 +344,14 @@ class LifeDataService:
         conn.execute("PRAGMA synchronous = FULL")
         conn.execute("PRAGMA temp_store = MEMORY")
         conn.execute("PRAGMA cache_size = -65536")
+        # SQLite has no date type, and the CMMS dates land in TEXT columns in
+        # whichever shape the source wrote them ("2026-01-15T15:00:00+00:00" from
+        # the Limble sync, "1/15/2026 15:00" from an older import). Ordering
+        # those as text is ordering them by their leading digits, so queries that
+        # need a real chronology sort on this instead: it parses the value the
+        # same way the analysis code does and returns a fixed-width UTC string,
+        # which then compares chronologically as plain text.
+        conn.create_function("gremlin_sort_datetime", 1, self._datetime_sort_key, deterministic=True)
         return conn
 
     @contextmanager
@@ -2661,6 +2703,140 @@ class LifeDataService:
             )
         raise ValueError("Disposition kind must be 'wo' or 'pm'.")
 
+    # ---- disposition table ordering ------------------------------------------
+    # Every column the disposition table can be sorted by, keyed by the name its
+    # API row carries so the browser names a column and the server orders by it.
+    # The value is (SQL expression, column type): the expression produces the
+    # value the cell shows, and the type is what stops the ordering from being a
+    # text comparison -- dates go through gremlin_sort_datetime, numbers compare
+    # as numbers, and text compares case-insensitively.
+    #
+    # Sorting is done here rather than in the browser because the table is
+    # paginated: reordering the 50 rows on screen answers "which of these 50 is
+    # oldest", when what the question means is "which of this asset's records is
+    # oldest". Ordering in SQL puts that row on page 1.
+    def _disposition_sort_expressions(self, kind: str) -> dict[str, tuple[str, str]]:
+        if kind not in ("wo", "pm"):
+            raise ValueError("Disposition kind must be 'wo' or 'pm'.")
+        # The narrative is four boxes rendered as one cell, and the cell shows only
+        # the boxes that were filled in, each captioned, joined by " · "
+        # (narrativeText in life_data_analysis.js). The sort key is built the same
+        # way, because ordering the raw values run together orders something the
+        # screen does not show: a row reading "Area Affected: Z" would sort before
+        # one reading "Condition: A" on the "Z", while the cells read the other way
+        # round. The separator trails the last entry instead of sitting between
+        # them, which is the same order with less SQL -- every key carries the same
+        # suffix, so it can never decide a comparison.
+        narrative = " || ".join(
+            "CASE WHEN NULLIF(TRIM(m.{key}), '') IS NOT NULL "
+            "THEN '{label}: ' || TRIM(m.{key}) || ' · ' ELSE '' END".format(
+                key=field.key, label=field.label.replace("'", "''")
+            )
+            for field in NARRATIVE_FIELDS
+        )
+        # The screen's checkbox is ticked either because a saved disposition says
+        # so or because the saved category implies it (see renderDispositionEditor),
+        # so the ordering has to read the same rule or it disagrees with the
+        # boxes it is sorting.
+        implied_include = (
+            "d.disposition_category = 'INCLUDED_FAILURE'"
+            if kind == "wo"
+            else "d.disposition_category = 'INCLUDED_PM_RESET_EVENT' AND d.pm_reset_inclusion_decision = 'APPROVED_RESET'"
+        )
+        # The read-only source columns come straight from DISPLAY_COLUMN_SOURCES,
+        # so every column the table draws is one the table can be sorted by.
+        columns: dict[str, tuple[str, str]] = dict(DISPLAY_COLUMN_SOURCES)
+        columns.update({
+            "failure_narrative": (f"({narrative})", COLUMN_TYPE_TEXT),
+            "disposition_notes": ("COALESCE(NULLIF(TRIM(d.disposition_notes), ''), d.disposition_text)", COLUMN_TYPE_TEXT),
+            "disposition_category": ("COALESCE(NULLIF(TRIM(d.disposition_category), ''), 'UNKNOWN')", COLUMN_TYPE_TEXT),
+            "effective_record_class": ("COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto)", COLUMN_TYPE_TEXT),
+            "modeled_population_name": (
+                "COALESCE(NULLIF(TRIM(mp.population_name), ''), '{}')".format(
+                    MODELED_POPULATION_PLACEHOLDER.replace("'", "''")
+                ),
+                COLUMN_TYPE_TEXT,
+            ),
+            "include_in_weibull_candidate": (
+                f"(CASE WHEN COALESCE(d.include_in_weibull_candidate, 0) = 1 OR ({implied_include}) THEN 1 ELSE 0 END)",
+                COLUMN_TYPE_BOOLEAN,
+            ),
+        })
+        if kind == "pm":
+            columns.update(
+                {
+                    "pm_reset_inclusion_decision": (
+                        "COALESCE(NULLIF(TRIM(d.pm_reset_inclusion_decision), ''), 'NEEDS_REVIEW')",
+                        COLUMN_TYPE_TEXT,
+                    ),
+                    "reset_target_failure_mode": ("rtfm.failure_mode_name", COLUMN_TYPE_TEXT),
+                    "reset_target_failure_mechanism": ("rtfmech.failure_mechanism_name", COLUMN_TYPE_TEXT),
+                    "pm_reset_renewal_rationale": ("d.pm_reset_renewal_rationale", COLUMN_TYPE_TEXT),
+                }
+            )
+        else:
+            columns.update(
+                {
+                    "failure_mode": ("fm.failure_mode_name", COLUMN_TYPE_TEXT),
+                    "failure_mechanism": ("fmech.failure_mechanism_name", COLUMN_TYPE_TEXT),
+                }
+            )
+        return columns
+
+    def disposition_sort_columns(self, kind: str) -> dict[str, str]:
+        """The disposition table's sortable columns for ``kind``, as name -> type.
+
+        Handed to the browser so a column menu can offer the sort its column
+        actually is ("Oldest -> Newest" on a date, "Smallest -> Largest" on a
+        number) and so an unknown column name is refused rather than pasted into
+        SQL.
+        """
+
+        return {key: column_type for key, (_, column_type) in self._disposition_sort_expressions(kind).items()}
+
+    @staticmethod
+    def _sort_key_expressions(expression: str, column_type: str) -> list[str]:
+        """The ORDER BY term(s) that compare ``expression`` as ``column_type``."""
+
+        if column_type == COLUMN_TYPE_DATETIME:
+            return [f"gremlin_sort_datetime({expression})"]
+        if column_type == COLUMN_TYPE_NUMBER:
+            # A number the CMMS stored as text ("1042") casts cleanly; anything
+            # that is not a number casts to 0.0, so the text form breaks the tie
+            # between those rather than leaving them in arbitrary order.
+            return [
+                f"CAST(NULLIF(TRIM({expression}), '') AS REAL)",
+                f"NULLIF(TRIM({expression}), '') COLLATE NOCASE",
+            ]
+        if column_type == COLUMN_TYPE_BOOLEAN:
+            return [f"CAST({expression} AS INTEGER)"]
+        return [f"NULLIF(TRIM({expression}), '') COLLATE NOCASE"]
+
+    def _disposition_order_by(self, kind: str, sort: str | None, sort_dir: str | None) -> str:
+        """The ORDER BY for one disposition page, typed by column."""
+
+        columns = self._disposition_sort_expressions(kind)
+        if not sort or sort not in columns:
+            # No column chosen: the date the record actually happened, read as a
+            # date rather than as the text SQLite holds it in, then task id
+            # numerically so 9 comes before 10.
+            return (
+                "ORDER BY gremlin_sort_datetime(COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final)),"
+                " CAST(NULLIF(TRIM(m.task_id), '') AS REAL), m.task_id, m.mapped_record_id"
+            )
+        expression, column_type = columns[sort]
+        order = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
+        keys = self._sort_key_expressions(expression, column_type)
+        # Empty cells go last whichever way the column points, the way a
+        # spreadsheet does it, so sorting descending never opens on a page of
+        # blanks. mapped_record_id breaks the remaining ties: without a total
+        # order, two rows that compare equal can swap between pages and the same
+        # record shows up twice, or not at all.
+        clauses = [f"CASE WHEN {keys[0]} IS NULL THEN 1 ELSE 0 END"]
+        clauses.extend(f"{key} {order}" for key in keys)
+        clauses.append("m.mapped_record_id")
+        return "ORDER BY " + ", ".join(clauses)
+
     @staticmethod
     def _escape_like(value: str) -> str:
         # Escape LIKE wildcards so user-typed % / _ are matched literally (paired
@@ -2684,6 +2860,11 @@ class LifeDataService:
             "CAST(m.task_id AS TEXT)",
             "m.created_date_final",
             "m.completed_date_final",
+            # The date columns are also matched in the normalised form the table
+            # renders them in, so a value copied out of a date cell still finds
+            # its row even though the database holds it as "2026-01-15T15:00:00+00:00".
+            "gremlin_sort_datetime(m.created_date_final)",
+            "gremlin_sort_datetime(m.completed_date_final)",
             "CAST(ROUND(m.downtime_hours, 2) AS TEXT)",
             "m.completion_notes",
             "m.request_title",
@@ -2717,10 +2898,14 @@ class LifeDataService:
             ).fetchone()
         return int(row["count"] or 0)
 
-    def disposition_rows(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False, limit: int | None = None, offset: int = 0, search: str | None = None) -> list[dict[str, Any]]:
+    def disposition_rows(self, asset_number: str, kind: str, *, only_needing_disposition: bool = False, limit: int | None = None, offset: int = 0, search: str | None = None, sort: str | None = None, sort_dir: str = "asc") -> list[dict[str, Any]]:
         where = self._disposition_where(kind)
         needs_disposition_where = self._needs_disposition_where(kind) if only_needing_disposition else ""
         search_clause, search_params = self._disposition_search_clause(search)
+        # Ordering runs across the whole selection before LIMIT/OFFSET, so a sort
+        # chosen on one page is a sort of every eligible row rather than of the
+        # 50 that happen to be on screen.
+        order_by = self._disposition_order_by(kind, sort, sort_dir)
         pagination = ""
         params: list[Any] = [asset_number, *search_params]
         if limit is not None:
@@ -2771,7 +2956,7 @@ class LifeDataService:
                 LEFT JOIN failure_mechanism rtfmech ON rtfmech.failure_mechanism_id = d.reset_target_failure_mechanism_id
                 LEFT JOIN modeled_population mp ON mp.modeled_population_id = d.modeled_population_id
                 WHERE m.asset_number = ? AND {where} {needs_disposition_where}{search_clause}
-                ORDER BY COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final), m.task_id
+                {order_by}
                 {pagination}
                 """,
                 params,
@@ -4635,6 +4820,25 @@ class LifeDataService:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
+
+    def _datetime_sort_key(self, value: Any) -> str | None:
+        """A stored CMMS date as a fixed-width UTC string that sorts chronologically.
+
+        Registered on every connection as ``gremlin_sort_datetime`` (see
+        ``connect``) so ORDER BY can treat a TEXT date column as a date. The
+        return is padded to a fixed width, which is what lets plain text
+        comparison stand in for a date comparison; a value that is not a date at
+        all (and a blank one) returns NULL so it can be sorted to the end rather
+        than landing in the middle of the run.
+
+        A date that arrived without a clock time keeps midnight, so it sorts
+        ahead of that same day's timed records rather than after them.
+        """
+
+        parsed = self._parse_datetime(value)
+        if parsed is None:
+            return None
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
     def _fit_weibull_2p(self, data: list[tuple[float, int]]) -> tuple[float, float, float]:
         failures = [t for t, failed in data if failed]
