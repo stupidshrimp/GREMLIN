@@ -120,7 +120,7 @@
       const values = readValues();
       if (!refreshNet()) {
         show("config-availability-status",
-          `${group.asset_group}: break, lunch and setup exceed the scheduled hours — net would be negative.`,
+          `${group.asset_group}: break, lunch and setup exceed the scheduled hours; net would be negative.`,
           "error");
         return;
       }

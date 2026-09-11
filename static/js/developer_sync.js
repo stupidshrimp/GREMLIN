@@ -236,7 +236,7 @@
       "Typical full sync",
       history.median_seconds
         ? `${formatDuration(history.median_seconds)} (median of the last ${formatNumber(history.timed_runs)})`
-        : "Not known yet — no sync has been timed against this database"
+        : "Not known yet; no sync has been timed against this database"
     );
 
     facts.id = "dev-sync-facts";
@@ -264,8 +264,8 @@
     if (flight) {
       warnings.push(
         `Import batch ${flight.import_batch_id === null ? "?" : flight.import_batch_id} has been open since ` +
-          `${formatTimestamp(flight.started_at)} (${formatDuration(flight.age_seconds)} ago). Another process — most ` +
-          "likely the scheduled nightly task — may still be importing, and a second sync would repeat its work."
+          `${formatTimestamp(flight.started_at)} (${formatDuration(flight.age_seconds)} ago). Another process, most ` +
+          "likely the scheduled nightly task, may still be importing, and a second sync would repeat its work."
       );
     }
 
@@ -368,11 +368,11 @@
       const basis = job.estimate_basis ? ` (${job.estimate_basis})` : "";
       parts.push(
         elapsed > estimate
-          ? `longer than usual — expected about ${formatDuration(estimate)}${basis}`
+          ? `longer than usual; expected about ${formatDuration(estimate)}${basis}`
           : `about ${formatDuration(estimate - elapsed)} remaining${basis}`
       );
     } else {
-      parts.push("no estimate yet — this is the first sync being timed");
+      parts.push("no estimate yet; this is the first sync being timed");
     }
     label.textContent = parts.join(" · ");
   }
