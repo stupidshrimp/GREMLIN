@@ -2871,13 +2871,28 @@ class LifeDataService:
             # and reading it as one put it at the top of the ascending page. It
             # sorts with the blanks at the end instead, and the text form below
             # orders those among themselves rather than leaving them arbitrary.
-            return [
-                f"gremlin_sort_number({expression})",
-                f"NULLIF(TRIM({expression}), '') COLLATE NOCASE",
-            ]
+            return [f"gremlin_sort_number({expression})", LifeDataService._text_sort_key(expression)]
         if column_type == COLUMN_TYPE_BOOLEAN:
             return [f"CAST({expression} AS INTEGER)"]
-        return [f"NULLIF(TRIM({expression}), '') COLLATE NOCASE"]
+        return [LifeDataService._text_sort_key(expression)]
+
+    @staticmethod
+    def _text_sort_key(expression: str) -> str:
+        """Compare ``expression`` as text, case-insensitively, empty cells as NULL.
+
+        A cell is empty when it holds nothing, and whitespace is something it
+        holds: " 7 " compares as the characters it has rather than as "7", and a
+        cell of three spaces is a value rather than a blank. Trimming anything off
+        before the comparison would sort a cell somewhere other than where it
+        reads, and put the table's order out of step with the workbook's, which
+        can only compare what is actually in the cell.
+
+        Both the text columns and the text half of a number column's ordering read
+        this one expression -- as two copies they drifted, and the number column
+        kept comparing a trimmed value after the text columns had stopped.
+        """
+
+        return f"NULLIF({expression}, '') COLLATE NOCASE"
 
     def _disposition_order_by(self, kind: str, sort: str | None, sort_dir: str | None) -> str:
         """The ORDER BY for one disposition page, typed by column."""
@@ -2927,7 +2942,7 @@ class LifeDataService:
             return f"CASE WHEN {sort_key} IS NULL THEN 1 ELSE 0 END"
         numbers, text = ("0", "1") if order == "ASC" else ("1", "0")
         return (
-            f"CASE WHEN NULLIF(TRIM({expression}), '') IS NULL THEN 2"
+            f"CASE WHEN NULLIF({expression}, '') IS NULL THEN 2"
             f" WHEN {sort_key} IS NOT NULL THEN {numbers} ELSE {text} END"
         )
 
@@ -3884,7 +3899,13 @@ class LifeDataService:
         # number when the number writes back as the same characters: "1234" does,
         # while "001234", "+1234", "1e3", "1,042" and "1234.0" each name a record
         # that no number spells the same way. Those keep their own text.
-        text = str(value).strip()
+        #
+        # Compared against the value exactly as stored, with nothing trimmed off
+        # it first: the CMMS field is copied in whole (_get_alias does not trim),
+        # so " 123 " is a task id of its own, and stripping it before asking
+        # whether the spelling converts cleanly is the rewrite this check exists
+        # to refuse -- it would answer for "123", a different record.
+        text = str(value)
         if not INTEGER_TEXT.fullmatch(text):
             return None
         whole = int(text)
@@ -3941,7 +3962,10 @@ class LifeDataService:
         """
 
         styled = f' s="{style}"' if style else ""
-        if value is None or (isinstance(value, str) and not value.strip()):
+        # Only an absent value leaves an empty cell. A string of spaces is what the
+        # record holds, and blanking it here would be one more quiet rewrite of a
+        # value the reader is meant to be checking.
+        if value is None or value == "":
             return f'<c r="{reference}"{styled}/>'
         if column_type == COLUMN_TYPE_DATETIME:
             serial = self._excel_serial_datetime(value)

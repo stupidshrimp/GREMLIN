@@ -178,6 +178,20 @@ class NumericSortTests(DispositionSortTestCase):
                 # And the text is in front of it rather than sharing its place.
                 self.assertEqual(str(rows[-2]["taskID"] if direction == "asc" else rows[0]["taskID"]), "A-14")
 
+    def test_whitespace_around_an_id_is_part_of_it_when_ordering_too(self):
+        """Comparing " 7 " as "7" sorts it somewhere other than where it reads.
+
+        The parse stopped trimming so the workbook could not rewrite the id; the
+        ordering has to stop trimming for the same reason, or the two put the same
+        record in different places. Trimmed, " 7 " would sort after "1e3" and
+        "0009"; untrimmed it leads the text block, which is where the cell reads
+        and where a spreadsheet puts it.
+        """
+
+        for task_id in (" 7 ", "0009", "1e3"):
+            self.add_wo(task_id)
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[3:], [" 7 ", "0009", "1e3"])
+
     def test_several_non_numbers_still_have_an_order_of_their_own(self):
         """A block of its own is not an arbitrary heap."""
 

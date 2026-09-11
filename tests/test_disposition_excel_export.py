@@ -321,14 +321,16 @@ class NumberColumnTests(DispositionExcelTestCase):
     def test_an_id_keeps_its_own_spelling_in_the_cell(self):
         """What an identifier is written as is part of which record it names.
 
-        "001234", "+1234", "1e3" and "1,042" all have a number underneath them,
-        and writing that number puts a different string in the cell than the one
-        the CMMS holds -- two of them collapsing onto a record that already exists
+        "001234", "+1234", "1e3", "1,042" and " 7 " all have a number underneath
+        them, and writing that number puts a different string in the cell than the
+        one the CMMS holds -- each collapsing onto a record that already exists
         under its plain spelling. Only text that is the number's own canonical
-        form becomes a number; the rest keep their characters.
+        form becomes a number; the rest keep their characters, whitespace
+        included: the CMMS field is stored whole, so the padding around " 7 " is
+        as much a part of it as the zeros in "0009".
         """
 
-        for task_id in ("0009", "+7", "1e3", "1,042"):
+        for task_id in ("0009", "+7", "1e3", "1,042", " 7 "):
             with self.subTest(task_id=task_id):
                 self.add_wo(task_id)
                 self.assertIn(task_id, self.export(f"spelled-{task_id}.xlsx").values("taskID"))
@@ -338,6 +340,19 @@ class NumberColumnTests(DispositionExcelTestCase):
 
         self.add_wo("1042")
         self.assertIn(1042.0, self.export("plain.xlsx").values("taskID"))
+
+    def test_a_cell_of_spaces_is_a_value_rather_than_a_blank(self):
+        """Blanking it would be one more quiet rewrite of what the record holds.
+
+        The reader is checking these cells against the CMMS, so an empty cell has
+        to mean the record is empty. It also keeps the table and the workbook in
+        step: a spreadsheet can only compare what is actually in the cell, so a
+        value the table calls blank and the workbook calls text sorts in two
+        different places.
+        """
+
+        self.add_wo("   ")
+        self.assertIn("   ", self.export("spaces.xlsx").values("taskID"))
 
     def test_a_quantity_column_is_untouched_by_that_rule(self):
         """It applies to text, and only task ids arrive as text.
