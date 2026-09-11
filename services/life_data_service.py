@@ -276,6 +276,70 @@ EXCEL_PM_DISPOSITION_COLUMNS = EXCEL_BASE_COLUMNS + EXCEL_COMMON_DISPOSITION_COL
     "pm_reset_renewal_rationale",
 )
 
+# What each exported column holds, so the workbook carries Excel's own types
+# rather than a sheet of text. Excel sorts, filters and formats by cell type, and
+# a column written as text sorts as text there exactly as it used to on the
+# screen: "10" ahead of "9", and dates by the digits they happen to start with.
+# Worse, a text date cannot be filtered by "last month" or reformatted at all --
+# the value is a sentence to Excel, not a day.
+#
+# The record columns take the types the screen already sorts them by
+# (DISPLAY_COLUMN_SOURCES), so the workbook and the table order a column the same
+# way; the disposition columns are named here. A value that does not fit its type
+# is written as the text it is rather than dropped -- a task id of "A-14" is
+# still that task id, and losing it to keep the column tidy is the worse trade.
+EXCEL_COLUMN_TYPES: dict[str, str] = {
+    "mapped_record_id": COLUMN_TYPE_NUMBER,
+    **{key: column_type for key, (_, column_type) in DISPLAY_COLUMN_SOURCES.items()},
+    **{key: COLUMN_TYPE_TEXT for key in NARRATIVE_KEYS},
+    "disposition_notes": COLUMN_TYPE_TEXT,
+    "disposition_category": COLUMN_TYPE_TEXT,
+    "record_class": COLUMN_TYPE_TEXT,
+    "include_in_weibull_candidate": COLUMN_TYPE_BOOLEAN,
+    "failure_mode_id": COLUMN_TYPE_NUMBER,
+    "failure_mode": COLUMN_TYPE_TEXT,
+    "failure_mechanism_id": COLUMN_TYPE_NUMBER,
+    "failure_mechanism": COLUMN_TYPE_TEXT,
+    "pm_reset_decision": COLUMN_TYPE_TEXT,
+    "reset_target_failure_mode_id": COLUMN_TYPE_NUMBER,
+    "reset_target_failure_mode": COLUMN_TYPE_TEXT,
+    "reset_target_failure_mechanism_id": COLUMN_TYPE_NUMBER,
+    "reset_target_failure_mechanism": COLUMN_TYPE_TEXT,
+    "pm_reset_renewal_rationale": COLUMN_TYPE_TEXT,
+}
+
+# The largest whole number a spreadsheet can hold without changing it. Excel
+# stores every number as a double, so an integer past 2**53 is rounded to one it
+# can represent -- fine for a quantity, and a different record entirely for an
+# id. Anything bigger stays text, which is the only form that survives the trip.
+EXACT_INTEGER_LIMIT = 2**53
+# The width SQLite stores an INTEGER in, and so the widest value the ordering can
+# compare exactly. Handing a Python int past this to a SQL function raises rather
+# than rounding quietly, so the sort key falls back to a double there.
+SQLITE_INTEGER_LIMIT = 2**63
+INTEGER_TEXT = re.compile(r"[-+]?\d+")
+
+# Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
+# system, offset by one so that it reproduces the leap-year bug it inherited from
+# Lotus 1-2-3. A date has to reach the sheet as that number, under a date number
+# format, for Excel to treat it as a date at all.
+EXCEL_DATE_EPOCH = datetime(1899, 12, 30, tzinfo=timezone.utc)
+
+# Indexes into the cellXfs list _xlsx_styles_xml writes, in the order it writes
+# them. A cell names the format it is drawn in by index, so the two move together.
+EXCEL_STYLE_DEFAULT = 0
+EXCEL_STYLE_HEADER = 1
+EXCEL_STYLE_DATETIME = 2
+EXCEL_STYLE_DECIMAL = 3
+
+# Characters XML 1.0 cannot carry. Free-text CMMS boxes pick them up from
+# copy-pasted terminal output and barcode scanners, and one of them in one
+# completion note is the difference between a workbook and a file Excel refuses
+# to open ("unreadable content"). Lone surrogates go with them: they cannot even
+# be encoded to UTF-8, so they take the whole download down with a
+# UnicodeEncodeError rather than merely corrupting it.
+ILLEGAL_XML_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
 
 @dataclass(frozen=True)
 class SummaryMetrics:
@@ -352,6 +416,10 @@ class LifeDataService:
         # same way the analysis code does and returns a fixed-width UTC string,
         # which then compares chronologically as plain text.
         conn.create_function("gremlin_sort_datetime", 1, self._datetime_sort_key, deterministic=True)
+        # And the same for the numbers: task ids arrive as TEXT, so ordering them
+        # needs to know which of those strings are numbers at all. This is the one
+        # answer to that, shared with the Excel export.
+        conn.create_function("gremlin_sort_number", 1, self._number_sort_key, deterministic=True)
         return conn
 
     @contextmanager
@@ -2801,16 +2869,34 @@ class LifeDataService:
         if column_type == COLUMN_TYPE_DATETIME:
             return [f"gremlin_sort_datetime({expression})"]
         if column_type == COLUMN_TYPE_NUMBER:
-            # A number the CMMS stored as text ("1042") casts cleanly; anything
-            # that is not a number casts to 0.0, so the text form breaks the tie
-            # between those rather than leaving them in arbitrary order.
-            return [
-                f"CAST(NULLIF(TRIM({expression}), '') AS REAL)",
-                f"NULLIF(TRIM({expression}), '') COLLATE NOCASE",
-            ]
+            # A number the CMMS stored as text ("1042") compares as the number it
+            # is. Anything that is not a number is NULL rather than the 0.0 a CAST
+            # would make of it -- "A-14" is not the smallest task id on the asset,
+            # and reading it as one put it at the top of the ascending page. It
+            # sorts with the blanks at the end instead, and the text form below
+            # orders those among themselves rather than leaving them arbitrary.
+            return [f"gremlin_sort_number({expression})", LifeDataService._text_sort_key(expression)]
         if column_type == COLUMN_TYPE_BOOLEAN:
             return [f"CAST({expression} AS INTEGER)"]
-        return [f"NULLIF(TRIM({expression}), '') COLLATE NOCASE"]
+        return [LifeDataService._text_sort_key(expression)]
+
+    @staticmethod
+    def _text_sort_key(expression: str) -> str:
+        """Compare ``expression`` as text, case-insensitively, empty cells as NULL.
+
+        A cell is empty when it holds nothing, and whitespace is something it
+        holds: " 7 " compares as the characters it has rather than as "7", and a
+        cell of three spaces is a value rather than a blank. Trimming anything off
+        before the comparison would sort a cell somewhere other than where it
+        reads, and put the table's order out of step with the workbook's, which
+        can only compare what is actually in the cell.
+
+        Both the text columns and the text half of a number column's ordering read
+        this one expression -- as two copies they drifted, and the number column
+        kept comparing a trimmed value after the text columns had stopped.
+        """
+
+        return f"NULLIF({expression}, '') COLLATE NOCASE"
 
     def _disposition_order_by(self, kind: str, sort: str | None, sort_dir: str | None) -> str:
         """The ORDER BY for one disposition page, typed by column."""
@@ -2822,20 +2908,47 @@ class LifeDataService:
             # numerically so 9 comes before 10.
             return (
                 "ORDER BY gremlin_sort_datetime(COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final)),"
-                " CAST(NULLIF(TRIM(m.task_id), '') AS REAL), m.task_id, m.mapped_record_id"
+                " gremlin_sort_number(m.task_id), m.task_id, m.mapped_record_id"
             )
         expression, column_type = columns[sort]
         order = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
         keys = self._sort_key_expressions(expression, column_type)
-        # Empty cells go last whichever way the column points, the way a
-        # spreadsheet does it, so sorting descending never opens on a page of
-        # blanks. mapped_record_id breaks the remaining ties: without a total
-        # order, two rows that compare equal can swap between pages and the same
-        # record shows up twice, or not at all.
-        clauses = [f"CASE WHEN {keys[0]} IS NULL THEN 1 ELSE 0 END"]
+        # The blocks first, then the values inside them. mapped_record_id breaks
+        # the remaining ties: without a total order, two rows that compare equal
+        # can swap between pages and the same record shows up twice, or not at all.
+        clauses = [self._sort_group_rank(expression, column_type, keys[0], order)]
         clauses.extend(f"{key} {order}" for key in keys)
         clauses.append("m.mapped_record_id")
         return "ORDER BY " + ", ".join(clauses)
+
+    def _sort_group_rank(self, expression: str, column_type: str, sort_key: str, order: str) -> str:
+        """Which block a row belongs to, so the blocks sit where a spreadsheet puts them.
+
+        Empty cells go last whichever way the column points, so sorting
+        descending never opens on a page of blanks.
+
+        A number column has a third block between those two: the values that are
+        not numbers. A task id like "A-14" is neither a number nor an empty cell,
+        and reading it as either misplaces it -- as 0.0 (what CAST would make of
+        it) it led the ascending page as the smallest id on the asset; pinned with
+        the blanks it sat at the bottom of a descending sort, while the workbook
+        built from the same rows put it at the top. A spreadsheet keeps text in a
+        block of its own that swaps ends with the direction, after the numbers
+        ascending and ahead of them descending, and that is what this reproduces.
+
+        Dates keep the two-block rule. A value that will not parse as a date is a
+        broken date rather than a value of another kind -- 2025-02-31 is somebody's
+        typo, not an identifier -- and ImpossibleDateTests pins those to the end in
+        both directions, where a data-quality problem is found in one place.
+        """
+
+        if column_type != COLUMN_TYPE_NUMBER:
+            return f"CASE WHEN {sort_key} IS NULL THEN 1 ELSE 0 END"
+        numbers, text = ("0", "1") if order == "ASC" else ("1", "0")
+        return (
+            f"CASE WHEN NULLIF({expression}, '') IS NULL THEN 2"
+            f" WHEN {sort_key} IS NOT NULL THEN {numbers} ELSE {text} END"
+        )
 
     @staticmethod
     def _escape_like(value: str) -> str:
@@ -2972,11 +3085,23 @@ class LifeDataService:
             return EXCEL_PM_DISPOSITION_COLUMNS
         raise ValueError("Disposition kind must be 'wo' or 'pm'.")
 
-    def export_disposition_excel(self, asset_number: str, kind: str, output_path: str | Path) -> int:
-        """Write the selected asset's disposition table to an Excel workbook."""
+    def export_disposition_excel(self, asset_number: str, kind: str, output_path: str | Path, *, only_needing_disposition: bool = False) -> int:
+        """Write the selected asset's disposition table to an Excel workbook.
+
+        ``only_needing_disposition`` is the Rows selector's "Only new /
+        undispositioned" setting, and it narrows the workbook the same way it
+        narrows the table -- through the one WHERE clause both read, so the two
+        can never disagree about which rows are new. The point of that setting is
+        to work through the backlog, and a workbook of every eligible row hands
+        the reader the job of finding the new ones again in Excel.
+
+        The search box and the page you are on still do not narrow it: those cut
+        the table down to look at something, while this one names which records
+        are outstanding.
+        """
 
         headers = self.disposition_excel_headers(kind)
-        rows = self.disposition_rows(asset_number, kind)
+        rows = self.disposition_rows(asset_number, kind, only_needing_disposition=only_needing_disposition)
         sheet_rows: list[list[Any]] = [list(headers)]
         for row in rows:
             record: dict[str, Any] = {
@@ -3011,6 +3136,7 @@ class LifeDataService:
             "WO Dispositions" if kind == "wo" else "PM Dispositions",
             validations=validations,
             lookup_rows=lookup_rows,
+            column_types=EXCEL_COLUMN_TYPES,
         )
         return len(rows)
 
@@ -3596,8 +3722,15 @@ class LifeDataService:
         ]
         return [*list_validations, *integer_validations], lookup_rows
 
-    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None) -> None:
-        """Write a simple Excel-compatible .xlsx workbook using only the standard library."""
+    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None, column_types: dict[str, str] | None = None) -> None:
+        """Write a simple Excel-compatible .xlsx workbook using only the standard library.
+
+        ``column_types`` maps a header name to one of the ``COLUMN_TYPE_*``
+        constants and is what makes the sheet sortable: without it every cell is
+        text, and Excel orders and filters text as text. The styles part carries
+        the date format those typed cells are drawn in, so a date reaches the
+        reader as a date rather than as the five-digit number Excel stores it as.
+        """
 
         include_lookup_sheet = bool(lookup_rows)
         with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as workbook:
@@ -3605,8 +3738,17 @@ class LifeDataService:
             workbook.writestr("_rels/.rels", self._xlsx_root_rels())
             workbook.writestr("xl/workbook.xml", self._xlsx_workbook_xml(sheet_name, include_lookup_sheet=include_lookup_sheet))
             workbook.writestr("xl/_rels/workbook.xml.rels", self._xlsx_workbook_rels(include_lookup_sheet=include_lookup_sheet))
-            workbook.writestr("xl/worksheets/sheet1.xml", self._xlsx_sheet_xml(rows, validations=validations))
+            workbook.writestr("xl/styles.xml", self._xlsx_styles_xml())
+            workbook.writestr(
+                "xl/worksheets/sheet1.xml",
+                # The header row is the filter row, so the sheet opens with
+                # Excel's own sort/filter menu on every column rather than
+                # leaving the reader to select the range and find it themselves.
+                self._xlsx_sheet_xml(rows, validations=validations, column_types=column_types, auto_filter=True),
+            )
             if include_lookup_sheet:
+                # The dropdown source lists: plain text, and nothing sorts or
+                # filters them, so they stay untyped and unfiltered.
                 workbook.writestr("xl/worksheets/sheet2.xml", self._xlsx_sheet_xml(lookup_rows or []))
 
     def _read_xlsx(self, input_path: str | Path) -> list[tuple[Any, ...]]:
@@ -3623,9 +3765,10 @@ class LifeDataService:
                 rels = ET.fromstring(workbook.read("xl/_rels/workbook.xml.rels"))
                 for rel in rels:
                     if rel.attrib.get("Id") == relationship_id:
-                        target = rel.attrib.get("Target", "worksheets/sheet1.xml")
-                        sheet_path = f"xl/{target.lstrip('/')}" if not target.startswith("xl/") else target
+                        sheet_path = self._xlsx_part_path(rel.attrib.get("Target", "worksheets/sheet1.xml"))
                         break
+            if sheet_path not in workbook.namelist():
+                raise ValueError("That .xlsx file has no readable first worksheet. Re-download the template and fill that in.")
             sheet = ET.fromstring(workbook.read(sheet_path))
         namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
         parsed_rows: list[tuple[Any, ...]] = []
@@ -3647,6 +3790,7 @@ class LifeDataService:
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>{sheet2}
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>'''
 
     def _xlsx_root_rels(self) -> str:
@@ -3665,32 +3809,289 @@ class LifeDataService:
 
     def _xlsx_workbook_rels(self, *, include_lookup_sheet: bool = False) -> str:
         lookup_rel = '\n<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' if include_lookup_sheet else ""
+        # rId3 whether or not the lookup sheet is there, so the id a sheet holds
+        # never depends on how many sheets came before it.
         return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>{lookup_rel}
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>'''
 
-    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None) -> str:
+    def _xlsx_styles_xml(self) -> str:
+        """The workbook's number formats and fonts, indexed by the EXCEL_STYLE_* constants.
+
+        A date is a plain number in a sheet; only the format a cell is drawn in
+        says it is a date, so without this part every exported date reads as
+        46027 -- sortable, and unreadable. numFmtId 164 is the first id reserved
+        for custom formats; anything below 163 is one of Excel's own built-ins.
+        """
+
+        return '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="2">
+<numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd\\ hh:mm"/>
+<numFmt numFmtId="165" formatCode="0.00"/>
+</numFmts>
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="4">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
+
+    def _xlsx_safe_text(self, value: Any) -> str:
+        """``value`` as text a workbook can actually carry (see ILLEGAL_XML_CHARACTERS)."""
+
+        return ILLEGAL_XML_CHARACTERS.sub("", str(value))
+
+    @staticmethod
+    def _xlsx_inline_text(text: str) -> str:
+        """One inline string, with its whitespace marked significant where it is.
+
+        A bare <t> lets a reader fold the whitespace at either end away, which for
+        a task id of " 123 " means the workbook hands back the record next to it
+        -- the rewrite the parse was changed to stop, undone one layer further out
+        by the file format. xml:space says the characters are the value. It is
+        only written where it changes something, which is how every other writer
+        does it and keeps an ordinary sheet from carrying it on every cell.
+        """
+
+        marked = ' xml:space="preserve"' if text != text.strip() else ""
+        return f"<t{marked}>{escape(text)}</t>"
+
+    def _excel_serial_datetime(self, value: Any) -> float | None:
+        """``value`` as the day count Excel stores a date as, or None if it is not a date.
+
+        Parsed by the same reader the screen's ordering uses, so a workbook and
+        the table agree on which values are dates and on what each one says; the
+        result is UTC, which is the normalised form the table already renders.
+        """
+
+        parsed = self._parse_datetime(value)
+        if parsed is None:
+            return None
+        # A clock time is a fraction of a day, and most of them (17:30 among
+        # them) have no exact binary representation, so the serial always lands a
+        # fraction of a microsecond off the second it means. Every reader settles
+        # that the same way, by rounding to the nearest second -- which is why the
+        # 11 decimal places kept here are enough: they shorten the cell text
+        # without moving the value far enough to round to a different second.
+        return round((parsed - EXCEL_DATE_EPOCH).total_seconds() / 86400.0, 11)
+
+    @staticmethod
+    def _parse_number(value: Any) -> int | float | None:
+        """``value`` as the number it is, or None when it is not a number.
+
+        The single rule for "is this column's value a number", read by the table's
+        ORDER BY (through ``gremlin_sort_number``) and by the workbook writer. One
+        rule is the point: the CMMS hands ids and quantities over as text, and if
+        the two halves disagreed about which strings are numbers, a value would
+        sort among the numbers on one and among the text on the other.
+
+        A value that is already a number is taken as one, bar infinity and NaN --
+        neither has a spreadsheet representation, and neither orders sensibly.
+        Text is read as a number only when it is the number's own canonical form,
+        which is what keeps an identifier's spelling from being rewritten; the
+        integer is parsed with ``int()`` rather than ``float()``, which would
+        round a long id to the nearest value a double can hold before anybody
+        could notice ("9007199254740993" comes back out of ``float()`` as ...992,
+        a different work order).
+        """
+
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        # Anything reaching here arrived as text, and on these screens that means
+        # a task id -- the one number-typed column the CMMS stores as TEXT, and an
+        # identifier rather than a quantity (downtime_hours is REAL, so it is
+        # already a float above and never takes this path). What an identifier is
+        # written as is part of which record it names, so it is only read as a
+        # number when the number writes back as the same characters: "1234" does,
+        # while "001234", "+1234", "1e3", "1,042" and "1234.0" each name a record
+        # that no number spells the same way. Those keep their own text.
+        #
+        # Compared against the value exactly as stored, with nothing trimmed off
+        # it first: the CMMS field is copied in whole (_get_alias does not trim),
+        # so " 123 " is a task id of its own, and stripping it before asking
+        # whether the spelling converts cleanly is the rewrite this check exists
+        # to refuse -- it would answer for "123", a different record.
+        text = str(value)
+        if not INTEGER_TEXT.fullmatch(text):
+            return None
+        whole = int(text)
+        return whole if str(whole) == text else None
+
+    def _number_sort_key(self, value: Any) -> int | float | None:
+        """``value`` as a number ORDER BY can compare, or NULL when it is not one.
+
+        Registered on every connection as ``gremlin_sort_number`` (see
+        ``connect``). SQLite's own ``CAST(x AS REAL)`` cannot say "not a number":
+        it reads "A-14" as 0.0, which sorted a task id that is not a number in
+        among the ones that are, as the smallest of them. Returning NULL instead
+        puts it with the blanks at the end of the column, which is where the
+        column already promises to keep a cell it has no value for, and where a
+        spreadsheet puts text in an ascending sort.
+
+        An integer is handed over as an integer. SQLite compares INTEGER values
+        exactly, and rounding one to a double here would undo the exactness
+        _parse_number just went to the trouble of keeping: -9007199254740993 and
+        -9007199254740992 become one key, tie, and are then separated by the text
+        key, which orders negative numbers backwards. Past the width SQLite
+        stores an integer in there is no exact key left to give it, so those
+        compare as doubles -- two ids that differ only beyond 2**63 still tie.
+        """
+
+        number = self._parse_number(value)
+        if number is None:
+            return None
+        if isinstance(number, int) and -SQLITE_INTEGER_LIMIT <= number < SQLITE_INTEGER_LIMIT:
+            return number
+        try:
+            return float(number)
+        except OverflowError:
+            # An integer too large for a double at all. It is still bigger than
+            # everything else in the column, so it sorts there rather than
+            # disappearing into the blanks -- and raising here would take down the
+            # whole page, since this runs inside the ORDER BY.
+            return math.inf if number > 0 else -math.inf
+
+    def _excel_number_value(self, value: Any) -> int | float | None:
+        """``value`` as a number a cell can hold exactly, or None to keep it as text.
+
+        The same rule as the ordering, with one more question asked of it: a
+        spreadsheet stores every number as a double, so a whole number past
+        EXACT_INTEGER_LIMIT would be written back rounded. For a quantity that is
+        a rounding; for an id it is a different record, so those stay text, which
+        is the only form that survives the trip intact.
+        """
+
+        number = self._parse_number(value)
+        if isinstance(number, int) and abs(number) > EXACT_INTEGER_LIMIT:
+            return None
+        return number
+
+    def _xlsx_cell_xml(self, reference: str, value: Any, column_type: str | None, *, style: int = EXCEL_STYLE_DEFAULT) -> str:
+        """One cell, written as the type its column holds.
+
+        A value that will not convert falls through to text rather than being
+        dropped: a task id of "A-14", a date the CMMS recorded as "unknown", and a
+        downtime somebody typed a note into all still reach the reader. Such a row
+        sorts among the text at the end of the column, which is what Excel does
+        with a mixed column, and is the visible signal that the cell needs
+        looking at.
+        """
+
+        styled = f' s="{style}"' if style else ""
+        # Only an absent value leaves an empty cell. A string of spaces is what the
+        # record holds, and blanking it here would be one more quiet rewrite of a
+        # value the reader is meant to be checking.
+        if value is None or value == "":
+            return f'<c r="{reference}"{styled}/>'
+        if column_type == COLUMN_TYPE_DATETIME:
+            serial = self._excel_serial_datetime(value)
+            if serial is not None:
+                return f'<c r="{reference}" s="{EXCEL_STYLE_DATETIME}"><v>{serial}</v></c>'
+        elif column_type == COLUMN_TYPE_NUMBER:
+            number = self._excel_number_value(value)
+            if number is not None:
+                # A fractional number is drawn to two places so a column of them
+                # lines up (downtime, which the query has already rounded to two);
+                # a whole one keeps the general format, so an id reads 1042 rather
+                # than 1042.00. The cell holds the full value either way -- the
+                # format is what it is drawn as, not what it is.
+                cell_style = f' s="{EXCEL_STYLE_DECIMAL}"' if isinstance(number, float) else styled
+                return f'<c r="{reference}"{cell_style}><v>{number}</v></c>'
+        elif column_type == COLUMN_TYPE_BOOLEAN:
+            # Written as the words the Lookup Lists dropdown offers rather than as
+            # a boolean cell. A boolean TRUE and the dropdown's "TRUE" are
+            # different values to Excel: the column would sort in two blocks, and
+            # every untouched row would be flagged by "circle invalid data"
+            # against its own dropdown.
+            flag = self._excel_optional_bool(value)
+            if flag is not None:
+                return f'<c r="{reference}"{styled} t="inlineStr"><is><t>{"TRUE" if flag else "FALSE"}</t></is></c>'
+        elif column_type is None:
+            # Untyped sheets (the lookup lists) keep the old pass-through.
+            if isinstance(value, bool):
+                return f'<c r="{reference}"{styled} t="b"><v>{1 if value else 0}</v></c>'
+            if isinstance(value, int) or (isinstance(value, float) and math.isfinite(value)):
+                return f'<c r="{reference}"{styled}><v>{value}</v></c>'
+        return f'<c r="{reference}"{styled} t="inlineStr"><is>{self._xlsx_inline_text(self._xlsx_safe_text(value))}</is></c>'
+
+    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, auto_filter: bool = False) -> str:
+        headers = list(rows[0]) if rows else []
+        # Resolved from the header row rather than from the caller's column order:
+        # the header names the column, so the types follow a column that moves.
+        # Matched through the same normalisation the import reads headers with, so
+        # the two halves of the round trip agree on what a column is called.
+        normalized_types = {self._normalize_excel_header(name): value for name, value in (column_types or {}).items()}
+        types_by_index = [normalized_types.get(self._normalize_excel_header(header)) for header in headers]
         xml_rows = []
         for row_index, row in enumerate(rows, start=1):
+            is_header = row_index == 1
             cells = []
             for column_index, value in enumerate(row, start=1):
                 reference = f"{self._xlsx_column_name(column_index)}{row_index}"
-                if value in (None, ""):
-                    cells.append(f'<c r="{reference}"/>')
-                elif isinstance(value, bool):
-                    cells.append(f'<c r="{reference}" t="b"><v>{1 if value else 0}</v></c>')
-                elif isinstance(value, (int, float)):
-                    cells.append(f'<c r="{reference}"><v>{value}</v></c>')
-                else:
-                    cells.append(f'<c r="{reference}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>')
+                column_type = None if is_header else (types_by_index[column_index - 1] if column_index <= len(types_by_index) else None)
+                cells.append(
+                    self._xlsx_cell_xml(
+                        reference,
+                        value,
+                        column_type,
+                        style=EXCEL_STYLE_HEADER if is_header else EXCEL_STYLE_DEFAULT,
+                    )
+                )
             xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-        validation_xml = self._xlsx_data_validations(rows[0] if rows else [], validations or [])
+        column_xml = self._xlsx_columns(headers, rows, types_by_index)
+        filter_xml = ""
+        if auto_filter and headers:
+            last_column = self._xlsx_column_name(len(headers))
+            filter_xml = f'<autoFilter ref="A1:{last_column}{max(len(rows), 1)}"/>'
+        validation_xml = self._xlsx_data_validations(headers, validations or [])
+        # Order is fixed by the schema: cols, sheetData, autoFilter, dataValidations.
         return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-<sheetData>{"".join(xml_rows)}</sheetData>{validation_xml}
+<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>{column_xml}
+<sheetData>{"".join(xml_rows)}</sheetData>{filter_xml}{validation_xml}
 </worksheet>'''
+
+    def _xlsx_columns(self, headers: list[Any], rows: list[list[Any]], types_by_index: list[str | None]) -> str:
+        """Column widths, so a sheet of default-width columns is not the first thing to fix.
+
+        Measured off the header and the first few rows rather than the whole
+        selection -- an asset with thousands of records would otherwise pay for a
+        pass over every cell to size a column the same way. A date is measured as
+        the sixteen characters it is drawn in, not as its serial number.
+        """
+
+        if not headers:
+            return ""
+        widths = []
+        for column_index, header in enumerate(headers):
+            longest = len(self._xlsx_safe_text(header))
+            if types_by_index[column_index] == COLUMN_TYPE_DATETIME:
+                # Its cells hold a serial number; what has to fit is the sixteen
+                # characters the date format draws, or the header, whichever is wider.
+                widths.append(float(max(18, longest + 2)))
+                continue
+            for row in rows[1:51]:
+                if column_index < len(row) and row[column_index] is not None:
+                    longest = max(longest, len(self._xlsx_safe_text(row[column_index])))
+            widths.append(float(max(10, min(longest + 2, 60))))
+        entries = "".join(
+            f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+            for index, width in enumerate(widths, start=1)
+        )
+        return f"\n<cols>{entries}</cols>"
 
     def _xlsx_data_validations(self, headers: list[Any], validations: list[ExcelValidation]) -> str:
         header_indexes = {self._normalize_excel_header(header): index for index, header in enumerate(headers, start=1)}
@@ -3748,6 +4149,20 @@ class LifeDataService:
         if number.is_integer():
             return int(number)
         return number
+
+    def _xlsx_part_path(self, target: str) -> str:
+        """A workbook relationship Target as the zip entry it names.
+
+        Every writer spells the same sheet differently: Excel saves a relative
+        "worksheets/sheet1.xml", while LibreOffice and Google Sheets save the
+        package-absolute "/xl/worksheets/sheet1.xml". Reading the second as
+        relative built "xl/xl/worksheets/sheet1.xml" and the upload died on a raw
+        KeyError, so a workbook that had been through anything but Excel could not
+        be dispositioned at all.
+        """
+
+        cleaned = str(target or "").lstrip("/")
+        return cleaned if cleaned.startswith("xl/") else f"xl/{cleaned}"
 
     def _xlsx_column_name(self, index: int) -> str:
         name = ""
