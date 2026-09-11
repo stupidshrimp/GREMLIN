@@ -314,12 +314,6 @@ EXCEL_COLUMN_TYPES: dict[str, str] = {
 # id. Anything bigger stays text, which is the only form that survives the trip.
 EXACT_INTEGER_LIMIT = 2**53
 INTEGER_TEXT = re.compile(r"[-+]?\d+")
-# A whole number written with leading zeros. The padding is part of the
-# identifier rather than decoration of it: a CMMS using fixed-width task ids has
-# "001234" and "1234" as two different records, and reading either as 1234 makes
-# them one. There is no number that carries the padding, so a value like this is
-# not treated as one -- it keeps its own text form, and sorts among the text.
-PADDED_INTEGER_TEXT = re.compile(r"[-+]?0\d+")
 
 # Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
 # system, offset by one so that it reproduces the leap-year bug it inherited from
@@ -3866,13 +3860,14 @@ class LifeDataService:
         the two halves disagreed about which strings are numbers, a value would
         sort among the numbers on one and among the text on the other.
 
-        Integral text is parsed as an integer rather than through ``float()``,
-        which rounds a long id to the nearest value a double can hold before
-        anybody can notice: "9007199254740993" comes back out of ``float()`` as
-        ...992, a different work order. A zero-padded id is not a number at all
-        here (see PADDED_INTEGER_TEXT): the padding is part of which record it
-        names, and no number carries it. Infinity and NaN are not numbers either
-        -- neither has a spreadsheet representation, and neither orders sensibly.
+        A value that is already a number is taken as one, bar infinity and NaN --
+        neither has a spreadsheet representation, and neither orders sensibly.
+        Text is read as a number only when it is the number's own canonical form,
+        which is what keeps an identifier's spelling from being rewritten; the
+        integer is parsed with ``int()`` rather than ``float()``, which would
+        round a long id to the nearest value a double can hold before anybody
+        could notice ("9007199254740993" comes back out of ``float()`` as ...992,
+        a different work order).
         """
 
         if isinstance(value, bool) or value is None:
@@ -3881,16 +3876,19 @@ class LifeDataService:
             return value
         if isinstance(value, float):
             return value if math.isfinite(value) else None
-        text = str(value).strip().replace(",", "")
-        if not text:
+        # Anything reaching here arrived as text, and on these screens that means
+        # a task id -- the one number-typed column the CMMS stores as TEXT, and an
+        # identifier rather than a quantity (downtime_hours is REAL, so it is
+        # already a float above and never takes this path). What an identifier is
+        # written as is part of which record it names, so it is only read as a
+        # number when the number writes back as the same characters: "1234" does,
+        # while "001234", "+1234", "1e3", "1,042" and "1234.0" each name a record
+        # that no number spells the same way. Those keep their own text.
+        text = str(value).strip()
+        if not INTEGER_TEXT.fullmatch(text):
             return None
-        if INTEGER_TEXT.fullmatch(text):
-            return None if PADDED_INTEGER_TEXT.fullmatch(text) else int(text)
-        try:
-            number = float(text)
-        except ValueError:
-            return None
-        return number if math.isfinite(number) else None
+        whole = int(text)
+        return whole if str(whole) == text else None
 
     def _number_sort_key(self, value: Any) -> float | None:
         """``value`` as a number ORDER BY can compare, or NULL when it is not one.

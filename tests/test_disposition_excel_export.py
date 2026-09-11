@@ -318,16 +318,37 @@ class NumberColumnTests(DispositionExcelTestCase):
         self.assertEqual(on_screen[:2], ["B-2", "A-14"])
         self.assertEqual(self.as_excel_would_sort(cells, descending=True), on_screen)
 
-    def test_a_zero_padded_id_keeps_every_digit_in_the_cell(self):
-        """"001234" written as 1234 is a different record from the one in the CMMS.
+    def test_an_id_keeps_its_own_spelling_in_the_cell(self):
+        """What an identifier is written as is part of which record it names.
 
-        Where task ids are padded to a fixed width, "001234" and "1234" are two
-        records; the number under them is the same, so the padded one is not
-        written as a number at all.
+        "001234", "+1234", "1e3" and "1,042" all have a number underneath them,
+        and writing that number puts a different string in the cell than the one
+        the CMMS holds -- two of them collapsing onto a record that already exists
+        under its plain spelling. Only text that is the number's own canonical
+        form becomes a number; the rest keep their characters.
         """
 
-        self.add_wo("0009")
-        self.assertIn("0009", self.export("padded.xlsx").values("taskID"))
+        for task_id in ("0009", "+7", "1e3", "1,042"):
+            with self.subTest(task_id=task_id):
+                self.add_wo(task_id)
+                self.assertIn(task_id, self.export(f"spelled-{task_id}.xlsx").values("taskID"))
+
+    def test_the_plain_spelling_is_still_a_number(self):
+        """The rule has to keep the ordinary case ordering as a number."""
+
+        self.add_wo("1042")
+        self.assertIn(1042.0, self.export("plain.xlsx").values("taskID"))
+
+    def test_a_quantity_column_is_untouched_by_that_rule(self):
+        """It applies to text, and only task ids arrive as text.
+
+        downtime_hours is REAL, so a downtime is already a float before
+        _parse_number sees it and never reaches the canonical-form check -- which
+        is what makes that check safe to apply to identifiers as strictly as it is.
+        """
+
+        self.add_wo("1042", downtime=int(2.5 * 3600))
+        self.assertIn(2.5, self.export("quantity.xlsx").values("downtime"))
 
     def test_the_id_columns_are_numbers_too(self):
         """mapped_record_id is how a row finds its record, and it is matched as an int."""

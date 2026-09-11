@@ -186,16 +186,21 @@ class NumericSortTests(DispositionSortTestCase):
         self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[-2:], ["A-14", "B-2"])
         self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc")[:2], ["B-2", "A-14"])
 
-    def test_a_zero_padded_id_keeps_its_padding_rather_than_the_number_under_it(self):
-        """"001234" and "1234" are two records where the CMMS pads to fixed width.
+    def test_an_id_spelled_a_way_no_number_spells_it_sorts_as_text(self):
+        """"0009", "+9" and "9e0" are each a record of their own.
 
-        Reading either as 1234 makes them one, on the screen and in the workbook
-        alike, so the padded form is not treated as a number at all: it sorts in
-        the text block, where its own digits are what it is ordered by.
+        Each has 9 underneath it, and reading them as 9 makes four records into
+        one -- on the screen and in the workbook alike. Only text that is the
+        number's own canonical form is a number, so these sort in the text block
+        by their own characters.
         """
 
-        self.add_wo("0009")
-        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc"), ["9", "10", "100", "0009"])
+        for task_id in ("0009", "+9", "9e0"):
+            with self.subTest(task_id=task_id):
+                self.add_wo(task_id)
+                order = self.task_ids(sort="taskID", sort_dir="asc")
+                self.assertEqual(order[:3], ["9", "10", "100"])
+                self.assertIn(task_id, order[3:])
 
     def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
         """The ordering runs in Python, where the integer is exact.
