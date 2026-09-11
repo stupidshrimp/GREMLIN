@@ -248,6 +248,44 @@ class NumberColumnTests(DispositionExcelTestCase):
         self.add_wo("A-14")
         self.assertIn("A-14", self.export().values("taskID"))
 
+    def test_an_id_too_long_for_a_spreadsheet_keeps_every_digit(self):
+        """Rounding a quantity is a rounding; rounding an id is another record.
+
+        A spreadsheet holds every number as a double, so 9007199254740993 would be
+        written back as ...992 -- a number that names a different work order than
+        the one the row was built from. Past that limit the exact digits only
+        survive as text, so that is what the cell gets.
+        """
+
+        self.add_wo("9007199254740993")
+        self.assertIn("9007199254740993", self.export("huge.xlsx").values("taskID"))
+
+    def test_the_largest_id_a_cell_can_hold_exactly_is_still_a_number(self):
+        """The limit is where a double stops being exact, not a round number of digits."""
+
+        self.assertEqual(self.service._excel_number_value("9007199254740992"), 9007199254740992)
+        self.assertIsNone(self.service._excel_number_value("9007199254740993"))
+
+    def test_the_screen_and_the_workbook_agree_on_what_is_a_number(self):
+        """The disagreement this shared rule exists to prevent.
+
+        Ordering used to read a value that is not a number as 0.0, so "A-14" came
+        first on the screen's ascending page while the workbook put it after every
+        number, the way a spreadsheet does. Both halves read _parse_number now, so
+        an ascending sort produces the same order on either.
+        """
+
+        self.add_wo("A-14")
+        on_screen = [
+            str(row["taskID"])
+            for row in self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir="asc")
+        ]
+        cells = self.export("mixed.xlsx").values("taskID")
+        # Excel's own ascending rule: the numbers in order, then the text.
+        in_excel = sorted(v for v in cells if not isinstance(v, str))
+        in_excel += sorted(v for v in cells if isinstance(v, str))
+        self.assertEqual([str(int(v)) if not isinstance(v, str) else v for v in in_excel], on_screen)
+
     def test_the_id_columns_are_numbers_too(self):
         """mapped_record_id is how a row finds its record, and it is matched as an int."""
 

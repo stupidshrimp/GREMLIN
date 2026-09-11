@@ -308,6 +308,13 @@ EXCEL_COLUMN_TYPES: dict[str, str] = {
     "pm_reset_renewal_rationale": COLUMN_TYPE_TEXT,
 }
 
+# The largest whole number a spreadsheet can hold without changing it. Excel
+# stores every number as a double, so an integer past 2**53 is rounded to one it
+# can represent -- fine for a quantity, and a different record entirely for an
+# id. Anything bigger stays text, which is the only form that survives the trip.
+EXACT_INTEGER_LIMIT = 2**53
+INTEGER_TEXT = re.compile(r"[-+]?\d+")
+
 # Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
 # system, offset by one so that it reproduces the leap-year bug it inherited from
 # Lotus 1-2-3. A date has to reach the sheet as that number, under a date number
@@ -405,6 +412,10 @@ class LifeDataService:
         # same way the analysis code does and returns a fixed-width UTC string,
         # which then compares chronologically as plain text.
         conn.create_function("gremlin_sort_datetime", 1, self._datetime_sort_key, deterministic=True)
+        # And the same for the numbers: task ids arrive as TEXT, so ordering them
+        # needs to know which of those strings are numbers at all. This is the one
+        # answer to that, shared with the Excel export.
+        conn.create_function("gremlin_sort_number", 1, self._number_sort_key, deterministic=True)
         return conn
 
     @contextmanager
@@ -2854,11 +2865,14 @@ class LifeDataService:
         if column_type == COLUMN_TYPE_DATETIME:
             return [f"gremlin_sort_datetime({expression})"]
         if column_type == COLUMN_TYPE_NUMBER:
-            # A number the CMMS stored as text ("1042") casts cleanly; anything
-            # that is not a number casts to 0.0, so the text form breaks the tie
-            # between those rather than leaving them in arbitrary order.
+            # A number the CMMS stored as text ("1042") compares as the number it
+            # is. Anything that is not a number is NULL rather than the 0.0 a CAST
+            # would make of it -- "A-14" is not the smallest task id on the asset,
+            # and reading it as one put it at the top of the ascending page. It
+            # sorts with the blanks at the end instead, and the text form below
+            # orders those among themselves rather than leaving them arbitrary.
             return [
-                f"CAST(NULLIF(TRIM({expression}), '') AS REAL)",
+                f"gremlin_sort_number({expression})",
                 f"NULLIF(TRIM({expression}), '') COLLATE NOCASE",
             ]
         if column_type == COLUMN_TYPE_BOOLEAN:
@@ -3809,14 +3823,21 @@ class LifeDataService:
         # without moving the value far enough to round to a different second.
         return round((parsed - EXCEL_DATE_EPOCH).total_seconds() / 86400.0, 11)
 
-    def _excel_number_value(self, value: Any) -> int | float | None:
-        """``value`` as a number, or None if it is not one.
+    @staticmethod
+    def _parse_number(value: Any) -> int | float | None:
+        """``value`` as the number it is, or None when it is not a number.
 
-        The CMMS hands over ids and quantities as text ("1042"), which is why the
-        column has to be read rather than passed through: a numeric-looking string
-        left as text is exactly the cell that sorts 10 before 9. Infinities and
-        NaN are refused along with the non-numbers -- neither has an XML
-        representation Excel will read back.
+        The single rule for "is this column's value a number", read by the table's
+        ORDER BY (through ``gremlin_sort_number``) and by the workbook writer. One
+        rule is the point: the CMMS hands ids and quantities over as text, and if
+        the two halves disagreed about which strings are numbers, a value would
+        sort among the numbers on one and among the text on the other.
+
+        Integral text is parsed as an integer rather than through ``float()``,
+        which rounds a long id to the nearest value a double can hold before
+        anybody can notice: "9007199254740993" comes back out of ``float()`` as
+        ...992, a different work order. Infinity and NaN are not numbers here --
+        neither has a spreadsheet representation, and neither orders sensibly.
         """
 
         if isinstance(value, bool) or value is None:
@@ -3828,14 +3849,52 @@ class LifeDataService:
         text = str(value).strip().replace(",", "")
         if not text:
             return None
+        if INTEGER_TEXT.fullmatch(text):
+            return int(text)
         try:
             number = float(text)
         except ValueError:
             return None
-        if not math.isfinite(number):
+        return number if math.isfinite(number) else None
+
+    def _number_sort_key(self, value: Any) -> float | None:
+        """``value`` as a number ORDER BY can compare, or NULL when it is not one.
+
+        Registered on every connection as ``gremlin_sort_number`` (see
+        ``connect``). SQLite's own ``CAST(x AS REAL)`` cannot say "not a number":
+        it reads "A-14" as 0.0, which sorted a task id that is not a number in
+        among the ones that are, as the smallest of them. Returning NULL instead
+        puts it with the blanks at the end of the column, which is where the
+        column already promises to keep a cell it has no value for, and where a
+        spreadsheet puts text in an ascending sort.
+        """
+
+        number = self._parse_number(value)
+        if number is None:
             return None
-        # Whole numbers go back as ints so an id reads "1042" rather than "1042.0".
-        return int(number) if number.is_integer() and abs(number) < 2**53 else number
+        try:
+            return float(number)
+        except OverflowError:
+            # An integer too large for a double at all. It is still bigger than
+            # everything else in the column, so it sorts there rather than
+            # disappearing into the blanks -- and raising here would take down the
+            # whole page, since this runs inside the ORDER BY.
+            return math.inf if number > 0 else -math.inf
+
+    def _excel_number_value(self, value: Any) -> int | float | None:
+        """``value`` as a number a cell can hold exactly, or None to keep it as text.
+
+        The same rule as the ordering, with one more question asked of it: a
+        spreadsheet stores every number as a double, so a whole number past
+        EXACT_INTEGER_LIMIT would be written back rounded. For a quantity that is
+        a rounding; for an id it is a different record, so those stay text, which
+        is the only form that survives the trip intact.
+        """
+
+        number = self._parse_number(value)
+        if isinstance(number, int) and abs(number) > EXACT_INTEGER_LIMIT:
+            return None
+        return number
 
     def _xlsx_cell_xml(self, reference: str, value: Any, column_type: str | None, *, style: int = EXCEL_STYLE_DEFAULT) -> str:
         """One cell, written as the type its column holds.

@@ -137,6 +137,41 @@ class NumericSortTests(DispositionSortTestCase):
         self.assertEqual(self.task_ids(sort="downtime", sort_dir="asc")[-1], "7")
         self.assertEqual(self.task_ids(sort="downtime", sort_dir="desc")[-1], "7")
 
+    def test_a_task_id_that_is_not_a_number_is_not_treated_as_zero(self):
+        """SQLite reads a CAST of "A-14" to REAL as 0.0, which is not what it is.
+
+        Ordering on that cast put a task id that is not a number at the very top
+        of the ascending page, in among the ones that are, as the smallest of
+        them. It is a value the column has no number for, so it belongs where the
+        column already keeps those: at the end, in both directions, beside the
+        blanks.
+        """
+
+        self.add_wo("A-14")
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc"), ["9", "10", "100", "A-14"])
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc"), ["100", "10", "9", "A-14"])
+
+    def test_several_non_numbers_still_have_an_order_of_their_own(self):
+        """Dropped to the end is not dropped into an arbitrary heap."""
+
+        for task_id in ("B-2", "A-14"):
+            self.add_wo(task_id)
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[-2:], ["A-14", "B-2"])
+
+    def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
+        """The ordering runs in Python, where the integer is exact.
+
+        The workbook keeps such an id as text because a spreadsheet cannot hold it
+        without rounding; the screen has no such limit, so it stays a number here
+        rather than being pushed down with the values that are not numbers at all.
+        """
+
+        self.add_wo("9007199254740993")
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc"),
+            ["9", "10", "100", "9007199254740993"],
+        )
+
 
 class SortSpansEveryPageTests(DispositionSortTestCase):
     """The sort covers the selection, not the page."""
