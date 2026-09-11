@@ -266,25 +266,68 @@ class NumberColumnTests(DispositionExcelTestCase):
         self.assertEqual(self.service._excel_number_value("9007199254740992"), 9007199254740992)
         self.assertIsNone(self.service._excel_number_value("9007199254740993"))
 
+    @staticmethod
+    def as_excel_would_sort(cells: list, descending: bool) -> list[str]:
+        """``cells`` in the order a spreadsheet puts them, as text.
+
+        Excel's rule for a mixed column: the numbers in one block, the text in
+        another, and the two swap ends with the direction -- text after the numbers
+        ascending, ahead of them descending. Blanks stay last either way.
+        """
+
+        numbers = sorted((v for v in cells if isinstance(v, (int, float))), reverse=descending)
+        text = sorted((v for v in cells if isinstance(v, str)), reverse=descending)
+        ordered = [*text, *numbers] if descending else [*numbers, *text]
+        return [v if isinstance(v, str) else str(int(v)) for v in ordered]
+
     def test_the_screen_and_the_workbook_agree_on_what_is_a_number(self):
         """The disagreement this shared rule exists to prevent.
 
         Ordering used to read a value that is not a number as 0.0, so "A-14" came
         first on the screen's ascending page while the workbook put it after every
-        number, the way a spreadsheet does. Both halves read _parse_number now, so
-        an ascending sort produces the same order on either.
+        number, the way a spreadsheet does. Both halves read _parse_number now.
         """
 
         self.add_wo("A-14")
+        cells = self.export("mixed.xlsx").values("taskID")
+        for descending in (False, True):
+            with self.subTest(descending=descending):
+                on_screen = [
+                    str(row["taskID"])
+                    for row in self.service.disposition_rows(
+                        self.ASSET, "wo", sort="taskID", sort_dir="desc" if descending else "asc"
+                    )
+                ]
+                self.assertEqual(self.as_excel_would_sort(cells, descending), on_screen)
+
+    def test_they_agree_descending_too_where_the_text_block_leads(self):
+        """The direction the first fix did not cover.
+
+        Pinning the text with the blanks made it last whichever way the column
+        pointed, so a descending sort read one way on the screen and the other way
+        in the file built from the same rows.
+        """
+
+        for task_id in ("A-14", "B-2"):
+            self.add_wo(task_id)
+        cells = self.export("desc.xlsx").values("taskID")
         on_screen = [
             str(row["taskID"])
-            for row in self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir="asc")
+            for row in self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir="desc")
         ]
-        cells = self.export("mixed.xlsx").values("taskID")
-        # Excel's own ascending rule: the numbers in order, then the text.
-        in_excel = sorted(v for v in cells if not isinstance(v, str))
-        in_excel += sorted(v for v in cells if isinstance(v, str))
-        self.assertEqual([str(int(v)) if not isinstance(v, str) else v for v in in_excel], on_screen)
+        self.assertEqual(on_screen[:2], ["B-2", "A-14"])
+        self.assertEqual(self.as_excel_would_sort(cells, descending=True), on_screen)
+
+    def test_a_zero_padded_id_keeps_every_digit_in_the_cell(self):
+        """"001234" written as 1234 is a different record from the one in the CMMS.
+
+        Where task ids are padded to a fixed width, "001234" and "1234" are two
+        records; the number under them is the same, so the padded one is not
+        written as a number at all.
+        """
+
+        self.add_wo("0009")
+        self.assertIn("0009", self.export("padded.xlsx").values("taskID"))
 
     def test_the_id_columns_are_numbers_too(self):
         """mapped_record_id is how a row finds its record, and it is matched as an int."""

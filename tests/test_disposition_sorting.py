@@ -140,23 +140,62 @@ class NumericSortTests(DispositionSortTestCase):
     def test_a_task_id_that_is_not_a_number_is_not_treated_as_zero(self):
         """SQLite reads a CAST of "A-14" to REAL as 0.0, which is not what it is.
 
-        Ordering on that cast put a task id that is not a number at the very top
-        of the ascending page, in among the ones that are, as the smallest of
-        them. It is a value the column has no number for, so it belongs where the
-        column already keeps those: at the end, in both directions, beside the
-        blanks.
+        Ordering on that cast put a task id with no number in it at the very top
+        of the ascending page, in among the ones that are numbers, as the smallest
+        of them.
         """
 
         self.add_wo("A-14")
         self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc"), ["9", "10", "100", "A-14"])
-        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc"), ["100", "10", "9", "A-14"])
+
+    def test_it_is_not_treated_as_an_empty_cell_either(self):
+        """Which is the same mistake with the other sign.
+
+        "A-14" is neither a number nor a blank, and pinning it to the end in both
+        directions -- where this column does keep its blanks -- reads it as the
+        second. It is text, so it moves as a block of its own: after the numbers
+        ascending, ahead of them descending, which is where a spreadsheet puts it
+        and therefore where the workbook built from these rows puts it.
+        """
+
+        self.add_wo("A-14")
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc"), ["A-14", "100", "10", "9"])
+
+    def test_a_blank_still_sorts_last_in_both_directions(self):
+        """The blanks keep the rule the text just stopped sharing.
+
+        Sorting descending must not open on a page of rows with nothing in the
+        column being sorted -- that is the whole reason blanks are pinned -- so the
+        third block stays where it was.
+        """
+
+        self.add_wo("A-14")
+        self.add_wo("")  # nothing in the column at all
+        for direction in ("asc", "desc"):
+            with self.subTest(direction=direction):
+                rows = self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir=direction)
+                self.assertFalse(rows[-1]["taskID"], rows[-1]["taskID"])
+                # And the text is in front of it rather than sharing its place.
+                self.assertEqual(str(rows[-2]["taskID"] if direction == "asc" else rows[0]["taskID"]), "A-14")
 
     def test_several_non_numbers_still_have_an_order_of_their_own(self):
-        """Dropped to the end is not dropped into an arbitrary heap."""
+        """A block of its own is not an arbitrary heap."""
 
         for task_id in ("B-2", "A-14"):
             self.add_wo(task_id)
         self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[-2:], ["A-14", "B-2"])
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc")[:2], ["B-2", "A-14"])
+
+    def test_a_zero_padded_id_keeps_its_padding_rather_than_the_number_under_it(self):
+        """"001234" and "1234" are two records where the CMMS pads to fixed width.
+
+        Reading either as 1234 makes them one, on the screen and in the workbook
+        alike, so the padded form is not treated as a number at all: it sorts in
+        the text block, where its own digits are what it is ordered by.
+        """
+
+        self.add_wo("0009")
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc"), ["9", "10", "100", "0009"])
 
     def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
         """The ordering runs in Python, where the integer is exact.

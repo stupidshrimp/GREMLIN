@@ -314,6 +314,12 @@ EXCEL_COLUMN_TYPES: dict[str, str] = {
 # id. Anything bigger stays text, which is the only form that survives the trip.
 EXACT_INTEGER_LIMIT = 2**53
 INTEGER_TEXT = re.compile(r"[-+]?\d+")
+# A whole number written with leading zeros. The padding is part of the
+# identifier rather than decoration of it: a CMMS using fixed-width task ids has
+# "001234" and "1234" as two different records, and reading either as 1234 makes
+# them one. There is no number that carries the padding, so a value like this is
+# not treated as one -- it keeps its own text form, and sorts among the text.
+PADDED_INTEGER_TEXT = re.compile(r"[-+]?0\d+")
 
 # Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
 # system, offset by one so that it reproduces the leap-year bug it inherited from
@@ -2889,20 +2895,47 @@ class LifeDataService:
             # numerically so 9 comes before 10.
             return (
                 "ORDER BY gremlin_sort_datetime(COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final)),"
-                " CAST(NULLIF(TRIM(m.task_id), '') AS REAL), m.task_id, m.mapped_record_id"
+                " gremlin_sort_number(m.task_id), m.task_id, m.mapped_record_id"
             )
         expression, column_type = columns[sort]
         order = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
         keys = self._sort_key_expressions(expression, column_type)
-        # Empty cells go last whichever way the column points, the way a
-        # spreadsheet does it, so sorting descending never opens on a page of
-        # blanks. mapped_record_id breaks the remaining ties: without a total
-        # order, two rows that compare equal can swap between pages and the same
-        # record shows up twice, or not at all.
-        clauses = [f"CASE WHEN {keys[0]} IS NULL THEN 1 ELSE 0 END"]
+        # The blocks first, then the values inside them. mapped_record_id breaks
+        # the remaining ties: without a total order, two rows that compare equal
+        # can swap between pages and the same record shows up twice, or not at all.
+        clauses = [self._sort_group_rank(expression, column_type, keys[0], order)]
         clauses.extend(f"{key} {order}" for key in keys)
         clauses.append("m.mapped_record_id")
         return "ORDER BY " + ", ".join(clauses)
+
+    def _sort_group_rank(self, expression: str, column_type: str, sort_key: str, order: str) -> str:
+        """Which block a row belongs to, so the blocks sit where a spreadsheet puts them.
+
+        Empty cells go last whichever way the column points, so sorting
+        descending never opens on a page of blanks.
+
+        A number column has a third block between those two: the values that are
+        not numbers. A task id like "A-14" is neither a number nor an empty cell,
+        and reading it as either misplaces it -- as 0.0 (what CAST would make of
+        it) it led the ascending page as the smallest id on the asset; pinned with
+        the blanks it sat at the bottom of a descending sort, while the workbook
+        built from the same rows put it at the top. A spreadsheet keeps text in a
+        block of its own that swaps ends with the direction, after the numbers
+        ascending and ahead of them descending, and that is what this reproduces.
+
+        Dates keep the two-block rule. A value that will not parse as a date is a
+        broken date rather than a value of another kind -- 2025-02-31 is somebody's
+        typo, not an identifier -- and ImpossibleDateTests pins those to the end in
+        both directions, where a data-quality problem is found in one place.
+        """
+
+        if column_type != COLUMN_TYPE_NUMBER:
+            return f"CASE WHEN {sort_key} IS NULL THEN 1 ELSE 0 END"
+        numbers, text = ("0", "1") if order == "ASC" else ("1", "0")
+        return (
+            f"CASE WHEN NULLIF(TRIM({expression}), '') IS NULL THEN 2"
+            f" WHEN {sort_key} IS NOT NULL THEN {numbers} ELSE {text} END"
+        )
 
     @staticmethod
     def _escape_like(value: str) -> str:
@@ -3836,8 +3869,10 @@ class LifeDataService:
         Integral text is parsed as an integer rather than through ``float()``,
         which rounds a long id to the nearest value a double can hold before
         anybody can notice: "9007199254740993" comes back out of ``float()`` as
-        ...992, a different work order. Infinity and NaN are not numbers here --
-        neither has a spreadsheet representation, and neither orders sensibly.
+        ...992, a different work order. A zero-padded id is not a number at all
+        here (see PADDED_INTEGER_TEXT): the padding is part of which record it
+        names, and no number carries it. Infinity and NaN are not numbers either
+        -- neither has a spreadsheet representation, and neither orders sensibly.
         """
 
         if isinstance(value, bool) or value is None:
@@ -3850,7 +3885,7 @@ class LifeDataService:
         if not text:
             return None
         if INTEGER_TEXT.fullmatch(text):
-            return int(text)
+            return None if PADDED_INTEGER_TEXT.fullmatch(text) else int(text)
         try:
             number = float(text)
         except ValueError:
