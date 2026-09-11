@@ -14,7 +14,7 @@
     <p>
       How much GREMLIN is being used, and by whom. Sign-ins come from the login
       endpoint and changes from the audit trail every protected write already
-      stamps, so this reads what the deployment records anyway — it is a view over
+      stamps, so this reads what the deployment records anyway; it is a view over
       the access database, not a second thing collecting data. Read-only, like
       database inspection.
     </p>
@@ -72,7 +72,7 @@
   <div class="glass-card slide-in">
     <h2>Accounts</h2>
     <p class="dev-muted">
-      Every account, including ones with nothing in the window — an account that is
+      Every account, including ones with nothing in the window. An account that is
       never used is as much a finding as a busy one. “Per active day” separates somebody
       who signs in daily from somebody who signed in six times in one afternoon. An
       account older than the recorded history reads “None recorded since …” rather than
@@ -87,7 +87,7 @@
       <h2>Recent sign-ins</h2>
       <p class="dev-muted">
         Latest attempts in the window. An attempt against a name that matches no account
-        is recorded without that name — the commonest way to type one is a PIN in the
+        is recorded without that name. The commonest way to type one is a PIN in the
         username box, and this database keeps no credential in the clear.
       </p>
       <div class="dev-table-scroll" id="dev-activity-logins"></div>

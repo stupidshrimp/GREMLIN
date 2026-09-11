@@ -89,7 +89,7 @@
 
       <ol class="lda-help-steps">
         <li><strong>Select the asset and record type first.</strong> The workbook is built from the Asset
-          Number and Record Type chosen in Step 1, and it holds every eligible entry for that selection —
+          Number and Record Type chosen in Step 1, and it holds every eligible entry for that selection;
           the Rows selector, the search box, and the page you are on do not narrow it.</li>
         <li><strong>Click Download Excel.</strong> You get
           <code>&lt;asset&gt;_wo_dispositions.xlsx</code> (or <code>_pm_</code> for PM reset events). The
@@ -101,11 +101,11 @@
             <div>
               <h3>Both record types</h3>
               <ul>
-                <li><code>disposition_notes</code> — free text. Required for
+                <li><code>disposition_notes</code>: free text. Required for
                   <code>HELD_AMBIGUOUS</code> and <code>EXCLUDED_MIXED_CONTAMINATING</code>.</li>
-                <li><code>disposition_category</code> — dropdown.</li>
-                <li><code>record_class</code> — dropdown.</li>
-                <li><code>include_in_weibull_candidate</code> — <strong>set this to <code>TRUE</code> on
+                <li><code>disposition_category</code>: dropdown.</li>
+                <li><code>record_class</code>: dropdown.</li>
+                <li><code>include_in_weibull_candidate</code>: <strong>set this to <code>TRUE</code> on
                   every row the analysis should use.</strong> It arrives <code>FALSE</code> on any row nobody
                   has dispositioned yet, and the import keeps whatever the cell says, so a row left at
                   <code>FALSE</code> saves fine and is still left out of the Weibull.</li>
@@ -114,7 +114,7 @@
             <div>
               <h3>Work orders</h3>
               <ul>
-                <li><code>failure_mode</code> and <code>failure_mechanism</code> — pick from the dropdown,
+                <li><code>failure_mode</code> and <code>failure_mechanism</code>: pick from the dropdown,
                   or type a brand-new name and it is created for this asset on import. A WO becomes
                   Weibull-usable only as <code>INCLUDED_FAILURE</code> with a failure mode and
                   <code>include_in_weibull_candidate</code> at <code>TRUE</code>.</li>
@@ -132,11 +132,11 @@
         </li>
         <li><strong>Leave the rest of the sheet alone.</strong> <code>mapped_record_id</code> is how each
           row finds its record: never edit it, delete a row, or add one. The task, date, downtime, note and
-          failure-narrative columns are read-only — edits there are ignored on import, so the workbook can
+          failure-narrative columns are read-only; edits there are ignored on import, so the workbook can
           never overwrite what the maintenance team recorded in Limble.</li>
         <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
           <code>mapped_record_id</code>. Every row whose values differ from the saved disposition is written
-          as the current one — the same result as editing it here and clicking Save Dispositions — and rows
+          as the current one, with the same result as editing it here and clicking Save Dispositions. Rows
           that already match are skipped. What the workbook is compared against is the database, not
           anything half-typed in the table below: the page reloads on a successful import, so it asks before
           discarding unsaved edits, the same way paging and the selectors do.</li>
@@ -149,14 +149,14 @@
           <code>reset_target_…_id</code> pair for PMs). The id columns win whenever they are filled in, so
           a new name typed beside an old id is read as no change at all.</p>
         <p><strong>Moving a row to another failure mode moves its mechanism too.</strong> Clearing the ids
-          is not enough on its own — the mechanism has to be one that belongs to the new mode, so pick one
+          is not enough on its own; the mechanism has to be one that belongs to the new mode, so pick one
           of its mechanisms, type a new name for it, or leave the mechanism cell empty. A mechanism carried
           over from the old mode is refused, and refusing one row is refusing the file.</p>
         <p><strong>PMs cannot invent taxonomy.</strong> A reset target has to be an existing work-order
           failure mode/mechanism, so choose those from the dropdown. Work orders are the only place a new
           mode or mechanism can be named.</p>
         <p><strong>One wrong row stops the whole import.</strong> Nothing at all is saved when a single row
-          is refused — a <code>mapped_record_id</code> that does not belong to the selected asset and record
+          is refused, whether it is a <code>mapped_record_id</code> that does not belong to the selected asset and record
           type (usually a workbook downloaded for a different one), or a mechanism sitting under the wrong
           failure mode. Fix that row and upload the file again.</p>
         <p><strong>A workbook is a snapshot, and uploading it does not merge.</strong> Each row is compared

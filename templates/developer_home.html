@@ -13,10 +13,10 @@
       Database inspection reads and only reads: every panel behind it opens
       <code>GREMLIN.db</code> <code>mode=ro</code>, so it can neither change the file nor
       take the writer lock other users depend on. User activity reads too, from the
-      access database rather than this one. The rest are consequential —
+      access database rather than this one. The rest are consequential:
       Limble sync writes to the database and spends this server's API credentials,
       access control decides who may sign in, and bug reports writes to the shared
-      drive every deployment reads — so they each get their own page rather
+      drive every deployment reads, so they each get their own page rather
       than a tab next to something you opened to read.
     </p>
     <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
@@ -32,7 +32,7 @@
 <section class="card-grid dev-card-grid">
   <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_database') }}">
     <h2>Database inspection</h2>
-    <p>Read the runtime, the file, the schema and the rows — without touching any of them.</p>
+    <p>Read the runtime, the file, the schema and the rows without touching any of them.</p>
     <div class="card-hover-copy">
       <p>
         Runtime configuration and registered routes, database file health, ingestion

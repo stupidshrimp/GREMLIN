@@ -730,7 +730,7 @@
     if (calcCard) calcCard.hidden = !ready || !CAN_EDIT;
     if (asset) {
       $("lda-asset-hint").textContent = asset.asset_name
-        ? `Selected ${asset.asset_number} — ${asset.asset_name}.`
+        ? `Selected ${asset.asset_number}: ${asset.asset_name}.`
         : `Selected ${asset.asset_number}.`;
       if (state.pageMode === "disposition") reloadDispositionForSelection();
       else refreshSummary();
@@ -818,7 +818,7 @@
       list.appendChild(
         el("li", {
           text:
-            `${row.failure_mechanism_name} — beta ${fmt(row.beta_mle)} ` +
+            `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
             `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h)`,
         })
       );
@@ -1768,7 +1768,7 @@
             failure_mode_name: modeName,
             failure_mechanism_name: null,
           },
-          labelText: `${modeName} — all mechanisms (${totalCount} WOs, ${fmt(totalDowntime)} downtime h)`,
+          labelText: `${modeName}: all mechanisms (${totalCount} WOs, ${fmt(totalDowntime)} downtime h)`,
         });
       }
       mechs.forEach((mechanism) => {
@@ -2597,13 +2597,13 @@
         excelHelpButton(),
         withTooltip(
           download,
-          `Downloads the entries you selected — every eligible ${recordWord} row for this asset — as an ` +
+          `Downloads every eligible ${recordWord} row for the asset you selected as an ` +
             ".xlsx workbook with the disposition dropdowns built in, so you can fill them in offline."
         ),
         withTooltip(
           upload,
           "Uploads that filled-in workbook back. Rows are matched by mapped_record_id, and every row that " +
-            "differs from the saved disposition is written — so an old workbook can put stale values back " +
+            "differs from the saved disposition is written, so an old workbook can put stale values back " +
             "over someone else's newer edits."
         ),
         save,
@@ -2702,7 +2702,7 @@
         list.appendChild(
           el("li", {
             class: "lda-combobox-empty",
-            text: allowFreeText ? "No matches — keep typing to add a new value." : "No matching options.",
+            text: allowFreeText ? "No matches. Keep typing to add a new value." : "No matching options.",
           })
         );
         return;
@@ -3231,7 +3231,7 @@
     }
     if (hint) {
       hint.hidden = false;
-      hint.textContent = "Work order count by downtime range — shows whether downtime comes from many short events or a few long ones.";
+      hint.textContent = "Work order count by downtime range shows whether downtime comes from many short events or a few long ones.";
     }
     canvas.hidden = false;
     const dist = data.distribution || [];
@@ -3670,7 +3670,7 @@
         ? `${fmt(result.eta_lower_ci)} to ${fmt(result.eta_upper_ci)} hours`
         : "not available";
     const mttf = result.mean_time_to_failure != null ? `${fmt(result.mean_time_to_failure)} hours` : "not available";
-    return `Approx. 95% CI — beta: ${betaCi}; eta: ${etaCi}; MTTF: ${mttf}.`;
+    return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
   }
 
   function renderAnalysisResult(result) {
@@ -3735,7 +3735,7 @@
         class: "lda-hint",
         text:
           "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
-          "The red vertical line marks the current life — the elapsed time from the most recent valid event to the analysis cutoff. " +
+          "The red vertical line marks the current life, which is the elapsed time from the most recent valid event to the analysis cutoff. " +
           "The hazard and PDF panes intentionally show only the MLE curve. Hover any plotted point or the current-life line to see its task ID, life hours, start/end dates, request description, and completion notes; click it to jump to the source Weibull data row below.",
       }),
       panel("Results Interpretation Summary", buildInterpretationTable(result),

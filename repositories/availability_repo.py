@@ -814,7 +814,7 @@ class AvailabilityRepository:
         if deductions > schedule_hours_per_day:
             raise AvailabilityConfigError(
                 f"Break, lunch and setup total {deductions:g} h, which is more than the "
-                f"{schedule_hours_per_day:g} h scheduled — net hours would be negative."
+                f"{schedule_hours_per_day:g} h scheduled; net hours would be negative."
             )
 
         with self.write_connection() as conn:
