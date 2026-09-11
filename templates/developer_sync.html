@@ -31,7 +31,7 @@
       (<code>python -m jobs.sync_limble</code>): it pulls tasks and assets from the Limble
       API, upserts them into the raw import tables and refreshes the mapped layer the
       dashboards read. Run it here when a change in Limble needs to reach GREMLIN before
-      tonight. The import is idempotent, so running it again is safe — unchanged tasks are
+      tonight. The import is idempotent, so running it again is safe: unchanged tasks are
       skipped, and a sync never deletes curated data.
     </p>
 
@@ -46,15 +46,15 @@
       </div>
       <div class="dev-field">
         <span class="dev-field-legend">Options</span>
-        <label class="dev-check"><input type="checkbox" id="dev-sync-dry-run"> Dry run — fetch and transform, write nothing</label>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-dry-run"> Dry run: fetch and transform, write nothing</label>
         <label class="dev-check"><input type="checkbox" id="dev-sync-no-assets"> Skip asset enrichment</label>
-        <label class="dev-check"><input type="checkbox" id="dev-sync-instructions" checked> Read the ACCA failure narrative — Area Affected, Condition, Cause, Action</label>
+        <label class="dev-check"><input type="checkbox" id="dev-sync-instructions" checked> Read the ACCA failure narrative: Area Affected, Condition, Cause, Action</label>
       </div>
       <div class="dev-field" id="dev-sync-instructions-field" hidden>
         <label for="dev-sync-instructions-limit">Stop after reading ACCA from this many work orders</label>
         <input type="number" id="dev-sync-instructions-limit" min="0" step="50" value="500" autocomplete="off">
         <p class="dev-muted">
-          This caps the ACCA read only — every work order is still imported either way. The
+          This caps the ACCA read only; every work order is still imported either way. The
           four ACCA boxes (Area Affected, Condition, Cause, Action) live in each work order's
           instructions, which Limble serves one task at a time, so each work order read costs
           a request on top of the usual pull, about a second each. ACCA is read from the most
@@ -73,7 +73,7 @@
     </div>
     <p class="dev-muted">
       Limble has no “updated since” filter on its task endpoint, so a date narrows what is
-      written, not what is downloaded — the fetch takes just as long either way.
+      written, not what is downloaded; the fetch takes just as long either way.
     </p>
   </div>
 

@@ -286,7 +286,7 @@
       hint.textContent = `Comparing ${state.selected.size} selected asset(s).`;
     } else {
       const total = state.payload && state.payload.assets ? state.payload.assets.length : state.assets.length;
-      hint.textContent = `No assets selected — comparing all ${total} asset(s).`;
+      hint.textContent = `No assets selected; comparing all ${total} asset(s).`;
     }
   }
 
@@ -689,7 +689,7 @@
     if (!items.length) {
       drawBarChart(canvas, [], { height: 160 });
       empty.textContent = visibleAssets().length
-        ? "MTBF needs at least two dated corrective work orders — Data Required."
+        ? "MTBF needs at least two dated corrective work orders. Data Required."
         : noDataMessage();
       empty.hidden = false;
       return;
@@ -733,7 +733,7 @@
       mtbfItems.length
         ? null
         : rows.length
-        ? "Data Required — at least two dated corrective work orders are required to compute MTBF."
+        ? "Data Required: at least two dated corrective work orders are required to compute MTBF."
         : noDataMessage()
     );
 
@@ -828,7 +828,7 @@
   function renderThresholdSummary(rows) {
     const node = $("alerts-threshold-summary");
     const flagged = rows.filter((r) => (r.risk_score || 0) >= ALERT_THRESHOLD);
-    const mode = state.payload && state.payload.baseline_mode === "relative" ? " (scored relative to the other selected assets — no baseline period available)" : "";
+    const mode = state.payload && state.payload.baseline_mode === "relative" ? " (scored relative to the other selected assets; no baseline period available)" : "";
     if (!rows.length) {
       node.textContent = noDataMessage();
       return;
@@ -1168,7 +1168,7 @@
     if (row && row.flagged) {
       notes.push(
         `Downtime ${fmtNum(row.adjusted_downtime_hours, 1)} h exceeded scheduled ` +
-          `${fmtNum(row.adjusted_scheduled_hours, 1)} h — clamped to 0%.`
+          `${fmtNum(row.adjusted_scheduled_hours, 1)} h; clamped to 0%.`
       );
     }
     // 100% off no work orders at all is arithmetically the same as a genuinely
@@ -1430,7 +1430,7 @@
         kind: "flagged",
         text:
           `Downtime ${fmtNum(row.adjusted_downtime_hours, 1)} h exceeded scheduled ` +
-          `${fmtNum(row.adjusted_scheduled_hours, 1)} h — clamped to 0%`,
+          `${fmtNum(row.adjusted_scheduled_hours, 1)} h; clamped to 0%`,
       });
     }
     if (row.no_wo_entries) notes.push({ kind: "no-data", text: row.note || "No WO entries this month" });
@@ -2413,7 +2413,7 @@
       ? renderWorkOrderBody(group, data, detail)
       : renderSummaryBody(group, detail, items, focusKey, rerender);
 
-    const title = `${group.asset_group} — the rows behind the chart`;
+    const title = `${group.asset_group}: the rows behind the chart`;
     const closeButton = el("button", {
       type: "button",
       class: "metrics-modal-close",
@@ -2622,7 +2622,7 @@
     const label = $("availability-preview-label");
     if (label && lastIndex >= 0) {
       const months = data.groups[0].month_labels || [];
-      label.textContent = `Average availability by group — ${months[lastIndex] || ""}`;
+      label.textContent = `Average availability by group: ${months[lastIndex] || ""}`;
     }
     drawBarChart(canvas, sortedDesc(items), { height: 160, valueSuffix: "%" });
   }
@@ -2692,7 +2692,7 @@
     // drift a whole column away from their values once the table is stretched to
     // fill the card.
     const head = el("tr", {}, [
-      el("th", { scope: "col", text: mode === "ot" ? "Asset — OT hours" : "Asset" }),
+      el("th", { scope: "col", text: mode === "ot" ? "Asset: OT hours" : "Asset" }),
     ].concat(
       labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label }))
     ));

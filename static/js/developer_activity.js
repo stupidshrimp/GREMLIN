@@ -23,7 +23,7 @@
   const OUTCOME_LABELS = {
     success: "Signed in",
     failure: "Wrong PIN",
-    blocked: "Refused — locked out",
+    blocked: "Refused: locked out",
   };
 
   const state = { days: 30, requestVersion: 0 };
@@ -172,7 +172,7 @@
           "span",
           "dev-stat-note",
           `${plural(goneLogins, "sign-in")}, ${plural(goneRefusals, "refused attempt")} and ` +
-            `${plural(goneChanges, "change")} by accounts that no longer exist — counted in the ` +
+            `${plural(goneChanges, "change")} by accounts that no longer exist, counted in the ` +
             "totals above, but in no row below"
         )
       );
@@ -270,7 +270,7 @@
       if (hour !== null) values[hour] += bucket.logins;
     });
     $("dev-activity-hourly-note").textContent =
-      "Successful sign-ins by hour of the day, in this browser's local time — each day " +
+      "Successful sign-ins by hour of the day, in this browser's local time. Each day " +
       "converted at the offset that was in force on it.";
     buildChart(
       $("dev-activity-hourly"),
@@ -425,7 +425,7 @@
           // Nothing survives in this tier, so there is no date to give -- a
           // trim line without a row behind it would read as history that is
           // still here.
-          return tier.dropped ? `${name} none kept — all ${formatNumber(tier.dropped)} dropped` : null;
+          return tier.dropped ? `${name}: none kept; all ${formatNumber(tier.dropped)} dropped` : null;
         })
         .filter(Boolean);
       factRow(
@@ -456,7 +456,7 @@
       // watched. Claiming the window is complete there states the one thing
       // this panel exists to be right about, backwards.
       const kept = retention.capped
-        ? `At the ${formatNumber(retention.login_event_cap)}-row cap. Nothing has been dropped yet — ` +
+        ? `At the ${formatNumber(retention.login_event_cap)}-row cap. Nothing has been dropped yet; ` +
           "trimming starts once the history runs past the cap."
         : `Capped at ${formatNumber(retention.login_event_cap)} attempts; below it, so nothing has been dropped.`;
       let covered;
