@@ -313,6 +313,10 @@ EXCEL_COLUMN_TYPES: dict[str, str] = {
 # can represent -- fine for a quantity, and a different record entirely for an
 # id. Anything bigger stays text, which is the only form that survives the trip.
 EXACT_INTEGER_LIMIT = 2**53
+# The width SQLite stores an INTEGER in, and so the widest value the ordering can
+# compare exactly. Handing a Python int past this to a SQL function raises rather
+# than rounding quietly, so the sort key falls back to a double there.
+SQLITE_INTEGER_LIMIT = 2**63
 INTEGER_TEXT = re.compile(r"[-+]?\d+")
 
 # Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
@@ -3846,6 +3850,21 @@ class LifeDataService:
 
         return ILLEGAL_XML_CHARACTERS.sub("", str(value))
 
+    @staticmethod
+    def _xlsx_inline_text(text: str) -> str:
+        """One inline string, with its whitespace marked significant where it is.
+
+        A bare <t> lets a reader fold the whitespace at either end away, which for
+        a task id of " 123 " means the workbook hands back the record next to it
+        -- the rewrite the parse was changed to stop, undone one layer further out
+        by the file format. xml:space says the characters are the value. It is
+        only written where it changes something, which is how every other writer
+        does it and keeps an ordinary sheet from carrying it on every cell.
+        """
+
+        marked = ' xml:space="preserve"' if text != text.strip() else ""
+        return f"<t{marked}>{escape(text)}</t>"
+
     def _excel_serial_datetime(self, value: Any) -> float | None:
         """``value`` as the day count Excel stores a date as, or None if it is not a date.
 
@@ -3911,7 +3930,7 @@ class LifeDataService:
         whole = int(text)
         return whole if str(whole) == text else None
 
-    def _number_sort_key(self, value: Any) -> float | None:
+    def _number_sort_key(self, value: Any) -> int | float | None:
         """``value`` as a number ORDER BY can compare, or NULL when it is not one.
 
         Registered on every connection as ``gremlin_sort_number`` (see
@@ -3921,11 +3940,21 @@ class LifeDataService:
         puts it with the blanks at the end of the column, which is where the
         column already promises to keep a cell it has no value for, and where a
         spreadsheet puts text in an ascending sort.
+
+        An integer is handed over as an integer. SQLite compares INTEGER values
+        exactly, and rounding one to a double here would undo the exactness
+        _parse_number just went to the trouble of keeping: -9007199254740993 and
+        -9007199254740992 become one key, tie, and are then separated by the text
+        key, which orders negative numbers backwards. Past the width SQLite
+        stores an integer in there is no exact key left to give it, so those
+        compare as doubles -- two ids that differ only beyond 2**63 still tie.
         """
 
         number = self._parse_number(value)
         if number is None:
             return None
+        if isinstance(number, int) and -SQLITE_INTEGER_LIMIT <= number < SQLITE_INTEGER_LIMIT:
+            return number
         try:
             return float(number)
         except OverflowError:
@@ -3996,7 +4025,7 @@ class LifeDataService:
                 return f'<c r="{reference}"{styled} t="b"><v>{1 if value else 0}</v></c>'
             if isinstance(value, int) or (isinstance(value, float) and math.isfinite(value)):
                 return f'<c r="{reference}"{styled}><v>{value}</v></c>'
-        return f'<c r="{reference}"{styled} t="inlineStr"><is><t>{escape(self._xlsx_safe_text(value))}</t></is></c>'
+        return f'<c r="{reference}"{styled} t="inlineStr"><is>{self._xlsx_inline_text(self._xlsx_safe_text(value))}</is></c>'
 
     def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, auto_filter: bool = False) -> str:
         headers = list(rows[0]) if rows else []

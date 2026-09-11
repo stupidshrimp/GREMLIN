@@ -216,6 +216,27 @@ class NumericSortTests(DispositionSortTestCase):
                 self.assertEqual(order[:3], ["9", "10", "100"])
                 self.assertIn(task_id, order[3:])
 
+    def test_two_ids_that_differ_past_double_precision_still_order(self):
+        """Rounding them to a double for the sort key merges them into one.
+
+        -9007199254740993 and -9007199254740992 became the same key, tied, and
+        were then separated by the text key, which orders negative numbers
+        backwards -- so they came out in the opposite of their numeric order in
+        both directions. The key is the integer itself, which SQLite compares
+        exactly.
+        """
+
+        for task_id in ("-9007199254740993", "-9007199254740992"):
+            self.add_wo(task_id)
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc")[:2],
+            ["-9007199254740993", "-9007199254740992"],
+        )
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="desc")[-2:],
+            ["-9007199254740992", "-9007199254740993"],
+        )
+
     def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
         """The ordering runs in Python, where the integer is exact.
 

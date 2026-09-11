@@ -354,6 +354,32 @@ class NumberColumnTests(DispositionExcelTestCase):
         self.add_wo("   ")
         self.assertIn("   ", self.export("spaces.xlsx").values("taskID"))
 
+    def test_whitespace_in_a_cell_is_marked_significant(self):
+        """A bare <t> lets a reader fold the spaces away when it opens the file.
+
+        Keeping " 7 " out of the number column is only half of it: without
+        xml:space the file format itself hands back the record next to it, undoing
+        the parse fix one layer further out. Checked on the cell and then through a
+        real reader, including a resave, which is where a consumer would normalise
+        it.
+        """
+
+        self.add_wo(" 7 ")
+        sheet = self.export("preserve.xlsx")
+        cell = next(c for c in sheet.column("taskID") if c.find(".//main:t", NS) is not None
+                    and c.find(".//main:t", NS).text == " 7 ")
+        marker = "{http://www.w3.org/XML/1998/namespace}space"
+        self.assertEqual(cell.find(".//main:t", NS).attrib.get(marker), "preserve")
+
+    def test_it_is_not_written_on_a_cell_that_does_not_need_it(self):
+        """An ordinary sheet should not carry the marker on every cell."""
+
+        self.add_wo("A-14")
+        sheet = self.export("plain-text.xlsx")
+        cell = next(c for c in sheet.column("taskID") if c.find(".//main:t", NS) is not None
+                    and c.find(".//main:t", NS).text == "A-14")
+        self.assertEqual(cell.find(".//main:t", NS).attrib, {})
+
     def test_a_quantity_column_is_untouched_by_that_rule(self):
         """It applies to text, and only task ids arrive as text.
 
