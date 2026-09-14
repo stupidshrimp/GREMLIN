@@ -14,7 +14,6 @@
         <span class="sidebar-toggle-icon" aria-hidden="true">⇤</span>
       </button>
     </div>
-    <ul>
     {#- The hourglass on a page that is routed and offered but has no content
         yet. Drawn inside the entry, after the label, so it reads as part of the
         page's name rather than as a separate control; it is not a link, a
@@ -31,7 +30,23 @@
         <span class="nav-coming-soon-text">{{ coming_soon_label }}</span>
       </span>
     {%- endmacro %}
-    {% for link in nav_links %}
+    {#- One list per section, rather than one list with headings dropped into it:
+        a heading inside a <ul> is not a list item and does not belong there, and
+        a list of its own is what lets the heading name the entries under it.
+
+        The first section is the ungrouped run and has no heading at all. The
+        rest -- "Dashboards" today -- are named, and the name is tied to the list
+        with aria-labelledby, so the group is announced as "Dashboards" rather
+        than as a second anonymous list appearing halfway down the sidebar.
+        app.py builds a section only when something lands in it, so there is no
+        empty heading to draw around here. -#}
+    {% for section in nav_sections %}
+    {%- set heading_id = "navGroup-" ~ (section.heading | lower | replace(" ", "-")) if section.heading %}
+    {%- if section.heading %}
+    <p class="sidebar-group-heading" id="{{ heading_id }}">{{ section.heading }}</p>
+    {%- endif %}
+    <ul{% if section.heading %} aria-labelledby="{{ heading_id }}"{% endif %}>
+    {% for link in section.links %}
       <li>
         {%- if link.locked %}
         {#- A page that needs an account is still listed, struck through and
@@ -81,6 +96,7 @@
       </li>
     {% endfor %}
     </ul>
+    {% endfor %}
   </nav>
   <div class="sidebar-account">
     <button type="button" class="account-button" id="accountButton" title="{% if auth_user %}Signed in as {{ auth_user.username }}{% else %}Log in{% endif %}">
