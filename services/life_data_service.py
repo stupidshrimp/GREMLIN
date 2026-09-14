@@ -322,11 +322,24 @@ EXACT_INTEGER_LIMIT = 10**15 - 1
 SQLITE_INTEGER_LIMIT = 2**63
 INTEGER_TEXT = re.compile(r"[-+]?\d+")
 
-# Excel counts a date as the number of days since 1899-12-30 -- the 1900 date
-# system, offset by one so that it reproduces the leap-year bug it inherited from
-# Lotus 1-2-3. A date has to reach the sheet as that number, under a date number
-# format, for Excel to treat it as a date at all.
+# Excel counts a date as a number of days, and a date has to reach the sheet as
+# that number, under a date number format, for Excel to be able to treat it as a
+# date at all. Which day it counts from depends on where the date falls, because
+# Excel has a 1900-02-29 that never happened -- inherited from Lotus 1-2-3 and
+# kept for compatibility. From 1900-03-01 the phantom day is already in the count,
+# so 1899-12-30 is the epoch that lands on it; before that it is not, and counting
+# from 1899-12-30 puts the date a day late (1900-01-01 would be 2 where Excel says
+# 1, and 1900-02-28 would be 60, which is the phantom day itself).
+#
+# The phantom day needs no handling of its own: _parse_datetime refuses
+# 1900-02-29 along with every other day that does not exist, so nothing ever
+# reaches serial 60.
 EXCEL_DATE_EPOCH = datetime(1899, 12, 30, tzinfo=timezone.utc)
+EXCEL_DATE_EPOCH_BEFORE_THE_PHANTOM_DAY = datetime(1899, 12, 31, tzinfo=timezone.utc)
+EXCEL_PHANTOM_DAY_PASSED = datetime(1900, 3, 1, tzinfo=timezone.utc)
+# Excel's first representable date. Anything earlier has no serial at all -- the
+# count would go negative, which a date cell cannot show -- so it stays text.
+EXCEL_FIRST_DATE = datetime(1900, 1, 1, tzinfo=timezone.utc)
 
 # Indexes into the cellXfs list _xlsx_styles_xml writes, in the order it writes
 # them. A cell names the format it is drawn in by index, so the two move together.
@@ -3913,18 +3926,23 @@ class LifeDataService:
         Parsed by the same reader the screen's ordering uses, so a workbook and
         the table agree on which values are dates and on what each one says; the
         result is UTC, which is the normalised form the table already renders.
+
+        A date Excel cannot count at all -- anything before 1900 -- is None, and
+        the cell keeps the text, the same answer every other value that will not
+        convert gets.
         """
 
         parsed = self._parse_datetime(value)
-        if parsed is None:
+        if parsed is None or parsed < EXCEL_FIRST_DATE:
             return None
+        epoch = EXCEL_DATE_EPOCH if parsed >= EXCEL_PHANTOM_DAY_PASSED else EXCEL_DATE_EPOCH_BEFORE_THE_PHANTOM_DAY
         # A clock time is a fraction of a day, and most of them (17:30 among
         # them) have no exact binary representation, so the serial always lands a
         # fraction of a microsecond off the second it means. Every reader settles
         # that the same way, by rounding to the nearest second -- which is why the
         # 11 decimal places kept here are enough: they shorten the cell text
         # without moving the value far enough to round to a different second.
-        return round((parsed - EXCEL_DATE_EPOCH).total_seconds() / 86400.0, 11)
+        return round((parsed - epoch).total_seconds() / 86400.0, 11)
 
     @staticmethod
     def _parse_number(value: Any) -> int | float | None:

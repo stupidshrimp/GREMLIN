@@ -213,6 +213,36 @@ class DateColumnTests(DispositionExcelTestCase):
         self.assertIn('numFmtId="164"', styles)
         self.assertIn("yyyy", styles)
 
+    def test_the_serials_match_excels_own_across_its_phantom_day(self):
+        """Excel has a 1900-02-29 that never happened, and counts from it.
+
+        From 1900-03-01 the phantom day is already in the count, so 1899-12-30 is
+        the epoch that lands on Excel's numbers. Before it, that epoch puts every
+        date a day late -- 1900-01-01 as 2 where Excel says 1, and 1900-02-28 as
+        60, which is the phantom day itself, so the cell would read a date the
+        record does not have.
+
+        The phantom day needs no handling of its own: _parse_datetime refuses it
+        with every other day that does not exist, so nothing reaches serial 60.
+        """
+
+        for text, serial in (("1900-01-01", 1), ("1900-01-31", 31), ("1900-02-28", 59),
+                             ("1900-03-01", 61), ("1900-03-02", 62), ("2026-01-05", 46027)):
+            with self.subTest(date=text):
+                self.assertEqual(self.service._excel_serial_datetime(text), serial)
+        self.assertIsNone(self.service._parse_datetime("1900-02-29"))
+
+    def test_a_date_earlier_than_excel_can_count_stays_text(self):
+        """The count would go negative, and a date cell cannot show that.
+
+        So it takes the same answer as every other value that will not convert,
+        rather than a cell of hashes or a date read off a negative number.
+        """
+
+        self.assertIsNone(self.service._excel_serial_datetime("1899-06-15"))
+        self.add_wo("4", completedDate_Final="1899-06-15")
+        self.assertIn("1899-06-15", self.export("pre-1900.xlsx").values("completedDate_Final"))
+
     def test_a_value_that_is_not_a_date_stays_the_text_it_is(self):
         """Dropping it would be tidier and would lose what the record says."""
 
