@@ -3938,6 +3938,7 @@ class LifeDataService:
 
         A value that is already a number is taken as one, bar infinity and NaN --
         neither has a spreadsheet representation, and neither orders sensibly.
+        Nor is a string of digits too long for Python to convert at all.
         Text is read as a number only when it is the number's own canonical form,
         which is what keeps an identifier's spelling from being rewritten; the
         integer is parsed with ``int()`` rather than ``float()``, which would
@@ -3969,8 +3970,18 @@ class LifeDataService:
         text = str(value)
         if not INTEGER_TEXT.fullmatch(text):
             return None
-        whole = int(text)
-        return whole if str(whole) == text else None
+        try:
+            whole = int(text)
+            return whole if str(whole) == text else None
+        except ValueError:
+            # Python refuses to convert an integer this wide, in either direction
+            # (sys.get_int_max_str_digits, 4300 by default): the conversion is
+            # quadratic, so a long enough string is a way to hang a process. This
+            # runs inside the ORDER BY, where raising does not spoil one cell but
+            # takes the whole disposition page down with it -- and the export with
+            # it. A value no number can be made of is text, which is what every
+            # other value that will not convert already becomes.
+            return None
 
     def _number_sort_key(self, value: Any) -> int | float | None:
         """``value`` as a number ORDER BY can compare, or NULL when it is not one.

@@ -279,6 +279,28 @@ class NumericSortTests(DispositionSortTestCase):
             ["-9223372036854775809", "-9223372036854775808"],
         )
 
+    def test_an_id_too_long_for_python_to_convert_does_not_break_the_page(self):
+        """Python refuses to convert an integer past 4300 digits in either direction.
+
+        The conversion is quadratic, so the limit exists to stop a long enough
+        string hanging a process. The parse runs inside the ORDER BY, where
+        raising does not spoil one cell: it takes the whole disposition page down
+        for that asset, and the export with it. One record was enough.
+
+        A value no number can be made of is text, which is what everything else
+        that will not convert already becomes.
+        """
+
+        self.add_wo("9" * 5000)
+        for direction in ("asc", "desc"):
+            with self.subTest(direction=direction):
+                order = self.task_ids(sort="taskID", sort_dir=direction)
+                self.assertIn("9" * 5000, order)
+                self.assertEqual(sorted(order), sorted(["9", "10", "100", "9" * 5000]))
+        # And the page's own default ordering, which reads the same keys.
+        self.assertEqual(len(self.task_ids()), 4)
+        self.assertIsNone(self.service._parse_number("9" * 5000))
+
     def test_that_key_orders_every_integer_the_way_the_integers_order(self):
         """Across both signs and every width, since it is plain text comparison."""
 

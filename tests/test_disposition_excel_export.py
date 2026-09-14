@@ -275,6 +275,12 @@ class NumberColumnTests(DispositionExcelTestCase):
                 self.assertLess(int(too_wide), 2**53 + 1)  # a double would hold it
                 self.assertIsNone(self.service._excel_number_value(too_wide))
 
+    def test_an_id_too_long_for_python_to_convert_still_reaches_the_cell(self):
+        """Whole, not truncated: the export refuses to make a number of it, not to carry it."""
+
+        self.add_wo("9" * 5000)
+        self.assertIn("9" * 5000, self.export("unconvertible.xlsx").values("taskID"))
+
     def test_the_screen_still_orders_those_ids_as_numbers(self):
         """The cell's limit is not the ordering's limit.
 
