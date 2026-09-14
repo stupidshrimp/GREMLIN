@@ -62,6 +62,35 @@ def _labels(client, path="/"):
     return [label for label, _ in _entries(client, path)]
 
 
+# One list per section, with the section's heading -- if it has one -- in front
+# of it. The heading is optional in the pattern because the first section, the
+# ungrouped run at the top of the rail, deliberately has none.
+_SECTION = re.compile(
+    r'(?:<p class="sidebar-group-heading"[^>]*>(?P<heading>.*?)</p>\s*)?'
+    r"<ul(?P<attrs>[^>]*)>(?P<body>.*?)</ul>",
+    re.S,
+)
+
+
+def _sections(client, path="/"):
+    """The sidebar as (heading, labels, list attributes), in drawn order."""
+    found = []
+    for section in _SECTION.finditer(_sidebar(client, path)):
+        labels = [
+            label.strip()
+            for label in re.findall(
+                r'<span class="nav-label">(.*?)</span>', section.group("body"), re.S
+            )
+        ]
+        heading = section.group("heading")
+        found.append((heading.strip() if heading else None, labels, section.group("attrs")))
+    return found
+
+
+def _headings(client, path="/"):
+    return [heading for heading, _, _ in _sections(client, path) if heading]
+
+
 # The three GREMLIN shows a visitor with no account at all.
 OPEN = ["Home", "Reliability Links", "Configuration"]
 # The two of those three that no department can narrow away either. Configuration
@@ -384,6 +413,90 @@ def test_a_visitor_sees_the_mark_on_the_locked_entries_too(monkeypatch, tmp_path
         )
         assert "nav-locked" in item, label
         assert "nav-coming-soon" in item, label
+
+
+# --- the Dashboards heading --------------------------------------------------
+
+def test_the_three_dashboards_are_drawn_under_the_dashboards_heading(
+    monkeypatch, tmp_path
+):
+    """And only those three: the heading is a promise about what is under it."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="operations_maintenance")
+    sections = dict(
+        (heading, labels) for heading, labels, _ in _sections(client)
+    )
+    assert module.NAV_GROUP_DASHBOARDS == "Dashboards"
+    assert sections[module.NAV_GROUP_DASHBOARDS] == list(DEPARTMENT_PAGES)
+
+
+def test_everything_else_stays_in_the_ungrouped_run_above_it(monkeypatch, tmp_path):
+    """The heading was added under the existing sidebar, not around it."""
+    client = _client(_app(monkeypatch, tmp_path), department="all")
+    first_heading, first_labels, _ = _sections(client)[0]
+    assert first_heading is None
+    assert set(DEPARTMENT_PAGES).isdisjoint(first_labels)
+    assert set(FLOOR) <= set(first_labels)
+
+
+def test_a_visitor_gets_the_heading_over_the_struck_through_three(
+    monkeypatch, tmp_path
+):
+    """Signed out they are locked rather than gone, so the heading stands over
+    them exactly as it does for the department that owns them."""
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    sections = dict((heading, labels) for heading, labels, _ in _sections(client))
+    assert sections[module.NAV_GROUP_DASHBOARDS] == list(DEPARTMENT_PAGES)
+    for label, is_locked in _entries(client):
+        if label in DEPARTMENT_PAGES:
+            assert is_locked, label
+
+
+def test_no_heading_is_drawn_over_a_group_this_account_has_none_of(
+    monkeypatch, tmp_path
+):
+    """Facilities is offered none of the three. A heading left behind would
+    advertise a section that is not there -- which is the one thing the entries
+    being gone rather than struck through is trying not to do."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="facilities")
+    assert set(DEPARTMENT_PAGES).isdisjoint(_labels(client))
+    assert _headings(client) == []
+    assert "sidebar-group-heading" not in _sidebar(client)
+
+
+def test_the_heading_names_the_list_it_stands_over(monkeypatch, tmp_path):
+    """Without aria-labelledby the group is a second anonymous list appearing
+    halfway down the sidebar, and the heading is read as loose text above it."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="operations")
+    heading = re.search(
+        r'<p class="sidebar-group-heading" id="([^"]+)">(.*?)</p>',
+        _sidebar(client),
+        re.S,
+    )
+    assert heading, "the Dashboards heading was not drawn"
+    assert heading.group(2).strip() == module.NAV_GROUP_DASHBOARDS
+    for section_heading, _, attrs in _sections(client):
+        if section_heading:
+            assert f'aria-labelledby="{heading.group(1)}"' in attrs
+        else:
+            # The ungrouped run has no heading, so there is nothing to point at.
+            assert "aria-labelledby" not in attrs
+
+
+def test_the_grouping_changes_nothing_about_who_is_offered_what(
+    monkeypatch, tmp_path
+):
+    """The heading is presentation. The entries under it answer to the same
+    department rule they did when the sidebar was one flat list."""
+    module = _app(monkeypatch, tmp_path)
+    for department in ["operations", "maintenance", "operations_maintenance", "all"]:
+        client = _client(module, department=department, username=f"who_{department}")
+        assert set(DEPARTMENT_PAGES) <= set(_labels(client)), department
+        for route in DEPARTMENT_PAGES.values():
+            assert client.get(route).status_code == 200, (department, route)
 
 
 # --- the search catalog agrees with the sidebar ------------------------------

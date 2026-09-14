@@ -284,7 +284,7 @@ def auth_context():
         # the account has already been resolved, and threading it through forty
         # render_template calls would only mean one of them eventually going
         # without and quietly serving somebody else's navigation.
-        "nav_links": _nav_links_for(user),
+        "nav_sections": _nav_sections_for(user),
         "locked_nav_message": LOCKED_NAV_MESSAGE,
         "locked_nav_hint": LOCKED_NAV_HINT,
         # For the pages that link somewhere the sidebar no longer does. Home
@@ -363,6 +363,15 @@ app.jinja_env.globals.update(
 #
 # "coming_soon" is presentation, not access: it marks a page that is routed and
 # offered but has no content yet, and puts the hourglass on its sidebar entry.
+#
+# "group" is presentation as well, and is the sidebar's one sub-heading: an entry
+# that names a group is drawn under that heading instead of in the run at the top
+# of the rail, and an entry without the key is left where everything was before
+# the key existed. The heading is written here rather than in sidebar.html for
+# the same reason the rest of this list is: which pages sit under it is decided
+# in one place, and a page that moves under it moves by gaining this key alone.
+NAV_GROUP_DASHBOARDS = "Dashboards"
+
 PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
     {
@@ -426,20 +435,24 @@ PAGES = [
         "title": "Developer",
         "icon": ICONS["code"],
     },
-    # The three department pages. They have no content yet -- each is a
-    # placeholder standing in for the tracker that will be built on it -- but
-    # they are routed, navigated to and access-controlled exactly as a finished
-    # page is, so building one out later is an edit to its template alone.
+    # The three department pages, and the sidebar's "Dashboards" group. They
+    # have no content yet -- each is a placeholder standing in for the tracker
+    # that will be built on it -- but they are routed, navigated to and
+    # access-controlled exactly as a finished page is, so building one out later
+    # is an edit to its template alone.
     #
     # All three belong to Operations & Maintenance at every level, which is what
-    # the two keys below say: an account in Operations, in Maintenance, in both,
-    # or in none of them in particular ("all departments") is offered them, and
-    # a Facilities account is not.
+    # the two department keys below say: an account in Operations, in
+    # Maintenance, in both, or in none of them in particular ("all departments")
+    # is offered them, and a Facilities account is not. The heading follows the
+    # entries rather than standing on its own, so that account is not shown a
+    # "Dashboards" heading with nothing underneath it.
     {
         "route": "/safety-report",
         "template": "placeholder_page.html",
         "title": "Safety Report",
         "icon": ICONS["shield"],
+        "group": NAV_GROUP_DASHBOARDS,
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
@@ -449,6 +462,7 @@ PAGES = [
         "template": "placeholder_page.html",
         "title": "PM Task Tracker",
         "icon": ICONS["checklist"],
+        "group": NAV_GROUP_DASHBOARDS,
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
@@ -458,6 +472,7 @@ PAGES = [
         "template": "placeholder_page.html",
         "title": "Overdue WO Tracker",
         "icon": ICONS["overdue"],
+        "group": NAV_GROUP_DASHBOARDS,
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
@@ -815,8 +830,36 @@ def _nav_links_for(user: dict | None) -> list[dict]:
             # than read off the route in the template, so the sidebar never has
             # to know which pages are still empty.
             "coming_soon": bool(page.get("coming_soon")),
+            # Which heading the entry is drawn under, or None for the run at the
+            # top of the rail. Grouped into sections by _nav_sections_for below.
+            "group": page.get("group"),
         })
     return links
+
+
+def _nav_sections_for(user: dict | None) -> list[dict]:
+    """The sidebar as it is drawn: the same entries, under their headings.
+
+    Sections come out in the order PAGES first mentions them, so the ungrouped
+    run stays at the top and "Dashboards" follows it, and a section is created
+    only by an entry that lands in it. That second part is the whole reason this
+    groups the answer rather than the list: _nav_links_for has already dropped
+    the pages this account is not offered, so a Facilities account -- which is
+    offered none of the three dashboards -- is not shown a heading standing over
+    nothing, and no separate rule has to remember to hide it.
+    """
+
+    sections: list[dict] = []
+    by_heading: dict[str | None, dict] = {}
+    for link in _nav_links_for(user):
+        heading = link["group"]
+        section = by_heading.get(heading)
+        if section is None:
+            section = {"heading": heading, "links": []}
+            by_heading[heading] = section
+            sections.append(section)
+        section["links"].append(link)
+    return sections
 
 
 @app.before_request

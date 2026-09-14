@@ -79,6 +79,25 @@
   transition: opacity 130ms ease;
 }
 
+/* A sub-heading inside the nav -- "Dashboards" -- naming the run of entries
+   under it. Quieter and a shade smaller than .sidebar-heading above, which
+   names the whole rail: these two are never read as the same rank, and the one
+   that governs everything should not be the one that looks subordinate.
+
+   The top margin is what separates one list from the next; the lists themselves
+   carry none, so the ungrouped run at the top still starts where it always did. */
+.sidebar-group-heading {
+  margin: 1.1rem 0 0.45rem;
+  padding: 0 0.65rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: opacity 130ms ease;
+}
+
 .sidebar-toggle {
   display: inline-flex;
   align-items: center;
@@ -365,6 +384,24 @@ body.sidebar-collapsed .sidebar-header {
   padding: 0;
 }
 
+/* Collapsed to the icon rail there is no width for the word, but the break it
+   marks still has to be visible or the two runs of icons read as one list.
+   So the heading becomes the rule it was already implying: its text is clipped
+   to nothing and its top border is left doing the dividing.
+
+   Clipped rather than `display: none` -- which is what the rail does to
+   .sidebar-heading -- because this one names the list below it through
+   aria-labelledby, and the collapsed rail is exactly where a screen reader has
+   least else to go on. */
+body.sidebar-collapsed .sidebar-group-heading {
+  height: 0;
+  margin: 0.75rem 0.35rem;
+  padding: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--sidebar-border);
+  color: transparent;
+}
+
 body.sidebar-collapsed .sidebar a,
 body.sidebar-collapsed .sidebar .nav-locked {
   justify-content: center;
@@ -390,7 +427,8 @@ body.sidebar-collapsed .sidebar a:hover {
   .app-layout,
   .sidebar,
   .nav-label,
-  .sidebar-heading {
+  .sidebar-heading,
+  .sidebar-group-heading {
     transition: none;
   }
 
@@ -450,6 +488,17 @@ body.sidebar-collapsed .sidebar a:hover {
     display: block;
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* The rail does not apply down here either, so the heading goes back to being
+     a heading rather than the divider it stands in as up there. */
+  body.sidebar-collapsed .sidebar-group-heading {
+    height: auto;
+    margin: 1.1rem 0 0.45rem;
+    padding: 0 0.65rem;
+    overflow: visible;
+    border-top: 0;
+    color: var(--muted);
   }
 
   .sidebar-toggle {
