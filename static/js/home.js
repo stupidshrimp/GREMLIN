@@ -5,16 +5,19 @@
   // say why rather than do nothing. The wording is rendered into the card by
   // the template, because what to do next depends on whether anybody is signed
   // in: a guest needs the login, a viewer needs an administrator.
-  var card = document.querySelector(".life-data-card-locked");
-  if (!card) {
-    return;
-  }
+  //
+  // More than one card can be locked at once -- signed out, Perform an Analysis
+  // is locked as well as Disposition -- so every one of them is wired, not just
+  // the first.
+  var cards = document.querySelectorAll(".life-data-card-locked");
 
-  card.addEventListener("click", function () {
-    var message = card.getAttribute("data-locked-message");
-    if (message && window.gremlinToast) {
-      window.gremlinToast(message);
-    }
+  Array.prototype.forEach.call(cards, function (card) {
+    card.addEventListener("click", function () {
+      var message = card.getAttribute("data-locked-message");
+      if (message && window.gremlinToast) {
+        window.gremlinToast(message);
+      }
+    });
   });
 })();
 

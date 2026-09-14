@@ -1227,3 +1227,10 @@ button.life-data-card {
 @media (prefers-reduced-motion: reduce) {
   .support-contacts a { transition: none; }
 }
+
+/* The reserved pages -- Safety Report, PM Task Tracker, Overdue WO Tracker --
+   which have a sidebar entry, a route and an access rule but no content yet.
+   They stack more paragraphs than any other card does, and `p { margin: 0 }` at
+   the top of this file means nothing separates them without this. */
+.placeholder-note { margin-top: 0.9rem; }
+.placeholder-actions { margin-top: 1.5rem; }

@@ -1,15 +1,22 @@
 {% extends "base.html" %}
 
-{#- Shown in place of a page whose whole purpose is editing, for a visitor who
-    may only read. It says which role the page needs and where the login is,
-    rather than bouncing to a page that looks like nothing went wrong. -#}
+{#- Shown in place of a page the person asking may not have. Two different
+    refusals land here and it says which one it is, rather than bouncing to a
+    page that looks like nothing went wrong.
+
+    `access_message` carries the whole explanation when the caller has one --
+    a page that needs a login, or one that belongs to another department. The
+    prose below it is the original case, a page whose purpose is editing met by
+    somebody who may only read, and stands where no message was passed. -#}
 
 {% block content %}
 <section class="glass-card fade-in-up">
-  <p class="eyebrow">Read-only access</p>
+  <p class="eyebrow">{{ page_eyebrow or "Read-only access" }}</p>
   <h1>{{ page_heading or "You do not have access to this page." }}</h1>
   <p>
-    {% if auth_user %}
+    {% if access_message %}
+      {{ access_message }}
+    {% elif auth_user %}
       You are signed in as <strong>{{ auth_user.username }}</strong> ({{ auth_user.role }}).
       This page changes stored data, so it needs the {{ required_role or "editor" }} role.
       Ask an administrator to change your role.

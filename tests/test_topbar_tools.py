@@ -216,8 +216,17 @@ def test_chart_theme_is_ordered_before_the_script_that_uses_it(template, script)
     ],
 )
 def test_chart_pages_serve_the_palette_reader(monkeypatch, tmp_path, page, script):
-    """And it survives rendering, for the pages a visitor can actually reach."""
-    body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
+    """And it survives rendering, on the pages that actually draw a chart.
+
+    Signed in, because both of these are sidebar pages that need an account: a
+    visitor is served the refusal instead, which carries no chart and so would
+    say nothing about whether the palette reader is still wired up.
+    """
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "viewer", "1357", "viewer")
+    client = module.app.test_client()
+    assert client.post("/auth/login", json={"username": "viewer", "pin": "1357"}).status_code == 200
+    body = client.get(page).get_data(as_text=True)
     assert body.index("chart_theme.js") < body.index(script), page
 
 

@@ -17,11 +17,49 @@
     <ul>
     {% for link in nav_links %}
       <li>
+        {%- if link.locked %}
+        {#- A page that needs an account is still listed, struck through and
+            inert, so that the sidebar reads as "log in to get the rest" rather
+            than as a shorter GREMLIN. A button, not an anchor: it advertises no
+            URL that would only meet a 403, it cannot be opened in a new tab by a
+            middle click that would bypass the click handler, and it is still
+            reachable from the keyboard. layout.js raises the toast; the route
+            itself does the refusing.
+
+            Deliberately not aria-disabled: a control marked disabled is one
+            that answers nothing, and the whole point of this one is that it
+            answers. What it is for is in its own accessible name instead --
+            "Metrics, log in first to see this page!" -- which says more than
+            "dimmed" would.
+
+            No title= on this one, because the hint below is the tooltip and two
+            tooltips on one control fight each other. The hint carries the label
+            as well, for the collapsed rail where nothing else names the page. -#}
+        <button
+          type="button"
+          class="nav-locked"
+          data-locked-message="{{ locked_nav_message }}"
+        >
+          <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
+          <span class="nav-label">{{ link.label }}</span>
+          {#- Part of the button's own text rather than an aria-describedby
+              tooltip, so its accessible name is "Metrics, log in first to see
+              this page!" -- the label and the reason in one reading. The label
+              is repeated inside the hint for the collapsed rail's benefit only,
+              and is hidden from assistive tech because the real one above is
+              still in the tree there. -#}
+          <span class="nav-lock-hint">
+            <span class="nav-lock-hint-label" aria-hidden="true">{{ link.label }}</span>
+            {{ locked_nav_hint }}
+          </span>
+        </button>
+        {%- else %}
         {# title= gives the icon a tooltip once the label is hidden in the collapsed state. #}
         <a href="{{ link.url }}" title="{{ link.label }}" class="{% if request.path == link.url %}active{% endif %}">
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
         </a>
+        {%- endif %}
       </li>
     {% endfor %}
     </ul>
@@ -37,10 +75,10 @@
   <button type="button" class="account-close" id="accountClose" aria-label="Close">×</button>
   {% if auth_user %}
     <h2>Signed in</h2><p><strong>{{ auth_user.username }}</strong> · {{ auth_user.role }}</p>
-    {#- Department and level are shown but never acted on: nothing is filtered by
-        them yet. They are here so somebody can check what their account records
-        about them, and ask an administrator if it is wrong, before the day those
-        two fields start deciding which pages they are offered. -#}
+    {#- Department and level, which decide which pages the sidebar above offers
+        this account. Shown here so that somebody who cannot find a page they
+        expect can see what their account records about them, and ask an
+        administrator if it is wrong, rather than concluding GREMLIN lost it. -#}
     <p class="account-dialog-scope">{{ department_label(auth_user.department) }} · {{ staff_level_label(auth_user.staff_level) }}</p>
     <p>Your login lasts for this browser session. Closing the browser signs you out.</p>
     {#- The developer area has no sidebar entry and is not linked from any page:

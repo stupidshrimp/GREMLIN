@@ -113,6 +113,101 @@
   });
 })();
 
+// Sidebar entries for pages that need an account: the toast on click, and the
+// hint beside them on hover.
+//
+// After the block above, which is where gremlinToast is defined.
+(function () {
+  "use strict";
+
+  var GAP = 8;
+
+  var locked = document.querySelectorAll(".sidebar .nav-locked");
+  if (!locked.length) {
+    // Everybody is offered the whole sidebar, so there is nothing locked to
+    // explain -- which is every page load by somebody signed in.
+    return;
+  }
+
+  // Which entry's hint is currently on screen. The hint is positioned against
+  // the viewport (see sidebar.css), so anything that moves the entry -- the
+  // sidebar scrolling under a still pointer, the window resizing -- has to move
+  // the hint with it or it is left pointing at nothing.
+  var showing = null;
+
+  function place(entry) {
+    var hint = entry.querySelector(".nav-lock-hint");
+    if (!hint) {
+      return;
+    }
+    var anchorBox = entry.getBoundingClientRect();
+    // Measured after the entry, and while the hint is still invisible: it is
+    // laid out either way, so this costs nothing and avoids a flash at the
+    // wrong coordinates on the first hover.
+    var hintBox = hint.getBoundingClientRect();
+    var left;
+    var top;
+
+    if (anchorBox.right + GAP + hintBox.width <= window.innerWidth - GAP) {
+      // The usual case: beside the sidebar, centred on the entry.
+      left = anchorBox.right + GAP;
+      top = anchorBox.top + anchorBox.height / 2 - hintBox.height / 2;
+    } else {
+      // Under 900px the sidebar spans the whole width as a grid of entries, so
+      // there is no "beside" -- and squeezing the hint in anyway would lay it
+      // over the entry whose name is the thing being asked about. Below the
+      // entry instead, which covers a neighbour rather than the subject.
+      left = anchorBox.left;
+      top = anchorBox.bottom + GAP;
+    }
+
+    left = Math.max(GAP, Math.min(left, window.innerWidth - GAP - hintBox.width));
+    top = Math.max(GAP, Math.min(top, window.innerHeight - GAP - hintBox.height));
+    hint.style.left = Math.round(left) + "px";
+    hint.style.top = Math.round(top) + "px";
+  }
+
+  function show(entry) {
+    showing = entry;
+    place(entry);
+  }
+
+  function hide(entry) {
+    if (showing === entry) {
+      showing = null;
+    }
+  }
+
+  Array.prototype.forEach.call(locked, function (entry) {
+    entry.addEventListener("click", function () {
+      var message = entry.getAttribute("data-locked-message");
+      if (message && window.gremlinToast) {
+        // "info", not the bare alarm: nothing was refused that the person had
+        // any business expecting to work. It is telling them where the door is.
+        window.gremlinToast(message, "info");
+      }
+    });
+
+    // pointerenter rather than mouseenter so a pen or a finger counts the same
+    // as a cursor; focus is the keyboard's equivalent, and the stylesheet
+    // reveals the hint on :focus-visible to match.
+    entry.addEventListener("pointerenter", function () { show(entry); });
+    entry.addEventListener("focus", function () { show(entry); });
+    entry.addEventListener("pointerleave", function () { hide(entry); });
+    entry.addEventListener("blur", function () { hide(entry); });
+  });
+
+  var follow = function () {
+    if (showing) {
+      place(showing);
+    }
+  };
+  // Capturing, because the scrolling is the sidebar's own and a scroll event on
+  // an element does not bubble.
+  window.addEventListener("scroll", follow, true);
+  window.addEventListener("resize", follow);
+})();
+
 // The help contacts, which are read from a dialog in both of the places they
 // are offered. Wired up on its own rather than inside the account dialog's
 // block above, because that block gives up early on a page without an account
