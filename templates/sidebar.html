@@ -15,6 +15,22 @@
       </button>
     </div>
     <ul>
+    {#- The hourglass on a page that is routed and offered but has no content
+        yet. Drawn inside the entry, after the label, so it reads as part of the
+        page's name rather than as a separate control; it is not a link, a
+        button or a target of any kind.
+
+        The word is in the markup as well as the shape, hidden from sight but
+        not from assistive tech, which makes the entry's accessible name
+        "Safety Report, coming soon" -- the same thing the badge says to anybody
+        who can see it. title= on the anchor repeats it for the collapsed rail,
+        where every label is hidden and the tooltip is all there is. -#}
+    {%- macro coming_soon_badge() %}
+      <span class="nav-coming-soon">
+        <span class="nav-coming-soon-icon" aria-hidden="true">{{ coming_soon_icon | safe }}</span>
+        <span class="nav-coming-soon-text">{{ coming_soon_label }}</span>
+      </span>
+    {%- endmacro %}
     {% for link in nav_links %}
       <li>
         {%- if link.locked %}
@@ -42,6 +58,7 @@
         >
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
+          {%- if link.coming_soon %}{{ coming_soon_badge() }}{% endif %}
           {#- Part of the button's own text rather than an aria-describedby
               tooltip, so its accessible name is "Metrics, log in first to see
               this page!" -- the label and the reason in one reading. The label
@@ -55,9 +72,10 @@
         </button>
         {%- else %}
         {# title= gives the icon a tooltip once the label is hidden in the collapsed state. #}
-        <a href="{{ link.url }}" title="{{ link.label }}" class="{% if request.path == link.url %}active{% endif %}">
+        <a href="{{ link.url }}" title="{{ link.label }}{% if link.coming_soon %} — {{ coming_soon_label }}{% endif %}" class="{% if request.path == link.url %}active{% endif %}">
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
+          {%- if link.coming_soon %}{{ coming_soon_badge() }}{% endif %}
         </a>
         {%- endif %}
       </li>
@@ -98,9 +116,14 @@
         account the three open pages are readable, and with one the sidebar
         stops being struck through -- and stops being the same sidebar for
         everybody, since department and level shape it from there. -#}
+    {#- Configuration is deliberately named on both sides of this. It is
+        readable with no account at all, and it is one of the pages a department
+        can be kept out of, so somebody who logs in and finds it gone has been
+        told here why rather than left to conclude GREMLIN lost it. -#}
     <p>Home, Reliability Links and Configuration are readable without an account.
-       The rest of the sidebar needs one, and which of it you are offered follows
-       the department and level your account is recorded under.</p>
+       The rest of the sidebar needs one, and which of it you are offered &mdash;
+       Configuration included &mdash; follows the department and level your
+       account is recorded under.</p>
     <form id="loginForm">
       <label>Username<input name="username" autocomplete="username" required></label>
       <label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>
