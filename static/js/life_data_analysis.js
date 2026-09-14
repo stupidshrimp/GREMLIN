@@ -2541,7 +2541,7 @@
     const download = el("button", {
       class: "btn-secondary",
       text: "Download Excel",
-      onclick: () => downloadExcel(data.kind),
+      onclick: () => downloadExcel(data.kind, data.scope),
     });
     const upload = el("button", {
       class: "btn-secondary",
@@ -2597,8 +2597,12 @@
         excelHelpButton(),
         withTooltip(
           download,
-          `Downloads every eligible ${recordWord} row for the asset you selected as an ` +
-            ".xlsx workbook with the disposition dropdowns built in, so you can fill them in offline."
+          `Downloads ${
+            data.scope === "new"
+              ? `only the new / undispositioned ${recordWord} rows`
+              : `every eligible ${recordWord} row`
+          } for the asset you selected as an .xlsx workbook with the disposition dropdowns built in, ` +
+            "dates and numbers typed so the columns sort, so you can fill them in offline."
         ),
         withTooltip(
           upload,
@@ -2965,8 +2969,16 @@
     });
   }
 
-  function downloadExcel(kind) {
-    const url = `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}`;
+  // The Rows selector travels with the download: the workbook is the offline
+  // copy of this table, so asking for only the new rows on screen and getting a
+  // file of every eligible row is the screen and the file disagreeing about what
+  // was asked for. The search box and the page number deliberately do not travel
+  // -- those narrow the view to look at something, while the scope names which
+  // records are still outstanding.
+  function downloadExcel(kind, scope) {
+    const url =
+      `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}` +
+      `&kind=${kind}&scope=${scope === "new" ? "new" : "all"}`;
     window.location.href = url;
   }
 

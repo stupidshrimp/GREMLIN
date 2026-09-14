@@ -137,6 +137,197 @@ class NumericSortTests(DispositionSortTestCase):
         self.assertEqual(self.task_ids(sort="downtime", sort_dir="asc")[-1], "7")
         self.assertEqual(self.task_ids(sort="downtime", sort_dir="desc")[-1], "7")
 
+    def test_a_task_id_that_is_not_a_number_is_not_treated_as_zero(self):
+        """SQLite reads a CAST of "A-14" to REAL as 0.0, which is not what it is.
+
+        Ordering on that cast put a task id with no number in it at the very top
+        of the ascending page, in among the ones that are numbers, as the smallest
+        of them.
+        """
+
+        self.add_wo("A-14")
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc"), ["9", "10", "100", "A-14"])
+
+    def test_it_is_not_treated_as_an_empty_cell_either(self):
+        """Which is the same mistake with the other sign.
+
+        "A-14" is neither a number nor a blank, and pinning it to the end in both
+        directions -- where this column does keep its blanks -- reads it as the
+        second. It is text, so it moves as a block of its own: after the numbers
+        ascending, ahead of them descending, which is where a spreadsheet puts it
+        and therefore where the workbook built from these rows puts it.
+        """
+
+        self.add_wo("A-14")
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc"), ["A-14", "100", "10", "9"])
+
+    def test_a_blank_still_sorts_last_in_both_directions(self):
+        """The blanks keep the rule the text just stopped sharing.
+
+        Sorting descending must not open on a page of rows with nothing in the
+        column being sorted -- that is the whole reason blanks are pinned -- so the
+        third block stays where it was.
+        """
+
+        self.add_wo("A-14")
+        self.add_wo("")  # nothing in the column at all
+        for direction in ("asc", "desc"):
+            with self.subTest(direction=direction):
+                rows = self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir=direction)
+                self.assertFalse(rows[-1]["taskID"], rows[-1]["taskID"])
+                # And the text is in front of it rather than sharing its place.
+                self.assertEqual(str(rows[-2]["taskID"] if direction == "asc" else rows[0]["taskID"]), "A-14")
+
+    def test_whitespace_around_an_id_is_part_of_it_when_ordering_too(self):
+        """Comparing " 7 " as "7" sorts it somewhere other than where it reads.
+
+        The parse stopped trimming so the workbook could not rewrite the id; the
+        ordering has to stop trimming for the same reason, or the two put the same
+        record in different places. Trimmed, " 7 " would sort after "1e3" and
+        "0009"; untrimmed it leads the text block, which is where the cell reads
+        and where a spreadsheet puts it.
+        """
+
+        for task_id in (" 7 ", "0009", "1e3"):
+            self.add_wo(task_id)
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[3:], [" 7 ", "0009", "1e3"])
+
+    def test_several_non_numbers_still_have_an_order_of_their_own(self):
+        """A block of its own is not an arbitrary heap."""
+
+        for task_id in ("B-2", "A-14"):
+            self.add_wo(task_id)
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="asc")[-2:], ["A-14", "B-2"])
+        self.assertEqual(self.task_ids(sort="taskID", sort_dir="desc")[:2], ["B-2", "A-14"])
+
+    def test_an_id_spelled_a_way_no_number_spells_it_sorts_as_text(self):
+        """"0009", "+9" and "9e0" are each a record of their own.
+
+        Each has 9 underneath it, and reading them as 9 makes four records into
+        one -- on the screen and in the workbook alike. Only text that is the
+        number's own canonical form is a number, so these sort in the text block
+        by their own characters.
+        """
+
+        for task_id in ("0009", "+9", "9e0"):
+            with self.subTest(task_id=task_id):
+                self.add_wo(task_id)
+                order = self.task_ids(sort="taskID", sort_dir="asc")
+                self.assertEqual(order[:3], ["9", "10", "100"])
+                self.assertIn(task_id, order[3:])
+
+    def test_two_ids_that_differ_past_double_precision_still_order(self):
+        """Rounding them to a double for the sort key merges them into one.
+
+        -9007199254740993 and -9007199254740992 became the same key, tied, and
+        were then separated by the text key, which orders negative numbers
+        backwards -- so they came out in the opposite of their numeric order in
+        both directions. The key is the integer itself, which SQLite compares
+        exactly.
+        """
+
+        for task_id in ("-9007199254740993", "-9007199254740992"):
+            self.add_wo(task_id)
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc")[:2],
+            ["-9007199254740993", "-9007199254740992"],
+        )
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="desc")[-2:],
+            ["-9007199254740992", "-9007199254740993"],
+        )
+
+    def test_ids_past_sqlites_own_integer_width_still_order(self):
+        """Where the number key runs out, a second key has to carry it.
+
+        -9223372036854775808 is the last value SQLite holds exactly and
+        -9223372036854775809 the first it cannot, so the two tie on a key that has
+        become a double, and the text key behind them orders negatives backwards.
+        The pair is also why the tie-break covers every integer rather than only
+        the rounded ones: one of these is in range and one is not, and a key that
+        returned NULL for the first would have sorted it ahead of any string.
+        """
+
+        for task_id in ("-9223372036854775809", "-9223372036854775808"):
+            self.add_wo(task_id)
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc")[:2],
+            ["-9223372036854775809", "-9223372036854775808"],
+        )
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="desc")[-2:],
+            ["-9223372036854775808", "-9223372036854775809"],
+        )
+
+    def test_the_default_order_reaches_the_same_tie_breaker(self):
+        """No column chosen is still an ordering, and it had the same hole.
+
+        When nothing is sorted the rows go by date and then by task id, and that
+        path was reading the number key without the exact one behind it -- so two
+        ids past SQLite's integer width tied and fell through to the raw text,
+        which orders negatives backwards. Fixing one call site and not the other
+        left the default page wrong on exactly the values the chosen-column page
+        had just been fixed for.
+        """
+
+        for task_id in ("-9223372036854775809", "-9223372036854775808"):
+            self.add_wo(task_id, completedDate_Final="2026-01-05T00:00:00+00:00")
+        # The rows this class seeds carry no date, and a row with no date leads the
+        # default order; these two are the only ones the tie-breaker is reached for.
+        self.assertEqual(
+            self.task_ids()[-2:],
+            ["-9223372036854775809", "-9223372036854775808"],
+        )
+
+    def test_an_id_too_long_for_python_to_convert_does_not_break_the_page(self):
+        """Python refuses to convert an integer past 4300 digits in either direction.
+
+        The conversion is quadratic, so the limit exists to stop a long enough
+        string hanging a process. The parse runs inside the ORDER BY, where
+        raising does not spoil one cell: it takes the whole disposition page down
+        for that asset, and the export with it. One record was enough.
+
+        A value no number can be made of is text, which is what everything else
+        that will not convert already becomes.
+        """
+
+        self.add_wo("9" * 5000)
+        for direction in ("asc", "desc"):
+            with self.subTest(direction=direction):
+                order = self.task_ids(sort="taskID", sort_dir=direction)
+                self.assertIn("9" * 5000, order)
+                self.assertEqual(sorted(order), sorted(["9", "10", "100", "9" * 5000]))
+        # And the page's own default ordering, which reads the same keys.
+        self.assertEqual(len(self.task_ids()), 4)
+        self.assertIsNone(self.service._parse_number("9" * 5000))
+
+    def test_that_key_orders_every_integer_the_way_the_integers_order(self):
+        """Across both signs and every width, since it is plain text comparison."""
+
+        values = [0, 1, -1, 9, 10, 100, -77, 2**63 - 1, 2**63, -(2**63), -(2**63) - 1, 10**25, -(10**25)]
+        self.assertEqual(
+            sorted(values, key=lambda number: self.service._integer_sort_key(str(number))),
+            sorted(values),
+        )
+        # Nothing else is keyed on it, so it decides nothing in any other column.
+        for other in ("A-14", "", " 7 ", "2.5", "0009"):
+            with self.subTest(value=other):
+                self.assertIsNone(self.service._integer_sort_key(other))
+
+    def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
+        """The ordering runs in Python, where the integer is exact.
+
+        The workbook keeps such an id as text because a spreadsheet cannot hold it
+        without rounding; the screen has no such limit, so it stays a number here
+        rather than being pushed down with the values that are not numbers at all.
+        """
+
+        self.add_wo("9007199254740993")
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc"),
+            ["9", "10", "100", "9007199254740993"],
+        )
+
 
 class SortSpansEveryPageTests(DispositionSortTestCase):
     """The sort covers the selection, not the page."""
