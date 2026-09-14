@@ -171,6 +171,15 @@
   min-width: 0;
 }
 
+/* `p { margin: 0 }` is global, so a hero that explains itself in more than one
+   paragraph runs them into a single block. Every developer hero does, and the
+   access page now takes three to say who is offered which pages, which is two
+   more than reads as prose without this. Same 10px .dev-hero-path sets on
+   itself just below, so the spacing through the hero stays even. */
+.dev-hero-copy p + p {
+  margin-top: 10px;
+}
+
 .dev-hero-path {
   margin-top: 10px;
   font-size: 0.85rem;

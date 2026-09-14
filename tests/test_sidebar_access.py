@@ -209,3 +209,58 @@ def test_search_still_offers_a_visitor_what_logging_in_would_open(monkeypatch, t
     module = _app(monkeypatch, tmp_path)
     body = module.app.test_client().get("/search?q=safety").get_data(as_text=True)
     assert "/safety-report" in body
+
+
+# --- the pages that explain the rules ----------------------------------------
+#
+# Three places tell somebody what they may open: the login dialog on every page,
+# the refusal page, and the developer page where an administrator sets the two
+# fields. All three said "everything else is readable without an account" until
+# the rules above made that false, and nothing failed when it did -- which is
+# what these are for. They check the claim, not the sentence, so the wording can
+# still be rewritten.
+
+def _says_everything_is_readable(body: str) -> bool:
+    """Whether a page still makes the promise the login gate broke."""
+    lowered = body.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "everything else in gremlin stays readable",
+            "remains available read-only without an account",
+            "nothing is filtered by them yet",
+        )
+    )
+
+
+@pytest.mark.parametrize("page", ["/", "/configuration", "/reliability-links"])
+def test_the_login_dialog_names_what_an_account_is_for(monkeypatch, tmp_path, page):
+    """It is drawn on every page, and it is where somebody decides to bother."""
+    body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
+    assert not _says_everything_is_readable(body), page
+    for label in OPEN:
+        assert label in body, label
+    assert "department" in body.lower(), page
+
+
+def test_the_refusal_page_does_not_promise_what_it_just_refused(monkeypatch, tmp_path):
+    """The editor-role refusal is rendered for signed-out visitors too."""
+    body = (
+        _app(monkeypatch, tmp_path)
+        .app.test_client()
+        .get("/life-data-analysis/disposition")
+        .get_data(as_text=True)
+    )
+    assert not _says_everything_is_readable(body)
+
+
+def test_the_developer_page_explains_the_rule_it_edits(monkeypatch, tmp_path):
+    """Whoever sets a department here is the one person who must not be misled."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, role="admin")
+    body = client.get("/developer/access").get_data(as_text=True)
+    assert not _says_everything_is_readable(body)
+    # The three facts an administrator needs before changing anybody's row.
+    assert "overlap" in body.lower()
+    for label in OPEN:
+        assert label in body, label

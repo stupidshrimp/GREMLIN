@@ -23,8 +23,8 @@
     {% else %}
       This page changes stored data, so it needs an account with the
       {{ required_role or "editor" }} role. Log in with the person icon at the
-      bottom of the sidebar. Everything else in GREMLIN stays readable without
-      one.
+      bottom of the sidebar. Without one, GREMLIN offers Home, Reliability Links
+      and Configuration.
     {% endif %}
   </p>
   <p><a class="btn-secondary" href="{{ back_url or url_for('home') }}">Go back</a></p>

@@ -18,12 +18,20 @@
       separately from the analysis database.
     </p>
     <p>
-      Department and level record where in the plant an account&rsquo;s holder works. They
-      are stored against the account and can be changed here at any time, but nothing
-      is filtered by them yet &mdash; which pages and sidebar entries each department and
-      level should see has still to be decided. Until it is, every account reaches
-      exactly what its role allows, and accounts that predate these two fields carry
-      the unrestricted &ldquo;All&rdquo; values.
+      Department and level record where in the plant an account&rsquo;s holder works, and
+      decide which pages its sidebar offers. A page may be marked for a department,
+      for a level, or for neither; an account is offered it when the two overlap, so
+      a page marked Operations &amp; Maintenance reaches an Operations account and a
+      Maintenance account alike. Neither field is a rank &mdash; no department or level
+      is above another &mdash; and a page an account&rsquo;s department does not cover is
+      left out of its sidebar and refused at its address.
+    </p>
+    <p>
+      Home, Reliability Links and Configuration are outside all of it: every account
+      is offered those three whatever you set here, and so is a visitor who has not
+      signed in. The &ldquo;All&rdquo; values narrow nothing, which is what accounts that
+      predate these two fields carry, so changing an account away from them is what
+      takes a page away from somebody &mdash; not leaving it alone.
     </p>
     <p class="dev-hero-path">Accounts: <code>{{ access_db_path }}</code></p>
   </div>
