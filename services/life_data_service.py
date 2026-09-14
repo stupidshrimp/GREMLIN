@@ -308,11 +308,14 @@ EXCEL_COLUMN_TYPES: dict[str, str] = {
     "pm_reset_renewal_rationale": COLUMN_TYPE_TEXT,
 }
 
-# The largest whole number a spreadsheet can hold without changing it. Excel
-# stores every number as a double, so an integer past 2**53 is rounded to one it
-# can represent -- fine for a quantity, and a different record entirely for an
-# id. Anything bigger stays text, which is the only form that survives the trip.
-EXACT_INTEGER_LIMIT = 2**53
+# The largest whole number a spreadsheet can hold without changing it: fifteen
+# significant decimal digits, which is what Excel keeps regardless of the double
+# underneath. That bites well before the binary limit does -- 2**53 is sixteen
+# digits, so an id like 1234567890123456 sits under it and is still shown, and
+# saved back, as 1234567890123460, one digit away from the record beside it.
+# Rounding a quantity is a rounding; rounding an id is a different record, so
+# anything wider stays text, the only form that survives the trip.
+EXACT_INTEGER_LIMIT = 10**15 - 1
 # The width SQLite stores an INTEGER in, and so the widest value the ordering can
 # compare exactly. Handing a Python int past this to a SQL function raises rather
 # than rounding quietly, so the sort key falls back to a double there.

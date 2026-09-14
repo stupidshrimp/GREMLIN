@@ -251,20 +251,39 @@ class NumberColumnTests(DispositionExcelTestCase):
     def test_an_id_too_long_for_a_spreadsheet_keeps_every_digit(self):
         """Rounding a quantity is a rounding; rounding an id is another record.
 
-        A spreadsheet holds every number as a double, so 9007199254740993 would be
-        written back as ...992 -- a number that names a different work order than
-        the one the row was built from. Past that limit the exact digits only
-        survive as text, so that is what the cell gets.
+        A spreadsheet keeps fifteen significant digits, so 1234567890123456 would
+        be shown, and saved back, as 1234567890123460 -- a number that names a
+        different work order than the one the row was built from. Past that width
+        the exact digits only survive as text, so that is what the cell gets.
         """
 
-        self.add_wo("9007199254740993")
-        self.assertIn("9007199254740993", self.export("huge.xlsx").values("taskID"))
+        self.add_wo("1234567890123456")
+        self.assertIn("1234567890123456", self.export("huge.xlsx").values("taskID"))
 
-    def test_the_largest_id_a_cell_can_hold_exactly_is_still_a_number(self):
-        """The limit is where a double stops being exact, not a round number of digits."""
+    def test_the_limit_is_excels_decimal_precision_not_the_double_underneath(self):
+        """Sixteen digits is too many even below 2**53.
 
-        self.assertEqual(self.service._excel_number_value("9007199254740992"), 9007199254740992)
-        self.assertIsNone(self.service._excel_number_value("9007199254740993"))
+        A double holds 1234567890123456 exactly and 2**53 is itself sixteen
+        digits, so a binary limit lets that id through into a numeric cell -- where
+        Excel keeps fifteen significant digits and hands back ...460. The limit has
+        to be the one the reader actually sees.
+        """
+
+        self.assertEqual(self.service._excel_number_value("999999999999999"), 999999999999999)
+        for too_wide in ("1000000000000000", "1234567890123456", "9007199254740992"):
+            with self.subTest(task_id=too_wide):
+                self.assertLess(int(too_wide), 2**53 + 1)  # a double would hold it
+                self.assertIsNone(self.service._excel_number_value(too_wide))
+
+    def test_the_screen_still_orders_those_ids_as_numbers(self):
+        """The cell's limit is not the ordering's limit.
+
+        Keeping a sixteen-digit id as text is about what a spreadsheet can show.
+        The ordering runs in Python and SQLite, both exact well past that, so it
+        still compares the id as the number it is.
+        """
+
+        self.assertEqual(self.service._number_sort_key("1234567890123456"), 1234567890123456)
 
     @staticmethod
     def as_excel_would_sort(cells: list, descending: bool) -> list[str]:
