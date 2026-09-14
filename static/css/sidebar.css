@@ -79,7 +79,7 @@
   transition: opacity 130ms ease;
 }
 
-/* A sub-heading inside the nav -- "Dashboards" -- naming the run of entries
+/* A sub-heading inside the nav naming the run of entries
    under it. Quieter and a shade smaller than .sidebar-heading above, which
    names the whole rail: these two are never read as the same rank, and the one
    that governs everything should not be the one that looks subordinate.
