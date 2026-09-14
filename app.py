@@ -364,13 +364,15 @@ app.jinja_env.globals.update(
 # "coming_soon" is presentation, not access: it marks a page that is routed and
 # offered but has no content yet, and puts the hourglass on its sidebar entry.
 #
-# "group" is presentation as well, and is the sidebar's one sub-heading: an entry
+# "group" is presentation as well, and supplies the sidebar's sub-headings: an entry
 # that names a group is drawn under that heading instead of in the run at the top
 # of the rail, and an entry without the key is left where everything was before
 # the key existed. The heading is written here rather than in sidebar.html for
 # the same reason the rest of this list is: which pages sit under it is decided
 # in one place, and a page that moves under it moves by gaining this key alone.
+NAV_GROUP_ANALYSIS = "Analysis"
 NAV_GROUP_DASHBOARDS = "Dashboards"
+NAV_GROUP_OTHER = "Other"
 
 PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
@@ -382,6 +384,7 @@ PAGES = [
         "template": "perform_analysis.html",
         "title": "Life Data Analysis",
         "icon": ICONS["trend"],
+        "group": NAV_GROUP_ANALYSIS,
         # Reliability engineering work, not shift work: an account recorded as
         # Operations, as Maintenance, or as both is kept out of it. The section
         # covers the disposition workspace, the failure-classification page and
@@ -395,6 +398,7 @@ PAGES = [
         "template": "metrics.html",
         "title": "Metrics",
         "icon": ICONS["chart"],
+        "group": NAV_GROUP_ANALYSIS,
         "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "section": ("/metrics",),
     },
@@ -403,31 +407,6 @@ PAGES = [
         "template": "standards_and_documentation.html",
         "title": "Standards and Documentation",
         "icon": ICONS["docs"],
-    },
-    {
-        "route": "/reliability-links",
-        "template": "reliability_links.html",
-        "title": "Reliability Links",
-        "icon": ICONS["docs"],
-    },
-    {
-        # Named "Configuration" rather than "Settings": most of what is on it is
-        # structural plant configuration -- shift schedules, group membership,
-        # linked-downtime rules -- rather than the personal preferences
-        # "Settings" promises. /settings still resolves, as a redirect.
-        "route": "/configuration",
-        "template": "configuration.html",
-        "title": "Configuration",
-        "icon": ICONS["settings"],
-        # What is on it is the shape of the analysis Operations & Maintenance is
-        # kept out of above -- availability groups, linked-downtime rules, the
-        # CMMS mapping -- so it goes with those pages rather than staying on the
-        # open floor for them. It stays open to everybody else, signed in or
-        # not: this key narrows one department away and changes nothing else.
-        "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
-        # /settings is the old address and still redirects here; refusing it
-        # directly is better than bouncing somebody onto a 403.
-        "section": ("/configuration", "/settings"),
     },
     {
         "route": "/developer",
@@ -476,6 +455,36 @@ PAGES = [
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
+    },
+    # Utility destinations close the navigation under the final "Other"
+    # heading. Keeping these entries last also keeps that section at the bottom,
+    # because _nav_sections_for preserves the order in which groups first occur.
+    {
+        "route": "/reliability-links",
+        "template": "reliability_links.html",
+        "title": "Reliability Links",
+        "icon": ICONS["docs"],
+        "group": NAV_GROUP_OTHER,
+    },
+    {
+        # Named "Configuration" rather than "Settings": most of what is on it is
+        # structural plant configuration -- shift schedules, group membership,
+        # linked-downtime rules -- rather than the personal preferences
+        # "Settings" promises. /settings still resolves, as a redirect.
+        "route": "/configuration",
+        "template": "configuration.html",
+        "title": "Configuration",
+        "icon": ICONS["settings"],
+        "group": NAV_GROUP_OTHER,
+        # What is on it is the shape of the analysis Operations & Maintenance is
+        # kept out of above -- availability groups, linked-downtime rules, the
+        # CMMS mapping -- so it goes with those pages rather than staying on the
+        # open floor for them. It stays open to everybody else, signed in or
+        # not: this key narrows one department away and changes nothing else.
+        "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        # /settings is the old address and still redirects here; refusing it
+        # directly is better than bouncing somebody onto a 403.
+        "section": ("/configuration", "/settings"),
     },
 ]
 
@@ -841,7 +850,7 @@ def _nav_sections_for(user: dict | None) -> list[dict]:
     """The sidebar as it is drawn: the same entries, under their headings.
 
     Sections come out in the order PAGES first mentions them, so the ungrouped
-    run stays at the top and "Dashboards" follows it, and a section is created
+    run stays at the top and named groups follow it, and a section is created
     only by an entry that lands in it. That second part is the whole reason this
     groups the answer rather than the list: _nav_links_for has already dropped
     the pages this account is not offered, so a Facilities account -- which is

@@ -415,7 +415,24 @@ def test_a_visitor_sees_the_mark_on_the_locked_entries_too(monkeypatch, tmp_path
         assert "nav-coming-soon" in item, label
 
 
-# --- the Dashboards heading --------------------------------------------------
+# --- sidebar section headings -----------------------------------------------
+
+def test_analysis_and_other_entries_are_drawn_under_their_headings(
+    monkeypatch, tmp_path
+):
+    module = _app(monkeypatch, tmp_path)
+    sections = _sections(_client(module, department="all"))
+
+    assert module.NAV_GROUP_ANALYSIS == "Analysis"
+    assert module.NAV_GROUP_OTHER == "Other"
+    assert (module.NAV_GROUP_ANALYSIS, ["Life Data Analysis", "Metrics"]) in [
+        (heading, labels) for heading, labels, _ in sections
+    ]
+    assert sections[-1][0:2] == (
+        module.NAV_GROUP_OTHER,
+        ["Reliability Links", "Configuration"],
+    )
+
 
 def test_the_three_dashboards_are_drawn_under_the_dashboards_heading(
     monkeypatch, tmp_path
@@ -436,7 +453,7 @@ def test_everything_else_stays_in_the_ungrouped_run_above_it(monkeypatch, tmp_pa
     first_heading, first_labels, _ = _sections(client)[0]
     assert first_heading is None
     assert set(DEPARTMENT_PAGES).isdisjoint(first_labels)
-    assert set(FLOOR) <= set(first_labels)
+    assert first_labels == ["Home"]
 
 
 def test_a_visitor_gets_the_heading_over_the_struck_through_three(
@@ -462,8 +479,7 @@ def test_no_heading_is_drawn_over_a_group_this_account_has_none_of(
     module = _app(monkeypatch, tmp_path)
     client = _client(module, department="facilities")
     assert set(DEPARTMENT_PAGES).isdisjoint(_labels(client))
-    assert _headings(client) == []
-    assert "sidebar-group-heading" not in _sidebar(client)
+    assert module.NAV_GROUP_DASHBOARDS not in _headings(client)
 
 
 def test_the_heading_names_the_list_it_stands_over(monkeypatch, tmp_path):
@@ -471,16 +487,18 @@ def test_the_heading_names_the_list_it_stands_over(monkeypatch, tmp_path):
     halfway down the sidebar, and the heading is read as loose text above it."""
     module = _app(monkeypatch, tmp_path)
     client = _client(module, department="operations")
-    heading = re.search(
-        r'<p class="sidebar-group-heading" id="([^"]+)">(.*?)</p>',
-        _sidebar(client),
-        re.S,
-    )
-    assert heading, "the Dashboards heading was not drawn"
-    assert heading.group(2).strip() == module.NAV_GROUP_DASHBOARDS
+    heading_ids = {
+        label.strip(): heading_id
+        for heading_id, label in re.findall(
+            r'<p class="sidebar-group-heading" id="([^"]+)">(.*?)</p>',
+            _sidebar(client),
+            re.S,
+        )
+    }
+    assert module.NAV_GROUP_DASHBOARDS in heading_ids
     for section_heading, _, attrs in _sections(client):
         if section_heading:
-            assert f'aria-labelledby="{heading.group(1)}"' in attrs
+            assert f'aria-labelledby="{heading_ids[section_heading]}"' in attrs
         else:
             # The ungrouped run has no heading, so there is nothing to point at.
             assert "aria-labelledby" not in attrs
