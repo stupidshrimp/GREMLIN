@@ -127,19 +127,7 @@
     <button type="button" class="btn-secondary" id="logoutButton">Log out</button>
   {% else %}
     <h2>Log in to edit</h2>
-    {#- What logging in actually buys, in the place somebody is deciding whether
-        to bother. Both halves are true at once and neither alone is: without an
-        account the three open pages are readable, and with one the sidebar
-        stops being struck through -- and stops being the same sidebar for
-        everybody, since department and level shape it from there. -#}
-    {#- Configuration is deliberately named on both sides of this. It is
-        readable with no account at all, and it is one of the pages a department
-        can be kept out of, so somebody who logs in and finds it gone has been
-        told here why rather than left to conclude GREMLIN lost it. -#}
-    <p>Home, Reliability Links and Configuration are readable without an account.
-       The rest of the sidebar needs one, and which of it you are offered &mdash;
-       Configuration included &mdash; follows the department and level your
-       account is recorded under.</p>
+    <p>Your login lasts for this browser session. Closing the browser signs you out.</p>
     <form id="loginForm">
       <label>Username<input name="username" autocomplete="username" required></label>
       <label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>

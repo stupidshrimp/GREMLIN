@@ -566,12 +566,9 @@ def test_search_keeps_them_for_a_department_that_is_not_withheld(monkeypatch, tm
 
 # --- the pages that explain the rules ----------------------------------------
 #
-# Three places tell somebody what they may open: the login dialog on every page,
-# the refusal page, and the developer page where an administrator sets the two
-# fields. All three said "everything else is readable without an account" until
-# the rules above made that false, and nothing failed when it did -- which is
-# what these are for. They check the claim, not the sentence, so the wording can
-# still be rewritten.
+# The refusal page and developer page tell somebody what they may open. Both
+# said "everything else is readable without an account" until the rules above
+# made that false, and nothing failed when it did -- which is what these are for.
 
 def _says_everything_is_readable(body: str) -> bool:
     """Whether a page still makes the promise the login gate broke."""
@@ -587,13 +584,13 @@ def _says_everything_is_readable(body: str) -> bool:
 
 
 @pytest.mark.parametrize("page", ["/", "/configuration", "/reliability-links"])
-def test_the_login_dialog_names_what_an_account_is_for(monkeypatch, tmp_path, page):
-    """It is drawn on every page, and it is where somebody decides to bother."""
+def test_the_login_dialog_explains_session_duration(monkeypatch, tmp_path, page):
+    """The session description is drawn in the login dialog on every page."""
     body = _app(monkeypatch, tmp_path).app.test_client().get(page).get_data(as_text=True)
-    assert not _says_everything_is_readable(body), page
-    for label in OPEN:
-        assert label in body, label
-    assert "department" in body.lower(), page
+    assert (
+        "Your login lasts for this browser session. Closing the browser signs you out."
+        in body
+    ), page
 
 
 def test_the_refusal_page_does_not_promise_what_it_just_refused(monkeypatch, tmp_path):
