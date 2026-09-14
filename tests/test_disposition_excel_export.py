@@ -488,12 +488,18 @@ class WorkbookShapeTests(DispositionExcelTestCase):
         self.assertIn("Lookup Lists", "".join(sheet.xml["xl/worksheets/sheet1.xml"]))
 
     def test_a_control_character_in_a_note_does_not_corrupt_the_workbook(self):
-        """One \\x07 pasted into a completion note used to be a file Excel refuses to open."""
+        """One \\x07 pasted into a completion note used to be a file Excel refuses to open.
+
+        The \\x0b leaves a space behind rather than vanishing: it is one of the six
+        in the set that \\s counts as whitespace, and running the words either side
+        of it together would lose the break the writer put there. The \\x07 is not a
+        separator and simply goes.
+        """
 
         self.add_wo("3", completionNotes="stopped\x07 the line \x0b& restarted <it>")
         sheet = self.export("control.xlsx")
         notes = [value for value in sheet.values("completionNotes") if value]
-        self.assertEqual(notes, ["stopped the line & restarted <it>"])
+        self.assertEqual(notes, ["stopped the line  & restarted <it>"])
 
 
 class RoundTripIsLosslessTests(DispositionExcelTestCase):
@@ -537,6 +543,38 @@ class RoundTripIsLosslessTests(DispositionExcelTestCase):
         # And still nothing the second time, rather than converging after one pass.
         self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
         self.assertEqual(self.saved_note(), "held for review see the log")
+
+    def test_a_separator_becomes_a_space_rather_than_disappearing(self):
+        r"""Six of the characters XML refuses are ones \s treats as whitespace.
+
+        Collapsing runs of whitespace turned each of them into a space long before
+        this branch existed, so "Bearing\x0bfailure" was the failure mode
+        "Bearing failure". Deleting them instead ran the words together into a
+        name that matches nothing and gets created alongside the real one -- the
+        duplicate this cleaning exists to prevent, reintroduced by the cleaning.
+        """
+
+        for separator in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(separator=separator):
+                self.assertEqual(
+                    self.service._normalize_taxonomy_text(f"Bearing{separator}failure"),
+                    "Bearing failure",
+                )
+
+    def test_cleaning_and_collapsing_can_run_in_either_order(self):
+        """Which is what stops the two from having to be kept in step.
+
+        A separator that is already a space by the time whitespace is collapsed
+        gives the same answer whichever step ran first, so no caller has to know.
+        """
+
+        import re
+
+        for raw in ("Bearing\x0bfailure", "a\x0b\x0cb", "x\x1cy", "  padded \x0b name  "):
+            with self.subTest(raw=raw):
+                cleaned_first = re.sub(r"\s+", " ", self.service._without_unrepresentable_characters(raw)).strip()
+                collapsed_first = self.service._without_unrepresentable_characters(re.sub(r"\s+", " ", raw)).strip()
+                self.assertEqual(cleaned_first, collapsed_first)
 
     def test_a_taxonomy_name_with_one_in_it_is_created_once(self):
         r"""The same trip, where getting it wrong duplicates a failure mode.

@@ -341,7 +341,13 @@ EXCEL_STYLE_DECIMAL = 3
 # to open ("unreadable content"). Lone surrogates go with them: they cannot even
 # be encoded to UTF-8, so they take the whole download down with a
 # UnicodeEncodeError rather than merely corrupting it.
-ILLEGAL_XML_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+# Six of them are separators -- \s matches them, and collapsing runs of
+# whitespace turned each into a space long before any of this. Deleting those
+# outright would join the words they stood between, so "Bearing\x0bfailure"
+# would become one word and stop matching the failure mode it names. They become
+# a space; everything else in the set separates nothing and simply goes.
+ILLEGAL_XML_WHITESPACE = re.compile(r"[\x0b\x0c\x1c-\x1f]")
+ILLEGAL_XML_CHARACTERS = re.compile(r"[\x00-\x08\x0e-\x1b\ud800-\udfff\ufffe\uffff]")
 
 
 @dataclass(frozen=True)
@@ -2920,7 +2926,11 @@ class LifeDataService:
             # numerically so 9 comes before 10.
             return (
                 "ORDER BY gremlin_sort_datetime(COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final)),"
-                " gremlin_sort_number(m.task_id), m.task_id, m.mapped_record_id"
+                # The same three keys the chosen-column path uses, for the same
+                # reason: past SQLite's integer width the first one rounds, and
+                # m.task_id alone would order negatives backwards.
+                " gremlin_sort_number(m.task_id), gremlin_sort_integer(m.task_id),"
+                " m.task_id, m.mapped_record_id"
             )
         expression, column_type = columns[sort]
         order = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
@@ -4298,18 +4308,25 @@ class LifeDataService:
         # \s does not cover every character XML refuses -- it catches \x0b and \x0c
         # and leaves \x07 -- so a name typed with one in it would reach the sheet
         # cleaned, come back as a different name, and be created a second time.
+        # The two steps commute: the separators are spaces by the time this
+        # collapses runs of them, whichever ran first.
         return re.sub(r"\s+", " ", self._without_unrepresentable_characters(str(text or "")).strip())
 
     @staticmethod
     def _without_unrepresentable_characters(text: str) -> str:
         """``text`` without the characters that cannot survive to a workbook.
 
-        See ILLEGAL_XML_CHARACTERS. Used on the way in as well as the way out: a
-        value the database keeps but the workbook cannot carry makes an untouched
-        round trip rewrite the record.
+        See ILLEGAL_XML_CHARACTERS and ILLEGAL_XML_WHITESPACE. Used on the way in
+        as well as the way out: a value the database keeps but the workbook cannot
+        carry makes an untouched round trip rewrite the record.
+
+        Turning the separators into spaces rather than deleting them is also what
+        lets this run either side of a whitespace collapse without changing the
+        answer -- deleting them first left _normalize_taxonomy_text with nothing to
+        collapse, and a name whose words had run together named nothing.
         """
 
-        return ILLEGAL_XML_CHARACTERS.sub("", text)
+        return ILLEGAL_XML_CHARACTERS.sub("", ILLEGAL_XML_WHITESPACE.sub(" ", text))
 
     def _lookup_failure_mode_id(self, conn: sqlite3.Connection, text: str) -> int | None:
         row = conn.execute(

@@ -259,6 +259,26 @@ class NumericSortTests(DispositionSortTestCase):
             ["-9223372036854775808", "-9223372036854775809"],
         )
 
+    def test_the_default_order_reaches_the_same_tie_breaker(self):
+        """No column chosen is still an ordering, and it had the same hole.
+
+        When nothing is sorted the rows go by date and then by task id, and that
+        path was reading the number key without the exact one behind it -- so two
+        ids past SQLite's integer width tied and fell through to the raw text,
+        which orders negatives backwards. Fixing one call site and not the other
+        left the default page wrong on exactly the values the chosen-column page
+        had just been fixed for.
+        """
+
+        for task_id in ("-9223372036854775809", "-9223372036854775808"):
+            self.add_wo(task_id, completedDate_Final="2026-01-05T00:00:00+00:00")
+        # The rows this class seeds carry no date, and a row with no date leads the
+        # default order; these two are the only ones the tie-breaker is reached for.
+        self.assertEqual(
+            self.task_ids()[-2:],
+            ["-9223372036854775809", "-9223372036854775808"],
+        )
+
     def test_that_key_orders_every_integer_the_way_the_integers_order(self):
         """Across both signs and every width, since it is plain text comparison."""
 
