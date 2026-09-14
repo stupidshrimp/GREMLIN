@@ -423,6 +423,8 @@ class LifeDataService:
         # needs to know which of those strings are numbers at all. This is the one
         # answer to that, shared with the Excel export.
         conn.create_function("gremlin_sort_number", 1, self._number_sort_key, deterministic=True)
+        # And the tie-breaker behind it, for the integers it has to round.
+        conn.create_function("gremlin_sort_integer", 1, self._integer_sort_key, deterministic=True)
         return conn
 
     @contextmanager
@@ -2878,7 +2880,14 @@ class LifeDataService:
             # and reading it as one put it at the top of the ascending page. It
             # sorts with the blanks at the end instead, and the text form below
             # orders those among themselves rather than leaving them arbitrary.
-            return [f"gremlin_sort_number({expression})", LifeDataService._text_sort_key(expression)]
+            # Three keys: the number, then every integer in an exact form, then the
+            # text. The middle one only ever decides a tie the first key could not,
+            # which past SQLite's integer width is the only place it has any left.
+            return [
+                f"gremlin_sort_number({expression})",
+                f"gremlin_sort_integer({expression})",
+                LifeDataService._text_sort_key(expression),
+            ]
         if column_type == COLUMN_TYPE_BOOLEAN:
             return [f"CAST({expression} AS INTEGER)"]
         return [LifeDataService._text_sort_key(expression)]
@@ -3851,7 +3860,7 @@ class LifeDataService:
     def _xlsx_safe_text(self, value: Any) -> str:
         """``value`` as text a workbook can actually carry (see ILLEGAL_XML_CHARACTERS)."""
 
-        return ILLEGAL_XML_CHARACTERS.sub("", str(value))
+        return self._without_unrepresentable_characters(str(value))
 
     @staticmethod
     def _xlsx_inline_text(text: str) -> str:
@@ -3950,7 +3959,8 @@ class LifeDataService:
         -9007199254740992 become one key, tie, and are then separated by the text
         key, which orders negative numbers backwards. Past the width SQLite
         stores an integer in there is no exact key left to give it, so those
-        compare as doubles -- two ids that differ only beyond 2**63 still tie.
+        compare as doubles and tie with their neighbours; gremlin_sort_integer
+        breaks exactly those ties.
         """
 
         number = self._parse_number(value)
@@ -3966,6 +3976,42 @@ class LifeDataService:
             # disappearing into the blanks -- and raising here would take down the
             # whole page, since this runs inside the ORDER BY.
             return math.inf if number > 0 else -math.inf
+
+    def _integer_sort_key(self, value: Any) -> str | None:
+        """Every integer as a string that compares in the integer's own order.
+
+        Registered as ``gremlin_sort_integer``, and read after
+        ``gremlin_sort_number`` to settle the ties that one cannot. Past SQLite's
+        integer width the number key has to become a double, and a double at that
+        magnitude cannot tell -9223372036854775809 from -9223372036854775808: they
+        tie, and the text key behind them orders negatives backwards, so the pair
+        came out reversed in both directions.
+
+        It covers every integer rather than only the ones that were rounded,
+        because a tie group can hold one of each -- that pair is exactly such a
+        group, -9223372036854775808 being the last value SQLite holds exactly and
+        -9223372036854775809 the first it cannot. Keyed only on the rounded ones,
+        the first of them would have returned NULL, which sorts ahead of any
+        string and put the pair back in the wrong order. Non-integers return NULL:
+        a float column returns it for every row, so this decides nothing there.
+
+        The encoding is ordinary text comparison made to agree with numeric
+        comparison: a leading digit puts negatives before everything else, then the
+        digit count so that longer means larger, then the digits. Both are inverted
+        for a negative, where more digits means smaller.
+        """
+
+        number = self._parse_number(value)
+        if not isinstance(number, int):
+            return None
+        digits = str(abs(number))
+        # The length field is fixed width so that the comparison stays a plain text
+        # comparison. An id past what it can count is past what anyone can write.
+        length = min(len(digits), 99999)
+        if number >= 0:
+            return f"2{length:05d}{digits}"
+        inverted = "".join(str(9 - int(digit)) for digit in digits)
+        return f"0{99999 - length:05d}{inverted}"
 
     def _excel_number_value(self, value: Any) -> int | float | None:
         """``value`` as a number a cell can hold exactly, or None to keep it as text.
@@ -4249,7 +4295,21 @@ class LifeDataService:
         return int(row["failure_mechanism_id"]) if row else None
 
     def _normalize_taxonomy_text(self, text: str | None) -> str:
-        return re.sub(r"\s+", " ", str(text or "").strip())
+        # \s does not cover every character XML refuses -- it catches \x0b and \x0c
+        # and leaves \x07 -- so a name typed with one in it would reach the sheet
+        # cleaned, come back as a different name, and be created a second time.
+        return re.sub(r"\s+", " ", self._without_unrepresentable_characters(str(text or "")).strip())
+
+    @staticmethod
+    def _without_unrepresentable_characters(text: str) -> str:
+        """``text`` without the characters that cannot survive to a workbook.
+
+        See ILLEGAL_XML_CHARACTERS. Used on the way in as well as the way out: a
+        value the database keeps but the workbook cannot carry makes an untouched
+        round trip rewrite the record.
+        """
+
+        return ILLEGAL_XML_CHARACTERS.sub("", text)
 
     def _lookup_failure_mode_id(self, conn: sqlite3.Connection, text: str) -> int | None:
         row = conn.execute(
@@ -4557,8 +4617,14 @@ class LifeDataService:
             raise ValueError(f"Unsupported PM disposition category: {disposition_category}")
         if kind == "pm" and record_class_final == "CORRECTIVE_WO":
             raise ValueError("Corrective WO is not selectable for PM disposition records.")
-        notes = disposition_text.strip()
-        rationale = pm_reset_rationale.strip()
+        # Cleaned on the way into the database rather than only on the way out to a
+        # workbook. These two are editable in Excel, so the import reads them back
+        # and compares them against what is stored: sanitising at the export alone
+        # made an untouched workbook differ from its own source, and uploading it
+        # saved a new disposition that dropped the character. Text the database
+        # keeps is text every surface can carry.
+        notes = self._without_unrepresentable_characters(str(disposition_text or "")).strip()
+        rationale = self._without_unrepresentable_characters(str(pm_reset_rationale or "")).strip()
         if disposition_category in {"HELD_AMBIGUOUS", "EXCLUDED_MIXED_CONTAMINATING"} and not notes:
             raise ValueError(f"{disposition_category} requires disposition notes.")
         if kind == "pm" and pm_reset_decision == "REJECTED_RESET" and disposition_category != "REJECTED_PM_RESET":

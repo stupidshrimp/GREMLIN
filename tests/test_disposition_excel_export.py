@@ -496,6 +496,73 @@ class WorkbookShapeTests(DispositionExcelTestCase):
         self.assertEqual(notes, ["stopped the line & restarted <it>"])
 
 
+class RoundTripIsLosslessTests(DispositionExcelTestCase):
+    """A workbook nobody edited must save nothing when it goes back.
+
+    The export strips characters XML cannot carry. Two of the columns it strips
+    them from are editable, so the import reads them back and compares them
+    against what is stored: sanitising on the way out alone made an untouched
+    workbook differ from its own source, and uploading it wrote a new disposition
+    with the character silently gone. They are cleaned on the way in now, so the
+    database only ever holds what the workbook can carry.
+    """
+
+    NOTE = "held for review\x07 see the log"
+
+    def setUp(self):
+        super().setUp()
+        self.add_wo("9")
+        self.record_id = self.service.disposition_rows(self.ASSET, "wo")[0]["mapped_record_id"]
+
+    def saved_note(self):
+        return self.service.disposition_rows(self.ASSET, "wo")[0]["disposition_notes"]
+
+    def test_the_character_never_reaches_the_database(self):
+        self.service.save_dispositions([{
+            "mapped_record_id": self.record_id, "kind": "wo",
+            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
+            "disposition_text": self.NOTE,
+        }])
+        self.assertEqual(self.saved_note(), "held for review see the log")
+
+    def test_an_untouched_workbook_saves_nothing(self):
+        self.service.save_dispositions([{
+            "mapped_record_id": self.record_id, "kind": "wo",
+            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
+            "disposition_text": self.NOTE,
+        }])
+        path = self.workspace / "round-trip.xlsx"
+        self.service.export_disposition_excel(self.ASSET, "wo", path)
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
+        # And still nothing the second time, rather than converging after one pass.
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
+        self.assertEqual(self.saved_note(), "held for review see the log")
+
+    def test_a_taxonomy_name_with_one_in_it_is_created_once(self):
+        r"""The same trip, where getting it wrong duplicates a failure mode.
+
+        A name cleaned only on the way out comes back as a different name, and the
+        import creates that one too. _normalize_taxonomy_text collapses \s, which
+        does not cover \x07, so it needed the same treatment as the notes.
+        """
+
+        self.service.save_dispositions([{
+            "mapped_record_id": self.record_id, "kind": "wo",
+            "disposition_category": "INCLUDED_FAILURE", "record_class_final": "CORRECTIVE_WO",
+            "failure_mode_text": "Bearing\x07 failure", "failure_mechanism_text": "Fatigue",
+            "include_in_weibull_candidate": True,
+        }])
+        names = [row["failure_mode_name"] for row in self.service.get_asset_failure_mode_options(self.ASSET)]
+        self.assertEqual(names, ["Bearing failure"])
+        path = self.workspace / "taxonomy.xlsx"
+        self.service.export_disposition_excel(self.ASSET, "wo", path)
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
+        self.assertEqual(
+            [row["failure_mode_name"] for row in self.service.get_asset_failure_mode_options(self.ASSET)],
+            ["Bearing failure"],
+        )
+
+
 class DownloadScopeTests(DispositionExcelTestCase):
     """"Only new / undispositioned" narrows the workbook, not just the screen."""
 

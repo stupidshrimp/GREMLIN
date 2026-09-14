@@ -237,6 +237,41 @@ class NumericSortTests(DispositionSortTestCase):
             ["-9007199254740992", "-9007199254740993"],
         )
 
+    def test_ids_past_sqlites_own_integer_width_still_order(self):
+        """Where the number key runs out, a second key has to carry it.
+
+        -9223372036854775808 is the last value SQLite holds exactly and
+        -9223372036854775809 the first it cannot, so the two tie on a key that has
+        become a double, and the text key behind them orders negatives backwards.
+        The pair is also why the tie-break covers every integer rather than only
+        the rounded ones: one of these is in range and one is not, and a key that
+        returned NULL for the first would have sorted it ahead of any string.
+        """
+
+        for task_id in ("-9223372036854775809", "-9223372036854775808"):
+            self.add_wo(task_id)
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="asc")[:2],
+            ["-9223372036854775809", "-9223372036854775808"],
+        )
+        self.assertEqual(
+            self.task_ids(sort="taskID", sort_dir="desc")[-2:],
+            ["-9223372036854775808", "-9223372036854775809"],
+        )
+
+    def test_that_key_orders_every_integer_the_way_the_integers_order(self):
+        """Across both signs and every width, since it is plain text comparison."""
+
+        values = [0, 1, -1, 9, 10, 100, -77, 2**63 - 1, 2**63, -(2**63), -(2**63) - 1, 10**25, -(10**25)]
+        self.assertEqual(
+            sorted(values, key=lambda number: self.service._integer_sort_key(str(number))),
+            sorted(values),
+        )
+        # Nothing else is keyed on it, so it decides nothing in any other column.
+        for other in ("A-14", "", " 7 ", "2.5", "0009"):
+            with self.subTest(value=other):
+                self.assertIsNone(self.service._integer_sort_key(other))
+
     def test_an_id_too_long_for_a_double_still_sorts_as_the_number_it_is(self):
         """The ordering runs in Python, where the integer is exact.
 
