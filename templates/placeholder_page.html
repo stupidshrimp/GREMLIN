@@ -12,7 +12,18 @@
 
 {% block content %}
 <section class="glass-card fade-in-up">
-  <p class="eyebrow">Coming soon</p>
+  {#- The same hourglass the sidebar entry carries, in the place somebody lands
+      after clicking it: the badge that told them the page was empty is the first
+      thing on the page confirming it. Drawn from the one definition in app.py,
+      so the two marks cannot become different marks.
+
+      The icon is decorative here -- unlike the sidebar, the word "Coming soon"
+      is right beside it in plain sight -- so it is hidden from assistive tech
+      rather than repeated. -#}
+  <p class="eyebrow placeholder-eyebrow">
+    <span class="placeholder-badge" aria-hidden="true">{{ coming_soon_icon | safe }}</span>
+    {{ coming_soon_label }}
+  </p>
   <h1>{{ page_title }}</h1>
   {% if page_summary %}<p class="hero-copy">{{ page_summary }}</p>{% endif %}
   <p class="placeholder-note">

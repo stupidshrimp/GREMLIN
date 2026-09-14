@@ -1234,3 +1234,32 @@ button.life-data-card {
    the top of this file means nothing separates them without this. */
 .placeholder-note { margin-top: 0.9rem; }
 .placeholder-actions { margin-top: 1.5rem; }
+
+/* "Coming soon", with the hourglass the page's own sidebar entry carries. The
+   eyebrow is the one line on these pages that says what they are, so the mark
+   goes there rather than beside the heading, where it would compete with the
+   page's name. */
+.placeholder-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.placeholder-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 50%;
+  background: var(--forest-100);
+  border: 1px solid var(--forest-200);
+}
+
+.placeholder-badge svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  /* The eyebrow's own colour, so the mark and the words it sits against read as
+     one label rather than as a label with a sticker on it. */
+  fill: currentColor;
+}

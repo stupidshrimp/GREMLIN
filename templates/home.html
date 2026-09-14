@@ -67,11 +67,16 @@
     </div>
   {%- endmacro %}
 
-  {% if auth_user -%}
+  {#- Three outcomes, not two. Offered: a link. Signed out: the locked button
+      above. Signed in to a department Life Data Analysis is kept out of: nothing
+      at all -- the sidebar drops that entry rather than striking it through, for
+      the reason given on _nav_links_for, and a card here that stayed would be
+      the same advertisement the sidebar just stopped making. -#}
+  {% if auth_may_open(url_for('perform_analysis')) -%}
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
     {{- analysis_card_body() }}
   </a>
-  {%- else -%}
+  {%- elif not auth_user -%}
   <button type="button"
           class="glass-card tile slide-in life-data-card life-data-card-locked"
           data-locked-message="{{ locked_nav_message }}">
@@ -94,16 +99,22 @@
     </div>
   {%- endmacro %}
 
-  {% if auth_can_edit -%}
-  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
-    {{- disposition_card_body() }}
-  </a>
-  {%- else -%}
-  <button type="button"
-          class="glass-card tile slide-in life-data-card life-data-card-locked"
-          data-locked-message="{% if auth_user %}Only authorized users can open Disposition. It needs the editor role; ask an administrator to change yours.{% else %}Only authorized users can open Disposition. Log in with the person icon at the bottom of the sidebar.{% endif %}">
-    {{- disposition_card_body() }}
-  </button>
+  {#- Disposition lives inside Life Data Analysis, so the department question is
+      asked before the role one: an account kept out of that section is not
+      invited to ask an administrator for the editor role it would still be
+      refused with. -#}
+  {% if auth_may_open(url_for('disposition')) -%}
+    {% if auth_can_edit -%}
+    <a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+      {{- disposition_card_body() }}
+    </a>
+    {%- else -%}
+    <button type="button"
+            class="glass-card tile slide-in life-data-card life-data-card-locked"
+            data-locked-message="{% if auth_user %}Only authorized users can open Disposition. It needs the editor role; ask an administrator to change yours.{% else %}Only authorized users can open Disposition. Log in with the person icon at the bottom of the sidebar.{% endif %}">
+      {{- disposition_card_body() }}
+    </button>
+    {%- endif %}
   {%- endif %}
 
   <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">

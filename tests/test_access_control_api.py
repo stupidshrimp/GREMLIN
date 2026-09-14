@@ -468,28 +468,30 @@ def test_a_value_outside_the_catalog_is_a_bad_request(monkeypatch, tmp_path, fie
     assert module.access_control.authenticate("planner", "2468") is None
 
 
-def test_neither_field_changes_what_an_account_may_reach(monkeypatch, tmp_path):
-    """Nothing is gated on department or level yet, and this is what says so.
+def test_the_department_decides_what_an_editor_may_reach(monkeypatch, tmp_path):
+    """Two editors, same role, different departments, different answers.
 
-    Whichever page these two eventually hide, it is not hidden today: an editor
-    in one department reaches exactly what an editor in another does. Expect to
-    rewrite this test the day a filtering rule is written -- that is its job.
+    The role says what an account may *do*; the department says which pages it
+    is given at all, and the second is asked first. Life Data Analysis is kept
+    out of Operations & Maintenance, so an Operations editor is refused the
+    whole section while a Facilities editor with the identical role walks in.
     """
 
     module = _app(monkeypatch, tmp_path)
     module.access_control.save_user(None, "one", "1111", "editor", "facilities", "associate")
     module.access_control.save_user(None, "two", "2222", "editor", "operations", "leadership")
 
-    pages = ["/", "/life-data-analysis/perform-analysis", "/life-data-analysis/disposition"]
-    seen = []
-    for username, pin in (("one", "1111"), ("two", "2222")):
+    def _statuses(username, pin, pages):
         client = module.app.test_client()
-        user = module.access_control.authenticate(username, pin)
         with client.session_transaction() as session:
-            session["user"] = user
-        seen.append([client.get(page).status_code for page in pages])
-    assert seen[0] == seen[1]
-    assert 403 not in seen[0], "an editor is turned away from none of these"
+            session["user"] = module.access_control.authenticate(username, pin)
+        return [client.get(page).status_code for page in pages]
+
+    withheld = ["/life-data-analysis/perform-analysis", "/life-data-analysis/disposition"]
+    assert _statuses("one", "1111", withheld) == [200, 200]
+    assert _statuses("two", "2222", withheld) == [403, 403]
+    # Home is on the open floor, which no department narrows away.
+    assert _statuses("one", "1111", ["/"]) == _statuses("two", "2222", ["/"]) == [200]
 
 
 def test_the_account_dialog_shows_what_the_account_records(monkeypatch, tmp_path):

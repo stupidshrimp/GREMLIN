@@ -287,6 +287,12 @@ def auth_context():
         "nav_links": _nav_links_for(user),
         "locked_nav_message": LOCKED_NAV_MESSAGE,
         "locked_nav_hint": LOCKED_NAV_HINT,
+        # For the pages that link somewhere the sidebar no longer does. Home
+        # draws cards into Life Data Analysis, and a department kept out of that
+        # section must not be handed a card that only answers 403. Bound to the
+        # account already resolved above rather than exposed as a global that
+        # would have to resolve it again per call.
+        "auth_may_open": lambda path: _path_is_offered(path, user),
     }
 
 ICONS = {
@@ -301,6 +307,31 @@ ICONS = {
     "overdue": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8a9.2 9.2 0 1 0 0 18.4 9.2 9.2 0 0 0 0-18.4Zm0 2a1 1 0 0 1 1 1V12l3.3 2a1 1 0 1 1-1 1.7l-3.8-2.3a1 1 0 0 1-.5-.9V5.8c0-.6.4-1 1-1Z"/></svg>',
 }
 
+# The mark a page that is not built yet carries. An hourglass rather than a
+# clock: a clock is how GREMLIN already draws "overdue" two lines above, and the
+# sidebar would then be using one shape for "this is late" and "this is coming".
+#
+# One definition, drawn in both places it belongs -- beside the sidebar entry and
+# on the page itself -- so the two cannot end up disagreeing about which pages
+# are still empty. Registered as a template global for the same reason the two
+# label lookups above are: every page draws the sidebar.
+COMING_SOON_ICON = (
+    '<svg viewBox="0 0 24 24" aria-hidden="true">'
+    '<path d="M7.5 2.8h9a1 1 0 1 1 0 2h-.4v1.3c0 1.6-.8 3.1-2.1 4l-1.3.9 1.3.9c1.3.9 2.1 2.4 '
+    '2.1 4v1.3h.4a1 1 0 1 1 0 2h-9a1 1 0 1 1 0-2h.4v-1.3c0-1.6.8-3.1 2.1-4l1.3-.9-1.3-.9a4.9 '
+    '4.9 0 0 1-2.1-4V4.8h-.4a1 1 0 0 1 0-2Zm2.4 2v1.3c0 .9.5 1.8 1.3 2.4l1.3.9 1.3-.9c.8-.6 '
+    '1.3-1.4 1.3-2.4V4.8H9.9Z"/></svg>'
+)
+
+# What a not-built-yet page is called, in the sidebar badge, in the tooltip and
+# on the page. One string so the three always say the same word.
+COMING_SOON_LABEL = "Coming soon"
+
+app.jinja_env.globals.update(
+    coming_soon_icon=COMING_SOON_ICON,
+    coming_soon_label=COMING_SOON_LABEL,
+)
+
 # Every page the sidebar can offer, and -- since the two rules below read the
 # same list -- who is offered it.
 #
@@ -313,6 +344,25 @@ ICONS = {
 # Operations & Maintenance. Nothing here is a ranking: the test is whether the
 # page's departments and the account's departments overlap at all, and likewise
 # for levels, so no department or level can be "above" another by accident.
+#
+# A third key, "withheld_from_department", says the opposite thing, and is here
+# because "department" cannot say it. Marking Metrics for Facilities would keep
+# Operations out today and would also keep out every department added after it,
+# silently, which is not what anybody meant to write down. This key names the
+# department a page is kept *out* of and leaves every other one -- present and
+# future -- holding it. An account loses the page only when every department it
+# covers is named: an Operations account and an Operations & Maintenance account
+# both lose Metrics, an account recorded as "all departments" keeps it, because
+# it covers Facilities too.
+#
+# "section" goes with it. A withheld page is usually the front door of several
+# routes -- Metrics owns its whole /metrics/api/... shelf -- and withholding the
+# door alone would make the page invisible rather than closed. The prefixes
+# listed there are refused as one, so a route added under a withheld section
+# later is covered without anybody remembering to cover it.
+#
+# "coming_soon" is presentation, not access: it marks a page that is routed and
+# offered but has no content yet, and puts the hourglass on its sidebar entry.
 PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
     {
@@ -323,8 +373,22 @@ PAGES = [
         "template": "perform_analysis.html",
         "title": "Life Data Analysis",
         "icon": ICONS["trend"],
+        # Reliability engineering work, not shift work: an account recorded as
+        # Operations, as Maintenance, or as both is kept out of it. The section
+        # covers the disposition workspace, the failure-classification page and
+        # every /life-data-analysis/api/... endpoint the three of them read,
+        # which is the difference between the page being hidden and being shut.
+        "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "section": ("/life-data-analysis",),
     },
-    {"route": "/metrics", "template": "metrics.html", "title": "Metrics", "icon": ICONS["chart"]},
+    {
+        "route": "/metrics",
+        "template": "metrics.html",
+        "title": "Metrics",
+        "icon": ICONS["chart"],
+        "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "section": ("/metrics",),
+    },
     {
         "route": "/standards-and-documentation",
         "template": "standards_and_documentation.html",
@@ -346,6 +410,15 @@ PAGES = [
         "template": "configuration.html",
         "title": "Configuration",
         "icon": ICONS["settings"],
+        # What is on it is the shape of the analysis Operations & Maintenance is
+        # kept out of above -- availability groups, linked-downtime rules, the
+        # CMMS mapping -- so it goes with those pages rather than staying on the
+        # open floor for them. It stays open to everybody else, signed in or
+        # not: this key narrows one department away and changes nothing else.
+        "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        # /settings is the old address and still redirects here; refusing it
+        # directly is better than bouncing somebody onto a 403.
+        "section": ("/configuration", "/settings"),
     },
     {
         "route": "/developer",
@@ -369,6 +442,7 @@ PAGES = [
         "icon": ICONS["shield"],
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
+        "coming_soon": True,
     },
     {
         "route": "/pm-task-tracker",
@@ -377,6 +451,7 @@ PAGES = [
         "icon": ICONS["checklist"],
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
+        "coming_soon": True,
     },
     {
         "route": "/overdue-wo-tracker",
@@ -385,6 +460,7 @@ PAGES = [
         "icon": ICONS["overdue"],
         "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "staff_level": STAFF_LEVEL_ALL,
+        "coming_soon": True,
     },
 ]
 
@@ -573,6 +649,15 @@ NAV_LINKS = [
 # and whether a given route is one of these pages at all.
 PAGES_BY_ROUTE = {page["route"]: page for page in PAGES}
 
+# The pages a department is kept out of, each paired with every path prefix it
+# owns. Built once at import rather than walked per request, because the check
+# below runs on every single request that is not a static file.
+WITHHELD_SECTIONS = tuple(
+    (page, tuple(page.get("section") or (page["route"],)))
+    for page in PAGES
+    if page.get("withheld_from_department")
+)
+
 
 def _scopes_overlap(page_scope: tuple[str, ...], account_scope: tuple[str, ...]) -> bool:
     """Whether a page's side of one column and an account's side of it meet.
@@ -608,6 +693,45 @@ def _page_suits_account(page: dict, user: dict | None) -> bool:
     )
 
 
+def _page_is_withheld_from(page: dict, user: dict | None) -> bool:
+    """Whether this page is one this account's department is kept out of.
+
+    The mirror image of ``_page_suits_account`` above, and deliberately not the
+    same test written backwards. That one asks whether the two sides *overlap*,
+    which is the right question for "who is this page for"; asking it here would
+    take Metrics away from an account recorded as "all departments", because
+    "all" overlaps Operations. This asks for *containment* instead: the page is
+    withheld only when every department the account covers is one the page is
+    kept out of. An Operations account is exactly that and loses the page; an
+    "all departments" account also covers Facilities and keeps it.
+
+    A signed-out visitor is withheld nothing, the same way they are narrowed by
+    nothing: they have not said which department they are in, and the entry they
+    see is struck through rather than absent.
+    """
+
+    withheld = page.get("withheld_from_department")
+    if withheld is None or user is None:
+        return False
+    account = set(department_scope(user.get("department", DEFAULT_DEPARTMENT)))
+    return bool(account) and account <= set(department_scope(withheld))
+
+
+def _withheld_section_for(path: str) -> dict | None:
+    """The withheld page that owns ``path``, if one does.
+
+    Matches the section's own address and anything under it, and nothing else:
+    "/metrics" covers "/metrics/api/reliability" and does not covet
+    "/metrics-export" that somebody adds next year.
+    """
+
+    for page, prefixes in WITHHELD_SECTIONS:
+        for prefix in prefixes:
+            if path == prefix or path.startswith(prefix + "/"):
+                return page
+    return None
+
+
 def _page_is_open(route: str) -> bool:
     """Whether this route is one of the three that never need an account."""
 
@@ -626,9 +750,32 @@ def _may_open_page(route: str, user: dict | None) -> bool:
     """
 
     page = PAGES_BY_ROUTE.get(route)
-    if page is None or route in UNLISTED_ROUTES or _page_is_open(route):
+    if page is None or route in UNLISTED_ROUTES:
+        return True
+    # Asked before the open floor, and that order is the whole of what the key
+    # means: Configuration is on that floor and is still kept from Operations &
+    # Maintenance. Being open says "no account needed", never "no rule applies".
+    if _page_is_withheld_from(page, user):
+        return False
+    if _page_is_open(route):
         return True
     return user is not None and _page_suits_account(page, user)
+
+
+def _path_is_offered(path: str, user: dict | None) -> bool:
+    """Whether this account would be served ``path`` rather than refused it.
+
+    The same two questions ``_refuse_a_page_this_account_may_not_open`` asks,
+    in the same order, for markup that needs the answer before the click. It
+    covers paths PAGES does not name -- the disposition workspace is one -- by
+    asking the withheld section they sit inside, which is why a template cannot
+    get this right with ``_may_open_page`` alone.
+    """
+
+    withheld = _withheld_section_for(path)
+    if withheld is not None and _page_is_withheld_from(withheld, user):
+        return False
+    return _may_open_page(path, user)
 
 
 # What a locked sidebar entry says when it is clicked, and what it says when it
@@ -645,13 +792,17 @@ def _nav_links_for(user: dict | None) -> list[dict]:
     difference is the point. Signed out, it is *locked*: still drawn, struck
     through, and answering a click with the reason. Signed in but in the wrong
     department, it is *gone*: the account is not being asked to do anything about
-    it, so advertising a page it will never be given is only clutter.
+    it, so advertising a page it will never be given is only clutter. A page the
+    account's department is kept out of goes the same way, and for the same
+    reason -- including Configuration, which every other account is shown.
     """
 
     links = []
     for page in PAGES:
         route = page["route"]
         if route in UNLISTED_ROUTES:
+            continue
+        if _page_is_withheld_from(page, user):
             continue
         if not _page_is_open(route) and not _page_suits_account(page, user):
             continue
@@ -660,6 +811,10 @@ def _nav_links_for(user: dict | None) -> list[dict]:
             "url": route,
             "icon": page["icon"],
             "locked": not _may_open_page(route, user),
+            # Drawn as an hourglass beside the label. Carried on the link rather
+            # than read off the route in the template, so the sidebar never has
+            # to know which pages are still empty.
+            "coming_soon": bool(page.get("coming_soon")),
         })
     return links
 
@@ -676,38 +831,80 @@ def _refuse_a_page_this_account_may_not_open():
     nothing to show it.
 
     Costs one account lookup on the handful of routes it covers and none at all
-    anywhere else, including every static file: a path PAGES does not name is
-    returned on before the session is touched.
+    anywhere else, including every static file: a path PAGES does not name and
+    no withheld section owns is returned on before the session is touched.
     """
 
+    withheld = _withheld_section_for(request.path)
     page = PAGES_BY_ROUTE.get(request.path)
-    if page is None or request.path in UNLISTED_ROUTES or _page_is_open(request.path):
+    gated = (
+        page is not None
+        and request.path not in UNLISTED_ROUTES
+        and not _page_is_open(request.path)
+    )
+    if withheld is None and not gated:
         return None
+
     user = _resolved_account()
-    if _may_open_page(request.path, user):
+
+    if withheld is not None and _page_is_withheld_from(withheld, user):
+        return _refuse_page(
+            withheld,
+            eyebrow="Different department",
+            heading=f"{withheld['title']} is not one of your department's pages.",
+            message=(
+                f"{withheld['title']} is kept out of "
+                f"{department_label(withheld['withheld_from_department'])} accounts, and "
+                f"yours is recorded as "
+                f"{department_label(user.get('department', DEFAULT_DEPARTMENT))}. "
+                "Ask an administrator if that is wrong."
+            ),
+        )
+    if not gated or _may_open_page(request.path, user):
         return None
     if user is None:
-        heading = f"{page['title']} needs an account."
-        message = (
-            "GREMLIN keeps Home, Reliability Links and Configuration open to "
-            "everybody. The rest needs a login: use the person icon at the "
-            "bottom of the sidebar."
+        return _refuse_page(
+            page,
+            eyebrow="Log in required",
+            heading=f"{page['title']} needs an account.",
+            message=(
+                "GREMLIN keeps Home, Reliability Links and Configuration open to "
+                "everybody. The rest needs a login: use the person icon at the "
+                "bottom of the sidebar."
+            ),
         )
-    else:
-        heading = f"{page['title']} is for another department."
-        message = (
+    return _refuse_page(
+        page,
+        eyebrow="Different department",
+        heading=f"{page['title']} is for another department.",
+        message=(
             f"{page['title']} belongs to "
             f"{department_label(page.get('department', DEPARTMENT_ALL))} "
             f"({staff_level_label(page.get('staff_level', STAFF_LEVEL_ALL))}), and your "
             f"account is recorded as {department_label(user.get('department', DEFAULT_DEPARTMENT))} "
             f"({staff_level_label(user.get('staff_level', DEFAULT_STAFF_LEVEL))}). "
             "Ask an administrator if that is wrong."
-        )
+        ),
+    )
+
+
+def _refuse_page(page: dict, *, eyebrow: str, heading: str, message: str):
+    """The 403 the guard above hands back, in the shape the caller is asking in.
+
+    A withheld section is mostly endpoints rather than pages -- /metrics/api/...
+    is the bulk of Metrics by route count -- and a page of HTML returned to a
+    fetch() is a parse error in the browser console rather than an answer. The
+    JSON says the same thing the page does, so whichever half of GREMLIN asked
+    is told why.
+    """
+
+    if "/api/" in request.path or request.path.endswith("/api"):
+        return jsonify({"error": message}), 403
     return (
         render_template(
             "not_authorized.html",
             page_title=page["title"],
-            page_eyebrow="Log in required" if user is None else "Different department",
+            page_eyebrow=eyebrow,
             page_heading=heading,
             access_message=message,
         ),
@@ -1096,6 +1293,23 @@ SEARCH_ENTRIES = [
 ]
 
 
+def _entry_suits_account(url: str, account: dict | None) -> bool:
+    """Whether a search entry's destination is one this account may open.
+
+    The catalog links to panels and presets as well as to pages, so the
+    destination is reduced to its path first -- "/metrics#card-kpis" is Metrics,
+    and a fragment cannot make it anything else. Both rules are then asked of
+    that path: the page's own department, if PAGES names it, and the withheld
+    section it may sit inside, which is what covers the deep links.
+    """
+
+    path = url.split("?")[0].split("#")[0]
+    withheld = _withheld_section_for(path)
+    if withheld is not None and _page_is_withheld_from(withheld, account):
+        return False
+    return _page_suits_account(PAGES_BY_ROUTE.get(path, {}), account)
+
+
 def _search_index(
     is_admin: bool, can_edit: bool, has_account: bool, account: dict | None = None
 ) -> list[dict]:
@@ -1112,7 +1326,10 @@ def _search_index(
     A page an account may open once it logs in stays in the catalog for a
     signed-out visitor, the way the sidebar keeps drawing it -- the page is what
     asks them to log in. A page their department does not cover is dropped,
-    because logging in is not going to change that.
+    because logging in is not going to change that, and so is one their
+    department is kept out of -- entries deep inside a withheld section
+    included, since a search for "downtime driver" must not be the way around a
+    closed Life Data Analysis.
     """
     allowed = {None}
     if can_edit:
@@ -1132,9 +1349,7 @@ def _search_index(
         }
         for entry in SEARCH_ENTRIES
         if entry.get("role") in allowed
-        and _page_suits_account(
-            PAGES_BY_ROUTE.get(entry["url"].split("?")[0].split("#")[0], {}), account
-        )
+        and _entry_suits_account(entry["url"], account)
     ]
 
     # The account dialog has no URL of its own -- it is a <dialog> the sidebar
