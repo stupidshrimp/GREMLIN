@@ -198,21 +198,32 @@ def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
     assert response.status_code != 403
 
 
-def _assert_read_only_ui(client):
-    """No page offers a control that writes, whoever this read-only caller is."""
+def _assert_read_only_ui(client, *, has_account=True):
+    """No page offers a control that writes, whoever this read-only caller is.
+
+    `has_account` because the two read-only callers do not see the same pages.
+    Perform an Analysis is a sidebar page, so a signed-out visitor is refused it
+    outright and there are no hidden controls on it to check -- the point being
+    made here is made by the refusal instead.
+    """
     configuration = client.get("/configuration").data
     assert b"Asset group schedules" not in configuration
     assert b"Refresh CMMS mapping" not in configuration
     assert b"Linked downtime rules" not in configuration
     # Named rather than silently missing: the section says who may edit it.
     assert b"editable by authorized users only" in configuration
-    analysis = client.get("/life-data-analysis/perform-analysis").data
-    assert b'id="lda-perform" hidden' in analysis
-    assert b'id="lda-disposition-wo" hidden' in analysis
-    assert b'id="lda-disposition-pm" hidden' in analysis
-    # Not merely hidden: this card is nothing but a write, and selecting an
-    # asset is what un-hides it, so it must not be in the page at all.
-    assert b"lda-calculate-all" not in analysis
+    if has_account:
+        analysis = client.get("/life-data-analysis/perform-analysis").data
+        assert b'id="lda-perform" hidden' in analysis
+        assert b'id="lda-disposition-wo" hidden' in analysis
+        assert b'id="lda-disposition-pm" hidden' in analysis
+        # Not merely hidden: this card is nothing but a write, and selecting an
+        # asset is what un-hides it, so it must not be in the page at all.
+        assert b"lda-calculate-all" not in analysis
+    else:
+        refused = client.get("/life-data-analysis/perform-analysis")
+        assert refused.status_code == 403
+        assert b"lda-calculate-all" not in refused.data
     assert client.get("/life-data-analysis/disposition").status_code == 403
     # The workflow cards moved onto the home page, so that is where the
     # Disposition card explains itself to a caller who may only read: still on
@@ -227,7 +238,7 @@ def _assert_read_only_ui(client):
 def test_guest_ui_offers_no_write_controls(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     client = module.app.test_client()
-    _assert_read_only_ui(client)
+    _assert_read_only_ui(client, has_account=False)
     # Nobody is signed in, so the card sends them to the login rather than to
     # an administrator who cannot help until they have an account.
     assert b"Log in with the person icon" in client.get("/").data

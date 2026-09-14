@@ -2,8 +2,8 @@
 
 The page is mostly copy, which tests have nothing useful to say about. What they
 can hold on to is the wiring underneath it -- the three-part pairing that makes
-the S&C mark stop instead of looping, and the promise that a visitor who is not
-signed in can open everything the page points at.
+the S&C mark stop instead of looping, and the promise that every link the page
+offers lands on a page rather than on a 404.
 """
 
 import importlib
@@ -71,19 +71,29 @@ def test_the_hold_lands_before_the_animation_fades_out(monkeypatch, tmp_path):
     assert 1560 <= int(hold_ms.group(1)) <= 2560
 
 
-def test_about_only_points_at_pages_a_visitor_can_open(monkeypatch, tmp_path):
-    """Nobody is signed in on the About page, so nothing it offers may need to be.
+def test_about_points_at_pages_that_exist(monkeypatch, tmp_path):
+    """About is a footer page, so a visitor reads it; every link on it has to land.
 
-    Disposition is the one workflow that does -- it takes the editor role -- and
-    the page says so in a sentence instead of linking to a 403.
+    An editor opens all of them. A visitor opens the ones GREMLIN keeps open and
+    is told to log in for the rest -- which is a page saying so, not a dead end,
+    and is the only other answer allowed here. A 404 or a 500 is a broken link
+    either way.
     """
-    client = _app(monkeypatch, tmp_path).app.test_client()
-    content = _main_content(client.get("/about").get_data(as_text=True))
+    module = _app(monkeypatch, tmp_path)
+    module.access_control.save_user(None, "editor", "2468", "editor")
+    visitor = module.app.test_client()
+    editor = module.app.test_client()
+    assert editor.post("/auth/login", json={"username": "editor", "pin": "2468"}).status_code == 200
 
+    content = _main_content(visitor.get("/about").get_data(as_text=True))
     routes = re.findall(r'href="(/[^"#]*)"', content)
     assert routes, "the About page offered no links at all"
     for route in routes:
-        assert client.get(route).status_code == 200, route
+        assert editor.get(route).status_code == 200, route
+        refused = visitor.get(route)
+        assert refused.status_code in (200, 403), route
+        if refused.status_code == 403:
+            assert b"needs an account" in refused.data, route
 
 
 def test_about_says_who_built_it(monkeypatch, tmp_path):

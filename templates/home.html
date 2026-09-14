@@ -52,14 +52,32 @@
          aria-hidden="true">
   {%- endmacro %}
 
-  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+  {#- Perform an Analysis needs an account, the same as its sidebar entry, so the
+      card is locked for a signed-out visitor for the same reason that entry is:
+      Home would otherwise advertise a door that only answers 403. Locked here
+      means exactly what it means in the sidebar -- still drawn, and answering
+      the click with the reason. Refusing the page itself stays the route's job.
+      -#}
+  {%- macro analysis_card_body() %}
     {{- card_hover_media('img/analysis_gif.gif') }}
     <h2>Perform an Analysis</h2>
     <p>Run life distribution fitting and compare model confidence quickly.</p>
     <div class="card-hover-copy">
       <p>Includes guided setup, model summaries, and reliability projection outputs for mission-time planning.</p>
     </div>
+  {%- endmacro %}
+
+  {% if auth_user -%}
+  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+    {{- analysis_card_body() }}
   </a>
+  {%- else -%}
+  <button type="button"
+          class="glass-card tile slide-in life-data-card life-data-card-locked"
+          data-locked-message="{{ locked_nav_message }}">
+    {{- analysis_card_body() }}
+  </button>
+  {%- endif %}
 
   {#- The Disposition card is shown to everybody, but only an editor gets a link
       out of it. A card that simply vanishes reads as a feature GREMLIN does not

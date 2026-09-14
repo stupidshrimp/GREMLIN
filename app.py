@@ -51,12 +51,17 @@ from services.access_control import (
     ACTIVITY_MAX_DAYS,
     DEFAULT_DEPARTMENT,
     DEFAULT_STAFF_LEVEL,
+    DEPARTMENT_ALL,
+    DEPARTMENT_OPERATIONS_MAINTENANCE,
     DEPARTMENTS,
     ROLES,
+    STAFF_LEVEL_ALL,
     STAFF_LEVELS,
     AccessControl,
     department_label,
+    department_scope,
     staff_level_label,
+    staff_level_scope,
 )
 from services.sync_service import (
     APP_ENV_KEYS,
@@ -162,10 +167,10 @@ ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
 # passed page by page: the account dialog on every page and the developer roster
 # both write them out, and neither should carry its own copy of the wording.
 #
-# Nothing in GREMLIN filters on either one yet. When something does, the rule
-# belongs with the navigation it hides -- PAGES and NAV_LINKS below -- and reads
-# the stored value; see services/access_control.py for why the module that
-# stores them deliberately enforces nothing.
+# The rule that reads them lives with the navigation it shapes -- PAGES and
+# _nav_links_for below -- and reads the stored value; see
+# services/access_control.py for why the module that stores them deliberately
+# enforces nothing.
 app.jinja_env.globals.update(
     department_label=department_label,
     staff_level_label=staff_level_label,
@@ -271,7 +276,17 @@ def auth_context():
         # role-filtered, so it is built here rather than in a second context
         # processor: the account has already been reloaded and checked, and
         # doing it again would mean a second lookup on every single render.
-        "search_index": _search_index(is_admin=is_admin, can_edit=can_edit, has_account=bool(user)),
+        "search_index": _search_index(
+            is_admin=is_admin, can_edit=can_edit, has_account=bool(user), account=user
+        ),
+        # The sidebar is drawn on every page and its shape now depends on who is
+        # asking, so it is built here for the same reason the search catalog is:
+        # the account has already been resolved, and threading it through forty
+        # render_template calls would only mean one of them eventually going
+        # without and quietly serving somebody else's navigation.
+        "nav_links": _nav_links_for(user),
+        "locked_nav_message": LOCKED_NAV_MESSAGE,
+        "locked_nav_hint": LOCKED_NAV_HINT,
     }
 
 ICONS = {
@@ -281,8 +296,23 @@ ICONS = {
     "docs": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.8h7.8c.2 0 .5.1.6.3l3.8 3.8c.2.2.3.4.3.6v13.7c0 .5-.4.9-.9.9H6c-.5 0-.9-.4-.9-.9V3.7c0-.5.4-.9.9-.9Zm7.2 1.9v2.6c0 .5.4.9.9.9h2.6L13.2 4.7ZM8.2 11.2c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Zm0 3.8c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Z"/></svg>',
     "settings": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 2.9a1 1 0 0 1 2 0v1.3a7.8 7.8 0 0 1 2.1.9l.9-.9a1 1 0 1 1 1.4 1.4l-.9.9c.4.6.7 1.4.9 2.1h1.3a1 1 0 1 1 0 2h-1.3a7.8 7.8 0 0 1-.9 2.1l.9.9a1 1 0 1 1-1.4 1.4l-.9-.9c-.6.4-1.4.7-2.1.9v1.3a1 1 0 1 1-2 0v-1.3a7.8 7.8 0 0 1-2.1-.9l-.9.9a1 1 0 1 1-1.4-1.4l.9-.9a7.8 7.8 0 0 1-.9-2.1H3.6a1 1 0 1 1 0-2h1.3c.2-.8.5-1.5.9-2.1l-.9-.9A1 1 0 0 1 6.3 4l.9.9c.6-.4 1.4-.7 2.1-.9V2.9Zm1 5.1a3.8 3.8 0 1 0 0 7.7 3.8 3.8 0 0 0 0-7.7Z"/></svg>',
     "code": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.4 17.6a1 1 0 0 1-1.4 0l-4.9-4.9a1 1 0 0 1 0-1.4l4.9-4.9a1 1 0 1 1 1.4 1.4L5.2 12l4.2 4.2a1 1 0 0 1 0 1.4Zm5.2 0a1 1 0 0 1 0-1.4l4.2-4.2-4.2-4.2a1 1 0 1 1 1.4-1.4l4.9 4.9a1 1 0 0 1 0 1.4l-4.9 4.9a1 1 0 0 1-1.4 0Z"/></svg>',
+    "shield": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2 4.9 5a1 1 0 0 0-.6.9v5.3c0 4.2 2.7 8.1 7.3 10.5.3.1.5.1.8 0 4.6-2.4 7.3-6.3 7.3-10.5V5.9a1 1 0 0 0-.6-.9L12 2.2Zm3.5 6.6a1 1 0 0 1 0 1.4l-4 4a1 1 0 0 1-1.4 0l-2-2a1 1 0 1 1 1.4-1.4l1.3 1.3 3.3-3.3a1 1 0 0 1 1.4 0Z"/></svg>',
+    "checklist": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 4.6a1 1 0 0 1 0 1.4L4.9 7.7a1 1 0 0 1-1.4 0L2.6 6.8a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0Zm0 6.5a1 1 0 0 1 0 1.4l-1.7 1.7a1 1 0 0 1-1.4 0l-.9-.9a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0Zm0 6.5a1 1 0 0 1 0 1.4l-1.7 1.7a1 1 0 0 1-1.4 0l-.9-.9a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0ZM9.3 6.1c0-.5.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Zm0 6.5c0-.6.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Zm0 6.4c0-.5.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Z"/></svg>',
+    "overdue": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8a9.2 9.2 0 1 0 0 18.4 9.2 9.2 0 0 0 0-18.4Zm0 2a1 1 0 0 1 1 1V12l3.3 2a1 1 0 1 1-1 1.7l-3.8-2.3a1 1 0 0 1-.5-.9V5.8c0-.6.4-1 1-1Z"/></svg>',
 }
 
+# Every page the sidebar can offer, and -- since the two rules below read the
+# same list -- who is offered it.
+#
+# Two optional keys narrow an entry, both written in the vocabulary an account
+# uses for itself (services/access_control.py): "department" and "staff_level".
+# An entry that leaves one out is not narrowed on it, exactly as an account that
+# holds "all" is not narrowed by it. A combined value such as
+# "operations_maintenance" names both of its parts on either side, so an
+# Operations account and a Maintenance account both reach a page marked for
+# Operations & Maintenance. Nothing here is a ranking: the test is whether the
+# page's departments and the account's departments overlap at all, and likewise
+# for levels, so no department or level can be "above" another by accident.
 PAGES = [
     {"route": "/", "template": "home.html", "title": "Home", "icon": ICONS["home"]},
     {
@@ -322,7 +352,40 @@ PAGES = [
         "template": "developer_home.html",
         "title": "Developer",
         "icon": ICONS["code"],
-    }
+    },
+    # The three department pages. They have no content yet -- each is a
+    # placeholder standing in for the tracker that will be built on it -- but
+    # they are routed, navigated to and access-controlled exactly as a finished
+    # page is, so building one out later is an edit to its template alone.
+    #
+    # All three belong to Operations & Maintenance at every level, which is what
+    # the two keys below say: an account in Operations, in Maintenance, in both,
+    # or in none of them in particular ("all departments") is offered them, and
+    # a Facilities account is not.
+    {
+        "route": "/safety-report",
+        "template": "placeholder_page.html",
+        "title": "Safety Report",
+        "icon": ICONS["shield"],
+        "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "staff_level": STAFF_LEVEL_ALL,
+    },
+    {
+        "route": "/pm-task-tracker",
+        "template": "placeholder_page.html",
+        "title": "PM Task Tracker",
+        "icon": ICONS["checklist"],
+        "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "staff_level": STAFF_LEVEL_ALL,
+    },
+    {
+        "route": "/overdue-wo-tracker",
+        "template": "placeholder_page.html",
+        "title": "Overdue WO Tracker",
+        "icon": ICONS["overdue"],
+        "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "staff_level": STAFF_LEVEL_ALL,
+    },
 ]
 
 
@@ -489,11 +552,168 @@ def _disposition_kind() -> str:
 # every developer route checks the role for itself.
 UNLISTED_ROUTES = {"/standards-and-documentation", "/developer"}
 
+# The three pages GREMLIN is willing to show anybody at all. Everything else in
+# the sidebar needs an account: signed out, those entries are still drawn, but
+# struck through and inert, because an entry that simply vanished would read as
+# a feature GREMLIN does not have rather than as one more reason to log in --
+# the same argument the locked Disposition card on Home is built on.
+#
+# They are also the floor for the department rules below: whatever an account's
+# department narrows away, these three survive it, so no account can end up
+# looking at an empty sidebar.
+OPEN_ROUTES = {"/", "/reliability-links", "/configuration"}
+
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
     for page in PAGES
     if page["route"] not in UNLISTED_ROUTES
 ]
+
+# Keyed by route, for the two questions asked per request: what a page requires,
+# and whether a given route is one of these pages at all.
+PAGES_BY_ROUTE = {page["route"]: page for page in PAGES}
+
+
+def _scopes_overlap(page_scope: tuple[str, ...], account_scope: tuple[str, ...]) -> bool:
+    """Whether a page's side of one column and an account's side of it meet.
+
+    Both sides are unpacked into single values first -- "all" into every one of
+    them, "operations_maintenance" into its two -- so this is a set question and
+    never a comparison. That is deliberate: it means adding a department cannot
+    silently place it above or below an existing one.
+    """
+
+    return bool(set(page_scope) & set(account_scope))
+
+
+def _page_suits_account(page: dict, user: dict | None) -> bool:
+    """Whether this account's department and level cover this page.
+
+    Says nothing about logging in -- ``_page_is_open`` and ``_may_open_page``
+    below are what ask that. A page with neither key set is covered by every
+    account, which is every page that existed before departments did.
+    """
+
+    if user is None:
+        # Nothing to narrow by. A signed-out visitor is shown the whole catalog
+        # and told to log in, rather than shown a catalog shaped by a department
+        # they have not proved they are in.
+        return True
+    return _scopes_overlap(
+        department_scope(page.get("department", DEPARTMENT_ALL)),
+        department_scope(user.get("department", DEFAULT_DEPARTMENT)),
+    ) and _scopes_overlap(
+        staff_level_scope(page.get("staff_level", STAFF_LEVEL_ALL)),
+        staff_level_scope(user.get("staff_level", DEFAULT_STAFF_LEVEL)),
+    )
+
+
+def _page_is_open(route: str) -> bool:
+    """Whether this route is one of the three that never need an account."""
+
+    return route in OPEN_ROUTES
+
+
+def _may_open_page(route: str, user: dict | None) -> bool:
+    """Whether whoever is asking may be served this page.
+
+    This is the lock the struck-through sidebar entries stand in front of, so a
+    typed URL or an old bookmark meets the same answer the click does. It covers
+    the sidebar's own pages only: the ones deliberately kept out of it keep
+    whatever access they already had, because each already has a rule of its own
+    -- the developer area checks the administrator role itself, and Standards
+    and Documentation is reference material reached from pages that stay open.
+    """
+
+    page = PAGES_BY_ROUTE.get(route)
+    if page is None or route in UNLISTED_ROUTES or _page_is_open(route):
+        return True
+    return user is not None and _page_suits_account(page, user)
+
+
+# What a locked sidebar entry says when it is clicked, and what it says when it
+# is pointed at. Written here rather than in the template so the toast, the
+# hover and the page that refuses a typed URL cannot drift apart.
+LOCKED_NAV_MESSAGE = "To see this page, please log in."
+LOCKED_NAV_HINT = "Log in first to see this page!"
+
+
+def _nav_links_for(user: dict | None) -> list[dict]:
+    """The sidebar as this account should see it.
+
+    Two different things happen to an entry that is not offered, and the
+    difference is the point. Signed out, it is *locked*: still drawn, struck
+    through, and answering a click with the reason. Signed in but in the wrong
+    department, it is *gone*: the account is not being asked to do anything about
+    it, so advertising a page it will never be given is only clutter.
+    """
+
+    links = []
+    for page in PAGES:
+        route = page["route"]
+        if route in UNLISTED_ROUTES:
+            continue
+        if not _page_is_open(route) and not _page_suits_account(page, user):
+            continue
+        links.append({
+            "label": page["title"],
+            "url": route,
+            "icon": page["icon"],
+            "locked": not _may_open_page(route, user),
+        })
+    return links
+
+
+@app.before_request
+def _refuse_a_page_this_account_may_not_open():
+    """The lock the struck-through sidebar entries stand in front of.
+
+    Hiding or striking through an entry is presentation; this is what makes it
+    true, so a typed URL, a shared link and an old bookmark all meet the same
+    answer the click gives. Written once against PAGES rather than as a
+    decorator per view, because the failure mode of the decorator is a page
+    added later without one -- and that page would be open to everybody with
+    nothing to show it.
+
+    Costs one account lookup on the handful of routes it covers and none at all
+    anywhere else, including every static file: a path PAGES does not name is
+    returned on before the session is touched.
+    """
+
+    page = PAGES_BY_ROUTE.get(request.path)
+    if page is None or request.path in UNLISTED_ROUTES or _page_is_open(request.path):
+        return None
+    user = _resolved_account()
+    if _may_open_page(request.path, user):
+        return None
+    if user is None:
+        heading = f"{page['title']} needs an account."
+        message = (
+            "GREMLIN keeps Home, Reliability Links and Configuration open to "
+            "everybody. The rest needs a login: use the person icon at the "
+            "bottom of the sidebar."
+        )
+    else:
+        heading = f"{page['title']} is for another department."
+        message = (
+            f"{page['title']} belongs to "
+            f"{department_label(page.get('department', DEPARTMENT_ALL))} "
+            f"({staff_level_label(page.get('staff_level', STAFF_LEVEL_ALL))}), and your "
+            f"account is recorded as {department_label(user.get('department', DEFAULT_DEPARTMENT))} "
+            f"({staff_level_label(user.get('staff_level', DEFAULT_STAFF_LEVEL))}). "
+            "Ask an administrator if that is wrong."
+        )
+    return (
+        render_template(
+            "not_authorized.html",
+            page_title=page["title"],
+            page_eyebrow="Log in required" if user is None else "Different department",
+            page_heading=heading,
+            access_message=message,
+        ),
+        403,
+    )
+
 
 # The footer's own navigation. These pages are about GREMLIN rather than part of
 # the reliability workflow, so they are deliberately kept out of PAGES and out of
@@ -638,6 +858,31 @@ SEARCH_ENTRIES = [
         "kind": "page",
         "context": "Maintenance",
         "keywords": ["preventive maintenance", "schedule", "upcoming", "due date", "frequency"],
+    },
+    # The three Operations & Maintenance pages. No "role" key: they are narrowed
+    # by department rather than by what an account may write, and _search_index
+    # applies that from PAGES -- the same entry it takes the sidebar's answer
+    # from -- so the two cannot come apart.
+    {
+        "label": "Safety Report",
+        "url": "/safety-report",
+        "kind": "page",
+        "context": "Operations & Maintenance",
+        "keywords": ["incident", "near miss", "ehs", "hazard", "injury", "safety"],
+    },
+    {
+        "label": "PM Task Tracker",
+        "url": "/pm-task-tracker",
+        "kind": "page",
+        "context": "Operations & Maintenance",
+        "keywords": ["preventive maintenance", "tasks", "completion", "backlog", "pm"],
+    },
+    {
+        "label": "Overdue WO Tracker",
+        "url": "/overdue-wo-tracker",
+        "kind": "page",
+        "context": "Operations & Maintenance",
+        "keywords": ["work order", "late", "past due", "aging", "overdue", "wo"],
     },
     {
         "label": "Configuration",
@@ -851,13 +1096,23 @@ SEARCH_ENTRIES = [
 ]
 
 
-def _search_index(is_admin: bool, can_edit: bool, has_account: bool) -> list[dict]:
+def _search_index(
+    is_admin: bool, can_edit: bool, has_account: bool, account: dict | None = None
+) -> list[dict]:
     """The search catalog as the signed-in account may see it.
 
     Role filtering happens here rather than in the browser so an entry the
     account cannot open is never sent to it in the first place -- hiding it with
     a script would put the whole developer catalog in the page source of every
     anonymous visitor.
+
+    `account` adds the second filter, department and level, and is the reason it
+    is a parameter rather than another pair of booleans: the rule lives with
+    PAGES, and what it needs is the account itself. It narrows and never locks.
+    A page an account may open once it logs in stays in the catalog for a
+    signed-out visitor, the way the sidebar keeps drawing it -- the page is what
+    asks them to log in. A page their department does not cover is dropped,
+    because logging in is not going to change that.
     """
     allowed = {None}
     if can_edit:
@@ -877,6 +1132,9 @@ def _search_index(is_admin: bool, can_edit: bool, has_account: bool) -> list[dic
         }
         for entry in SEARCH_ENTRIES
         if entry.get("role") in allowed
+        and _page_suits_account(
+            PAGES_BY_ROUTE.get(entry["url"].split("?")[0].split("#")[0], {}), account
+        )
     ]
 
     # The account dialog has no URL of its own -- it is a <dialog> the sidebar
@@ -901,6 +1159,7 @@ def _account_search_index() -> list[dict]:
         is_admin=level >= ROLE_LEVEL["admin"],
         can_edit=level >= ROLE_LEVEL["editor"],
         has_account=bool(user),
+        account=user,
     )
 
 
@@ -973,7 +1232,7 @@ RELEVANT_LINKS = [
 
 @app.route("/")
 def home():
-    return render_template("home.html", page_title="Home", nav_links=NAV_LINKS)
+    return render_template("home.html", page_title="Home")
 
 
 @app.post("/auth/login")
@@ -1033,7 +1292,6 @@ def perform_analysis():
     return render_template(
         "perform_analysis.html",
         page_title="Perform an Analysis",
-        nav_links=NAV_LINKS,
     )
 
 
@@ -1053,14 +1311,12 @@ def disposition():
                 page_heading="Disposition is for editors.",
                 required_role="editor",
                 back_url=url_for("perform_analysis"),
-                nav_links=NAV_LINKS,
             ),
             403,
         )
     return render_template(
         "disposition.html",
         page_title="Disposition",
-        nav_links=NAV_LINKS,
     )
 
 
@@ -1070,7 +1326,6 @@ def failure_classification():
     return render_template(
         "failure_classification.html",
         page_title="Failure Classification",
-        nav_links=NAV_LINKS,
         classification_data=classification_data,
     )
 
@@ -1079,7 +1334,6 @@ def metrics():
     return render_template(
         "metrics.html",
         page_title="Metrics",
-        nav_links=NAV_LINKS,
     )
 
 
@@ -1342,13 +1596,12 @@ def standards_and_documentation():
     return render_template(
         "standards_and_documentation.html",
         page_title="Standards and Documentation",
-        nav_links=NAV_LINKS,
     )
 
 
 @app.route("/configuration")
 def configuration():
-    return render_template("configuration.html", page_title="Configuration", nav_links=NAV_LINKS)
+    return render_template("configuration.html", page_title="Configuration")
 
 
 @app.route("/settings")
@@ -1393,7 +1646,6 @@ def search_results():
     return render_template(
         "search_results.html",
         page_title="Search",
-        nav_links=NAV_LINKS,
         query=query,
         results=_search_matches(query, catalog) if query else [],
     )
@@ -1401,7 +1653,7 @@ def search_results():
 
 @app.route("/about")
 def about():
-    return render_template("about.html", page_title="About", nav_links=NAV_LINKS)
+    return render_template("about.html", page_title="About")
 
 
 @app.route("/patch-notes")
@@ -1412,7 +1664,6 @@ def patch_notes():
     return render_template(
         "patch_notes.html",
         page_title="Patch Notes",
-        nav_links=NAV_LINKS,
         notes=patch_notes_reader.read(),
     )
 
@@ -1433,7 +1684,6 @@ def _bug_form_context(**extra):
     account = _resolved_account()
     return {
         "page_title": "Report a Bug",
-        "nav_links": NAV_LINKS,
         # Anonymous visitors reach this page too, so the token is minted here
         # rather than taken from auth_csrf_token, which only exists once
         # somebody has signed in.
@@ -1964,14 +2214,46 @@ def reliability_links():
     return render_template(
         "reliability_links.html",
         page_title="Reliability Links",
-        nav_links=NAV_LINKS,
     )
 @app.route("/pm-calendar")
 def pm_calendar():
     return render_template(
         "pm_calendar.html",
         page_title="PM Calendar",
-        nav_links=NAV_LINKS,
+    )
+
+
+# The three Operations & Maintenance pages. Each is a placeholder: routed,
+# navigated to, searchable and access-controlled like any other page, with
+# nothing on it yet but a note saying so. Who may open one is declared on its
+# PAGES entry and enforced by _refuse_a_page_this_account_may_not_open above, so
+# these views have nothing to check -- reaching one already means the answer was
+# yes. They share placeholder_page.html until each grows content of its own,
+# at which point the template name on the PAGES entry is what changes.
+@app.route("/safety-report")
+def safety_report():
+    return render_template(
+        "placeholder_page.html",
+        page_title="Safety Report",
+        page_summary="Safety findings and incident reporting for Operations & Maintenance.",
+    )
+
+
+@app.route("/pm-task-tracker")
+def pm_task_tracker():
+    return render_template(
+        "placeholder_page.html",
+        page_title="PM Task Tracker",
+        page_summary="Preventive maintenance tasks and their completion, for Operations & Maintenance.",
+    )
+
+
+@app.route("/overdue-wo-tracker")
+def overdue_wo_tracker():
+    return render_template(
+        "placeholder_page.html",
+        page_title="Overdue WO Tracker",
+        page_summary="Work orders past their due date, for Operations & Maintenance.",
     )
 
 def _pm_calendar_asset_ids() -> list[str] | None:
@@ -2114,7 +2396,7 @@ def dev_page(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not _dev_unlocked():
-            return render_template("developer_lock.html", page_title="Developer", nav_links=NAV_LINKS), 403
+            return render_template("developer_lock.html", page_title="Developer"), 403
         return view(*args, **kwargs)
 
     return wrapped
@@ -2125,7 +2407,6 @@ def _dev_page_context(section: str, **extra):
 
     return {
         "page_title": "Developer",
-        "nav_links": NAV_LINKS,
         "dev_section": section,
         "db_path": str(_configured_db_path()),
         **extra,
@@ -2567,7 +2848,7 @@ def api_dev_sync_start():
 
 @app.errorhandler(404)
 def not_found(_err):
-    return render_template("home.html", page_title="Not Found", nav_links=NAV_LINKS), 404
+    return render_template("home.html", page_title="Not Found"), 404
 
 
 if __name__ == "__main__":

@@ -19,12 +19,12 @@ ROLES = ("viewer", "editor", "admin")
 # Departments and staff levels sit alongside the role above, and are a different
 # kind of fact about an account. `role` says what the account may do to stored
 # data -- read it, change it, administer it -- and every protected write is
-# gated on it. These two say where in the plant the person sits, and gate
-# nothing at all: which pages and sidebar entries each department or level
-# should be shown has not been decided yet, so this module records the answer
-# and enforces none of it. When those rules do arrive they belong wherever the
-# navigation is assembled, not here -- nothing below should grow a notion of
-# which department outranks which, because none of them does.
+# gated on it. These two say where in the plant the person sits, and decide
+# which pages the sidebar offers. That decision is made in app.py, beside PAGES,
+# where each page declares the department and level it belongs to; this module
+# stores the account's side of it and enforces none of it. Nothing below should
+# grow a notion of which department outranks which, because none of them does --
+# the rule over there is an overlap test, never a comparison.
 #
 # Both sets carry an explicit "all" member meaning "not narrowed to anything",
 # and that is what every account gets by default. Accounts created before these
@@ -77,6 +77,10 @@ STAFF_LEVEL_LABELS = {
     "associate": "Associate",
     STAFF_LEVEL_ALL: "All levels",
 }
+# The counterpart of DEPARTMENT_SINGLES. No staff level stands for more than one
+# other, so there is no composites table here; "all" is the only value that
+# names a set rather than itself.
+STAFF_LEVEL_SINGLES = tuple(name for name in STAFF_LEVELS if name != STAFF_LEVEL_ALL)
 
 # Every read of an account is projected onto this list -- the session snapshot,
 # the login response, the developer roster -- so a column added here reaches all
@@ -204,6 +208,20 @@ def department_scope(department: str) -> tuple[str, ...]:
     if department == DEPARTMENT_ALL:
         return DEPARTMENT_SINGLES
     return DEPARTMENT_COMPOSITES.get(department, (department,))
+
+
+def staff_level_scope(staff_level: str) -> tuple[str, ...]:
+    """The single staff levels a stored staff level stands for.
+
+    ``department_scope`` above, for the other column, and just as inert: it
+    unpacks "all" into the three real levels so that a caller comparing two
+    scopes can intersect two sets of the same kind instead of special-casing the
+    word. An unrecognised value stands only for itself.
+    """
+
+    if staff_level == STAFF_LEVEL_ALL:
+        return STAFF_LEVEL_SINGLES
+    return (staff_level,)
 
 
 def department_label(department: str) -> str:

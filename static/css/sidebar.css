@@ -27,7 +27,7 @@
 .account-dialog input { font:inherit; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
 /* Department and level, under the username they belong to. Quiet, because the
    line above it is the one that governs what the account may do -- these two
-   record where its holder works and decide nothing yet. */
+   only say which pages it is offered. */
 .account-dialog-scope { margin:-8px 0 12px; color:var(--muted); font-size:.9rem; }
 /* The developer area is entered from this dialog and nowhere else, so its link
    is given a line of its own rather than sitting inside the sign-out prose. */
@@ -119,7 +119,8 @@
   gap: 0.35rem;
 }
 
-.sidebar a {
+.sidebar a,
+.sidebar .nav-locked {
   display: flex;
   align-items: center;
   gap: 0.7rem;
@@ -130,6 +131,106 @@
   font-size: 0.9rem;
   min-height: 2.5rem;
   transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+/* An entry for a page that needs an account. It is a <button>, so it starts by
+   undoing everything a button brings with it and inheriting what the anchors
+   above already have; only then does it say what makes it different. */
+.sidebar .nav-locked {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  /* Not `not-allowed`: clicking does do something -- it says why -- and a
+     crossed-out cursor promises the click will be ignored. */
+  cursor: pointer;
+  /* The anchor for the hint below, which is positioned against this entry. */
+  position: relative;
+  color: var(--muted);
+}
+
+/* Greyed out and struck through: the two halves of "this is here, and it is not
+   yours yet". The line goes on the label rather than the whole row so it reads
+   as a crossed-out name instead of a rule drawn across the sidebar. */
+.sidebar .nav-locked .nav-label {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.sidebar .nav-locked .nav-icon {
+  color: var(--muted);
+  background: var(--brand-tint-soft);
+  opacity: 0.65;
+}
+
+.sidebar .nav-locked:hover,
+.sidebar .nav-locked:focus-visible {
+  background: var(--brand-tint-soft);
+  color: var(--brand-ink);
+}
+
+/* The 2px nudge the live entries get on hover is deliberately not repeated: it
+   reads as "this one opens", which is the opposite of what this entry means. */
+.sidebar .nav-locked:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+}
+
+/* "Log in first to see this page!", shown the moment the entry is pointed at or
+   focused. A tooltip of its own rather than title=, which waits about a second,
+   cannot be styled, and never appears for a keyboard at all.
+
+   `fixed`, and placed by layout.js rather than by `left: 100%` here, because the
+   sidebar scrolls: any overflow other than visible clips its absolutely
+   positioned descendants, so a hint drawn beside the rail would be cut off at
+   the rail's edge. A fixed element is clipped by none of that, at the price of
+   being positioned against the viewport -- which is what the script supplies.
+   Until it does, the hint has no coordinates and is invisible either way. */
+.nav-lock-hint {
+  position: fixed;
+  z-index: 40;
+  width: max-content;
+  max-width: 15rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--forest-200);
+  background: var(--forest-100);
+  color: var(--forest-800);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  /* visibility, not display: the hint has to be laid out for layout.js to
+     measure before it is shown. It flips back to hidden only once the fade is
+     over, which is what the delay on the second transition is for. */
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 130ms ease, visibility 0s linear 130ms;
+}
+
+.sidebar .nav-locked:hover .nav-lock-hint,
+.sidebar .nav-locked:focus-visible .nav-lock-hint {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 130ms ease, visibility 0s;
+}
+
+/* The page's own name, which the hint carries only where nothing else does: on
+   the collapsed rail the label beside the icon is gone, and the hint is then the
+   one thing that can still say which page is being refused. */
+.nav-lock-hint-label {
+  display: none;
+}
+
+body.sidebar-collapsed .nav-lock-hint-label {
+  display: block;
+  font-weight: 700;
+  text-decoration: line-through;
 }
 
 .nav-icon {
@@ -193,7 +294,8 @@ body.sidebar-collapsed .sidebar-header {
   padding: 0;
 }
 
-body.sidebar-collapsed .sidebar a {
+body.sidebar-collapsed .sidebar a,
+body.sidebar-collapsed .sidebar .nav-locked {
   justify-content: center;
   gap: 0;
   padding-left: 0;
@@ -212,11 +314,20 @@ body.sidebar-collapsed .sidebar a:hover {
   transform: none;
 }
 
+
 @media (prefers-reduced-motion: reduce) {
   .app-layout,
   .sidebar,
   .nav-label,
   .sidebar-heading {
+    transition: none;
+  }
+
+  /* The hint still has to disappear when the pointer leaves, so visibility is
+     switched rather than left to a transition that no longer runs. */
+  .nav-lock-hint,
+  .sidebar .nav-locked:hover .nav-lock-hint,
+  .sidebar .nav-locked:focus-visible .nav-lock-hint {
     transition: none;
   }
 }
@@ -230,10 +341,15 @@ body.sidebar-collapsed .sidebar a:hover {
     padding: 1rem 0.7rem;
   }
 
-  body.sidebar-collapsed .sidebar a {
+  body.sidebar-collapsed .sidebar a,
+  body.sidebar-collapsed .sidebar .nav-locked {
     justify-content: flex-start;
     gap: 0.7rem;
     padding: 0.55rem 0.6rem;
+  }
+
+  body.sidebar-collapsed .nav-lock-hint-label {
+    display: none;
   }
 
   body.sidebar-collapsed .nav-label {

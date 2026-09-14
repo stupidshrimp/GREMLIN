@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{#- A page that exists, is navigated to and is access-controlled, but has no
+    content yet. Shipped rather than held back so the sidebar entry, the route,
+    the search catalog and the department rule can all be wired up and checked
+    now; the tracker itself is built by replacing this template with one of its
+    own on the page's PAGES entry.
+
+    It says plainly that it is empty. A page that looked finished and did
+    nothing would be reported as a bug, and the people who would report it are
+    the ones waiting for the real thing. -#}
+
+{% block content %}
+<section class="glass-card fade-in-up">
+  <p class="eyebrow">Coming soon</p>
+  <h1>{{ page_title }}</h1>
+  {% if page_summary %}<p class="hero-copy">{{ page_summary }}</p>{% endif %}
+  <p class="placeholder-note">
+    This page is reserved and not built yet. It is in the sidebar so the people
+    it is for can see it coming; there is nothing to do on it until the first
+    version lands.
+  </p>
+  <p class="placeholder-actions">
+    <a class="btn-secondary" href="{{ url_for('home') }}">Back to Home</a>
+  </p>
+</section>
+{% endblock %}
