@@ -544,6 +544,55 @@ class RoundTripIsLosslessTests(DispositionExcelTestCase):
         self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
         self.assertEqual(self.saved_note(), "held for review see the log")
 
+    def test_a_row_saved_before_the_cleaning_existed_is_left_alone(self):
+        """Cleaning on the way in only covers what is written from now on.
+
+        A database upgraded into this branch still holds rows with the character
+        in them, and those are the ones a reader is most likely to upload
+        untouched. The comparison reads both sides through the same cleaning, so
+        the row is recognised as unchanged and nothing is written -- no lost
+        character, and no version in the history attributed to whoever uploaded.
+
+        The stored value keeps its character until somebody actually edits that
+        row, since rewriting data nobody asked to change is the thing being
+        avoided.
+        """
+
+        self.service.save_dispositions([{
+            "mapped_record_id": self.record_id, "kind": "wo",
+            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
+            "disposition_text": "held for review",
+        }])
+        # Put the character back the way a row written before this branch holds it.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE event_disposition SET disposition_text = ?, disposition_notes = ? WHERE is_current = 1",
+                (self.NOTE, self.NOTE),
+            )
+            conn.commit()
+        self.assertEqual(self.saved_note(), self.NOTE)
+
+        path = self.workspace / "legacy.xlsx"
+        self.service.export_disposition_excel(self.ASSET, "wo", path)
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
+        self.assertEqual(self.saved_note(), self.NOTE)
+        with sqlite3.connect(self.db_path) as conn:
+            versions = conn.execute(
+                "SELECT COUNT(*) FROM event_disposition WHERE mapped_record_id = ?", (self.record_id,)
+            ).fetchone()[0]
+        self.assertEqual(versions, 1)
+
+    def test_editing_such_a_row_does_clean_it(self):
+        """The stored value is left alone, not left uncleanable."""
+
+        self.service.save_dispositions([{
+            "mapped_record_id": self.record_id, "kind": "wo",
+            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
+            "disposition_text": self.NOTE,
+        }])
+        self.assertEqual(self.saved_note(), "held for review see the log")
+
     def test_a_separator_becomes_a_space_rather_than_disappearing(self):
         r"""Six of the characters XML refuses are ones \s treats as whitespace.
 

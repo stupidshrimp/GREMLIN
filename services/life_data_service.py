@@ -3630,12 +3630,22 @@ class LifeDataService:
         Excel imports can include every row from a downloaded template. Skipping
         unchanged rows avoids creating duplicate historical disposition records
         and keeps GREMLIN.db queries fast after spreadsheet-based dispositioning.
+
+        The free text is compared as the workbook can carry it, on both sides. A
+        row saved before that cleaning existed still holds a character the sheet
+        cannot, so the cell comes back without it and a plain comparison reads
+        that as an edit: uploading a workbook nobody touched wrote a fresh
+        disposition, dropped the character, and left a version in the history
+        attributed to whoever uploaded. Comparing both sides through the same
+        cleaning asks what the question means -- would this workbook change
+        anything a workbook can express -- and leaves the stored value alone until
+        somebody actually edits that row, when the write-time cleaning takes it.
         """
 
         default_class = "CORRECTIVE_WO" if kind == "wo" else "PM"
         current_category = current_row.get("disposition_category") or "UNKNOWN"
         current_class = current_row.get("effective_record_class") or default_class
-        current_notes = self._excel_text(current_row.get("disposition_notes") or current_row.get("disposition_text"))
+        current_notes = self._comparable_text(current_row.get("disposition_notes") or current_row.get("disposition_text"))
         current_include = bool(current_row.get("include_in_weibull_candidate"))
         imported_include = imported.get("include_in_weibull_candidate")
         imported_include_bool = current_include if imported_include is None else bool(imported_include)
@@ -3643,7 +3653,7 @@ class LifeDataService:
         if (
             current_category != imported.get("disposition_category")
             or current_class != imported.get("record_class_final")
-            or current_notes != self._excel_text(imported.get("disposition_text"))
+            or current_notes != self._comparable_text(imported.get("disposition_text"))
             or current_include != imported_include_bool
         ):
             return False
@@ -3651,7 +3661,7 @@ class LifeDataService:
         if kind == "pm":
             return (
                 (current_row.get("pm_reset_inclusion_decision") or "NEEDS_REVIEW") == imported.get("pm_reset_decision")
-                and self._excel_text(current_row.get("pm_reset_renewal_rationale")) == self._excel_text(imported.get("pm_reset_rationale"))
+                and self._comparable_text(current_row.get("pm_reset_renewal_rationale")) == self._comparable_text(imported.get("pm_reset_rationale"))
                 and self._optional_int_value(current_row.get("reset_target_failure_mode_id")) == self._optional_int_value(imported.get("reset_target_failure_mode_id"))
                 and self._optional_int_value(current_row.get("reset_target_failure_mechanism_id")) == self._optional_int_value(imported.get("reset_target_failure_mechanism_id"))
             )
@@ -3666,6 +3676,16 @@ class LifeDataService:
             and (imported_mode_id is not None or self._normalize_taxonomy_text(imported.get("failure_mode_text")) == self._normalize_taxonomy_text(current_row.get("failure_mode")))
             and (imported_mechanism_id is not None or self._normalize_taxonomy_text(imported.get("failure_mechanism_text")) == self._normalize_taxonomy_text(current_row.get("failure_mechanism")))
         )
+
+    def _comparable_text(self, value: Any) -> str:
+        """``value`` as the workbook carries it, for deciding whether a row changed.
+
+        The same cleaning the export applies, so a value stored before that
+        cleaning existed compares equal to the cell it produces. Idempotent, so it
+        does not matter which side has already been through it.
+        """
+
+        return self._without_unrepresentable_characters(self._excel_text(value))
 
     def _optional_int_value(self, value: Any) -> int | None:
         if value in (None, ""):
