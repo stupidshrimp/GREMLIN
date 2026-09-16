@@ -368,7 +368,7 @@ def test_the_login_limiter_sees_the_real_client_behind_a_trusted_proxy(monkeypat
     """Otherwise the proxy's address is one shared client for the whole plant.
 
     Five wrong PINs from anybody would lock that shared scope and hand every
-    other user a 429 for fifteen minutes, correct credentials included.
+    other user a 429 for three minutes, correct credentials included.
     """
     monkeypatch.setenv("GREMLIN_TRUSTED_PROXY_HOPS", "1")
     module = _app(monkeypatch, tmp_path)

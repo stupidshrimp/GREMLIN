@@ -90,7 +90,7 @@ _ACCOUNT_COLUMNS = ",".join(ACCOUNT_FIELDS)
 
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
-LOGIN_LOCK_SECONDS = 15 * 60
+LOGIN_LOCK_SECONDS = 3 * 60
 DB_BUSY_TIMEOUT_SECONDS = 30
 MAX_USERNAME_CHARS = 128
 MAX_PIN_CHARS = 256
@@ -740,9 +740,20 @@ class AccessControl:
             # limiter table forever. Rows no longer participating in a failure
             # window or lockout are disposable; sweep them while already
             # holding the serialized writer transaction.
+            #
+            # A row that has served its lockout goes too, whatever its window
+            # still says. The lockout *is* the answer to the failures that
+            # produced it, so sitting one out owes a fresh five -- carrying the
+            # spent count forward would mean the first wrong PIN after the
+            # advertised wait locked the scope straight back, and the correct
+            # PIN a moment later along with it. That could not arise while the
+            # lockout outlasted the window, because the window had always run
+            # out first; with LOGIN_LOCK_SECONDS below LOGIN_WINDOW_SECONDS it
+            # is the ordinary case rather than the corner.
             conn.execute(
-                "DELETE FROM login_attempts WHERE window_started < ? AND locked_until <= ?",
-                (now - LOGIN_WINDOW_SECONDS, now),
+                """DELETE FROM login_attempts
+                    WHERE locked_until <= ? AND (locked_until > 0 OR window_started < ?)""",
+                (now, now - LOGIN_WINDOW_SECONDS),
             )
             # The sweep above only reaches rows whose window has already run
             # out, so a fast enough burst outruns it inside the window. Cap

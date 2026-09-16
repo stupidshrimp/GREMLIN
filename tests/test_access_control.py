@@ -16,6 +16,8 @@ from services.access_control import (
     DEPARTMENT_ALL,
     DEPARTMENTS,
     LOGIN_FAILURE_LIMIT,
+    LOGIN_LOCK_SECONDS,
+    LOGIN_WINDOW_SECONDS,
     STAFF_LEVELS,
     AccessControl,
     department_label,
@@ -170,6 +172,35 @@ def test_stale_login_attempt_scopes_are_swept(tmp_path, monkeypatch):
         assert conn.execute(
             "SELECT 1 FROM login_attempts WHERE scope_key='client:stale'"
         ).fetchone() is None
+
+
+def test_serving_a_lockout_restores_the_full_failure_budget(tmp_path, monkeypatch):
+    """The wait GREMLIN advertises in Retry-After has to be the whole wait.
+
+    The lockout is shorter than the failure window, so a row that has sat one
+    out is still inside its window. Were the spent count carried forward, the
+    first wrong PIN after the advertised wait would lock the scope straight
+    back -- and refuse the correct PIN along with it.
+    """
+    assert LOGIN_LOCK_SECONDS < LOGIN_WINDOW_SECONDS, "otherwise this proves nothing"
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr("services.access_control.time.time", lambda: clock["now"])
+    control = AccessControl(tmp_path / "accesscontrol.db")
+    control.ensure_schema(initial_username="root", initial_pin="secret")
+
+    for _ in range(LOGIN_FAILURE_LIMIT):
+        control.authenticate_limited("root", "wrong", "10.0.0.5")
+    _user, retry_after = control.authenticate_limited("root", "secret", "10.0.0.5")
+    assert retry_after == LOGIN_LOCK_SECONDS
+
+    # Sit out exactly what that promised, and the whole limit is available
+    # again before anything locks a second time.
+    clock["now"] += LOGIN_LOCK_SECONDS + 1
+    for attempt in range(LOGIN_FAILURE_LIMIT - 1):
+        _user, retry_after = control.authenticate_limited("root", "wrong", "10.0.0.5")
+        assert retry_after == 0, f"re-locked on attempt {attempt + 1} of a fresh budget"
+    user, retry_after = control.authenticate_limited("root", "secret", "10.0.0.5")
+    assert user is not None and retry_after == 0
 
 
 def test_login_attempt_scope_keys_are_fixed_length_for_oversized_input(tmp_path):
