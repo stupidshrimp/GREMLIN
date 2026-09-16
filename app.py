@@ -89,7 +89,7 @@ app = Flask(__name__)
 # request.remote_addr and nothing needs saying. Behind a reverse proxy or a TLS
 # terminator it is the *proxy* -- one address for the whole plant -- so five
 # wrong PINs from anybody would lock the shared per-client scope and hand every
-# other user a 429 for fifteen minutes, correct credentials included.
+# other user a 429 for three minutes, correct credentials included.
 #
 # Opt-in, because trusting X-Forwarded-For without a proxy in front is worse
 # than not reading it: any client could then claim whatever address it liked and
