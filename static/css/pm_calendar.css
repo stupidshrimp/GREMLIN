@@ -102,13 +102,25 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.7rem;   /* was 0.8rem */
   border: 1px solid var(--forest-200);
   border-radius: 999px;
   background: var(--forest-100);
   color: var(--forest-800);
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+/* The legend for the dot on that asset's calendar pills, in the same order
+   rebuildAssetColors() assigns them -- so this and the calendar agree without
+   the page having to say so anywhere. */
+.pm-asset-swatch {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--pm-asset-color, var(--forest-500));
+  flex: none;
 }
 
 /* A real button rather than a clickable <span>: it is the only way off a chip,
@@ -367,20 +379,34 @@
    application already reads as done / wrong / neither. */
 .pm-event.is-completed {
   background: var(--success-bg);
-  border-left-color: var(--brand-accent);
+  border-left-color: var(--pm-asset-color, var(--brand-accent));  /* was: var(--brand-accent) */
   color: var(--success-ink);
 }
 
 .pm-event.is-overdue {
   background: var(--danger-bg);
-  border-left-color: var(--danger-strong);
+  border-left-color: var(--danger-strong);   /* unchanged */
   color: var(--danger-ink);
 }
 
 .pm-event.is-upcoming {
   background: var(--forest-100);
-  border-left-color: var(--forest-500);
+  border-left-color: var(--pm-asset-color, var(--forest-500));   /* was: var(--forest-500) */
   color: var(--forest-800);
+}
+
+/* The asset marker itself, sized to sit on the pill's own text line rather
+   than push it -- pm-event is a two-line clamp and a tall dot costs a
+   character of room on every pill. Not drawn on is-overdue: that status
+   keeps its plain flat red until it gets the same treatment. */
+.pm-event-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.3rem;
+  border-radius: 50%;
+  background: var(--pm-asset-color, var(--brand-accent));
+  vertical-align: middle;
 }
 
 .pm-event-more {

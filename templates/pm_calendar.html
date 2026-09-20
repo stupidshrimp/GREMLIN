@@ -145,7 +145,7 @@
 {% endblock %}
 
 {% block scripts %}
-
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script>
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -175,7 +175,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Assets currently chipped in: same shape as allAssets.
     let selectedAssets = [];
     // PM events for the visible month, keyed by "YYYY-MM-DD".
+
     let eventsByDate = {};
+    let assetColorMap = {};
 
     // The status line had three writers -- the asset load, the sync poll and
     // the sync button -- and they overwrote each other. On every page load both
@@ -338,6 +340,22 @@ document.addEventListener('DOMContentLoaded', function () {
         return 'is-upcoming';
     }
 
+    function rebuildAssetColors() {
+    const palette = window.gremlinChartPalette ? window.gremlinChartPalette().series : [];
+    assetColorMap = {};
+    if (!palette.length) return;
+    selectedAssets
+        .slice()
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+        .forEach((asset, i) => {
+            assetColorMap[asset.id] = palette[i % palette.length];
+        });
+}
+
+    function assetColor(assetId) {
+        return assetColorMap[assetId] || null;
+    }
+
     function buildCalendar(month, year) {
         title.textContent = months[month] + ' ' + year;
         renderCalendarBody();
@@ -368,12 +386,28 @@ document.addEventListener('DOMContentLoaded', function () {
             const shown = dayEvents.slice(0, 3);
 
             shown.forEach(event => {
-                const pill = document.createElement('div');
-                pill.className = 'pm-event ' + eventClass(event);
-                pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '');
-                pill.textContent = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM');
-                cell.appendChild(pill);
-            });
+              const pill = document.createElement('div');
+              const status = eventClass(event);
+              pill.className = 'pm-event ' + status;
+              pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '');
+
+              const label = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM');
+
+              if (status === 'is-overdue') {
+                  pill.textContent = label;
+              } else {
+                  const color = assetColor(event.asset_id);
+                  if (color) pill.style.setProperty('--pm-asset-color', color);
+
+                  const dot = document.createElement('span');
+                  dot.className = 'pm-event-dot';
+                  dot.setAttribute('aria-hidden', 'true');
+                  pill.appendChild(dot);
+                  pill.appendChild(document.createTextNode(label));
+              }
+
+              cell.appendChild(pill);
+          });
 
             if (dayEvents.length > shown.length) {
                 const more = document.createElement('div');
@@ -394,12 +428,21 @@ document.addEventListener('DOMContentLoaded', function () {
         const container = document.getElementById('pm-selected-assets');
         const addButton = document.getElementById('pm-open-picker');
 
+        rebuildAssetColors();
+
         container.querySelectorAll('.pm-asset-chip').forEach(chip => chip.remove());
 
         selectedAssets.forEach(asset => {
             const chip = document.createElement('div');
             chip.className = 'pm-asset-chip';
             chip.dataset.assetId = asset.id;
+
+            const swatch = document.createElement('span');
+            swatch.className = 'pm-asset-swatch';
+            swatch.setAttribute('aria-hidden', 'true');
+            const swatchColor = assetColor(asset.id);
+            if (swatchColor) swatch.style.setProperty('--pm-asset-color', swatchColor);
+            chip.appendChild(swatch);
 
             const name = asset.name || asset.number || asset.id;
             chip.appendChild(document.createTextNode(name));
