@@ -58,6 +58,22 @@ CREATE TABLE IF NOT EXISTS pm_task (
 )
 """
 
+# The asset hierarchy, as far as the calendar needs it: every asset that has
+# PMs, plus every asset above one of those (a parent like 4002 can have no PMs
+# of its own and still be the natural thing to pick). Its own table rather
+# than a column on pm_task for exactly that reason -- a parent with no PMs has
+# no pm_task row to hang a column on. Replaced wholesale on every sync, since
+# /assets always comes back complete. Being a new table, CREATE TABLE IF NOT
+# EXISTS is all an existing database needs; it stays empty until the next
+# sync, and until then the calendar behaves exactly as it did before.
+_CREATE_ASSET_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS pm_asset (
+    asset_id TEXT PRIMARY KEY,
+    asset_name TEXT,
+    parent_asset_id TEXT
+)
+"""
+
 # Indexes speed up the lookups the calendar page actually does: "PMs for
 # these assets" and "PMs due in this date range." They cost nothing to have
 # and nothing to maintain -- SQLite keeps them up to date automatically.
@@ -65,6 +81,7 @@ _CREATE_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_id ON pm_task(asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_due_date ON pm_task(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_due ON pm_task(asset_id, due_date)",
+    "CREATE INDEX IF NOT EXISTS idx_pm_asset_parent ON pm_asset(parent_asset_id)",
 )
 
 # Every column in pm_task except the auto-filled synced_at. Used to keep the
@@ -199,6 +216,7 @@ class PmCalendarRepository:
 
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
+            conn.execute(_CREATE_ASSET_TABLE_SQL)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
 
@@ -235,9 +253,48 @@ class PmCalendarRepository:
 
         return {"upserted": len(rows)}
 
+    def replace_assets(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """Replace the whole asset hierarchy with `rows`, in one transaction.
+
+        Each dict has asset_id, asset_name and parent_asset_id (None for a
+        top-level asset). Wholesale rather than upserted: an asset moved to
+        another parent, or scrapped, in Limble must not leave its old link
+        behind. Readers never see a half-written tree -- the delete and the
+        inserts land together or not at all.
+        """
+
+        with self.write_connection() as conn:
+            conn.execute("DELETE FROM pm_asset")
+            conn.executemany(
+                "INSERT OR REPLACE INTO pm_asset (asset_id, asset_name, parent_asset_id) "
+                "VALUES (:asset_id, :asset_name, :parent_asset_id)",
+                [
+                    {
+                        "asset_id": row.get("asset_id"),
+                        "asset_name": row.get("asset_name"),
+                        "parent_asset_id": row.get("parent_asset_id"),
+                    }
+                    for row in rows
+                ],
+            )
+        return {"assets": len(rows)}
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
+    def fetch_assets(self) -> list[dict[str, Any]]:
+        """Every row of the asset hierarchy (empty until the first sync)."""
+
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(
+                    "SELECT asset_id, asset_name, parent_asset_id FROM pm_asset"
+                ).fetchall()
+            finally:
+                conn.close()
+        return [_row_to_dict(row) for row in rows]
+
     def fetch_tasks(
         self,
         asset_ids: list[str] | None = None,

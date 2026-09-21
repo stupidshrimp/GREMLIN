@@ -683,6 +683,43 @@
   border-color: var(--forest-500);
 }
 
+/* A sub-asset sits under its parent, indented one step per level. The
+   indent is a custom property so the option's own padding stays the one
+   defined above. */
+.pm-asset-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-left: calc(0.65rem + var(--pm-depth, 0) * 1.25rem);
+}
+
+/* The search box hides non-matching options with the `hidden` attribute. The
+   `display: flex` above beats the browser's own `[hidden] { display: none }`,
+   which left every option showing whatever was typed -- so honour it here. */
+.pm-asset-option[hidden] {
+  display: none;
+}
+
+.pm-asset-option.is-child::before {
+  content: "↳";
+  color: var(--muted);
+  margin-right: 0.35rem;
+}
+
+.pm-asset-option-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* "+20 sub-assets" in the picker, "+20" on a chip: what picking it brings. */
+.pm-asset-option-meta,
+.pm-asset-chip-meta {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
 /* ---- focus --------------------------------------------------------------- */
 /* One ring for every control on the page, the same one the rest of GREMLIN
    draws. Worth stating once here: several of these are buttons with their

@@ -379,15 +379,17 @@ def test_future_months_are_filled_with_projected_pms(tmp_path):
     """A month past whatever Limble has generated still shows something.
 
     Without projection this window is empty: no real row's due_date falls
-    in it. Every 28 days (M = 4 weeks) from the last completion is the
-    whole point of the feature.
+    in it. Every 28 days (M = 4 weeks) from the last completion, up to
+    _OPEN_LINE_PROJECTION_LIMIT cycles since this line still has an open
+    work order -- the fourth cycle (2026-11-19) is past that cap, so it
+    isn't among these even though the window runs through November.
     """
 
     service = _seeded_monthly_series(tmp_path, open_due_date="2026-08-28")
 
     events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-11-30")
 
-    assert [e["due_date"] for e in events] == ["2026-09-24", "2026-10-22", "2026-11-19"]
+    assert [e["due_date"] for e in events] == ["2026-09-24", "2026-10-22"]
     assert all(e["is_projected"] for e in events)
 
 
@@ -410,30 +412,31 @@ def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp
     on_schedule_dates = [e["due_date"] for e in on_schedule.events(**window)]
     dragged_dates = [e["due_date"] for e in dragged.events(**window)]
 
-    assert on_schedule_dates == dragged_dates == [
-        "2026-09-24", "2026-10-22", "2026-11-19", "2026-12-17",
-    ]
+    assert on_schedule_dates == dragged_dates == ["2026-09-24", "2026-10-22"]
 
 
 def test_a_projected_pill_yields_to_a_real_row_already_covering_its_slot(tmp_path):
     """The one place a real due date *is* allowed to matter: its own slot.
 
-    The dragged-out due date (2027-03-01) sits close enough to where the
-    unbroken cadence would have projected one (2027-03-11) that showing
-    both would just be the same PM twice. Only that one slot yields --
-    everything on either side of it keeps projecting on schedule.
+    The open row's due date (2026-10-25) sits close enough to where the
+    unbroken cadence would have projected its third cycle (2026-10-22) that
+    showing both would just be the same PM twice. Only that one slot
+    yields -- the cycle before it keeps projecting on schedule. (The window
+    stays within _OPEN_LINE_PROJECTION_LIMIT cycles of the anchor; further
+    out, this line's open work order caps projection off entirely -- see
+    test_projection_for_an_open_line_never_exceeds_the_cap.)
     """
 
-    service = _seeded_monthly_series(tmp_path, open_due_date="2027-03-01")
+    service = _seeded_monthly_series(tmp_path, open_due_date="2026-10-25")
 
-    events = service.events(asset_ids=["3103"], start_date="2027-01-01", end_date="2027-04-01")
+    events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-11-15")
 
     by_date = {e["due_date"]: e for e in events}
     # Real rows don't carry an is_projected key at all -- only synthetic
     # ones do -- so "not set" is what a real row winning looks like here.
-    assert not by_date["2027-03-01"].get("is_projected")
-    assert "2027-03-11" not in by_date  # the projected slot it absorbed
-    assert by_date["2027-02-11"]["is_projected"] is True  # neighbours unaffected
+    assert not by_date["2026-10-25"].get("is_projected")
+    assert "2026-10-22" not in by_date  # the projected slot it absorbed
+    assert by_date["2026-09-24"]["is_projected"] is True  # neighbour unaffected
 
 
 @pytest.mark.parametrize(
@@ -488,12 +491,12 @@ def test_two_pm_lines_with_the_same_code_on_one_asset_are_projected_separately(t
         },
     ])
 
-    events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-09-30")
+    events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-10-09")
 
     by_name = {e["task_name"]: e["due_date"] for e in events}
     assert by_name == {
         "3103 - M - Laser Optics": "2026-09-25",  # 2026-07-03 + 12 weeks
-        "3103 - M - Chiller": "2026-09-11",  # 2026-07-17 + 8 weeks
+        "3103 - M - Chiller": "2026-10-09",  # 2026-07-17 + 12 weeks
     }
     assert len({e["task_id"] for e in events}) == len(events)
 
@@ -518,9 +521,9 @@ def test_a_pm_lines_name_is_matched_ignoring_case_and_spacing(tmp_path):
         },
     ])
 
-    events = service.events(asset_ids=["3103"], start_date="2026-08-01", end_date="2026-08-31")
+    events = service.events(asset_ids=["3103"], start_date="2026-10-01", end_date="2026-10-31")
 
-    assert [e["due_date"] for e in events] == ["2026-08-28"]
+    assert [e["due_date"] for e in events] == ["2026-10-23"]
 
 
 def test_events_without_an_asset_filter_do_not_read_the_whole_history(tmp_path, monkeypatch):
@@ -606,42 +609,14 @@ def test_a_line_quiet_for_more_than_three_intervals_is_not_projected(tmp_path):
     assert events == []
 
 
-def test_a_scheduled_occurrence_keeps_a_line_live(tmp_path):
-    """Limble still holding an open work order for the line is proof it runs.
+def test_an_open_work_order_still_lets_a_line_project_up_to_the_cap(tmp_path):
+    """A late but not-ancient open work order: projection still runs, capped.
 
-    Last completed long ago, but the open occurrence is due next month, so
-    this line isn't retired -- it's just overdue for a completion.
-    """
-
-    service = PmCalendarService(tmp_path / "pm.db")
-    service._ensure_schema()
-    service.repo.upsert_tasks([
-        {
-            "task_id": "1", "asset_id": "777", "asset_number": "777",
-            "asset_name": "Press", "task_name": "777 - Q - Press inspection",
-            "status_raw": "done", "due_date": "2025-06-06",
-            "completed_date": "2025-06-06", "is_completed": 1,
-        },
-        {
-            "task_id": "2", "asset_id": "777", "asset_number": "777",
-            "asset_name": "Press", "task_name": "777 - Q - Press inspection",
-            "status_raw": "open", "due_date": "2026-10-16",
-            "completed_date": None, "is_completed": 0,
-        },
-    ])
-
-    events = service.events(asset_ids=["777"], start_date="2027-01-01", end_date="2027-03-31")
-
-    assert any(e.get("is_projected") for e in events)
-
-
-def test_a_long_overdue_open_work_order_keeps_a_line_live(tmp_path):
-    """Missed PMs on a running machine keep being projected.
-
-    Monthly, last completed in June; July's work order is still open and
-    Limble hasn't created anything newer. By today that's more than three
-    cycles of silence -- but the open work order means the PM is still on
-    the books, just late, so estimates carry on.
+    Monthly, last completed 2026-08-01; the open work order (due 2026-08-15)
+    is over a month overdue by the pinned "today" of 2026-09-21. That's
+    still within _OPEN_LINE_PROJECTION_LIMIT cycles of the anchor, so the
+    remaining cycles inside the cap show up -- the first cycle (2026-08-29)
+    doesn't, simply because it's already in the past.
     """
 
     service = PmCalendarService(tmp_path / "pm.db")
@@ -650,20 +625,89 @@ def test_a_long_overdue_open_work_order_keeps_a_line_live(tmp_path):
         {
             "task_id": "1", "asset_id": "777", "asset_number": "777",
             "asset_name": "Press", "task_name": "777 - M - Press lube",
-            "status_raw": "done", "due_date": "2026-06-05",
-            "completed_date": "2026-06-05", "is_completed": 1,
+            "status_raw": "done", "due_date": "2026-08-01",
+            "completed_date": "2026-08-01", "is_completed": 1,
         },
         {
             "task_id": "2", "asset_id": "777", "asset_number": "777",
             "asset_name": "Press", "task_name": "777 - M - Press lube",
-            "status_raw": "open", "due_date": "2026-06-19",
+            "status_raw": "open", "due_date": "2026-08-15",
             "completed_date": None, "is_completed": 0,
         },
     ])
 
-    events = service.events(asset_ids=["777"], start_date="2026-10-01", end_date="2026-10-31")
+    events = service.events(asset_ids=["777"], start_date="2026-09-01", end_date="2026-11-30")
 
-    assert [e["due_date"] for e in events if e.get("is_projected")] == ["2026-10-23"]
+    assert [e["due_date"] for e in events if e.get("is_projected")] == [
+        "2026-09-26", "2026-10-24",
+    ]
+
+
+def test_projection_for_an_open_line_never_exceeds_the_cap(tmp_path):
+    """However far ahead the window looks, an open line only ever shows three.
+
+    Last completed just before "today", with the next work order already
+    open -- nothing overdue about this one. Even with a window running
+    into 2027, only the first _OPEN_LINE_PROJECTION_LIMIT cycles past the
+    anchor ever appear; a fourth cycle that would otherwise fit the window
+    (2027-01-10) is deliberately withheld until the open work order closes.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": "1", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "done", "due_date": "2026-09-20",
+            "completed_date": "2026-09-20", "is_completed": 1,
+        },
+        {
+            "task_id": "2", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "open", "due_date": "2026-10-01",
+            "completed_date": None, "is_completed": 0,
+        },
+    ])
+
+    events = service.events(asset_ids=["777"], start_date="2026-09-01", end_date="2027-12-31")
+
+    projected = [e["due_date"] for e in events if e.get("is_projected")]
+    assert projected == ["2026-10-18", "2026-11-15", "2026-12-13"]
+    assert "2027-01-10" not in projected
+
+
+def test_a_very_overdue_open_work_order_produces_no_stale_estimates(tmp_path):
+    """So overdue that even the projection cap has already elapsed.
+
+    Quarterly, last completed 260 days before "today" -- well past
+    _STALE_AFTER_INTERVALS worth of silence. The open work order keeps this
+    line from being dropped outright as retired, but its
+    _OPEN_LINE_PROJECTION_LIMIT cycles past that old anchor all land in the
+    past too, so nothing is projected until the open work order is
+    completed and gives this line a fresh anchor to build from.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": "1", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - Q - Press inspection",
+            "status_raw": "done", "due_date": "2026-01-04",
+            "completed_date": "2026-01-04", "is_completed": 1,
+        },
+        {
+            "task_id": "2", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - Q - Press inspection",
+            "status_raw": "open", "due_date": "2026-01-18",
+            "completed_date": None, "is_completed": 0,
+        },
+    ])
+
+    events = service.events(asset_ids=["777"], start_date="2026-09-01", end_date="2027-12-31")
+
+    assert [e for e in events if e.get("is_projected")] == []
 
 
 def test_projecting_far_ahead_does_not_walk_every_cycle_from_the_anchor(tmp_path, monkeypatch):
@@ -704,3 +748,250 @@ def test_a_pm_name_that_does_not_match_the_cadence_convention_is_left_alone(tmp_
 
     assert len(events) == 1
     assert events[0]["task_id"] == "1"
+
+
+# ----------------------------------------------------------------------
+# Parent assets bring their sub-assets with them
+# ----------------------------------------------------------------------
+def _pm(task_id, asset_id, name, due, *, completed=None):
+    return {
+        "task_id": task_id, "asset_id": asset_id, "asset_number": asset_id,
+        "asset_name": name, "task_name": f"{asset_id} - Q - {name}",
+        "status_raw": "done" if completed else "open", "due_date": due,
+        "completed_date": completed, "is_completed": 1 if completed else 0,
+    }
+
+
+def _panel_line(tmp_path):
+    """4002 with two sub-assets, one of which has a sub-asset of its own.
+
+    4002 has PMs of its own; so do S1 and S1A. S2 has none, and nor does its
+    own child -- it's in the tree only because the test gives it one PM.
+    Asset 9 is an unrelated machine that must never come along.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        _pm("1", "4002", "Panel Finishing System", "2026-10-05"),
+        _pm("2", "S1", "Sander", "2026-10-06"),
+        _pm("3", "S1A", "Sander Dust Collector", "2026-10-07"),
+        _pm("4", "S2", "Oven", "2026-10-08"),
+        _pm("5", "9", "Unrelated Press", "2026-10-09"),
+    ])
+    service.repo.replace_assets([
+        {"asset_id": "4002", "asset_name": "Panel Finishing System", "parent_asset_id": None},
+        {"asset_id": "S1", "asset_name": "Sander", "parent_asset_id": "4002"},
+        {"asset_id": "S1A", "asset_name": "Sander Dust Collector", "parent_asset_id": "S1"},
+        {"asset_id": "S2", "asset_name": "Oven", "parent_asset_id": "4002"},
+        {"asset_id": "9", "asset_name": "Unrelated Press", "parent_asset_id": None},
+    ])
+    return service
+
+
+def _real_asset_ids(events):
+    return sorted({e["asset_id"] for e in events if not e.get("is_projected")})
+
+
+def test_picking_a_parent_shows_its_own_pms_and_every_sub_assets(tmp_path):
+    service = _panel_line(tmp_path)
+
+    events = service.events(asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31")
+
+    assert _real_asset_ids(events) == ["4002", "S1", "S1A", "S2"]
+
+
+def test_picking_a_sub_asset_shows_only_that_branch(tmp_path):
+    """Expansion only goes down: the parent and siblings stay out."""
+
+    service = _panel_line(tmp_path)
+
+    assert _real_asset_ids(
+        service.events(asset_ids=["S1"], start_date="2026-10-01", end_date="2026-10-31")
+    ) == ["S1", "S1A"]
+    assert _real_asset_ids(
+        service.events(asset_ids=["S2"], start_date="2026-10-01", end_date="2026-10-31")
+    ) == ["S2"]
+
+
+def test_picking_a_parent_and_one_of_its_children_counts_nothing_twice(tmp_path):
+    service = _panel_line(tmp_path)
+
+    events = service.events(asset_ids=["4002", "S1"], start_date="2026-10-01", end_date="2026-10-31")
+
+    assert len([e for e in events if not e.get("is_projected")]) == 4
+
+
+def test_the_summary_covers_the_whole_branch_too(tmp_path):
+    """The tiles and the grid have to be counting the same PMs.
+
+    summary() reads the real clock, so the completed PM is dated today --
+    always inside the year to date, whenever this runs.
+    """
+
+    service = _panel_line(tmp_path)
+    today = date.today().isoformat()
+    service.repo.upsert_tasks([
+        _pm("10", "S1A", "Sander Dust Collector", today, completed=today),
+    ])
+
+    assert service.summary(asset_ids=["4002"])["completed"] == 1
+    assert service.summary(asset_ids=["S2"])["completed"] == 0
+
+
+def test_a_loop_in_the_hierarchy_does_not_hang_a_request(tmp_path):
+    service = _panel_line(tmp_path)
+    service.repo.replace_assets([
+        {"asset_id": "4002", "asset_name": "Panel Finishing System", "parent_asset_id": "S1"},
+        {"asset_id": "S1", "asset_name": "Sander", "parent_asset_id": "4002"},
+    ])
+
+    events = service.events(asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31")
+
+    assert _real_asset_ids(events) == ["4002", "S1"]
+
+
+def test_the_picker_lists_each_parent_before_its_children(tmp_path):
+    service = _panel_line(tmp_path)
+
+    options = service.asset_options()
+
+    assert [(o["asset_id"], o["depth"], o["descendant_count"]) for o in options] == [
+        ("4002", 0, 3),
+        ("S2", 1, 0),  # "Oven" sorts before "Sander"
+        ("S1", 1, 1),
+        ("S1A", 2, 0),
+        ("9", 0, 0),
+    ]
+    assert {o["asset_id"]: o["parent_asset_id"] for o in options}["S1A"] == "S1"
+
+
+def test_before_the_first_sync_the_picker_stays_flat(tmp_path):
+    """A database synced before this shipped has no hierarchy yet.
+
+    Every asset with PMs is listed on its own, and picking one shows only
+    that asset -- exactly the old behaviour, until a sync fills pm_asset.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        _pm("1", "4002", "Panel Finishing System", "2026-10-05"),
+        _pm("2", "S1", "Sander", "2026-10-06"),
+    ])
+
+    assert [(o["asset_id"], o["depth"], o["descendant_count"]) for o in service.asset_options()] == [
+        ("4002", 0, 0),
+        ("S1", 0, 0),
+    ]
+    assert _real_asset_ids(
+        service.events(asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31")
+    ) == ["4002"]
+
+
+def test_an_asset_with_pms_missing_from_the_hierarchy_is_still_listed(tmp_path):
+    service = _panel_line(tmp_path)
+    service.repo.upsert_tasks([_pm("20", "77", "Brand New Lathe", "2026-10-10")])
+
+    options = {o["asset_id"]: o for o in service.asset_options()}
+
+    assert options["77"]["depth"] == 0
+    assert options["77"]["asset_name"] == "Brand New Lathe"
+
+
+def test_an_existing_database_gains_the_hierarchy_table(tmp_path):
+    """No migration step: the new table is created on first use."""
+
+    db = tmp_path / "pm.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE pm_task (task_id TEXT PRIMARY KEY, asset_id TEXT, asset_number TEXT, "
+        "asset_name TEXT, task_name TEXT, status_raw TEXT, due_date TEXT, completed_date TEXT, "
+        "is_completed INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    conn.execute(
+        "INSERT INTO pm_task (task_id, asset_id, asset_number, asset_name) VALUES ('1', '7', '7', 'Pump')"
+    )
+    conn.commit()
+    conn.close()
+
+    service = PmCalendarService(db)
+
+    assert [o["asset_id"] for o in service.asset_options()] == ["7"]
+    assert service.repo.fetch_assets() == []
+
+
+def test_the_hierarchy_keeps_parents_without_pms_and_drops_everything_else():
+    """What a sync stores, from Limble's /assets payload.
+
+    4002 has no PMs of its own here, but its sub-asset does, so 4002 is kept
+    and pickable. 500 has no PMs anywhere under it and is left out. A parent
+    id that isn't in /assets at all leaves its child at the top level.
+    """
+
+    assets = [
+        {"assetID": 4002, "name": "Panel Finishing System", "parentAssetID": 0},
+        {"assetID": 4101, "name": "Sander", "parentAssetID": 4002},
+        {"assetID": 500, "name": "Spare Parts Cage", "parentAssetID": 0},
+        {"assetID": 501, "name": "Shelf", "parentAssetID": 500},
+        {"assetID": 600, "name": "Orphan", "parentAssetID": 99999},
+    ]
+
+    rows = PmCalendarService._asset_hierarchy(assets, {"4101", "600"})
+
+    assert sorted((r["asset_id"], r["parent_asset_id"]) for r in rows) == [
+        ("4002", None),
+        ("4101", "4002"),
+        ("600", None),
+    ]
+
+
+def test_a_loop_in_limbles_asset_data_is_cut_when_stored():
+    assets = [
+        {"assetID": 1, "name": "A", "parentAssetID": 2},
+        {"assetID": 2, "name": "B", "parentAssetID": 1},
+    ]
+
+    rows = {r["asset_id"]: r["parent_asset_id"] for r in PmCalendarService._asset_hierarchy(assets, {"1"})}
+
+    # One of the two has to become the root; either way, walking up ends.
+    assert sorted(rows) == ["1", "2"]
+    assert None in rows.values()
+
+
+def test_a_sync_stores_the_hierarchy(tmp_path, monkeypatch):
+    """End to end through _run_sync, with Limble replaced by a stub."""
+
+    class _StubClient:
+        def __init__(self, config):
+            pass
+
+        def get_tasks(self, on_page=None):
+            return [
+                {"taskID": 1, "type": 1, "assetID": 4101, "name": "4101 - M - Sander",
+                 "dueDate": 1790000000, "dateCompleted": 0},
+            ]
+
+        def get_assets(self):
+            return [
+                {"assetID": 4002, "name": "Panel Finishing System", "parentAssetID": 0},
+                {"assetID": 4101, "name": "Sander", "parentAssetID": 4002},
+                {"assetID": 500, "name": "Spare Parts Cage", "parentAssetID": 0},
+            ]
+
+    monkeypatch.setattr(pm_calendar_service_module, "LimbleClient", _StubClient)
+    monkeypatch.setattr(pm_calendar_service_module.LimbleConfig, "from_env", classmethod(lambda cls: None))
+    monkeypatch.setattr(pm_calendar_service_module, "load_dotenv_files", lambda **kwargs: None)
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._run_sync()
+
+    assert service.status()["state"] == "succeeded", service.status()
+    assert sorted((r["asset_id"], r["parent_asset_id"]) for r in service.repo.fetch_assets()) == [
+        ("4002", None),
+        ("4101", "4002"),
+    ]
+    assert [(o["asset_id"], o["descendant_count"]) for o in service.asset_options()] == [
+        ("4002", 1),
+        ("4101", 0),
+    ]

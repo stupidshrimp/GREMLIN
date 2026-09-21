@@ -12,13 +12,14 @@ import hashlib
 import itertools
 import threading
 from bisect import bisect_left
+from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.pm_calendar_repo import DEFAULT_PM_CALENDAR_DB_PATH, PmCalendarRepository
-from services.ingestion_service import _unix_to_iso_utc
+from services.ingestion_service import _asset_parent_id, _unix_to_iso_utc
 from services.sync_service import LIMBLE_ENV_PREFIX, load_dotenv_files
 
 # Job states, same vocabulary as services/sync_service.py's LimbleSyncRunner.
@@ -257,12 +258,23 @@ class PmCalendarService:
 
             result = self.repo.upsert_tasks(rows)
 
+            # Only the part of the hierarchy that leads to a PM: anything
+            # else could never show a thing on this calendar. Built from the
+            # whole table rather than just this pull's rows, so an asset whose
+            # PMs are already stored keeps its place in the tree.
+            with_pms = {
+                str(option["asset_id"]) for option in self.repo.asset_options() if option.get("asset_id")
+            }
+            hierarchy = self._asset_hierarchy(assets, with_pms)
+            self.repo.replace_assets(hierarchy)
+
             with self._lock:
                 self._job = {
                     "state": STATE_SUCCEEDED,
                     "fetched": len(tasks),
                     "matched_pm_tasks": len(rows),
                     "upserted": result["upserted"],
+                    "assets_in_hierarchy": len(hierarchy),
                     "error": None,
                 }
         except Exception as exc:  # noqa: BLE001 - reported to the page, not swallowed
@@ -313,6 +325,59 @@ class PmCalendarService:
             "completed_date": completed_date,
             "is_completed": 1 if completed_date else 0,
         }
+
+    @staticmethod
+    def _asset_hierarchy(
+        assets: list[dict[str, Any]], with_pms: set[str]
+    ) -> list[dict[str, Any]]:
+        """The pm_asset rows: every asset with PMs, plus everything above one.
+
+        Walks up from each asset that has PMs, adding each parent on the way,
+        so a parent with no PMs of its own (the machine, when every PM is
+        filed against its sub-assets) still ends up pickable. A parent that
+        isn't in /assets at all ends the walk there, and the asset below it
+        is stored as top-level rather than pointing at something the page
+        can't show. Stops at an asset already visited, so a cycle in
+        Limble's data ends the walk instead of looping.
+        """
+
+        by_id = {
+            str(asset.get("assetID")): asset
+            for asset in assets
+            if asset.get("assetID") not in (None, "")
+        }
+
+        keep: dict[str, dict[str, Any]] = {}
+        for asset_id in sorted(with_pms):
+            current = asset_id
+            while current not in keep:
+                asset = by_id.get(current)
+                parent_id = _asset_parent_id(asset) if asset else None
+                if parent_id not in by_id:
+                    parent_id = None
+                keep[current] = {
+                    "asset_id": current,
+                    "asset_name": asset.get("name") if asset else None,
+                    "parent_asset_id": parent_id,
+                }
+                if parent_id is None:
+                    break
+                current = parent_id
+
+        # A cycle (A's parent is B, B's parent is A) would otherwise leave no
+        # root to hang either one from; cut the link at the asset where the
+        # walk found itself going round.
+        for asset_id in keep:
+            seen = {asset_id}
+            current = keep[asset_id]["parent_asset_id"]
+            while current is not None:
+                if current in seen:
+                    keep[asset_id]["parent_asset_id"] = None
+                    break
+                seen.add(current)
+                current = keep[current]["parent_asset_id"]
+
+        return list(keep.values())
 
     # ------------------------------------------------------------------
     # Projecting PMs beyond whatever Limble has already generated
@@ -483,9 +548,111 @@ class PmCalendarService:
     # ------------------------------------------------------------------
     # Reads for the page
     # ------------------------------------------------------------------
+    def _parent_links(self) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+        """The stored hierarchy as (asset by id, child ids by parent id).
+
+        Empty on a database that hasn't been synced since this shipped, and
+        everything built on it falls back to a flat list -- the calendar
+        just works the way it did before until the next sync fills it in.
+        """
+
+        by_id = {str(row["asset_id"]): row for row in self.repo.fetch_assets()}
+        children: dict[str, list[str]] = {}
+        for asset_id, row in by_id.items():
+            parent_id = row.get("parent_asset_id")
+            if parent_id and parent_id in by_id:
+                children.setdefault(str(parent_id), []).append(asset_id)
+        return by_id, children
+
     def asset_options(self) -> list[dict[str, Any]]:
+        """Every pickable asset, in tree order: each parent, then its children.
+
+        Each option carries `parent_asset_id`, `depth` (0 for top level) and
+        `descendant_count` (how many assets picking it brings along), which
+        is what the picker indents by and what the chip's "+N" shows.
+
+        An asset with PMs that the hierarchy doesn't know about -- nothing
+        synced since this shipped, or an asset missing from /assets -- is
+        listed at the top level on its own, exactly as before.
+        """
+
         self._ensure_schema()
-        return self.repo.asset_options()
+        with_pms = self.repo.asset_options()
+        by_id, children = self._parent_links()
+
+        for option in with_pms:
+            asset_id = str(option["asset_id"]) if option.get("asset_id") else None
+            if asset_id and asset_id not in by_id:
+                by_id[asset_id] = {
+                    "asset_id": asset_id,
+                    "asset_name": option.get("asset_name"),
+                    "parent_asset_id": None,
+                }
+
+        def name_key(asset_id: str) -> tuple[str, str]:
+            name = by_id[asset_id].get("asset_name") or ""
+            return (name.casefold(), asset_id)
+
+        def count_below(asset_id: str, seen: set[str]) -> int:
+            total = 0
+            for child_id in children.get(asset_id, ()):
+                if child_id not in seen:
+                    seen.add(child_id)
+                    total += 1 + count_below(child_id, seen)
+            return total
+
+        options: list[dict[str, Any]] = []
+        placed: set[str] = set()
+
+        def place(asset_id: str, depth: int) -> None:
+            if asset_id in placed:
+                return
+            placed.add(asset_id)
+            row = by_id[asset_id]
+            options.append(
+                {
+                    "asset_id": asset_id,
+                    "asset_number": asset_id,
+                    "asset_name": row.get("asset_name"),
+                    "parent_asset_id": row.get("parent_asset_id") if depth else None,
+                    "depth": depth,
+                    "descendant_count": count_below(asset_id, {asset_id}),
+                }
+            )
+            for child_id in sorted(children.get(asset_id, ()), key=name_key):
+                place(child_id, depth + 1)
+
+        roots = [
+            asset_id
+            for asset_id, row in by_id.items()
+            if not row.get("parent_asset_id") or row["parent_asset_id"] not in by_id
+        ]
+        for asset_id in sorted(roots, key=name_key):
+            place(asset_id, 0)
+        return options
+
+    def _with_descendants(self, asset_ids: list[str]) -> list[str]:
+        """Expand a selection so picking a parent picks everything under it.
+
+        The parent itself stays in: 4002 can have PMs of its own as well as
+        its sub-assets', and picking it should show both. Expansion only ever
+        goes down, so picking a sub-asset on its own shows just that one.
+        Breadth-first with a seen set, so a parent and one of its children
+        both picked -- or a loop in the data -- doesn't count anything twice.
+        """
+
+        _, children = self._parent_links()
+        expanded: list[str] = []
+        seen: set[str] = set()
+        queue = deque(str(asset_id) for asset_id in asset_ids)
+        while queue:
+            asset_id = queue.popleft()
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            expanded.append(asset_id)
+            queue.extend(children.get(asset_id, ()))
+        return expanded
 
     def events(
         self,
@@ -496,6 +663,8 @@ class PmCalendarService:
         if asset_ids is not None and len(asset_ids) == 0:
             return []
         self._ensure_schema()
+        if asset_ids is not None:
+            asset_ids = self._with_descendants(asset_ids)
         real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
         # Projecting reads each series' full history, with no date bound, to
@@ -521,6 +690,8 @@ class PmCalendarService:
             return empty
 
         self._ensure_schema()
+        if asset_ids is not None:
+            asset_ids = self._with_descendants(asset_ids)
         today = date.today().isoformat()
         year_start = date.today().replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)

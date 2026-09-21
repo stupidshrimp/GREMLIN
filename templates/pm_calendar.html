@@ -193,8 +193,13 @@ document.addEventListener('DOMContentLoaded', function () {
     let currentMonth = today.getMonth();
     let currentYear = today.getFullYear();
 
-    // Every asset the picker knows about: [{id, number, name}, ...]
+    // Every asset the picker knows about, straight from /api/assets:
+    // [{asset_id, asset_number, asset_name, parent_asset_id, depth,
+    //   descendant_count}, ...], parents listed before their children.
     let allAssets = [];
+    // asset id -> its parent's id, for every asset that has one. How a
+    // sub-asset's PM finds the colour of the parent it was picked through.
+    let parentOf = {};
     // Assets currently chipped in: same shape as allAssets.
     let selectedAssets = [];
     // PM events for the visible month, keyed by "YYYY-MM-DD".
@@ -279,7 +284,23 @@ document.addEventListener('DOMContentLoaded', function () {
                 // opened stops being reported once it comes back.
                 reportDatabase('assets', '');
                 allAssets = data.assets || [];
+                parentOf = {};
+                allAssets.forEach(asset => {
+                    if (asset.parent_asset_id) parentOf[asset.asset_id] = asset.parent_asset_id;
+                });
                 renderAssetOptions(allAssets);
+                // After a sync the hierarchy may have changed under chips
+                // that are already picked: refresh their "+N" and repaint
+                // with the new parent links. Nothing needs refetching -- the
+                // server expands the selection on every request anyway.
+                const byId = {};
+                allAssets.forEach(asset => { byId[asset.asset_id] = asset; });
+                selectedAssets.forEach(asset => {
+                    const option = byId[asset.id];
+                    asset.descendants = option ? (option.descendant_count || 0) : 0;
+                });
+                renderChips();
+                renderCalendarBody();
             })
             .catch(() => {
                 // Leave the picker empty rather than throwing; the user can
@@ -379,8 +400,20 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 }
 
+    // A PM takes the colour of the nearest picked asset at or above it: its
+    // own if it was picked directly, otherwise the parent (or grandparent)
+    // that brought it in. So picking 4002 paints its whole schedule one
+    // colour, and picking one of its sub-assets as well gives that one its
+    // own. The seen set stops a loop in the data from spinning forever.
     function assetColor(assetId) {
-        return assetColorMap[assetId] || null;
+        const seen = new Set();
+        let current = assetId;
+        while (current && !seen.has(current)) {
+            if (assetColorMap[current]) return assetColorMap[current];
+            seen.add(current);
+            current = parentOf[current];
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------
@@ -638,6 +671,16 @@ document.addEventListener('DOMContentLoaded', function () {
             const name = asset.name || asset.number || asset.id;
             chip.appendChild(document.createTextNode(name));
 
+            // "+20": picking a parent brings its sub-assets along, and the
+            // chip should say so rather than look like one machine.
+            if (asset.descendants > 0) {
+                const meta = document.createElement('span');
+                meta.className = 'pm-asset-chip-meta';
+                meta.textContent = '+' + asset.descendants;
+                meta.title = 'Includes ' + asset.descendants + ' sub-asset' + (asset.descendants === 1 ? '' : 's');
+                chip.appendChild(meta);
+            }
+
             // A button, not a clickable <span>: taking a chip back off is the
             // only thing you can do to it, and it has to be reachable from the
             // keyboard like every other control on the page.
@@ -683,13 +726,33 @@ document.addEventListener('DOMContentLoaded', function () {
             const option = document.createElement('button');
             option.type = 'button';
             option.className = 'pm-asset-option';
-            option.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
+            const depth = asset.depth || 0;
+            if (depth > 0) option.classList.add('is-child');
+            option.style.setProperty('--pm-depth', depth);
             option.dataset.assetId = asset.asset_id;
             option.dataset.assetNumber = asset.asset_number || '';
             option.dataset.assetName = asset.asset_name || '';
 
+            const label = document.createElement('span');
+            label.className = 'pm-asset-option-name';
+            label.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
+            option.appendChild(label);
+
+            const descendants = asset.descendant_count || 0;
+            if (descendants > 0) {
+                const meta = document.createElement('span');
+                meta.className = 'pm-asset-option-meta';
+                meta.textContent = '+' + descendants + ' sub-asset' + (descendants === 1 ? '' : 's');
+                option.appendChild(meta);
+            }
+
             option.addEventListener('click', () => {
-                addAsset({ id: asset.asset_id, number: asset.asset_number, name: asset.asset_name });
+                addAsset({
+                    id: asset.asset_id,
+                    number: asset.asset_number,
+                    name: asset.asset_name,
+                    descendants: descendants,
+                });
                 closePicker();
             });
 
@@ -848,7 +911,8 @@ document.addEventListener('DOMContentLoaded', function () {
     searchBox.addEventListener('keyup', () => {
         const value = searchBox.value.toLowerCase();
         document.querySelectorAll('#pm-asset-list .pm-asset-option').forEach(option => {
-            option.hidden = !option.textContent.toLowerCase().includes(value);
+            const name = option.querySelector('.pm-asset-option-name');
+            option.hidden = !(name ? name.textContent : option.textContent).toLowerCase().includes(value);
         });
     });
 
