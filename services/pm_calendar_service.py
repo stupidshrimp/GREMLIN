@@ -31,16 +31,33 @@ STATE_FAILED = "failed"
 # on purpose -- that flag has a documented false-positive bug on this dataset.
 _PM_TYPE_VALUE = "1"
 
-# Every PM name in this account is "<asset> - <code> - <description>", e.g.
-# "3103 - M - Salvagnini Laser" for that asset's monthly line -- the code is
-# the recurrence cadence, spelled out by hand here rather than read from
-# Limble. That's deliberate, not a shortcut: a live pull of this account's
-# entire task history (244k+ rows) came back with zero rows where
+# Some PM names in this account follow "<asset> - <code> - <description>",
+# e.g. "3103 - M - Salvagnini Laser" for that asset's monthly line -- the
+# code is the recurrence cadence, spelled out by hand here rather than read
+# from Limble. Reading it from Limble is not on offer: a live pull of this
+# account's entire task history (244k+ rows) came back with zero rows where
 # template=true, for an asset whose "Manage PM Templates" page lists five --
-# so whatever Limble uses to drive its own recurrence, the /tasks endpoint
-# this app syncs from does not expose it. This table is the substitute, and
-# it only holds because the account's PM names keep following the same
-# convention; see _cadence_code below for what happens when one doesn't.
+# so whatever drives Limble's own recurrence, the /tasks endpoint this app
+# syncs from does not expose it.
+#
+# How far that convention actually reaches, measured against a real sync
+# (76,462 PM rows, September 2026): 15.7% of names carry a code this can
+# read, covering 563 of 3,899 assets. The other 3,336 assets never show a
+# projected PM at all -- their names are things like "HYDMECH BAND SAW PM
+# INSPECTION", which were never going to parse and never will. The sync
+# reports that count as pm_tasks_without_cadence so the gap is visible
+# rather than inferred from an empty calendar.
+#
+# So read this table as a floor on the feature's reach, not as a description
+# of the account. The durable fix is to take each line's interval from the
+# gaps between its own completions instead of from its name: 41% of all PM
+# lines have a consistent enough completion history to support that, against
+# the 20% this table reaches, and it needs no naming convention at all.
+#
+# Where the table does apply, it is accurate. Median observed gap between
+# completions, same sync: M 30d (table 30), Q 85d (90), SA 178d (180),
+# A 352d (360), 2W 14d (14). 3Y has a single series on the books and cannot
+# be checked either way.
 #
 # One fixed interval per code, on purpose, even where a particular template
 # in Limble repeats on a slightly different one (1435's SA is set to 24
