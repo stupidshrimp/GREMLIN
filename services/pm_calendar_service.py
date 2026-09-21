@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import statistics
 import threading
 from datetime import date, timedelta
 from pathlib import Path
@@ -42,17 +43,19 @@ _PM_TYPE_VALUE = "1"
 #
 # How far that convention actually reaches, measured against a real sync
 # (76,462 PM rows, September 2026): 15.7% of names carry a code this can
-# read, covering 563 of 3,899 assets. The other 3,336 assets never show a
-# projected PM at all -- their names are things like "HYDMECH BAND SAW PM
-# INSPECTION", which were never going to parse and never will. The sync
-# reports that count as pm_tasks_without_cadence so the gap is visible
-# rather than inferred from an empty calendar.
+# read, covering 563 of 3,899 assets. Names like "HYDMECH BAND SAW PM
+# INSPECTION" were never going to parse and never will. That is why this
+# table is the fallback and not the source -- _observed_interval reads a
+# line's cadence from the gaps between its own completions first, which
+# needs no naming convention and takes the same sync from 1,593 projectable
+# lines to 4,237, and from 563 assets to 2,460.
 #
-# So read this table as a floor on the feature's reach, not as a description
-# of the account. The durable fix is to take each line's interval from the
-# gaps between its own completions instead of from its name: 41% of all PM
-# lines have a consistent enough completion history to support that, against
-# the 20% this table reaches, and it needs no naming convention at all.
+# So the table earns its place twice over, and neither is "how this account
+# names things". It carries the 893 lines whose history is too thin or too
+# erratic to read but whose name still says what they are; and its values
+# are what an observed interval snaps to, so a line seen repeating on 30-ish
+# days is recorded as monthly and stays on its day of the month rather than
+# drifting a little earlier every time.
 #
 # Where the table does apply, it is accurate. Median observed gap between
 # completions, same sync: M 30d (table 30), Q 85d (90), SA 178d (180),
@@ -76,6 +79,12 @@ _PM_TYPE_VALUE = "1"
 _CADENCE: dict[str, tuple[int, int]] = {
     "2W": (0, 14),  # Every two weeks
     "M": (1, 0),  # Monthly
+    # No PM in this account is named "2M", but inferring intervals from
+    # completion history turns up ~190 lines repeating on 59-62 days. Without
+    # an entry here they snap to nothing and step by raw days, drifting off
+    # their day of the month; with one they behave like every other cadence
+    # that names a calendar period.
+    "2M": (2, 0),  # Every two months
     "Q": (3, 0),  # Quarterly
     "SA": (6, 0),  # Semi-annual
     "A": (12, 0),  # Annual
@@ -93,6 +102,27 @@ _CADENCE: dict[str, tuple[int, int]] = {
 # below, which would otherwise grind through a decade of intervals to emit
 # a handful of in-window rows.
 _MAX_STALE_INTERVALS = 3
+
+# Reading a line's cadence out of its own completion history needs enough
+# completions to see more than one gap -- two dates make a single gap, which
+# could be any two unrelated visits -- and gaps that agree with each other.
+# A PM done twice in a week and then not again for a year has no cadence to
+# speak of, and a median taken over that would invent one. The spread test is
+# a median absolute deviation rather than a standard deviation, so one
+# outlying gap (a shutdown, a holiday) cannot drag a real cadence out of
+# range. The floor keeps short cadences from being held to an implausible
+# few days of precision.
+_MIN_COMPLETIONS_FOR_INTERVAL = 3
+_INTERVAL_SPREAD_FRACTION = 0.25
+_INTERVAL_SPREAD_FLOOR_DAYS = 7
+
+# How close an observed gap has to be to a standard cadence to be called that
+# cadence. Measured against a real sync of this account, the codes land well
+# inside this: M 30d against 30, Q 85 against 90, SA 178 against 180, A 352
+# against 360. Snapping matters because a cadence expressed in months steps
+# by calendar months and stays on its day of the month, where a raw day count
+# walks backwards through the year.
+_CADENCE_SNAP_TOLERANCE = 0.15
 
 
 def _cadence_code(task_name: str | None) -> str | None:
@@ -172,30 +202,80 @@ def _add_months(iso_date: str, months: int) -> str:
     return date(year, month, day).isoformat()
 
 
-def _advance(iso_date: str, code: str, steps: int = 1) -> str:
-    """Move ``steps`` whole intervals of ``code`` forward from an ISO date.
+def _advance(iso_date: str, interval: tuple[int, int], steps: int = 1) -> str:
+    """Move ``steps`` whole intervals forward from an ISO date.
 
-    Always called against the series anchor rather than against the previous
-    projected date: stepping one month at a time from a clamped date would
-    walk a 31st down to the 28th and leave it there, where anchor + n months
-    returns to the 31st in every month long enough to have one.
+    An interval is (months, days) with exactly one side set. Always called
+    against the series anchor rather than against the previous projected
+    date: stepping one month at a time from a clamped date would walk a 31st
+    down to the 28th and leave it there, where anchor + n months returns to
+    the 31st in every month long enough to have one.
     """
 
-    months, days = _CADENCE[code]
+    months, days = interval
     return _add_months(iso_date, months * steps) if months else _add_days(iso_date, days * steps)
 
 
-def _nominal_days(code: str) -> int:
-    """Roughly how long one interval of ``code`` is, in days.
+def _nominal_days(interval: tuple[int, int]) -> int:
+    """Roughly how long one interval is, in days.
 
     Only used where a couple of days either way changes nothing: the
     half-interval window deciding whether a real row already covers a
     projected slot, and the staleness cutoff. Actual projected dates come
-    from _advance, which counts calendar months.
+    from _advance, which counts calendar months where the interval has them.
     """
 
-    months, days = _CADENCE[code]
+    months, days = interval
     return months * 30 + days
+
+
+def _snap_to_cadence(days: int) -> tuple[int, int]:
+    """Express an observed gap as a calendar cadence where one fits.
+
+    A line repeating every thirty-ish days is monthly, and saying so keeps it
+    on the same day of each month instead of drifting a day or two earlier
+    every time. A gap matching no standard cadence keeps its measured day
+    count, which is the honest answer for a PM that genuinely runs on, say,
+    forty-five days.
+    """
+
+    for interval in _CADENCE.values():
+        nominal = _nominal_days(interval)
+        if abs(days - nominal) <= nominal * _CADENCE_SNAP_TOLERANCE:
+            return interval
+    return (0, days)
+
+
+def _observed_interval(completed_dates: list[str]) -> tuple[int, int] | None:
+    """The interval a PM line actually repeats on, read from its own history.
+
+    Preferred over the code in the name, for two reasons. Coverage: measured
+    against a real sync of this account, 84% of PM names carry no readable
+    code, so a name-only projection leaves five assets in six with a blank
+    future -- while 41% of all lines have a completion history consistent
+    enough to read. And accuracy: where a template's real cadence differs
+    from what its code implies (an "SA" line set to 24 weeks rather than 26),
+    what actually happened is the better authority than what it was called.
+
+    None when the history cannot support a cadence -- too few completions, or
+    gaps that disagree -- which sends the caller back to the name.
+    """
+
+    days = sorted({value[:10] for value in completed_dates})
+    if len(days) < _MIN_COMPLETIONS_FOR_INTERVAL:
+        return None
+
+    # Same-day repeats would otherwise contribute a zero gap and drag the
+    # median down; duplicate dates are already collapsed by the set above.
+    gaps = [gap for gap in (_days_between(a, b) for a, b in zip(days, days[1:])) if gap > 0]
+    if len(gaps) < 2:
+        return None
+
+    middle = statistics.median(gaps)
+    spread = statistics.median([abs(gap - middle) for gap in gaps])
+    if spread > max(_INTERVAL_SPREAD_FLOOR_DAYS, middle * _INTERVAL_SPREAD_FRACTION):
+        return None
+    return _snap_to_cadence(round(middle))
 
 
 def _today() -> str:
@@ -226,7 +306,7 @@ def _history_since() -> str:
     due.
     """
 
-    longest = max(_nominal_days(code) for code in _CADENCE)
+    longest = max(_nominal_days(interval) for interval in _CADENCE.values())
     return _add_days(_today(), -(_MAX_STALE_INTERVALS * longest + 366))
 
 
@@ -330,12 +410,16 @@ class PmCalendarService:
 
             result = self.repo.upsert_tasks(rows)
 
-            # Every row here is a real PM, so a name this can't read a
-            # cadence out of is a PM that will never be projected -- see
-            # _cadence_code. Counting them turns a drift in the naming
-            # convention into a number someone can see now, rather than an
-            # asset quietly missing from future months for months.
+            # Two different questions, both worth an answer on the page.
+            # How far the naming convention still reaches, which is what a
+            # drift in it looks like from here:
             uncoded = sum(1 for row in rows if _cadence_code(row.get("task_name")) is None)
+            # And how much of the calendar can actually draw estimates, which
+            # since projection learned to read completion history is no longer
+            # the same question -- a line with no code in its name projects
+            # perfectly well if it has repeated often enough to show a
+            # cadence.
+            not_projectable = self._count_unprojectable_lines(rows)
 
             with self._lock:
                 self._job = {
@@ -343,6 +427,7 @@ class PmCalendarService:
                     "fetched": len(tasks),
                     "matched_pm_tasks": len(rows),
                     "pm_tasks_without_cadence": uncoded,
+                    "pm_lines_not_projectable": not_projectable,
                     "upserted": result["upserted"],
                     "error": None,
                 }
@@ -399,6 +484,32 @@ class PmCalendarService:
             "is_completed": 1 if completed_date else 0,
         }
 
+    @staticmethod
+    def _count_unprojectable_lines(rows: list[dict[str, Any]]) -> int:
+        """PM lines that will draw no estimates, for the sync to report.
+
+        Counted per line rather than per row: one line with two hundred
+        completions is one entry on the calendar, and a row count would let a
+        single busy PM drown out fifty silent ones. Mirrors the choice
+        _project_future_events makes -- history first, name second -- so the
+        number means "this many lines show nothing in a future month".
+        """
+
+        by_series: dict[tuple[Any, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            name = _series_name(row.get("task_name"))
+            if name and row.get("asset_id"):
+                by_series.setdefault((row["asset_id"], name), []).append(row)
+
+        unprojectable = 0
+        for line in by_series.values():
+            completed = [r["completed_date"] for r in line if r.get("completed_date")]
+            if _observed_interval(completed) is not None:
+                continue
+            if _cadence_code(line[0].get("task_name")) is None:
+                unprojectable += 1
+        return unprojectable
+
     # ------------------------------------------------------------------
     # Projecting PMs beyond whatever Limble has already generated
     # ------------------------------------------------------------------
@@ -419,6 +530,12 @@ class PmCalendarService:
         from what's already synced locally: no extra Limble call, and no
         dependency on Limble's own recurrence data, which (see
         _CADENCE above) this account's /tasks endpoint doesn't expose.
+
+        Each line's interval comes from the gaps between its own completions
+        where its history can support one, and from the code in its name
+        where it can't -- see _observed_interval for why that order and not
+        the other. A line with neither is not projected, which is the same
+        blank the calendar showed before this existed.
 
         Anchored on the last COMPLETED occurrence of each PM line, never on
         the last due date. A due date on a task that hasn't happened yet is
@@ -454,24 +571,32 @@ class PmCalendarService:
         by_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in history:
             name = _series_name(row.get("task_name"))
-            code = _cadence_code(row.get("task_name"))
             asset_id = row.get("asset_id")
-            if not name or not code or not asset_id:
+            if not name or not asset_id:
                 continue
             by_series.setdefault((asset_id, name), []).append(row)
 
         projected: list[dict[str, Any]] = []
         for (asset_id, series_name), rows in by_series.items():
             sample = rows[0]
-            code = _cadence_code(sample.get("task_name"))
-            if code is None:  # every row in this bucket parsed to get here
-                continue
-            interval_days = _nominal_days(code)
 
             due_dates = [r["due_date"][:10] for r in rows if r.get("due_date")]
             if not due_dates:
                 continue
             completed_dates = [r["completed_date"][:10] for r in rows if r.get("completed_date")]
+
+            # What this line actually does, then what it was called. The name
+            # is the fallback rather than the source: it covers a sixth of
+            # this account's PMs, and where both are available the history is
+            # the better authority on a template whose real cadence drifted
+            # from its code.
+            interval = _observed_interval(completed_dates)
+            if interval is None:
+                code = _cadence_code(sample.get("task_name"))
+                interval = _CADENCE[code] if code else None
+            if interval is None:
+                continue
+            interval_days = _nominal_days(interval)
 
             # The anchor: last completed, or -- only for a line that has
             # never once been completed -- its own latest known due date.
@@ -489,7 +614,7 @@ class PmCalendarService:
 
             step = 1
             while True:
-                next_due = _advance(anchor, code, step)
+                next_due = _advance(anchor, interval, step)
                 if end_date is not None and next_due > end_date:
                     break
                 if end_date is None and step > 500:
@@ -517,7 +642,7 @@ class PmCalendarService:
                     projected.append(
                         {
                             "task_id": (
-                                f"projected-{asset_id}-{code}"
+                                f"projected-{asset_id}"
                                 f"-{_series_slug(series_name)}-{next_due}"
                             ),
                             "asset_id": asset_id,

@@ -779,3 +779,149 @@ def test_an_older_database_gains_the_parent_column_without_losing_rows(tmp_path)
 
     assert repo.asset_parent_map() == {"4002": None}
     assert len(repo.fetch_tasks()) == 1
+
+
+# ----------------------------------------------------------------------
+# Reading a line's cadence from its own completion history
+# ----------------------------------------------------------------------
+def _monthly_history(asset_id, name):
+    """Four completions a month apart -- enough gaps to read a cadence from."""
+
+    return [
+        _row("1", asset_id, name, "2026-05-15", "2026-05-15"),
+        _row("2", asset_id, name, "2026-06-15", "2026-06-15"),
+        _row("3", asset_id, name, "2026-07-15", "2026-07-15"),
+        _row("4", asset_id, name, "2026-08-15", "2026-08-15"),
+    ]
+
+
+def test_a_pm_with_no_code_in_its_name_projects_from_its_own_history(tmp_path, monkeypatch):
+    """The 84% case: a real name from this account, carrying no cadence code.
+
+    Before this, "HYDMECH BAND SAW PM INSPECTION" could never be projected --
+    nothing in it parses -- and that asset's future months stayed blank no
+    matter how regularly the PM had actually been done.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, _monthly_history("77", "HYDMECH BAND SAW PM INSPECTION"))
+
+    events = service.events(asset_ids=["77"], start_date="2026-09-01", end_date="2026-11-30")
+
+    assert [e["due_date"] for e in events] == ["2026-09-15", "2026-10-15", "2026-11-15"]
+    assert all(e["is_projected"] for e in events)
+
+
+def test_history_beats_the_code_in_the_name_when_they_disagree(tmp_path, monkeypatch):
+    """A template whose real cadence drifted from what it was named.
+
+    The name says annual; the line has in fact been done monthly for four
+    months. What happened is the better authority than what it was called,
+    so the projection follows the history.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, _monthly_history("77", "77 - A - Mislabelled line"))
+
+    events = service.events(asset_ids=["77"], start_date="2026-09-01", end_date="2026-11-30")
+
+    assert [e["due_date"] for e in events] == ["2026-09-15", "2026-10-15", "2026-11-15"]
+
+
+def test_gaps_that_disagree_fall_back_to_the_name(tmp_path, monkeypatch):
+    """Two completions days apart and then nothing for months is not a cadence.
+
+    A median over those gaps would invent one. The line still has a code in
+    its name, so that is what it projects on -- annually, from the last
+    completion, not monthly from a fabricated gap.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "77", "77 - A - Erratic", "2026-01-05", "2026-01-05"),
+        _row("2", "77", "77 - A - Erratic", "2026-01-08", "2026-01-08"),
+        _row("3", "77", "77 - A - Erratic", "2026-08-15", "2026-08-15"),
+    ])
+
+    events = service.events(asset_ids=["77"], start_date="2027-01-01", end_date="2027-12-31")
+
+    assert [e["due_date"] for e in events] == ["2027-08-15"]
+
+
+def test_no_usable_history_and_no_code_projects_nothing(tmp_path, monkeypatch):
+    """Neither source available is the one case that still draws a blank."""
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "77", "HYDMECH BAND SAW PM INSPECTION", "2026-01-05", "2026-01-05"),
+        _row("2", "77", "HYDMECH BAND SAW PM INSPECTION", "2026-01-08", "2026-01-08"),
+        _row("3", "77", "HYDMECH BAND SAW PM INSPECTION", "2026-08-15", "2026-08-15"),
+    ])
+
+    events = service.events(asset_ids=["77"], start_date="2026-09-01", end_date="2027-12-31")
+
+    assert not any(e.get("is_projected") for e in events)
+
+
+def test_too_few_completions_falls_back_to_the_name(tmp_path, monkeypatch):
+    """Two completions make one gap, and one gap is not a pattern."""
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "77", "77 - A - Sparse", "2026-07-15", "2026-07-15"),
+        _row("2", "77", "77 - A - Sparse", "2026-08-15", "2026-08-15"),
+    ])
+
+    events = service.events(asset_ids=["77"], start_date="2027-01-01", end_date="2027-12-31")
+
+    assert [e["due_date"] for e in events] == ["2027-08-15"]
+
+
+def test_an_inferred_interval_near_a_standard_cadence_snaps_to_it(tmp_path, monkeypatch):
+    """~61 days is "every two months", and should stay on its day of the month.
+
+    Left as a raw 61-day step it would walk off the 10th within a year. The
+    2M entry exists for exactly this: no PM here is *named* 2M, but plenty
+    repeat on it.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "77", "BIMONTHLY FILTER CHANGE", "2026-04-10", "2026-04-10"),
+        _row("2", "77", "BIMONTHLY FILTER CHANGE", "2026-06-10", "2026-06-10"),
+        _row("3", "77", "BIMONTHLY FILTER CHANGE", "2026-08-10", "2026-08-10"),
+    ])
+
+    dates = [e["due_date"] for e in service.events(
+        asset_ids=["77"], start_date="2026-09-01", end_date="2027-02-28")]
+
+    assert dates == ["2026-10-10", "2026-12-10", "2027-02-10"]
+
+
+def test_an_interval_matching_no_standard_cadence_keeps_its_measured_days(tmp_path, monkeypatch):
+    """45 days is not a calendar period, and pretending otherwise would lie."""
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "77", "45 DAY INSPECTION", "2026-05-01", "2026-05-01"),
+        _row("2", "77", "45 DAY INSPECTION", "2026-06-15", "2026-06-15"),
+        _row("3", "77", "45 DAY INSPECTION", "2026-07-30", "2026-07-30"),
+    ])
+
+    dates = [e["due_date"] for e in service.events(
+        asset_ids=["77"], start_date="2026-09-01", end_date="2026-12-31")]
+
+    assert dates == ["2026-09-13", "2026-10-28", "2026-12-12"]
+
+
+def test_the_sync_counts_unprojectable_lines_not_unprojectable_rows(tmp_path):
+    """One busy PM must not drown out the silent ones in the reported number."""
+
+    projectable = _monthly_history("77", "PROJECTABLE FROM HISTORY")
+    silent = [
+        _row("9", "88", "SILENT LINE PM", "2026-01-05", "2026-01-05"),
+        _row("10", "88", "SILENT LINE PM", "2026-01-08", "2026-01-08"),
+        _row("11", "88", "SILENT LINE PM", "2026-08-15", "2026-08-15"),
+    ]
+
+    assert PmCalendarService._count_unprojectable_lines(projectable + silent) == 1
