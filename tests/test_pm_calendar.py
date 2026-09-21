@@ -19,6 +19,7 @@ from repositories.pm_calendar_repo import (
     PmCalendarRepository,
     PmCalendarUnavailableError,
 )
+import services.pm_calendar_service as pm_calendar_service
 from services.pm_calendar_service import PmCalendarService
 
 
@@ -317,11 +318,37 @@ def test_asset_options_lists_each_synced_asset_once(tmp_path):
     service = _seeded(tmp_path)
 
     assert [asset["asset_name"] for asset in service.asset_options()] == ["Fan", "Pump"]
-
-
 # ----------------------------------------------------------------------
 # Projecting future PMs beyond whatever Limble has already generated
 # ----------------------------------------------------------------------
+def _pin_today(monkeypatch, iso_day):
+    """Freeze what the projection considers "now".
+
+    The staleness cutoff measures an anchor against today, so without this
+    every test below would start failing on a date determined by when it is
+    run rather than by what it seeds.
+    """
+
+    monkeypatch.setattr(pm_calendar_service, "_today", lambda: iso_day)
+
+
+def _service(tmp_path, rows):
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks(rows)
+    return service
+
+
+def _row(task_id, asset_id, name, due, completed=None, **extra):
+    return {
+        "task_id": task_id, "asset_id": asset_id, "asset_number": asset_id,
+        "asset_name": extra.get("asset_name", f"Asset {asset_id}"),
+        "task_name": name, "status_raw": "done" if completed else "open",
+        "due_date": due, "completed_date": completed,
+        "is_completed": 1 if completed else 0,
+    }
+
+
 def _seeded_monthly_series(tmp_path, *, open_due_date):
     """Three completed monthly occurrences, plus a fourth still-open one.
 
@@ -331,54 +358,33 @@ def _seeded_monthly_series(tmp_path, *, open_due_date):
     dragging it should not touch what gets projected past it.
     """
 
-    service = PmCalendarService(tmp_path / "pm.db")
-    service._ensure_schema()
-    service.repo.upsert_tasks([
-        {
-            "task_id": "1", "asset_id": "3103", "asset_number": "3103",
-            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
-            "status_raw": "done", "due_date": "2026-06-05",
-            "completed_date": "2026-06-04", "is_completed": 1,
-        },
-        {
-            "task_id": "2", "asset_id": "3103", "asset_number": "3103",
-            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
-            "status_raw": "done", "due_date": "2026-07-03",
-            "completed_date": "2026-07-02", "is_completed": 1,
-        },
-        {
-            "task_id": "3", "asset_id": "3103", "asset_number": "3103",
-            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
-            "status_raw": "done", "due_date": "2026-07-31",
-            "completed_date": "2026-07-30", "is_completed": 1,
-        },
-        {
-            "task_id": "4", "asset_id": "3103", "asset_number": "3103",
-            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
-            "status_raw": "open", "due_date": open_due_date,
-            "completed_date": None, "is_completed": 0,
-        },
+    name = "3103 - M - Salvagnini Laser"
+    return _service(tmp_path, [
+        _row("1", "3103", name, "2026-06-05", "2026-06-04", asset_name="Salvagnini Laser"),
+        _row("2", "3103", name, "2026-07-03", "2026-07-02", asset_name="Salvagnini Laser"),
+        _row("3", "3103", name, "2026-07-31", "2026-07-30", asset_name="Salvagnini Laser"),
+        _row("4", "3103", name, open_due_date, None, asset_name="Salvagnini Laser"),
     ])
-    return service
 
 
-def test_future_months_are_filled_with_projected_pms(tmp_path):
+def test_future_months_are_filled_with_projected_pms(tmp_path, monkeypatch):
     """A month past whatever Limble has generated still shows something.
 
     Without projection this window is empty: no real row's due_date falls
-    in it. Every 28 days (M = 4 weeks) from the last completion is the
-    whole point of the feature.
+    in it. One calendar month at a time from the last completion
+    (2026-07-30) is the whole point of the feature.
     """
 
+    _pin_today(monkeypatch, "2026-09-01")
     service = _seeded_monthly_series(tmp_path, open_due_date="2026-08-28")
 
     events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-11-30")
 
-    assert [e["due_date"] for e in events] == ["2026-09-24", "2026-10-22", "2026-11-19"]
+    assert [e["due_date"] for e in events] == ["2026-09-30", "2026-10-30", "2026-11-30"]
     assert all(e["is_projected"] for e in events)
 
 
-def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp_path):
+def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp_path, monkeypatch):
     """The exact scenario the feature exists to survive.
 
     Two services, identical completed history, differing only in where the
@@ -390,6 +396,7 @@ def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp
     row's due_date at all.
     """
 
+    _pin_today(monkeypatch, "2026-09-01")
     on_schedule = _seeded_monthly_series(tmp_path / "a", open_due_date="2026-08-27")
     dragged = _seeded_monthly_series(tmp_path / "b", open_due_date="2027-03-01")
 
@@ -398,19 +405,20 @@ def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp
     dragged_dates = [e["due_date"] for e in dragged.events(**window)]
 
     assert on_schedule_dates == dragged_dates == [
-        "2026-09-24", "2026-10-22", "2026-11-19", "2026-12-17",
+        "2026-09-30", "2026-10-30", "2026-11-30", "2026-12-30",
     ]
 
 
-def test_a_projected_pill_yields_to_a_real_row_already_covering_its_slot(tmp_path):
+def test_a_projected_pill_yields_to_a_real_row_already_covering_its_slot(tmp_path, monkeypatch):
     """The one place a real due date *is* allowed to matter: its own slot.
 
     The dragged-out due date (2027-03-01) sits close enough to where the
-    unbroken cadence would have projected one (2027-03-11) that showing
+    unbroken cadence would have projected one (2027-02-28) that showing
     both would just be the same PM twice. Only that one slot yields --
     everything on either side of it keeps projecting on schedule.
     """
 
+    _pin_today(monkeypatch, "2026-09-01")
     service = _seeded_monthly_series(tmp_path, open_due_date="2027-03-01")
 
     events = service.events(asset_ids=["3103"], start_date="2027-01-01", end_date="2027-04-01")
@@ -419,49 +427,206 @@ def test_a_projected_pill_yields_to_a_real_row_already_covering_its_slot(tmp_pat
     # Real rows don't carry an is_projected key at all -- only synthetic
     # ones do -- so "not set" is what a real row winning looks like here.
     assert not by_date["2027-03-01"].get("is_projected")
-    assert "2027-03-11" not in by_date  # the projected slot it absorbed
-    assert by_date["2027-02-11"]["is_projected"] is True  # neighbours unaffected
+    assert "2027-02-28" not in by_date  # the projected slot it absorbed
+    assert by_date["2027-01-30"]["is_projected"] is True  # neighbours unaffected
+    assert by_date["2027-03-30"]["is_projected"] is True
 
 
 @pytest.mark.parametrize(
-    "code, weeks",
-    [("2W", 2), ("M", 4), ("Q", 12), ("SA", 26), ("A", 52), ("3Y", 156)],
+    "code, first_projection",
+    [
+        ("2W", "2026-01-16"),  # the one genuinely week-based cadence
+        ("M", "2026-02-02"),
+        ("Q", "2026-04-02"),
+        ("SA", "2026-07-02"),
+        ("A", "2027-01-02"),
+        ("3Y", "2029-01-02"),
+    ],
 )
-def test_each_code_projects_at_its_fixed_interval(tmp_path, code, weeks):
+def test_each_code_projects_at_its_fixed_interval(tmp_path, monkeypatch, code, first_projection):
     """One fixed interval per code -- the table, not the template's own setting.
 
-    SA is 26 weeks here even though some SA templates in Limble are set to 24:
-    the calendar projects the standard cadence a code stands for.
+    SA is six months here even though some SA templates in Limble are set to
+    24 weeks: the calendar projects the standard cadence a code stands for.
     """
 
-    service = PmCalendarService(tmp_path / "pm.db")
-    service._ensure_schema()
-    service.repo.upsert_tasks([{
-        "task_id": "1", "asset_id": "1435", "asset_number": "1435",
-        "asset_name": "Stokes Tablet Machine", "task_name": f"1435 - {code} - Stokes Tablet",
-        "status_raw": "done", "due_date": "2026-01-02",
-        "completed_date": "2026-01-02", "is_completed": 1,
-    }])
+    _pin_today(monkeypatch, "2026-01-03")
+    service = _service(tmp_path, [
+        _row("1", "1435", f"1435 - {code} - Stokes Tablet", "2026-01-02", "2026-01-02"),
+    ])
 
     events = service.events(asset_ids=["1435"], start_date="2026-01-03", end_date="2030-12-31")
 
-    first = date.fromisoformat(events[0]["due_date"])
-    assert (first - date(2026, 1, 2)).days == weeks * 7
+    assert events[0]["due_date"] == first_projection
 
 
-def test_a_pm_name_that_does_not_match_the_cadence_convention_is_left_alone(tmp_path):
+def test_monthly_projections_track_the_calendar_not_a_28_day_cycle(tmp_path, monkeypatch):
+    """Twelve occurrences in a year, each on the anchor's day of the month.
+
+    Four weeks would put thirteen in a year and walk the date backwards
+    through it -- fine in a one-month view, visibly wrong once a series runs
+    out a few years.
+    """
+
+    _pin_today(monkeypatch, "2026-01-16")
+    service = _service(tmp_path, [
+        _row("1", "3103", "3103 - M - Salvagnini Laser", "2026-01-15", "2026-01-15"),
+    ])
+
+    dates = [e["due_date"] for e in service.events(
+        asset_ids=["3103"], start_date="2026-01-16", end_date="2027-01-15")]
+
+    assert len(dates) == 12
+    assert {d[-2:] for d in dates} == {"15"}
+
+
+def test_a_month_end_anchor_clamps_instead_of_spilling_into_the_next_month(tmp_path, monkeypatch):
+    """The 31st stays the 31st wherever the month is long enough to have one.
+
+    Each date is anchor + n months rather than one month past the previous
+    projection, so February's clamp doesn't drag the rest of the series down
+    to the 28th with it.
+    """
+
+    _pin_today(monkeypatch, "2026-02-01")
+    service = _service(tmp_path, [
+        _row("1", "3103", "3103 - M - Salvagnini Laser", "2026-01-31", "2026-01-31"),
+    ])
+
+    dates = [e["due_date"] for e in service.events(
+        asset_ids=["3103"], start_date="2026-02-01", end_date="2026-05-31")]
+
+    assert dates == ["2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31"]
+
+
+def test_two_pms_of_the_same_cadence_on_one_asset_project_as_separate_lines(tmp_path, monkeypatch):
+    """Different work, same "M" -- two series, not one.
+
+    Keying the series on (asset_id, code) merged these into a single stream:
+    one line disappeared from every future month, and the survivor was
+    labelled with whichever row sorted first while running on the other's
+    schedule. The description is what tells them apart, so the whole name is
+    the series identity.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "3103", "3103 - M - Laser Optics", "2026-08-05", "2026-08-05"),
+        _row("2", "3103", "3103 - M - Laser Chiller", "2026-08-20", "2026-08-20"),
+    ])
+
+    events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-11-30")
+
+    assert [(e["due_date"], e["task_name"]) for e in events] == [
+        ("2026-09-05", "3103 - M - Laser Optics"),
+        ("2026-09-20", "3103 - M - Laser Chiller"),
+        ("2026-10-05", "3103 - M - Laser Optics"),
+        ("2026-10-20", "3103 - M - Laser Chiller"),
+        ("2026-11-05", "3103 - M - Laser Optics"),
+        ("2026-11-20", "3103 - M - Laser Chiller"),
+    ]
+    # Each line anchored on its own last completion, not on the later of the two.
+    assert len({e["task_id"] for e in events}) == 6
+
+
+def test_a_line_that_stopped_recurring_stops_being_projected(tmp_path, monkeypatch):
+    """A stale anchor is a retired PM, not a very overdue one.
+
+    777 was last done in 2019 and nothing has happened since -- a scrapped
+    asset, a deleted template, a renamed line. Extrapolating from it draws
+    pills into 2027 that look exactly like an estimate anchored on last
+    month's work. 778 is the control: same cadence, live anchor, still
+    projects.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "777", "777 - A - Annual inspection", "2019-05-01", "2019-05-01"),
+        _row("2", "778", "778 - A - Annual inspection", "2026-05-01", "2026-05-01"),
+    ])
+
+    events = service.events(
+        asset_ids=["777", "778"], start_date="2027-01-01", end_date="2027-12-31")
+
+    assert [(e["asset_id"], e["due_date"]) for e in events] == [("778", "2027-05-01")]
+
+
+def test_events_without_an_asset_filter_never_reads_the_whole_table(tmp_path, monkeypatch):
+    """``?assets=`` omitted must not turn a month view into SELECT * FROM pm_task.
+
+    Projection needs each series' history, which with no asset filter is
+    every row in the table -- materialised per request, on an endpoint a
+    bare GET can reach. The page always sends its chipped-in assets, so the
+    unscoped call keeps working and stays cheap; it just doesn't project.
+    """
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "3103", "3103 - M - Laser Optics", "2026-08-05", "2026-08-05"),
+        _row("2", "1435", "1435 - M - Stokes Tablet", "2026-08-06", "2026-08-06"),
+    ])
+
+    calls = []
+    inner = service.repo.fetch_tasks
+    monkeypatch.setattr(
+        service.repo, "fetch_tasks",
+        lambda **kw: (calls.append(kw), inner(**kw))[1],
+    )
+
+    events = service.events(asset_ids=None, start_date="2026-09-01", end_date="2026-09-30")
+
+    assert not any(e.get("is_projected") for e in events)
+    assert len(calls) == 1  # the window read only -- no history sweep
+    assert calls[0]["due_since"] and calls[0]["due_until"]
+
+
+def test_the_history_read_is_bounded_even_when_an_asset_filter_is_given(tmp_path, monkeypatch):
+    """The anchor hunt looks back a bounded distance, not to the start of time."""
+
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _seeded_monthly_series(tmp_path, open_due_date="2026-08-28")
+
+    calls = []
+    inner = service.repo.fetch_tasks
+    monkeypatch.setattr(
+        service.repo, "fetch_tasks",
+        lambda **kw: (calls.append(kw), inner(**kw))[1],
+    )
+
+    service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-09-30")
+
+    assert len(calls) == 2
+    assert calls[1]["due_since"] is not None
+
+
+def test_a_pm_name_that_does_not_match_the_cadence_convention_is_left_alone(tmp_path, monkeypatch):
     """No code to parse means no projection -- not a crash, not a guess."""
 
-    service = PmCalendarService(tmp_path / "pm.db")
-    service._ensure_schema()
-    service.repo.upsert_tasks([{
-        "task_id": "1", "asset_id": "9", "asset_number": "9",
-        "asset_name": "Mystery Asset", "task_name": "Replace worn belt",
-        "status_raw": "done", "due_date": "2026-06-01",
-        "completed_date": "2026-06-01", "is_completed": 1,
-    }])
+    _pin_today(monkeypatch, "2026-09-01")
+    service = _service(tmp_path, [
+        _row("1", "9", "Replace worn belt", "2026-06-01", "2026-06-01"),
+    ])
 
     events = service.events(asset_ids=["9"], start_date="2026-06-01", end_date="2027-06-01")
 
     assert len(events) == 1
     assert events[0]["task_id"] == "1"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "3103 — M — Salvagnini Laser",  # em dashes, not " - "
+        "3103 - Mo - Salvagnini Laser",  # code that isn't in the table
+        "Salvagnini Laser monthly",  # no segments at all
+    ],
+)
+def test_a_drifted_pm_name_yields_no_cadence_code(name):
+    """Every row reaching _cadence_code is a real PM, so a None is a PM lost.
+
+    Not an error -- there is nothing to fall back on -- but the sync counts
+    these so a drift in the naming convention is visible rather than showing
+    up months later as an asset with no future PMs.
+    """
+
+    assert pm_calendar_service._cadence_code(name) is None

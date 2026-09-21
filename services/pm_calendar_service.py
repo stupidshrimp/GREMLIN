@@ -8,6 +8,8 @@ range, YTD summary counts).
 
 from __future__ import annotations
 
+import calendar
+import hashlib
 import threading
 from datetime import date, timedelta
 from pathlib import Path
@@ -46,14 +48,34 @@ _PM_TYPE_VALUE = "1"
 # code stands for, not to reverse-engineer each template's own setting --
 # and a fixed table is predictable: the same code always projects the same
 # way. A new code only needs one line added here.
-_CADENCE_WEEKS: dict[str, int] = {
-    "2W": 2,  # Every two weeks
-    "M": 4,  # Monthly
-    "Q": 12,  # Quarterly
-    "SA": 26,  # Semi-annual
-    "A": 52,  # Annual
-    "3Y": 156,  # Every three years
+#
+# Held as (months, days) rather than a week count so the codes that name a
+# calendar period advance by one. Four weeks is not a month: it puts 13
+# occurrences in a year instead of 12, and the gap compounds the further a
+# series runs from its anchor -- 52 weeks is 364 days, so an annual PM drifts
+# a day and a quarter earlier every year until a projection several years out
+# is visibly in the wrong week. 2W is the one code that really does mean a
+# number of weeks, so it keeps a day count.
+_CADENCE: dict[str, tuple[int, int]] = {
+    "2W": (0, 14),  # Every two weeks
+    "M": (1, 0),  # Monthly
+    "Q": (3, 0),  # Quarterly
+    "SA": (6, 0),  # Semi-annual
+    "A": (12, 0),  # Annual
+    "3Y": (36, 0),  # Every three years
 }
+
+# How many intervals an anchor may fall behind before this stops projecting
+# from it. A line whose last completion is this many cycles back has missed
+# that many in a row, which in practice means it is no longer running: the
+# asset was scrapped, the template was deleted in Limble, or the line was
+# renamed and its new occurrences file under a different name. Left
+# unchecked, one stale row keeps drawing confident pills into any window
+# someone navigates to -- indistinguishable from an estimate anchored on
+# last month's work, and far likelier to be wrong. It also bounds the loop
+# below, which would otherwise grind through a decade of intervals to emit
+# a handful of in-window rows.
+_MAX_STALE_INTERVALS = 3
 
 
 def _cadence_code(task_name: str | None) -> str | None:
@@ -61,13 +83,22 @@ def _cadence_code(task_name: str | None) -> str | None:
 
     The second " - "-delimited segment, upper-cased so a stray "m" or "sa"
     still matches. Anything that doesn't split that way, or whose middle
-    segment isn't one of _CADENCE_WEEKS, returns None -- silently, on
-    purpose. Most rows this runs against are ordinary work orders and work
-    requests that were never going to be cadence-coded in the first place,
-    and even among PMs this account's naming convention is the one thing
-    tying a code to a cadence -- there is no flag or type this can check
-    instead. A name that doesn't parse is a PM this can't project, not a
-    bug to raise about.
+    segment isn't one of _CADENCE, returns None.
+
+    Note what a None actually is here. _map_pm_task already filters the sync
+    to type == "1" and drops templates, and this only ever runs over rows
+    read back out of pm_task, so every name reaching this function is a real
+    PM occurrence -- never an ordinary work order harmlessly declining to
+    parse. A None is always a PM that will silently never be projected: a
+    stray "Mo", an em dash where " - " was expected, a description that
+    itself contains " - " and shifts the segments along. That asset simply
+    stops showing future PMs and the calendar looks exactly as it did before
+    this feature existed.
+
+    Returning None per row is still the right behaviour -- there is no flag
+    or type to fall back on, so an unparseable name genuinely cannot be
+    projected. But it is a convention drift worth seeing, which is why the
+    sync reports how many rows it hit (pm_tasks_without_cadence).
     """
 
     if not task_name:
@@ -76,13 +107,110 @@ def _cadence_code(task_name: str | None) -> str | None:
     if len(parts) < 2:
         return None
     code = parts[1]
-    return code if code in _CADENCE_WEEKS else None
+    return code if code in _CADENCE else None
+
+
+def _series_name(task_name: str | None) -> str | None:
+    """The identity of one recurring PM line, normalised for grouping.
+
+    Whitespace collapsed and upper-cased so "3103 - M - Laser Optics" and
+    "3103 -  m  - laser optics" are recognised as the same line. The whole
+    name is the identity on purpose: the description is the only thing
+    telling two same-cadence PMs on one asset apart.
+    """
+
+    if not task_name:
+        return None
+    collapsed = " ".join(task_name.split()).upper()
+    return collapsed or None
+
+
+def _series_slug(series_name: str) -> str:
+    """A short stable stand-in for a PM line's name, for synthetic task ids.
+
+    Projected rows need ids unique per line, not just per (asset, cadence),
+    now that one asset can carry several series of the same cadence. Never
+    shown: the day dialog prints the Limble task number for real rows only.
+    """
+
+    return hashlib.blake2b(series_name.encode(), digest_size=4).hexdigest()
 
 
 def _add_days(iso_date: str, days: int) -> str:
     """Add whole days to an ISO date (or datetime) string, returning "YYYY-MM-DD"."""
 
     return (date.fromisoformat(iso_date[:10]) + timedelta(days=days)).isoformat()
+
+
+def _add_months(iso_date: str, months: int) -> str:
+    """Add whole calendar months, clamping onto the end of a shorter month."""
+
+    anchor = date.fromisoformat(iso_date[:10])
+    total = anchor.month - 1 + months
+    year = anchor.year + total // 12
+    month = total % 12 + 1
+    # The 31st of a month followed by a 30-day one lands on the 30th, not on
+    # the 1st of the month after.
+    day = min(anchor.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day).isoformat()
+
+
+def _advance(iso_date: str, code: str, steps: int = 1) -> str:
+    """Move ``steps`` whole intervals of ``code`` forward from an ISO date.
+
+    Always called against the series anchor rather than against the previous
+    projected date: stepping one month at a time from a clamped date would
+    walk a 31st down to the 28th and leave it there, where anchor + n months
+    returns to the 31st in every month long enough to have one.
+    """
+
+    months, days = _CADENCE[code]
+    return _add_months(iso_date, months * steps) if months else _add_days(iso_date, days * steps)
+
+
+def _nominal_days(code: str) -> int:
+    """Roughly how long one interval of ``code`` is, in days.
+
+    Only used where a couple of days either way changes nothing: the
+    half-interval window deciding whether a real row already covers a
+    projected slot, and the staleness cutoff. Actual projected dates come
+    from _advance, which counts calendar months.
+    """
+
+    months, days = _CADENCE[code]
+    return months * 30 + days
+
+
+def _today() -> str:
+    """Today as an ISO date string.
+
+    One seam for the two places that need the current date -- the staleness
+    cutoff and the history bound it implies -- so a test can pin both
+    together without patching datetime for the whole module.
+    """
+
+    return date.today().isoformat()
+
+
+def _days_between(earlier: str, later: str) -> int:
+    """Whole days from ``earlier`` to ``later``; negative if ``later`` is first."""
+
+    return (date.fromisoformat(later[:10]) - date.fromisoformat(earlier[:10])).days
+
+
+def _history_since() -> str:
+    """The oldest due date worth reading when hunting for series anchors.
+
+    _project_future_events refuses an anchor more than _MAX_STALE_INTERVALS
+    intervals old, so nothing older than that -- measured against the
+    longest cadence on the books -- can produce a pill however far back it
+    sits. The extra year of slack is because this bounds due_date while the
+    anchor is a completed_date, and a PM can be finished well after it came
+    due.
+    """
+
+    longest = max(_nominal_days(code) for code in _CADENCE)
+    return _add_days(_today(), -(_MAX_STALE_INTERVALS * longest + 366))
 
 
 class PmCalendarService:
@@ -176,11 +304,19 @@ class PmCalendarService:
 
             result = self.repo.upsert_tasks(rows)
 
+            # Every row here is a real PM, so a name this can't read a
+            # cadence out of is a PM that will never be projected -- see
+            # _cadence_code. Counting them turns a drift in the naming
+            # convention into a number someone can see now, rather than an
+            # asset quietly missing from future months for months.
+            uncoded = sum(1 for row in rows if _cadence_code(row.get("task_name")) is None)
+
             with self._lock:
                 self._job = {
                     "state": STATE_SUCCEEDED,
                     "fetched": len(tasks),
                     "matched_pm_tasks": len(rows),
+                    "pm_tasks_without_cadence": uncoded,
                     "upserted": result["upserted"],
                     "error": None,
                 }
@@ -241,6 +377,8 @@ class PmCalendarService:
         history: list[dict[str, Any]],
         start_date: str | None,
         end_date: str | None,
+        *,
+        today: str | None = None,
     ) -> list[dict[str, Any]]:
         """Estimate PM occurrences beyond whatever Limble has already generated.
 
@@ -250,7 +388,7 @@ class PmCalendarService:
         for every asset. This fills that gap with estimates, built entirely
         from what's already synced locally: no extra Limble call, and no
         dependency on Limble's own recurrence data, which (see
-        _CADENCE_WEEKS above) this account's /tasks endpoint doesn't expose.
+        _CADENCE above) this account's /tasks endpoint doesn't expose.
 
         Anchored on the last COMPLETED occurrence of each PM line, never on
         the last due date. A due date on a task that hasn't happened yet is
@@ -266,19 +404,39 @@ class PmCalendarService:
         been completed in the synced history. There's no completed_date to
         build on yet, so the latest known due_date stands in until a first
         completion gives this something sturdier to anchor on.
+
+        An anchor more than _MAX_STALE_INTERVALS intervals old is refused
+        outright: see that constant for why a line that far behind is read
+        as no longer running rather than as very overdue. ``today`` exists
+        so tests can pin that judgement to a fixed date.
         """
 
+        today = today or _today()
+
+        # Keyed on the PM line itself -- asset plus full name -- not on
+        # (asset, cadence). An asset with two monthly PMs is two independent
+        # series: different work, same "M". Keying on the cadence alone
+        # merged them into one stream, so one line vanished from every future
+        # month and the survivor was labelled with whichever row sorted
+        # first, while both lines' due dates pooled into a single collision
+        # check. The naming convention already carries the discriminator --
+        # the description -- so the whole name is the identity.
         by_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in history:
+            name = _series_name(row.get("task_name"))
             code = _cadence_code(row.get("task_name"))
             asset_id = row.get("asset_id")
-            if not code or not asset_id:
+            if not name or not code or not asset_id:
                 continue
-            by_series.setdefault((asset_id, code), []).append(row)
+            by_series.setdefault((asset_id, name), []).append(row)
 
         projected: list[dict[str, Any]] = []
-        for (asset_id, code), rows in by_series.items():
-            interval_days = _CADENCE_WEEKS[code] * 7
+        for (asset_id, series_name), rows in by_series.items():
+            sample = rows[0]
+            code = _cadence_code(sample.get("task_name"))
+            if code is None:  # every row in this bucket parsed to get here
+                continue
+            interval_days = _nominal_days(code)
 
             due_dates = [r["due_date"][:10] for r in rows if r.get("due_date")]
             if not due_dates:
@@ -292,10 +450,24 @@ class PmCalendarService:
             # there is nothing sturdier to build the very first estimate on.
             anchor = max(completed_dates) if completed_dates else max(due_dates)
 
-            sample = rows[0]
-            next_due = _add_days(anchor, interval_days)
-            guard = 0
-            while end_date is None or next_due <= end_date:
+            # A line this far behind has missed _MAX_STALE_INTERVALS cycles
+            # in a row and is read as retired, not as overdue. Whatever real
+            # rows it still has keep showing; it just stops generating new
+            # estimates off a dead anchor.
+            if _days_between(anchor, today) > _MAX_STALE_INTERVALS * interval_days:
+                continue
+
+            step = 1
+            while True:
+                next_due = _advance(anchor, code, step)
+                if end_date is not None and next_due > end_date:
+                    break
+                if end_date is None and step > 500:
+                    # No end date means "project forever" -- refuse to loop
+                    # unbounded. The real caller (the calendar page) always
+                    # sends a month's start/end, so this only guards
+                    # something calling events() open-ended.
+                    break
                 # A slot this series already has a real row sitting in --
                 # completed or still open -- shouldn't also get an estimate
                 # stacked next to it. "Real, and within half a cycle of this
@@ -314,7 +486,10 @@ class PmCalendarService:
                 if not collides and (start_date is None or next_due >= start_date):
                     projected.append(
                         {
-                            "task_id": f"projected-{asset_id}-{code}-{next_due}",
+                            "task_id": (
+                                f"projected-{asset_id}-{code}"
+                                f"-{_series_slug(series_name)}-{next_due}"
+                            ),
                             "asset_id": asset_id,
                             "asset_number": sample.get("asset_number"),
                             "asset_name": sample.get("asset_name"),
@@ -326,14 +501,7 @@ class PmCalendarService:
                             "is_projected": True,
                         }
                     )
-                next_due = _add_days(next_due, interval_days)
-                guard += 1
-                if end_date is None and guard > 500:
-                    # No end date means "project forever" -- refuse to loop
-                    # unbounded. The real caller (the calendar page) always
-                    # sends a month's start/end, so this only guards
-                    # something calling events() open-ended.
-                    break
+                step += 1
 
         return projected
 
@@ -355,11 +523,23 @@ class PmCalendarService:
         self._ensure_schema()
         real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
+        if asset_ids is None:
+            # No asset filter means the history read below would be
+            # SELECT * FROM pm_task with no date bound -- every row in the
+            # table materialised into dicts, then grouped into a series per
+            # PM line in the account, on a plain GET. The page never asks
+            # for that: it always sends its chipped-in assets, and nothing
+            # selected sends ?assets= empty, which returned above. So the
+            # unscoped call keeps working and stays cheap, it just doesn't
+            # project.
+            return real
+
         # Projecting needs each series' full history to find its last
         # completed occurrence, not just whatever falls in the visible
         # month -- that anchor is very often months before the window
-        # someone is currently looking at.
-        history = self.repo.fetch_tasks(asset_ids=asset_ids)
+        # someone is currently looking at. Bounded below by the staleness
+        # cutoff, since an anchor older than that is refused anyway.
+        history = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=_history_since())
         projected = self._project_future_events(history, start_date, end_date)
 
         combined = real + projected
