@@ -102,7 +102,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.3rem 0.4rem 0.3rem 0.7rem;   /* was 0.8rem */
+  padding: 0.3rem 0.4rem 0.3rem 0.7rem;
   border: 1px solid var(--forest-200);
   border-radius: 999px;
   background: var(--forest-100);
@@ -383,19 +383,19 @@
    application already reads as done / wrong / neither. */
 .pm-event.is-completed {
   background: var(--success-bg);
-  border-left-color: var(--pm-asset-color, var(--brand-accent));  /* was: var(--brand-accent) */
+  border-left-color: var(--pm-asset-color, var(--brand-accent));
   color: var(--success-ink);
 }
 
 .pm-event.is-overdue {
   background: var(--danger-bg);
-  border-left-color: var(--danger-strong);   /* unchanged */
+  border-left-color: var(--danger-strong);
   color: var(--danger-ink);
 }
 
 .pm-event.is-upcoming {
   background: var(--forest-100);
-  border-left-color: var(--pm-asset-color, var(--forest-500));   /* was: var(--forest-500) */
+  border-left-color: var(--pm-asset-color, var(--forest-500));
   color: var(--forest-800);
 }
 

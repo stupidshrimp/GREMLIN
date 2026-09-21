@@ -367,20 +367,33 @@ document.addEventListener('DOMContentLoaded', function () {
         return 'is-upcoming';
     }
 
+    // Sorted by asset id rather than by pick order so an asset keeps its
+    // colour across a remove-and-re-add. The palette carries seven series
+    // colours and this wraps, so a selection of eight or more gives the
+    // eighth asset the first one's colour -- a documented ceiling on a
+    // feature whose whole job is telling assets apart, not a bug.
     function rebuildAssetColors() {
-    const palette = window.gremlinChartPalette ? window.gremlinChartPalette().series : [];
-    assetColorMap = {};
-    if (!palette.length) return;
-    selectedAssets
-        .slice()
-        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-        .forEach((asset, i) => {
-            assetColorMap[asset.id] = palette[i % palette.length];
-        });
-}
+        const palette = window.gremlinChartPalette ? window.gremlinChartPalette().series : [];
+        assetColorMap = {};
+        if (!palette.length) return;
+        selectedAssets
+            .slice()
+            .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+            .forEach((asset, i) => {
+                assetColorMap[asset.id] = palette[i % palette.length];
+            });
+    }
 
     function assetColor(assetId) {
         return assetColorMap[assetId] || null;
+    }
+
+    // The asset marker, built the same way everywhere it appears.
+    function assetDot() {
+        const dot = document.createElement('span');
+        dot.className = 'pm-event-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        return dot;
     }
 
     // ------------------------------------------------------------------
@@ -464,10 +477,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const asset = document.createElement('span');
             asset.className = 'pm-day-item-asset';
-            const dot = document.createElement('span');
-            dot.className = 'pm-event-dot';
-            dot.setAttribute('aria-hidden', 'true');
-            asset.appendChild(dot);
+            // No dot on an overdue PM, the same carve-out renderCalendarBody
+            // makes: that status keeps its plain flat red in both views, and
+            // the two reading the same is the point of the feature.
+            if (status !== 'is-overdue') asset.appendChild(assetDot());
             asset.appendChild(document.createTextNode(event.asset_name || event.asset_number || 'Asset'));
             head.appendChild(asset);
 
@@ -575,30 +588,27 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             shown.forEach(event => {
-              const pill = document.createElement('div');
-              const status = eventClass(event);
-              pill.className = 'pm-event ' + status;
-              pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '') +
-                  (event.is_projected ? ' — estimated from this PM\'s own history; Limble hasn\'t scheduled it yet' : '');
+                const pill = document.createElement('div');
+                const status = eventClass(event);
+                pill.className = 'pm-event ' + status;
+                pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '') +
+                    (event.is_projected ? ' — estimated from this PM\'s own history; Limble hasn\'t scheduled it yet' : '');
 
-              const label = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM') +
-                  (event.is_projected ? ' (est.)' : '');
+                const label = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM') +
+                    (event.is_projected ? ' (est.)' : '');
 
-              if (status === 'is-overdue') {
-                  pill.textContent = label;
-              } else {
-                  const color = assetColor(event.asset_id);
-                  if (color) pill.style.setProperty('--pm-asset-color', color);
+                if (status === 'is-overdue') {
+                    pill.textContent = label;
+                } else {
+                    const color = assetColor(event.asset_id);
+                    if (color) pill.style.setProperty('--pm-asset-color', color);
 
-                  const dot = document.createElement('span');
-                  dot.className = 'pm-event-dot';
-                  dot.setAttribute('aria-hidden', 'true');
-                  pill.appendChild(dot);
-                  pill.appendChild(document.createTextNode(label));
-              }
+                    pill.appendChild(assetDot());
+                    pill.appendChild(document.createTextNode(label));
+                }
 
-              cell.appendChild(pill);
-          });
+                cell.appendChild(pill);
+            });
 
             if (dayEvents.length > shown.length) {
                 const more = document.createElement('div');
@@ -858,6 +868,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
     buildCalendar(currentMonth, currentYear);
     renderChips();
+
+    // The palette is read once and baked into inline --pm-asset-color values,
+    // so without this a theme switch leaves every dot, swatch and pill border
+    // painted in the old theme's colours until a reload. chart_theme.js drops
+    // its cache before calling back, so rebuilding from it here picks up the
+    // new palette -- same hook metrics.js and life_data_analysis.js use.
+    if (window.gremlinOnThemeChange) {
+        window.gremlinOnThemeChange(() => {
+            renderChips();
+            renderCalendarBody();
+        });
+    }
+
     loadAssetOptions();
     refreshSummary();
     refreshEvents();
