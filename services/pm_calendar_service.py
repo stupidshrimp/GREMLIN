@@ -8,7 +8,10 @@ range, YTD summary counts).
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import threading
+from bisect import bisect_left
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,16 @@ _PM_TYPE_VALUE = "1"
 # code stands for, not to reverse-engineer each template's own setting --
 # and a fixed table is predictable: the same code always projects the same
 # way. A new code only needs one line added here.
+#
+# These are whole weeks, not calendar months or years, and that is also on
+# purpose: it's how this account's templates are set up in Limble
+# ("Repeats Every 4 Weeks on Fri", "Every 52 Weeks", "Every 156 Weeks"), so
+# it's what Limble will actually generate. It does mean M comes round 13
+# times a year rather than 12, and A lands about a day and a quarter
+# earlier each year (52 weeks is 364 days); 3Y is 1,092 days against a
+# calendar ~1,096. Calendar-month arithmetic would look tidier and disagree
+# with Limble. The staleness bound below keeps any projection within a few
+# cycles of real activity, so the drift never has years to build up.
 _CADENCE_WEEKS: dict[str, int] = {
     "2W": 2,  # Every two weeks
     "M": 4,  # Monthly
@@ -79,10 +92,78 @@ def _cadence_code(task_name: str | None) -> str | None:
     return code if code in _CADENCE_WEEKS else None
 
 
-def _add_days(iso_date: str, days: int) -> str:
-    """Add whole days to an ISO date (or datetime) string, returning "YYYY-MM-DD"."""
+def _series_key(task_name: str) -> str:
+    """One PM line's identity: its name, ignoring case and runs of spaces.
 
-    return (date.fromisoformat(iso_date[:10]) + timedelta(days=days)).isoformat()
+    The line, not the cadence code, is what repeats. One asset can carry two
+    PMs with the same code -- a monthly on the machine and a monthly on its
+    chiller -- and keyed on the code alone their histories were pooled into
+    one stream: one anchor, one name, and the other line gone from every
+    future month. The name is what tells them apart; case and spacing are
+    folded so a stray capital or a double space in Limble doesn't split one
+    line in two.
+    """
+
+    return " ".join(task_name.split()).casefold()
+
+
+# A PM line with nothing open in Limble, whose newest occurrence on file is
+# more than this many of its own intervals old, is treated as no longer
+# running and isn't projected.
+#
+# A scrapped asset, a template deleted in Limble, a line renamed so new
+# occurrences land under a different name: all of them leave their last
+# completion sitting in pm_task, and without a bound every one of those
+# would keep drawing estimates into any year someone navigated to --
+# indistinguishable on the calendar from an estimate anchored on last
+# month's completion, and far more likely to be wrong. What they have in
+# common is that everything on file is finished and nothing new has
+# appeared. For a renamed line, three cycles is how long the old name's
+# estimates overlap the new one's.
+#
+# An open work order always keeps a line alive, however overdue. A PM
+# that's months late on a machine that's still running is exactly what the
+# calendar should keep showing, and Limble won't necessarily create newer
+# occurrences while one sits undone. The cost: a scrapped asset whose last
+# work order was left open keeps projecting -- but that open work order is
+# also a red overdue pill on the calendar, so it's visible, and closing it
+# in Limble is what retires the line here too.
+_STALE_AFTER_INTERVALS = 3
+
+# While a line has an open (or overdue) work order, projection only ever
+# looks three cycles past the last completion, then stops -- not per month
+# viewed, a hard ceiling on the line itself. Limble only keeps one real
+# occurrence open at a time, so a run of estimates stacking up past it is
+# guesswork on top of guesswork: the open task is already the calendar's
+# best information about what's next, and it may get rescheduled, split, or
+# turned into something else entirely before it's done. Three cycles is
+# enough to fill in a bit of runway without pretending to know the shape of
+# a series that hasn't been resolved yet. Completing that work order clears
+# it -- has_open goes false, the anchor moves to the new completion, and
+# projection resumes at its normal, window-bounded pace.
+_OPEN_LINE_PROJECTION_LIMIT = 3
+
+
+def _today() -> date:
+    """Today, as projection sees it. A function so tests can pin it."""
+
+    return date.today()
+
+
+def _near_any(candidate: date, known: list[date], tolerance_days: float) -> bool:
+    """Is any date in `known` (sorted) within `tolerance_days` of `candidate`?
+
+    Only the neighbours either side of where `candidate` would sit can be the
+    closest, so this is a binary search rather than a scan of the whole
+    history for every candidate.
+    """
+
+    i = bisect_left(known, candidate)
+    return any(
+        abs((known[j] - candidate).days) <= tolerance_days
+        for j in (i - 1, i)
+        if 0 <= j < len(known)
+    )
 
 
 class PmCalendarService:
@@ -266,36 +347,108 @@ class PmCalendarService:
         been completed in the synced history. There's no completed_date to
         build on yet, so the latest known due_date stands in until a first
         completion gives this something sturdier to anchor on.
+
+        A line with nothing open in Limble whose newest occurrence is more
+        than _STALE_AFTER_INTERVALS of its own cycles old isn't projected at
+        all -- it has most likely stopped running.
+
+        Nothing is ever projected before today, whatever window is being
+        looked at -- an "estimated" pill on a month that's already happened
+        would just be an overdue real row wearing the wrong badge.
+
+        And while a line has an open work order, projection is capped at the
+        next _OPEN_LINE_PROJECTION_LIMIT cycles past the anchor and no
+        further, so an unresolved occurrence doesn't grow an indefinite tail
+        of guesses behind it. See _OPEN_LINE_PROJECTION_LIMIT for why.
         """
 
+        today = _today()
+        window_start = date.fromisoformat(start_date[:10]) if start_date else None
+        window_end = date.fromisoformat(end_date[:10]) if end_date else None
+
+        # One series per PM line: (asset, line name). See _series_key for why
+        # the code alone isn't enough.
         by_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in history:
-            code = _cadence_code(row.get("task_name"))
+            task_name = row.get("task_name")
+            code = _cadence_code(task_name)
             asset_id = row.get("asset_id")
             if not code or not asset_id:
                 continue
-            by_series.setdefault((asset_id, code), []).append(row)
+            by_series.setdefault((asset_id, _series_key(task_name)), []).append(row)
 
         projected: list[dict[str, Any]] = []
-        for (asset_id, code), rows in by_series.items():
+        for (asset_id, line), rows in by_series.items():
+            # Every row in a series has the same name up to case and spacing,
+            # so they all parse to the same code.
+            code = _cadence_code(rows[0]["task_name"])
             interval_days = _CADENCE_WEEKS[code] * 7
+            # Short and stable, so two lines projected onto the same day never
+            # share a task_id.
+            line_tag = hashlib.sha1(line.encode("utf-8")).hexdigest()[:8]
 
-            due_dates = [r["due_date"][:10] for r in rows if r.get("due_date")]
+            due_dates = sorted(date.fromisoformat(r["due_date"][:10]) for r in rows if r.get("due_date"))
             if not due_dates:
                 continue
-            completed_dates = [r["completed_date"][:10] for r in rows if r.get("completed_date")]
+            completed_dates = [
+                date.fromisoformat(r["completed_date"][:10]) for r in rows if r.get("completed_date")
+            ]
+
+            # A line that has gone quiet is not projected at all. See
+            # _STALE_AFTER_INTERVALS for what "quiet" means and why an open
+            # work order always counts as alive.
+            has_open = any(not r.get("completed_date") for r in rows)
+            last_seen = max(due_dates[-1], max(completed_dates, default=due_dates[-1]))
+            if not has_open and (today - last_seen).days > _STALE_AFTER_INTERVALS * interval_days:
+                continue
 
             # The anchor: last completed, or -- only for a line that has
             # never once been completed -- its own latest known due date.
             # That fallback is the one gap in the "immune to due-date
             # manipulation" promise below: with zero completion history
             # there is nothing sturdier to build the very first estimate on.
-            anchor = max(completed_dates) if completed_dates else max(due_dates)
+            anchor = max(completed_dates) if completed_dates else due_dates[-1]
 
-            sample = rows[0]
-            next_due = _add_days(anchor, interval_days)
-            guard = 0
-            while end_date is None or next_due <= end_date:
+            # Names and asset details come from the line's newest row, so an
+            # estimate reads the way the PM currently reads in Limble.
+            sample = max(rows, key=lambda r: r.get("due_date") or "")
+
+            if has_open:
+                # A hard ceiling, not a window-jump target: always the first
+                # _OPEN_LINE_PROJECTION_LIMIT cycles after the anchor, full
+                # stop, regardless of which month is being viewed. See
+                # _OPEN_LINE_PROJECTION_LIMIT.
+                ks: range | itertools.count = range(1, _OPEN_LINE_PROJECTION_LIMIT + 1)
+            else:
+                # Start at the first cycle inside the window (or today, if
+                # today is later than the window) rather than walking every
+                # cycle from the anchor to get there. Only which estimates
+                # are *looked at* changes: each one is still
+                # anchor + k * interval.
+                effective_start = window_start
+                if effective_start is None or today > effective_start:
+                    effective_start = today
+                k = 1
+                if effective_start > anchor:
+                    k = max(1, -(-(effective_start - anchor).days // interval_days))
+                ks = itertools.count(k)
+
+            for k in ks:
+                candidate = anchor + timedelta(days=interval_days * k)
+                if window_end and candidate > window_end:
+                    break
+                if not has_open and window_end is None and k > 500:
+                    # No end date means "project forever" -- refuse to loop
+                    # unbounded. The real caller (the calendar page) always
+                    # sends a month's start/end, so this only guards
+                    # something calling events() open-ended.
+                    break
+                if window_start and candidate < window_start:
+                    continue
+                if candidate < today:
+                    # Never an estimate for a month that's already happened.
+                    continue
+
                 # A slot this series already has a real row sitting in --
                 # completed or still open -- shouldn't also get an estimate
                 # stacked next to it. "Real, and within half a cycle of this
@@ -306,34 +459,24 @@ class PmCalendarService:
                 # one nearby estimate is shown, never the rest of the
                 # series. The sequence itself always advances a fixed
                 # interval from the completed-anchor, full stop.
-                collides = any(
-                    abs((date.fromisoformat(next_due) - date.fromisoformat(known)).days)
-                    <= interval_days / 2
-                    for known in due_dates
+                if _near_any(candidate, due_dates, interval_days / 2):
+                    continue
+
+                due = candidate.isoformat()
+                projected.append(
+                    {
+                        "task_id": f"projected-{asset_id}-{code}-{line_tag}-{due}",
+                        "asset_id": asset_id,
+                        "asset_number": sample.get("asset_number"),
+                        "asset_name": sample.get("asset_name"),
+                        "task_name": sample.get("task_name"),
+                        "status_raw": None,
+                        "due_date": due,
+                        "completed_date": None,
+                        "is_completed": 0,
+                        "is_projected": True,
+                    }
                 )
-                if not collides and (start_date is None or next_due >= start_date):
-                    projected.append(
-                        {
-                            "task_id": f"projected-{asset_id}-{code}-{next_due}",
-                            "asset_id": asset_id,
-                            "asset_number": sample.get("asset_number"),
-                            "asset_name": sample.get("asset_name"),
-                            "task_name": sample.get("task_name"),
-                            "status_raw": None,
-                            "due_date": next_due,
-                            "completed_date": None,
-                            "is_completed": 0,
-                            "is_projected": True,
-                        }
-                    )
-                next_due = _add_days(next_due, interval_days)
-                guard += 1
-                if end_date is None and guard > 500:
-                    # No end date means "project forever" -- refuse to loop
-                    # unbounded. The real caller (the calendar page) always
-                    # sends a month's start/end, so this only guards
-                    # something calling events() open-ended.
-                    break
 
         return projected
 
@@ -355,10 +498,16 @@ class PmCalendarService:
         self._ensure_schema()
         real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
-        # Projecting needs each series' full history to find its last
-        # completed occurrence, not just whatever falls in the visible
-        # month -- that anchor is very often months before the window
-        # someone is currently looking at.
+        # Projecting reads each series' full history, with no date bound, to
+        # find its last completed occurrence -- that anchor is often months
+        # before the window being looked at. That read is only bounded by the
+        # asset filter, so without one (no ?assets= at all, meaning "every
+        # asset") it would be the whole table on every request. The page
+        # always sends its selection; an unfiltered request gets real rows
+        # only.
+        if asset_ids is None:
+            return real
+
         history = self.repo.fetch_tasks(asset_ids=asset_ids)
         projected = self._project_future_events(history, start_date, end_date)
 
