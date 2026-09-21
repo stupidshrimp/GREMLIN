@@ -275,6 +275,10 @@
   color: var(--forest-900);
 }
 
+.pm-projected-hint {
+  margin: -0.3rem 0 0.8rem;
+}
+
 /* ---- month view ---------------------------------------------------------- */
 /* Seven columns have a width below which a day cell stops being able to hold a
    PM's name at all, so the grid keeps its own and scrolls inside this box. The
@@ -395,6 +399,17 @@
   color: var(--forest-800);
 }
 
+/* A projected PM is a guess, not a work order -- dashed and faded so it
+   reads as lighter-weight than anything Limble has actually scheduled,
+   even before the "(est.)" suffix on its label or its tooltip is read. */
+.pm-event.is-projected {
+  background: var(--forest-100);
+  border-left-color: var(--pm-asset-color, var(--forest-500));
+  border-left-style: dashed;
+  color: var(--forest-800);
+  opacity: 0.7;
+}
+
 /* The asset marker itself, sized to sit on the pill's own text line rather
    than push it -- pm-event is a two-line clamp and a tall dot costs a
    character of room on every pill. Not drawn on is-overdue: that status
@@ -413,6 +428,127 @@
   font-size: 0.7rem;
   font-weight: 600;
   color: var(--muted);
+}
+
+/* A day with PMs on it opens the details dialog. */
+.pm-day.has-events {
+  cursor: pointer;
+}
+
+/* ---- day details dialog -------------------------------------------------- */
+/* The one band of the dialog that scrolls, same as the picker's list. */
+.pm-day-list {
+  display: grid;
+  gap: 0.7rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* One PM, with the same asset-coloured left edge its pill has on the
+   calendar, so the two read as the same thing at two sizes. */
+.pm-day-item {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--pm-asset-color, var(--forest-500));
+  border-radius: 12px;
+  background: var(--surface-veil);
+}
+
+.pm-day-item.is-overdue {
+  border-left-color: var(--danger-strong);
+}
+
+.pm-day-item.is-projected {
+  border-left-style: dashed;
+}
+
+.pm-day-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.pm-day-item-asset {
+  font-weight: 700;
+  color: var(--forest-900);
+}
+
+.pm-day-item-task {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.pm-day-item-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 0.8rem;
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.pm-day-item-details dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.pm-day-item-details dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.pm-day-item-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Link colour the rest of GREMLIN uses inside a card: forest, not the
+   browser's blue, which no token owns. */
+.pm-day-item-link {
+  justify-self: start;
+  color: var(--forest-700);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.pm-day-item-link:hover {
+  color: var(--forest-900);
+}
+
+/* The four statuses, in the same colours as the pills on the calendar. */
+.pm-status-badge {
+  flex: none;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pm-status-badge.is-completed {
+  background: var(--success-bg);
+  color: var(--success-ink);
+}
+
+.pm-status-badge.is-overdue {
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+
+.pm-status-badge.is-upcoming {
+  background: var(--forest-100);
+  color: var(--forest-800);
+}
+
+.pm-status-badge.is-projected {
+  border: 1px dashed var(--forest-500);
+  color: var(--forest-800);
 }
 
 /* ---- week view ----------------------------------------------------------- */
@@ -558,7 +694,9 @@
 .pm-nav-btn:focus-visible,
 .pm-modal-close:focus-visible,
 .pm-asset-search:focus-visible,
-.pm-asset-option:focus-visible {
+.pm-asset-option:focus-visible,
+.pm-day.has-events:focus-visible,
+.pm-day-item-link:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;
 }

@@ -9,6 +9,7 @@ working tree.
 
 import importlib
 import sqlite3
+from datetime import date
 
 import pytest
 
@@ -316,3 +317,151 @@ def test_asset_options_lists_each_synced_asset_once(tmp_path):
     service = _seeded(tmp_path)
 
     assert [asset["asset_name"] for asset in service.asset_options()] == ["Fan", "Pump"]
+
+
+# ----------------------------------------------------------------------
+# Projecting future PMs beyond whatever Limble has already generated
+# ----------------------------------------------------------------------
+def _seeded_monthly_series(tmp_path, *, open_due_date):
+    """Three completed monthly occurrences, plus a fourth still-open one.
+
+    ``open_due_date`` is the lever the tests below pull: it is the one
+    field a scheduler is free to drag around in Limble while a PM is still
+    outstanding, and the whole point of anchoring on completed_date is that
+    dragging it should not touch what gets projected past it.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": "1", "asset_id": "3103", "asset_number": "3103",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
+            "status_raw": "done", "due_date": "2026-06-05",
+            "completed_date": "2026-06-04", "is_completed": 1,
+        },
+        {
+            "task_id": "2", "asset_id": "3103", "asset_number": "3103",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
+            "status_raw": "done", "due_date": "2026-07-03",
+            "completed_date": "2026-07-02", "is_completed": 1,
+        },
+        {
+            "task_id": "3", "asset_id": "3103", "asset_number": "3103",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
+            "status_raw": "done", "due_date": "2026-07-31",
+            "completed_date": "2026-07-30", "is_completed": 1,
+        },
+        {
+            "task_id": "4", "asset_id": "3103", "asset_number": "3103",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - M - Salvagnini Laser",
+            "status_raw": "open", "due_date": open_due_date,
+            "completed_date": None, "is_completed": 0,
+        },
+    ])
+    return service
+
+
+def test_future_months_are_filled_with_projected_pms(tmp_path):
+    """A month past whatever Limble has generated still shows something.
+
+    Without projection this window is empty: no real row's due_date falls
+    in it. Every 28 days (M = 4 weeks) from the last completion is the
+    whole point of the feature.
+    """
+
+    service = _seeded_monthly_series(tmp_path, open_due_date="2026-08-28")
+
+    events = service.events(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-11-30")
+
+    assert [e["due_date"] for e in events] == ["2026-09-24", "2026-10-22", "2026-11-19"]
+    assert all(e["is_projected"] for e in events)
+
+
+def test_dragging_the_open_tasks_due_date_does_not_move_the_projected_series(tmp_path):
+    """The exact scenario the feature exists to survive.
+
+    Two services, identical completed history, differing only in where the
+    still-open next occurrence's due date happens to sit right now -- one
+    left where the cadence would naturally put it, the other dragged five
+    months out, standing in for a reschedule. Projected pills for a window
+    neither due date touches must come out identical either way: the
+    series is built from completed_date alone and never reads the open
+    row's due_date at all.
+    """
+
+    on_schedule = _seeded_monthly_series(tmp_path / "a", open_due_date="2026-08-27")
+    dragged = _seeded_monthly_series(tmp_path / "b", open_due_date="2027-03-01")
+
+    window = dict(asset_ids=["3103"], start_date="2026-09-01", end_date="2026-12-31")
+    on_schedule_dates = [e["due_date"] for e in on_schedule.events(**window)]
+    dragged_dates = [e["due_date"] for e in dragged.events(**window)]
+
+    assert on_schedule_dates == dragged_dates == [
+        "2026-09-24", "2026-10-22", "2026-11-19", "2026-12-17",
+    ]
+
+
+def test_a_projected_pill_yields_to_a_real_row_already_covering_its_slot(tmp_path):
+    """The one place a real due date *is* allowed to matter: its own slot.
+
+    The dragged-out due date (2027-03-01) sits close enough to where the
+    unbroken cadence would have projected one (2027-03-11) that showing
+    both would just be the same PM twice. Only that one slot yields --
+    everything on either side of it keeps projecting on schedule.
+    """
+
+    service = _seeded_monthly_series(tmp_path, open_due_date="2027-03-01")
+
+    events = service.events(asset_ids=["3103"], start_date="2027-01-01", end_date="2027-04-01")
+
+    by_date = {e["due_date"]: e for e in events}
+    # Real rows don't carry an is_projected key at all -- only synthetic
+    # ones do -- so "not set" is what a real row winning looks like here.
+    assert not by_date["2027-03-01"].get("is_projected")
+    assert "2027-03-11" not in by_date  # the projected slot it absorbed
+    assert by_date["2027-02-11"]["is_projected"] is True  # neighbours unaffected
+
+
+@pytest.mark.parametrize(
+    "code, weeks",
+    [("2W", 2), ("M", 4), ("Q", 12), ("SA", 26), ("A", 52), ("3Y", 156)],
+)
+def test_each_code_projects_at_its_fixed_interval(tmp_path, code, weeks):
+    """One fixed interval per code -- the table, not the template's own setting.
+
+    SA is 26 weeks here even though some SA templates in Limble are set to 24:
+    the calendar projects the standard cadence a code stands for.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([{
+        "task_id": "1", "asset_id": "1435", "asset_number": "1435",
+        "asset_name": "Stokes Tablet Machine", "task_name": f"1435 - {code} - Stokes Tablet",
+        "status_raw": "done", "due_date": "2026-01-02",
+        "completed_date": "2026-01-02", "is_completed": 1,
+    }])
+
+    events = service.events(asset_ids=["1435"], start_date="2026-01-03", end_date="2030-12-31")
+
+    first = date.fromisoformat(events[0]["due_date"])
+    assert (first - date(2026, 1, 2)).days == weeks * 7
+
+
+def test_a_pm_name_that_does_not_match_the_cadence_convention_is_left_alone(tmp_path):
+    """No code to parse means no projection -- not a crash, not a guess."""
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([{
+        "task_id": "1", "asset_id": "9", "asset_number": "9",
+        "asset_name": "Mystery Asset", "task_name": "Replace worn belt",
+        "status_raw": "done", "due_date": "2026-06-01",
+        "completed_date": "2026-06-01", "is_completed": 1,
+    }])
+
+    events = service.events(asset_ids=["9"], start_date="2026-06-01", end_date="2027-06-01")
+
+    assert len(events) == 1
+    assert events[0]["task_id"] == "1"
