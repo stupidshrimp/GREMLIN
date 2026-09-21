@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS pm_task (
     asset_id TEXT,
     asset_number TEXT,
     asset_name TEXT,
+    parent_asset_id TEXT,
     task_name TEXT,
     status_raw TEXT,
     due_date TEXT,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS pm_task (
 # and nothing to maintain -- SQLite keeps them up to date automatically.
 _CREATE_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_id ON pm_task(asset_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pm_task_parent_asset ON pm_task(parent_asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_due_date ON pm_task(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_due ON pm_task(asset_id, due_date)",
 )
@@ -75,12 +77,31 @@ _TASK_COLUMNS = (
     "asset_id",
     "asset_number",
     "asset_name",
+    "parent_asset_id",
     "task_name",
     "status_raw",
     "due_date",
     "completed_date",
     "is_completed",
 )
+
+
+# Columns added to pm_task after it first shipped. CREATE TABLE IF NOT EXISTS
+# does nothing to a database that already has the older shape, so anything
+# added later has to be ALTERed in -- see _add_missing_columns. Existing rows
+# get NULL, which is exactly what an asset that has not been re-synced yet
+# should look like.
+_ADDED_COLUMNS: dict[str, str] = {"parent_asset_id": "TEXT"}
+
+# How many asset ids go into one "asset_id IN (...)" statement. Selecting a
+# parent expands to every asset beneath it, and on this account's hierarchy
+# the largest department covers 783 -- already most of the 999 bound
+# parameters SQLite allowed before 3.32, and that ceiling is a hard "too many
+# SQL variables" error rather than a slow query. GREMLIN is deployed on
+# Windows, where the bundled SQLite version is whatever the Python build
+# carried, so the floor is what has to be respected. Batching keeps every
+# statement well inside it however the plant reorganises its assets.
+_ASSET_ID_BATCH = 900
 
 
 class PmCalendarUnavailableError(RuntimeError):
@@ -199,8 +220,24 @@ class PmCalendarRepository:
 
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
+            self._add_missing_columns(conn)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        """Add any column this version expects that an older database lacks.
+
+        SQLite has no ADD COLUMN IF NOT EXISTS, so the current shape is read
+        first. Runs on every ensure_schema and is a no-op once the columns are
+        there; the index statements below have to come after it, since one of
+        them names a column this may have just added.
+        """
+
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(pm_task)")}
+        for column, declared_type in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE pm_task ADD COLUMN {column} {declared_type}")
 
     # ------------------------------------------------------------------
     # Writes
@@ -238,6 +275,24 @@ class PmCalendarRepository:
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
+    def asset_parent_map(self) -> dict[str, str | None]:
+        """Every synced asset mapped to its immediate parent, or None.
+
+        Only assets that actually have PMs appear, because that is all
+        pm_task holds -- so a parent with no PMs of its own is absent here
+        even when its children name it. Callers treat a parent they cannot
+        see as no parent, which is what the picker already shows.
+        """
+
+        sql = "SELECT DISTINCT asset_id, parent_asset_id FROM pm_task WHERE asset_id IS NOT NULL"
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(sql).fetchall()
+            finally:
+                conn.close()
+        return {str(row["asset_id"]): row["parent_asset_id"] for row in rows}
+
     def fetch_tasks(
         self,
         asset_ids: list[str] | None = None,
@@ -251,38 +306,58 @@ class PmCalendarRepository:
         `asset_ids` of None or [] means "every asset."
         """
 
-        clauses: list[str] = []
-        params: list[Any] = []
-
-        if asset_ids:
-            placeholders = ", ".join("?" for _ in asset_ids)
-            clauses.append(f"asset_id IN ({placeholders})")
-            params.extend(asset_ids)
+        date_clauses: list[str] = []
+        date_params: list[Any] = []
         if due_since:
-            clauses.append("due_date >= ?")
-            params.append(due_since)
+            date_clauses.append("due_date >= ?")
+            date_params.append(due_since)
         if due_until:
-            clauses.append("due_date <= ?")
-            params.append(due_until)
+            date_clauses.append("due_date <= ?")
+            date_params.append(due_until)
 
-        sql = "SELECT * FROM pm_task"
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY due_date"
+        # One statement per batch of asset ids -- see _ASSET_ID_BATCH for why
+        # a long list cannot go into a single IN clause. None or [] means
+        # every asset, which needs no id predicate and so is one statement.
+        if asset_ids:
+            batches: list[list[str] | None] = [
+                list(asset_ids[index:index + _ASSET_ID_BATCH])
+                for index in range(0, len(asset_ids), _ASSET_ID_BATCH)
+            ]
+        else:
+            batches = [None]
 
+        rows: list[Any] = []
         with self._reporting_failures():
             conn = self.connect()
             try:
-                rows = conn.execute(sql, params).fetchall()
+                for batch in batches:
+                    clauses = list(date_clauses)
+                    params = list(date_params)
+                    if batch:
+                        placeholders = ", ".join("?" for _ in batch)
+                        clauses.append(f"asset_id IN ({placeholders})")
+                        params.extend(batch)
+                    sql = "SELECT * FROM pm_task"
+                    if clauses:
+                        sql += " WHERE " + " AND ".join(clauses)
+                    rows.extend(conn.execute(sql, params).fetchall())
             finally:
                 conn.close()
-        return [_row_to_dict(row) for row in rows]
+
+        # Ordered here rather than in SQL: across more than one batch the
+        # database can only sort within each, so the merge has to happen
+        # somewhere. Empty string for a missing due_date keeps those first,
+        # which is where ORDER BY due_date put them.
+        return sorted(
+            (_row_to_dict(row) for row in rows),
+            key=lambda row: row["due_date"] or "",
+        )
 
     def asset_options(self) -> list[dict[str, Any]]:
         """Distinct assets that currently have at least one stored PM task."""
 
         sql = (
-            "SELECT DISTINCT asset_id, asset_number, asset_name "
+            "SELECT DISTINCT asset_id, asset_number, asset_name, parent_asset_id "
             "FROM pm_task ORDER BY asset_name"
         )
         with self._reporting_failures():

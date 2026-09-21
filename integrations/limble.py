@@ -93,7 +93,7 @@ class LimbleConfig:
     # Limble publishes a low request budget; the working scripts space requests
     # ~1.1s apart, so we keep the same conservative default.
     seconds_per_request: float = 1.1
-    page_limit: int = 200
+    page_limit: int = 1000
     max_retries: int = 4
     # Optional extra query params passed verbatim to the /tasks list endpoint
     # (e.g. {"locations": "5"}). Kept open so callers can narrow a pull without
@@ -275,6 +275,15 @@ class LimbleClient:
 
         page = 1
         fetched = 0
+        # What a full page actually looks like, measured from the first one
+        # rather than assumed to be whatever we asked for. A list endpoint is
+        # free to cap ``limit`` server-side, and comparing a capped page
+        # against the requested limit makes page 1 look like the last page:
+        # the loop stops after one page and the caller is told the sync
+        # succeeded having quietly read a fraction of the rows. Measuring the
+        # server's own page size keeps the terminator right at any limit,
+        # including one raised above a cap nobody knew was there.
+        page_size: int | None = None
         while True:
             page_params = {**params, "limit": self.config.page_limit, "page": page}
             payload = self._request("GET", path, params=page_params)
@@ -288,7 +297,11 @@ class LimbleClient:
                     fetched += 1
             if on_page is not None:
                 on_page(fetched, page)
-            if len(payload) < self.config.page_limit:
+            if page_size is None:
+                page_size = len(payload)
+            # A first page that was short because it held everything costs one
+            # extra request to confirm the end; a correct stop is worth it.
+            if len(payload) < page_size:
                 break
             page += 1
 
