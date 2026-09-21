@@ -908,11 +908,32 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     const searchBox = document.getElementById('pm-asset-search');
-    searchBox.addEventListener('keyup', () => {
-        const value = searchBox.value.toLowerCase();
-        document.querySelectorAll('#pm-asset-list .pm-asset-option').forEach(option => {
+    // An asset shows if its own name matches, or if anything above it does:
+    // searching "3101-3107" lists the Salvagnini line with every sub-asset
+    // under it, which is exactly what picking it will bring in. Searching a
+    // sub-asset's own number still finds just that one.
+    searchBox.addEventListener('input', () => {
+        const value = searchBox.value.trim().toLowerCase();
+        const options = document.querySelectorAll('#pm-asset-list .pm-asset-option');
+
+        const matches = new Set();
+        options.forEach(option => {
             const name = option.querySelector('.pm-asset-option-name');
-            option.hidden = !(name ? name.textContent : option.textContent).toLowerCase().includes(value);
+            if ((name ? name.textContent : option.textContent).toLowerCase().includes(value)) {
+                matches.add(option.dataset.assetId);
+            }
+        });
+
+        options.forEach(option => {
+            const seen = new Set();
+            let current = option.dataset.assetId;
+            let show = false;
+            while (current && !seen.has(current)) {
+                if (matches.has(current)) { show = true; break; }
+                seen.add(current);
+                current = parentOf[current];
+            }
+            option.hidden = !show;
         });
     });
 
