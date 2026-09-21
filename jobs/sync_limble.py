@@ -133,7 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "then filtered here. It does not make the fetch shorter."
         ),
     )
-    parser.add_argument("--page-limit", type=int, default=200, help="Records per API page (default 200).")
+    parser.add_argument("--page-limit", type=int, default=1000, help="Records per API page (default 200).")
     parser.add_argument("--no-assets", action="store_true", help="Skip the /assets fetch used for name/hierarchy enrichment.")
     parser.add_argument("--no-map", action="store_true", help="Skip refreshing mapped_cmms_record after import.")
     parser.add_argument(

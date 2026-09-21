@@ -93,7 +93,7 @@ class LimbleConfig:
     # Limble publishes a low request budget; the working scripts space requests
     # ~1.1s apart, so we keep the same conservative default.
     seconds_per_request: float = 1.1
-    page_limit: int = 200
+    page_limit: int = 1000
     max_retries: int = 4
     # Optional extra query params passed verbatim to the /tasks list endpoint
     # (e.g. {"locations": "5"}). Kept open so callers can narrow a pull without
