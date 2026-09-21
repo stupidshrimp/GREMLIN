@@ -19,6 +19,7 @@ from repositories.pm_calendar_repo import (
     PmCalendarRepository,
     PmCalendarUnavailableError,
 )
+import repositories.pm_calendar_repo as pm_calendar_repo
 import services.pm_calendar_service as pm_calendar_service
 from services.pm_calendar_service import PmCalendarService
 
@@ -925,3 +926,92 @@ def test_the_sync_counts_unprojectable_lines_not_unprojectable_rows(tmp_path):
     ]
 
     assert PmCalendarService._count_unprojectable_lines(projectable + silent) == 1
+
+
+# ----------------------------------------------------------------------
+# Reading a cadence out of the several ways this account writes a name
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "task_name, expected",
+    [
+        # The spelling the convention was written against.
+        ("3209 - Q - Schmidt Scribing Machine", "Q"),
+        # The same convention without spaces, which is most of the account.
+        ("8945-Q-DEHUMIDIFIER FANTECH", "Q"),
+        ("3359-M-Sandblaster", "M"),
+        # Mixed spacing, and lower case.
+        ("3209 -sa- Schmidt", "SA"),
+        # A sub-asset brings its own hyphen: S19 sits where a positional rule
+        # would look, and the cadence is one field further along.
+        ("4002-S19-M-Chain Drive", "M"),
+        # Some lines put the cadence last.
+        ("11000 HVAC 103-1 - Q", "Q"),
+        # Spellings of a cadence the table already holds.
+        ("1804-BIM-Magneform", "2M"),
+        ("8688-BIW-ITT B&G Heat Exchanger", "2W"),
+        # Nothing that resembles a code.
+        ("HYDMECH BAND SAW PM INSPECTION", None),
+        ("Econo Lift Tables PM Inspection", None),
+        # Fields that are not cadences must not be mistaken for them.
+        ("3458- AC-RTU 5.1 ROOF TOP UNIT BLDG. 5", None),
+        ("3414-RF 5-6 RETURN FAN BLDG 5", None),
+        ("4002-S09 Dry Off Oven", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_the_cadence_code_is_found_however_the_name_is_punctuated(task_name, expected):
+    assert pm_calendar_service._cadence_code(task_name) == expected
+
+
+def test_a_hyphen_written_name_projects_like_a_spaced_one(tmp_path, monkeypatch):
+    """End to end: the punctuation must not decide whether a PM is projected."""
+
+    _pin_today(monkeypatch, "2026-09-01")
+    spaced = _service(tmp_path / "a", [
+        _row("1", "77", "77 - M - Boiler", "2026-08-15", "2026-08-15")])
+    hyphened = _service(tmp_path / "b", [
+        _row("1", "77", "77-M-Boiler", "2026-08-15", "2026-08-15")])
+
+    window = dict(asset_ids=["77"], start_date="2026-09-01", end_date="2026-11-30")
+    assert [e["due_date"] for e in spaced.events(**window)] == \
+           [e["due_date"] for e in hyphened.events(**window)] == \
+           ["2026-09-15", "2026-10-15", "2026-11-15"]
+
+
+# ----------------------------------------------------------------------
+# Selecting a whole department: more asset ids than one statement can hold
+# ----------------------------------------------------------------------
+def test_a_selection_too_large_for_one_statement_still_returns_every_row(tmp_path, monkeypatch):
+    """Picking a department expands to hundreds of assets.
+
+    SQLite before 3.32 allows 999 bound parameters and this account's largest
+    department already covers 783, so the id list has to be batched -- and
+    going over is a hard "too many SQL variables" error, not a slow query.
+    The batch size is shrunk here rather than seeding a thousand assets.
+    """
+
+    monkeypatch.setattr(pm_calendar_repo, "_ASSET_ID_BATCH", 3)
+    ids = [str(n) for n in range(10)]
+    service = _service(tmp_path, [
+        # Due dates deliberately descending, so a batch-by-batch result that
+        # was never merged would come back out of order.
+        _row(str(n), str(n), f"{n} - M - Line", f"2026-09-{20 - n:02d}", None)
+        for n in range(10)
+    ])
+
+    rows = service.repo.fetch_tasks(asset_ids=ids)
+
+    assert len(rows) == 10
+    assert [r["due_date"] for r in rows] == sorted(r["due_date"] for r in rows)
+
+
+def test_batching_does_not_disturb_a_selection_that_fits_in_one_statement(tmp_path):
+    service = _service(tmp_path, [
+        _row("1", "5", "5 - M - One", "2026-09-02", None),
+        _row("2", "6", "6 - M - Two", "2026-09-01", None),
+    ])
+
+    rows = service.repo.fetch_tasks(asset_ids=["5", "6"])
+
+    assert [r["task_id"] for r in rows] == ["2", "1"]

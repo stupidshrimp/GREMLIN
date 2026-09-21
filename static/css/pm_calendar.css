@@ -678,18 +678,6 @@
   transition: background 160ms ease, border-color 160ms ease;
 }
 
-/* Children sit under their parent, one step in per level. The variable is
-   set per option by renderAssetOptions, so an arbitrarily deep hierarchy
-   needs no new rule. */
-.pm-asset-option.is-child {
-  padding-left: calc(0.65rem + var(--pm-asset-depth, 0) * 1.1rem);
-}
-
-/* See the search handler: a filtered list isn't a tree any more. */
-.pm-asset-list.is-filtered .pm-asset-option.is-child {
-  padding-left: 0.65rem;
-}
-
 /* What a parent brings with it, said quietly next to its name. */
 .pm-asset-option-note {
   color: var(--muted);

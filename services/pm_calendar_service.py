@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import re
 import statistics
 import threading
 from datetime import date, timedelta
@@ -41,21 +42,25 @@ _PM_TYPE_VALUE = "1"
 # so whatever drives Limble's own recurrence, the /tasks endpoint this app
 # syncs from does not expose it.
 #
-# How far that convention actually reaches, measured against a real sync
-# (76,462 PM rows, September 2026): 15.7% of names carry a code this can
-# read, covering 563 of 3,899 assets. Names like "HYDMECH BAND SAW PM
-# INSPECTION" were never going to parse and never will. That is why this
-# table is the fallback and not the source -- _observed_interval reads a
-# line's cadence from the gaps between its own completions first, which
-# needs no naming convention and takes the same sync from 1,593 projectable
-# lines to 4,237, and from 563 assets to 2,460.
+# How far that convention reaches, measured against a real sync (76,463 PM
+# rows, September 2026): 32.5% of names carry a code _cadence_code can read.
+# Names like "HYDMECH BAND SAW PM INSPECTION" make up much of the rest and
+# were never going to parse. That is why this table is the fallback and not
+# the source -- _observed_interval reads a line's cadence from the gaps
+# between its own completions first, which needs no naming convention at all.
 #
-# So the table earns its place twice over, and neither is "how this account
-# names things". It carries the 893 lines whose history is too thin or too
-# erratic to read but whose name still says what they are; and its values
-# are what an observed interval snaps to, so a line seen repeating on 30-ish
-# days is recorded as monthly and stays on its day of the month rather than
-# drifting a little earlier every time.
+# Together they take the same sync from 1,593 projectable PM lines to 5,400,
+# and from 563 of 3,899 assets to 2,998. History carries 3,345 of those
+# lines and the name carries 2,055; 2,717 lines have neither and draw
+# nothing, which is the same blank the calendar showed before any of this
+# existed.
+#
+# So the table earns its place twice over, and neither reason is "how this
+# account names things". It carries the lines whose history is too thin or
+# too erratic to read but whose name still says what they are; and its
+# values are what an observed interval snaps to, so a line seen repeating on
+# 30-ish days is recorded as monthly and stays on its day of the month
+# rather than drifting a little earlier every time.
 #
 # Where the table does apply, it is accurate. Median observed gap between
 # completions, same sync: M 30d (table 30), Q 85d (90), SA 178d (180),
@@ -112,6 +117,14 @@ _MAX_STALE_INTERVALS = 3
 # outlying gap (a shutdown, a holiday) cannot drag a real cadence out of
 # range. The floor keeps short cadences from being held to an implausible
 # few days of precision.
+# Other spellings of a cadence already in the table. Kept apart from
+# _CADENCE so that stays one entry per interval -- it doubles as the set of
+# targets an observed interval snaps to, and duplicates there would be noise.
+_CADENCE_ALIASES: dict[str, str] = {
+    "BIM": "2M",  # bi-monthly; 35 lines carry it and 97% really do repeat on two months
+    "BIW": "2W",  # bi-weekly
+}
+
 _MIN_COMPLETIONS_FOR_INTERVAL = 3
 _INTERVAL_SPREAD_FRACTION = 0.25
 _INTERVAL_SPREAD_FLOOR_DAYS = 7
@@ -128,9 +141,24 @@ _CADENCE_SNAP_TOLERANCE = 0.15
 def _cadence_code(task_name: str | None) -> str | None:
     """Pull the recurrence code out of a PM name, e.g. "M" from "3103 - M - ...".
 
-    The second " - "-delimited segment, upper-cased so a stray "m" or "sa"
-    still matches. Anything that doesn't split that way, or whose middle
-    segment isn't one of _CADENCE, returns None.
+    Split on a hyphen with or without spaces around it, because this account
+    writes the same convention both ways -- "3209 - Q - Schmidt Scribing
+    Machine" and "8945-Q-DEHUMIDIFIER FANTECH" are the same shape, and a
+    splitter that only accepted " - " rejected 11,445 rows carrying a code
+    already in this table.
+
+    Scans the fields between the first and the last rather than taking the
+    second, because a sub-asset brings its own hyphen: "4002-S19-M-Chain"
+    puts S19 where a positional rule would look. Only an exact match against
+    _CADENCE or _CADENCE_ALIASES counts, so the sub-asset designators,
+    equipment abbreviations and stray numbers that also land in those fields
+    read as no code at all -- which is what they are.
+
+    The first field is skipped because it is the asset number. The last is
+    not, because 14 rows here name the cadence at the end ("11000 HVAC 103-1
+    - Q") and a rule that stopped short of it would lose them. Scanning left
+    to right means an earlier field wins where both could match, which is the
+    conventional position.
 
     Note what a None actually is here. _map_pm_task already filters the sync
     to type == "1" and drops templates, and this only ever runs over rows
@@ -150,11 +178,13 @@ def _cadence_code(task_name: str | None) -> str | None:
 
     if not task_name:
         return None
-    parts = [part.strip().upper() for part in task_name.split(" - ")]
-    if len(parts) < 2:
-        return None
-    code = parts[1]
-    return code if code in _CADENCE else None
+    fields = [f.strip().upper() for f in re.split(r"\s*-\s*", " ".join(task_name.split()))]
+    for field in fields[1:]:
+        if field in _CADENCE:
+            return field
+        if field in _CADENCE_ALIASES:
+            return _CADENCE_ALIASES[field]
+    return None
 
 
 def _series_name(task_name: str | None) -> str | None:

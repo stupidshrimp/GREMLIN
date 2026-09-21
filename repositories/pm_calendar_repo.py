@@ -93,6 +93,16 @@ _TASK_COLUMNS = (
 # should look like.
 _ADDED_COLUMNS: dict[str, str] = {"parent_asset_id": "TEXT"}
 
+# How many asset ids go into one "asset_id IN (...)" statement. Selecting a
+# parent expands to every asset beneath it, and on this account's hierarchy
+# the largest department covers 783 -- already most of the 999 bound
+# parameters SQLite allowed before 3.32, and that ceiling is a hard "too many
+# SQL variables" error rather than a slow query. GREMLIN is deployed on
+# Windows, where the bundled SQLite version is whatever the Python build
+# carried, so the floor is what has to be respected. Batching keeps every
+# statement well inside it however the plant reorganises its assets.
+_ASSET_ID_BATCH = 900
+
 
 class PmCalendarUnavailableError(RuntimeError):
     """The PM calendar database could not be opened.
@@ -296,32 +306,52 @@ class PmCalendarRepository:
         `asset_ids` of None or [] means "every asset."
         """
 
-        clauses: list[str] = []
-        params: list[Any] = []
-
-        if asset_ids:
-            placeholders = ", ".join("?" for _ in asset_ids)
-            clauses.append(f"asset_id IN ({placeholders})")
-            params.extend(asset_ids)
+        date_clauses: list[str] = []
+        date_params: list[Any] = []
         if due_since:
-            clauses.append("due_date >= ?")
-            params.append(due_since)
+            date_clauses.append("due_date >= ?")
+            date_params.append(due_since)
         if due_until:
-            clauses.append("due_date <= ?")
-            params.append(due_until)
+            date_clauses.append("due_date <= ?")
+            date_params.append(due_until)
 
-        sql = "SELECT * FROM pm_task"
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY due_date"
+        # One statement per batch of asset ids -- see _ASSET_ID_BATCH for why
+        # a long list cannot go into a single IN clause. None or [] means
+        # every asset, which needs no id predicate and so is one statement.
+        if asset_ids:
+            batches: list[list[str] | None] = [
+                list(asset_ids[index:index + _ASSET_ID_BATCH])
+                for index in range(0, len(asset_ids), _ASSET_ID_BATCH)
+            ]
+        else:
+            batches = [None]
 
+        rows: list[Any] = []
         with self._reporting_failures():
             conn = self.connect()
             try:
-                rows = conn.execute(sql, params).fetchall()
+                for batch in batches:
+                    clauses = list(date_clauses)
+                    params = list(date_params)
+                    if batch:
+                        placeholders = ", ".join("?" for _ in batch)
+                        clauses.append(f"asset_id IN ({placeholders})")
+                        params.extend(batch)
+                    sql = "SELECT * FROM pm_task"
+                    if clauses:
+                        sql += " WHERE " + " AND ".join(clauses)
+                    rows.extend(conn.execute(sql, params).fetchall())
             finally:
                 conn.close()
-        return [_row_to_dict(row) for row in rows]
+
+        # Ordered here rather than in SQL: across more than one batch the
+        # database can only sort within each, so the merge has to happen
+        # somewhere. Empty string for a missing due_date keeps those first,
+        # which is where ORDER BY due_date put them.
+        return sorted(
+            (_row_to_dict(row) for row in rows),
+            key=lambda row: row["due_date"] or "",
+        )
 
     def asset_options(self) -> list[dict[str, Any]]:
         """Distinct assets that currently have at least one stored PM task."""

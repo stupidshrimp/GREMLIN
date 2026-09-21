@@ -738,46 +738,24 @@ document.addEventListener('DOMContentLoaded', function () {
     // Asset picker modal
     // ------------------------------------------------------------------
 
-    // Parents first with their own children beneath them, indented, so the
-    // list reads as the hierarchy Limble records rather than an alphabetical
-    // mix in which a parent and its sub-assets look like unrelated siblings.
-    function hierarchicalOrder(assets) {
-        const byId = {};
-        assets.forEach(a => { byId[String(a.asset_id)] = a; });
-        const out = [];
-        const seen = new Set();
-        (function walk(parentId, depth) {
-            const ids = parentId === ''
-                ? assets.filter(a => !parentOf[String(a.asset_id)]).map(a => String(a.asset_id))
-                : (childrenOf[parentId] || []);
-            ids.forEach(id => {
-                if (seen.has(id) || !byId[id]) return;
-                seen.add(id);
-                out.push({ asset: byId[id], depth: depth });
-                walk(id, depth + 1);
-            });
-        })('', 0);
-        // A parent loop would leave its members unvisited above; they still
-        // belong in the picker, just without a place in the tree.
-        assets.forEach(a => {
-            if (!seen.has(String(a.asset_id))) out.push({ asset: a, depth: 0 });
-        });
-        return out;
-    }
-
+    // One flat alphabetical list, the order asset_options() returns. The
+    // hierarchy is deliberately not drawn as a tree: on this account it is
+    // departments and buildings above the equipment, so nesting pushed 55%
+    // of assets two or three levels down and moved 4002 away from 4001 and
+    // 4005 where someone scrolling for it would look. The hierarchy still
+    // decides what a selection *covers* -- it just doesn't decide where
+    // things sit in the list.
     function renderAssetOptions(assets) {
         const list = document.getElementById('pm-asset-list');
         list.innerHTML = '';
 
-        hierarchicalOrder(assets).forEach(entry => {
-            const asset = entry.asset;
+        assets.forEach(asset => {
             // Buttons for the same reason the chip's ✕ is one -- the picker is
             // a list of things to press, and a <div> with a click handler on it
             // cannot be tabbed to or pressed with a key.
             const option = document.createElement('button');
             option.type = 'button';
-            option.className = 'pm-asset-option' + (entry.depth ? ' is-child' : '');
-            option.style.setProperty('--pm-asset-depth', entry.depth);
+            option.className = 'pm-asset-option';
 
             const label = asset.asset_name || asset.asset_number || asset.asset_id;
             option.appendChild(document.createTextNode(label));
@@ -955,10 +933,6 @@ document.addEventListener('DOMContentLoaded', function () {
     searchBox.addEventListener('keyup', () => {
         const value = searchBox.value.toLowerCase();
         const list = document.getElementById('pm-asset-list');
-        // A filtered list is no longer a tree -- a match whose parent was
-        // hidden would sit indented under nothing. Flatten while searching
-        // and let the indent come back when the box is cleared.
-        list.classList.toggle('is-filtered', value.length > 0);
         list.querySelectorAll('.pm-asset-option').forEach(option => {
             option.hidden = !option.textContent.toLowerCase().includes(value);
         });
