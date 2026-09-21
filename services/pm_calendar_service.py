@@ -17,7 +17,7 @@ from typing import Any
 
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.pm_calendar_repo import DEFAULT_PM_CALENDAR_DB_PATH, PmCalendarRepository
-from services.ingestion_service import _unix_to_iso_utc
+from services.ingestion_service import _asset_parent_id, _unix_to_iso_utc
 from services.sync_service import LIMBLE_ENV_PREFIX, load_dotenv_files
 
 # Job states, same vocabulary as services/sync_service.py's LimbleSyncRunner.
@@ -295,10 +295,19 @@ class PmCalendarService:
                 for asset in assets
                 if asset.get("assetID") not in (None, "")
             }
+            # Limble's /assets carries the hierarchy and this call was already
+            # making it -- it just threw everything but the name away. Reuses
+            # ingestion_service's reader so the several spellings Limble has
+            # used for the parent field stay described in one place.
+            asset_parents = {
+                str(asset.get("assetID")): _asset_parent_id(asset)
+                for asset in assets
+                if asset.get("assetID") not in (None, "")
+            }
 
             rows = []
             for task in tasks:
-                row = self._map_pm_task(task, asset_names)
+                row = self._map_pm_task(task, asset_names, asset_parents)
                 if row is not None:
                     rows.append(row)
 
@@ -337,7 +346,10 @@ class PmCalendarService:
         return bool(value)
 
     def _map_pm_task(
-        self, task: dict[str, Any], asset_names: dict[str, Any]
+        self,
+        task: dict[str, Any],
+        asset_names: dict[str, Any],
+        asset_parents: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Return a pm_task row for a real PM occurrence, or None to skip this task."""
 
@@ -362,6 +374,7 @@ class PmCalendarService:
             "asset_id": asset_id_str,
             "asset_number": asset_id_str,
             "asset_name": asset_names.get(asset_id_str),
+            "parent_asset_id": (asset_parents or {}).get(asset_id_str),
             "task_name": task.get("name"),
             "status_raw": task.get("status") or task.get("statusID"),
             "due_date": due_date,
@@ -512,6 +525,36 @@ class PmCalendarService:
         self._ensure_schema()
         return self.repo.asset_options()
 
+    def _with_descendants(self, asset_ids: list[str]) -> list[str]:
+        """Expand a selection so picking a parent picks everything under it.
+
+        An asset whose PMs are filed against it directly stays in the set --
+        4002 has its own lines as well as twenty sub-assets, and picking it
+        should show both. Assets with no PMs never appear in the map, so a
+        parent nobody can select is simply not a parent here.
+
+        Walks breadth-first with a seen set: Limble's hierarchy is a tree in
+        practice, but a cycle in the data would otherwise hang the request,
+        and this runs on a plain GET.
+        """
+
+        children: dict[str, list[str]] = {}
+        for asset_id, parent_id in self.repo.asset_parent_map().items():
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(asset_id)
+
+        expanded: list[str] = []
+        seen: set[str] = set()
+        queue = [str(asset_id) for asset_id in asset_ids]
+        while queue:
+            asset_id = queue.pop(0)
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            expanded.append(asset_id)
+            queue.extend(children.get(asset_id, ()))
+        return expanded
+
     def events(
         self,
         asset_ids: list[str] | None = None,
@@ -521,6 +564,8 @@ class PmCalendarService:
         if asset_ids is not None and len(asset_ids) == 0:
             return []
         self._ensure_schema()
+        if asset_ids is not None:
+            asset_ids = self._with_descendants(asset_ids)
         real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
         if asset_ids is None:
@@ -552,8 +597,13 @@ class PmCalendarService:
             return empty
 
         self._ensure_schema()
-        today = date.today().isoformat()
-        year_start = date.today().replace(month=1, day=1).isoformat()
+        if asset_ids is not None:
+            asset_ids = self._with_descendants(asset_ids)
+        # Through _today() rather than date.today() so the whole page reads
+        # one clock: the tiles and the grid disagreeing about where "now" is
+        # would be a genuinely confusing bug to chase.
+        today = _today()
+        year_start = date.fromisoformat(today).replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)
 
         scheduled = len(due_ytd)

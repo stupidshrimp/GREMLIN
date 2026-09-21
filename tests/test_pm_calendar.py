@@ -339,10 +339,11 @@ def _service(tmp_path, rows):
     return service
 
 
-def _row(task_id, asset_id, name, due, completed=None, **extra):
+def _row(task_id, asset_id, name, due, completed=None, *, parent=None, **extra):
     return {
         "task_id": task_id, "asset_id": asset_id, "asset_number": asset_id,
         "asset_name": extra.get("asset_name", f"Asset {asset_id}"),
+        "parent_asset_id": parent,
         "task_name": name, "status_raw": "done" if completed else "open",
         "due_date": due, "completed_date": completed,
         "is_completed": 1 if completed else 0,
@@ -630,3 +631,151 @@ def test_a_drifted_pm_name_yields_no_cadence_code(name):
     """
 
     assert pm_calendar_service._cadence_code(name) is None
+
+
+# ----------------------------------------------------------------------
+# Asset hierarchy: picking a parent picks everything under it
+# ----------------------------------------------------------------------
+def _seeded_hierarchy(tmp_path):
+    """4002 with two sub-assets, one of which has a sub-asset of its own.
+
+    Mirrors the shape the real account has: a parent that carries PMs in its
+    own right *and* children that carry theirs, so "did picking the parent
+    include its own work as well as its children's" is answerable.
+    """
+
+    return _service(tmp_path, [
+        _row("1", "4002", "4002 - M - PFS", "2026-09-01", "2026-09-01",
+             asset_name="4002 Panel Finishing System"),
+        _row("2", "4002-S05", "4002-S05 - M - Chemical Spray", "2026-09-02", "2026-09-02",
+             parent="4002", asset_name="4002-S05 Chemical Spray"),
+        _row("3", "4002-S19", "4002-S19 - M - Chain", "2026-09-03", "2026-09-03",
+             parent="4002", asset_name="4002-S19 Chain"),
+        _row("4", "4002-S19-A", "4002-S19-A - M - Chain Motor", "2026-09-04", "2026-09-04",
+             parent="4002-S19", asset_name="4002-S19-A Chain Motor"),
+        _row("5", "7001", "7001 - M - Unrelated", "2026-09-05", "2026-09-05",
+             asset_name="7001 Unrelated Press"),
+    ])
+
+
+def _real_asset_ids(service, asset_ids, monkeypatch):
+    _pin_today(monkeypatch, "2026-09-10")
+    events = service.events(
+        asset_ids=asset_ids, start_date="2026-09-01", end_date="2026-09-30")
+    return sorted({e["asset_id"] for e in events if not e.get("is_projected")})
+
+
+def test_picking_a_parent_includes_its_own_pms_and_every_descendant(tmp_path, monkeypatch):
+    """One chip, the whole branch -- parent included, not just the children."""
+
+    service = _seeded_hierarchy(tmp_path)
+
+    assert _real_asset_ids(service, ["4002"], monkeypatch) == [
+        "4002", "4002-S05", "4002-S19", "4002-S19-A",
+    ]
+
+
+def test_picking_a_child_leaves_its_siblings_and_parent_out(tmp_path, monkeypatch):
+    """Sub-assets stay individually selectable; expansion only goes downwards."""
+
+    service = _seeded_hierarchy(tmp_path)
+
+    assert _real_asset_ids(service, ["4002-S05"], monkeypatch) == ["4002-S05"]
+
+
+def test_picking_a_middle_asset_takes_its_own_branch_only(tmp_path, monkeypatch):
+    """Expansion is the subtree under what was picked, not the whole tree."""
+
+    service = _seeded_hierarchy(tmp_path)
+
+    assert _real_asset_ids(service, ["4002-S19"], monkeypatch) == ["4002-S19", "4002-S19-A"]
+
+
+def test_the_ytd_summary_counts_a_parents_descendants_too(tmp_path, monkeypatch):
+    """The tiles and the grid have to agree about what a chip covers."""
+
+    _pin_today(monkeypatch, "2026-09-10")
+    service = _seeded_hierarchy(tmp_path)
+
+    assert service.summary(asset_ids=["4002"])["completed"] == 4
+    assert service.summary(asset_ids=["4002-S05"])["completed"] == 1
+
+
+def test_a_parent_loop_in_the_data_does_not_hang_the_request(tmp_path, monkeypatch):
+    """Limble's hierarchy is a tree in practice; a cycle must not spin a GET.
+
+    This is reachable by a plain GET, so a bad parent link has to terminate
+    rather than take the worker thread with it.
+    """
+
+    service = _service(tmp_path, [
+        _row("1", "A", "A - M - One", "2026-09-01", "2026-09-01", parent="B"),
+        _row("2", "B", "B - M - Two", "2026-09-02", "2026-09-02", parent="A"),
+    ])
+
+    assert _real_asset_ids(service, ["A"], monkeypatch) == ["A", "B"]
+
+
+def test_a_parent_with_no_pms_of_its_own_is_not_a_parent_here(tmp_path, monkeypatch):
+    """Only assets that reached pm_task can be picked, so only they can nest.
+
+    9000 is named as the parent but has no PMs, so it never appears in the
+    picker. Its child stands on its own rather than becoming unreachable.
+    """
+
+    service = _service(tmp_path, [
+        _row("1", "9001", "9001 - M - Orphan", "2026-09-01", "2026-09-01", parent="9000"),
+    ])
+
+    assert [a["asset_id"] for a in service.asset_options()] == ["9001"]
+    assert _real_asset_ids(service, ["9001"], monkeypatch) == ["9001"]
+
+
+def test_asset_options_carries_the_parent_so_the_picker_can_nest(tmp_path):
+    service = _seeded_hierarchy(tmp_path)
+
+    parents = {a["asset_id"]: a["parent_asset_id"] for a in service.asset_options()}
+
+    assert parents == {
+        "4002": None, "4002-S05": "4002", "4002-S19": "4002",
+        "4002-S19-A": "4002-S19", "7001": None,
+    }
+
+
+def test_the_sync_stores_each_tasks_parent_asset(tmp_path):
+    """The hierarchy comes off the /assets payload the sync already fetches."""
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    row = service._map_pm_task(
+        {"taskID": "1", "assetID": "4002-S05", "type": "1", "name": "4002-S05 - M - Spray"},
+        {"4002-S05": "4002-S05 Chemical Spray"},
+        {"4002-S05": "4002"},
+    )
+
+    assert row["parent_asset_id"] == "4002"
+
+
+def test_an_older_database_gains_the_parent_column_without_losing_rows(tmp_path):
+    """pm_task predates parent_asset_id, and CREATE TABLE IF NOT EXISTS is a no-op.
+
+    A database written by the previous version has to pick the column up on
+    the next start rather than needing to be deleted and re-synced.
+    """
+
+    db_path = tmp_path / "pm.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE pm_task (task_id TEXT PRIMARY KEY, asset_id TEXT, "
+        "asset_number TEXT, asset_name TEXT, task_name TEXT, status_raw TEXT, "
+        "due_date TEXT, completed_date TEXT, is_completed INTEGER NOT NULL DEFAULT 0, "
+        "synced_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    conn.execute("INSERT INTO pm_task (task_id, asset_id) VALUES ('1', '4002')")
+    conn.commit()
+    conn.close()
+
+    repo = PmCalendarRepository(db_path)
+    repo.ensure_schema()
+
+    assert repo.asset_parent_map() == {"4002": None}
+    assert len(repo.fetch_tasks()) == 1

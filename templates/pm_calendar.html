@@ -201,6 +201,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     let eventsByDate = {};
     let assetColorMap = {};
+    // asset_id -> parent asset_id, and the reverse. Only links where the
+    // parent is itself in the picker: a parent with no PMs of its own never
+    // reaches pm_task, so its children have nothing to nest under.
+    let parentOf = {};
+    let childrenOf = {};
 
     // The status line had three writers -- the asset load, the sync poll and
     // the sync button -- and they overwrote each other. On every page load both
@@ -279,6 +284,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 // opened stops being reported once it comes back.
                 reportDatabase('assets', '');
                 allAssets = data.assets || [];
+                rebuildHierarchy();
                 renderAssetOptions(allAssets);
             })
             .catch(() => {
@@ -384,8 +390,50 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     }
 
+    function rebuildHierarchy() {
+        const known = new Set(allAssets.map(a => String(a.asset_id)));
+        parentOf = {};
+        childrenOf = {};
+        allAssets.forEach(a => {
+            const id = String(a.asset_id);
+            const parent = a.parent_asset_id == null ? '' : String(a.parent_asset_id);
+            if (!parent || parent === id || !known.has(parent)) return;
+            parentOf[id] = parent;
+            (childrenOf[parent] = childrenOf[parent] || []).push(id);
+        });
+    }
+
+    // Everything below an asset, depth-first. The seen set is not defensive
+    // padding: a parent loop in the data would otherwise spin the browser.
+    function descendantIds(assetId) {
+        const out = [];
+        const seen = new Set([String(assetId)]);
+        const queue = [String(assetId)];
+        while (queue.length) {
+            (childrenOf[queue.shift()] || []).forEach(id => {
+                if (seen.has(id)) return;
+                seen.add(id);
+                out.push(id);
+                queue.push(id);
+            });
+        }
+        return out;
+    }
+
+    // The colour an event's pill should wear. An event belongs to whichever
+    // selected asset it sits under, which for a child of a chipped-in parent
+    // is an ancestor rather than itself -- so walk up until a selected asset
+    // is found. A directly selected child wins, because its own id is in the
+    // map and the walk stops immediately.
     function assetColor(assetId) {
-        return assetColorMap[assetId] || null;
+        let id = assetId == null ? null : String(assetId);
+        const seen = new Set();
+        while (id && !seen.has(id)) {
+            if (assetColorMap[id]) return assetColorMap[id];
+            seen.add(id);
+            id = parentOf[id];
+        }
+        return null;
     }
 
     // The asset marker, built the same way everywhere it appears.
@@ -646,7 +694,15 @@ document.addEventListener('DOMContentLoaded', function () {
             chip.appendChild(swatch);
 
             const name = asset.name || asset.number || asset.id;
-            chip.appendChild(document.createTextNode(name));
+            // One chip for a whole branch, rather than one per sub-asset:
+            // 4002 brings twenty children, and twenty chips would bury the
+            // row and wrap the seven-colour palette three times over.
+            const under = descendantIds(asset.id).length;
+            if (under) {
+                chip.title = name + ' and its ' + under + ' sub-asset' + (under === 1 ? '' : 's');
+            }
+            chip.appendChild(document.createTextNode(
+                under ? name + ' +' + under : name));
 
             // A button, not a clickable <span>: taking a chip back off is the
             // only thing you can do to it, and it has to be reachable from the
@@ -682,18 +738,59 @@ document.addEventListener('DOMContentLoaded', function () {
     // Asset picker modal
     // ------------------------------------------------------------------
 
+    // Parents first with their own children beneath them, indented, so the
+    // list reads as the hierarchy Limble records rather than an alphabetical
+    // mix in which a parent and its sub-assets look like unrelated siblings.
+    function hierarchicalOrder(assets) {
+        const byId = {};
+        assets.forEach(a => { byId[String(a.asset_id)] = a; });
+        const out = [];
+        const seen = new Set();
+        (function walk(parentId, depth) {
+            const ids = parentId === ''
+                ? assets.filter(a => !parentOf[String(a.asset_id)]).map(a => String(a.asset_id))
+                : (childrenOf[parentId] || []);
+            ids.forEach(id => {
+                if (seen.has(id) || !byId[id]) return;
+                seen.add(id);
+                out.push({ asset: byId[id], depth: depth });
+                walk(id, depth + 1);
+            });
+        })('', 0);
+        // A parent loop would leave its members unvisited above; they still
+        // belong in the picker, just without a place in the tree.
+        assets.forEach(a => {
+            if (!seen.has(String(a.asset_id))) out.push({ asset: a, depth: 0 });
+        });
+        return out;
+    }
+
     function renderAssetOptions(assets) {
         const list = document.getElementById('pm-asset-list');
         list.innerHTML = '';
 
-        assets.forEach(asset => {
+        hierarchicalOrder(assets).forEach(entry => {
+            const asset = entry.asset;
             // Buttons for the same reason the chip's ✕ is one -- the picker is
             // a list of things to press, and a <div> with a click handler on it
             // cannot be tabbed to or pressed with a key.
             const option = document.createElement('button');
             option.type = 'button';
-            option.className = 'pm-asset-option';
-            option.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
+            option.className = 'pm-asset-option' + (entry.depth ? ' is-child' : '');
+            option.style.setProperty('--pm-asset-depth', entry.depth);
+
+            const label = asset.asset_name || asset.asset_number || asset.asset_id;
+            option.appendChild(document.createTextNode(label));
+
+            // Says what pressing this will actually add, rather than leaving
+            // someone to notice twenty extra assets' PMs afterwards.
+            const under = descendantIds(asset.asset_id).length;
+            if (under) {
+                const note = document.createElement('span');
+                note.className = 'pm-asset-option-note';
+                note.textContent = ' +' + under + ' sub-asset' + (under === 1 ? '' : 's');
+                option.appendChild(note);
+            }
             option.dataset.assetId = asset.asset_id;
             option.dataset.assetNumber = asset.asset_number || '';
             option.dataset.assetName = asset.asset_name || '';
@@ -857,7 +954,12 @@ document.addEventListener('DOMContentLoaded', function () {
     const searchBox = document.getElementById('pm-asset-search');
     searchBox.addEventListener('keyup', () => {
         const value = searchBox.value.toLowerCase();
-        document.querySelectorAll('#pm-asset-list .pm-asset-option').forEach(option => {
+        const list = document.getElementById('pm-asset-list');
+        // A filtered list is no longer a tree -- a match whose parent was
+        // hidden would sit indented under nothing. Flatten while searching
+        // and let the indent come back when the box is cleared.
+        list.classList.toggle('is-filtered', value.length > 0);
+        list.querySelectorAll('.pm-asset-option').forEach(option => {
             option.hidden = !option.textContent.toLowerCase().includes(value);
         });
     });

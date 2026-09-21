@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS pm_task (
     asset_id TEXT,
     asset_number TEXT,
     asset_name TEXT,
+    parent_asset_id TEXT,
     task_name TEXT,
     status_raw TEXT,
     due_date TEXT,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS pm_task (
 # and nothing to maintain -- SQLite keeps them up to date automatically.
 _CREATE_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_id ON pm_task(asset_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pm_task_parent_asset ON pm_task(parent_asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_due_date ON pm_task(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_due ON pm_task(asset_id, due_date)",
 )
@@ -75,12 +77,21 @@ _TASK_COLUMNS = (
     "asset_id",
     "asset_number",
     "asset_name",
+    "parent_asset_id",
     "task_name",
     "status_raw",
     "due_date",
     "completed_date",
     "is_completed",
 )
+
+
+# Columns added to pm_task after it first shipped. CREATE TABLE IF NOT EXISTS
+# does nothing to a database that already has the older shape, so anything
+# added later has to be ALTERed in -- see _add_missing_columns. Existing rows
+# get NULL, which is exactly what an asset that has not been re-synced yet
+# should look like.
+_ADDED_COLUMNS: dict[str, str] = {"parent_asset_id": "TEXT"}
 
 
 class PmCalendarUnavailableError(RuntimeError):
@@ -199,8 +210,24 @@ class PmCalendarRepository:
 
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
+            self._add_missing_columns(conn)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        """Add any column this version expects that an older database lacks.
+
+        SQLite has no ADD COLUMN IF NOT EXISTS, so the current shape is read
+        first. Runs on every ensure_schema and is a no-op once the columns are
+        there; the index statements below have to come after it, since one of
+        them names a column this may have just added.
+        """
+
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(pm_task)")}
+        for column, declared_type in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE pm_task ADD COLUMN {column} {declared_type}")
 
     # ------------------------------------------------------------------
     # Writes
@@ -238,6 +265,24 @@ class PmCalendarRepository:
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
+    def asset_parent_map(self) -> dict[str, str | None]:
+        """Every synced asset mapped to its immediate parent, or None.
+
+        Only assets that actually have PMs appear, because that is all
+        pm_task holds -- so a parent with no PMs of its own is absent here
+        even when its children name it. Callers treat a parent they cannot
+        see as no parent, which is what the picker already shows.
+        """
+
+        sql = "SELECT DISTINCT asset_id, parent_asset_id FROM pm_task WHERE asset_id IS NOT NULL"
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(sql).fetchall()
+            finally:
+                conn.close()
+        return {str(row["asset_id"]): row["parent_asset_id"] for row in rows}
+
     def fetch_tasks(
         self,
         asset_ids: list[str] | None = None,
@@ -282,7 +327,7 @@ class PmCalendarRepository:
         """Distinct assets that currently have at least one stored PM task."""
 
         sql = (
-            "SELECT DISTINCT asset_id, asset_number, asset_name "
+            "SELECT DISTINCT asset_id, asset_number, asset_name, parent_asset_id "
             "FROM pm_task ORDER BY asset_name"
         )
         with self._reporting_failures():
