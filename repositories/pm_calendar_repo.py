@@ -335,6 +335,33 @@ class PmCalendarRepository:
                 conn.close()
         return [_row_to_dict(row) for row in rows]
 
+    def fetch_last_completed(self, asset_ids: list[str]) -> dict[str, Any] | None:
+        """The most recently completed PM among `asset_ids`, or None.
+
+        "Most recent" is by completed_date -- when the work was actually
+        signed off -- with due_date breaking a tie. Rows without a due_date
+        are skipped: the calendar draws a PM on its due date, so one without
+        has nowhere to be jumped to. One row, straight from the index on
+        asset_id; this never reads more than the matching assets' rows.
+        """
+
+        if not asset_ids:
+            return None
+        placeholders = ", ".join("?" for _ in asset_ids)
+        sql = (
+            f"SELECT * FROM pm_task WHERE asset_id IN ({placeholders}) "
+            "AND completed_date IS NOT NULL AND completed_date != '' "
+            "AND due_date IS NOT NULL AND due_date != '' "
+            "ORDER BY completed_date DESC, due_date DESC LIMIT 1"
+        )
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                row = conn.execute(sql, list(asset_ids)).fetchone()
+            finally:
+                conn.close()
+        return _row_to_dict(row) if row else None
+
     def asset_options(self) -> list[dict[str, Any]]:
         """Distinct assets that currently have at least one stored PM task."""
 

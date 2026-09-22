@@ -2574,6 +2574,21 @@ def api_pm_calendar_events():
     return jsonify({"events": events})
 
 
+@app.route("/pm-calendar/api/last-completed")
+def api_pm_calendar_last_completed():
+    # For the "Last done" button on an asset chip: which PM to jump the
+    # calendar to. `assets` is required here -- "every asset" has no sensible
+    # last completed PM to jump to, and would be an unbounded read.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        pm = pm_calendar_service.last_completed(asset_ids)
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"pm": pm})
+
+
 @app.route("/pm-calendar/api/summary")
 def api_pm_calendar_summary():
     try:

@@ -995,3 +995,90 @@ def test_a_sync_stores_the_hierarchy(tmp_path, monkeypatch):
         ("4002", 1),
         ("4101", 0),
     ]
+
+
+def test_a_line_grouped_through_parents_without_pms_is_picked_as_a_whole(tmp_path):
+    """The Salvagnini shape from Limble: two grouping levels with no PMs.
+
+    3101-3107 Salvagnini has no PMs; nor do its "Forming Side" and "Laser
+    Side" groupings. Every PM sits on the numbered machines underneath.
+    Picking the top still has to bring all seven in, and picking one side
+    only that side's machines.
+    """
+
+    assets = [
+        {"assetID": 9000, "name": "3101-3107 Salvagnini", "parentAssetID": 0},
+        {"assetID": 9001, "name": "Salvagnini Forming Side", "parentAssetID": 9000},
+        {"assetID": 9002, "name": "Salvagnini Laser Side", "parentAssetID": 9000},
+    ]
+    assets += [{"assetID": a, "name": str(a), "parentAssetID": 9001} for a in (3102, 3105, 3106, 3107)]
+    assets += [{"assetID": a, "name": str(a), "parentAssetID": 9002} for a in (3101, 3103, 3104)]
+    machines = ["3101", "3102", "3103", "3104", "3105", "3106", "3107"]
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([_pm(a, a, a, "2026-10-05") for a in machines])
+    service.repo.replace_assets(PmCalendarService._asset_hierarchy(assets, set(machines)))
+
+    window = dict(start_date="2026-10-01", end_date="2026-10-31")
+    assert _real_asset_ids(service.events(asset_ids=["9000"], **window)) == machines
+    assert _real_asset_ids(service.events(asset_ids=["9002"], **window)) == ["3101", "3103", "3104"]
+    counts = {o["asset_id"]: o["descendant_count"] for o in service.asset_options()}
+    assert (counts["9000"], counts["9001"], counts["9002"]) == (9, 4, 3)
+
+
+# ----------------------------------------------------------------------
+# "Last done": the most recently completed PM for a chip
+# ----------------------------------------------------------------------
+def test_last_done_is_the_most_recently_completed_pm(tmp_path):
+    """By completion date, not due date: the one signed off last wins."""
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        _pm("1", "7", "Pump", "2026-08-01", completed="2026-08-20"),
+        _pm("2", "7", "Pump", "2026-08-15", completed="2026-08-16"),
+        _pm("3", "7", "Pump", "2026-09-10"),  # still open
+    ])
+
+    pm = service.last_completed(["7"])
+
+    assert pm["task_id"] == "1"
+    assert pm["due_date"] == "2026-08-01"
+
+
+def test_last_done_on_a_parent_covers_its_sub_assets(tmp_path):
+    service = _panel_line(tmp_path)
+    service.repo.upsert_tasks([
+        _pm("30", "4002", "Panel Finishing System", "2026-07-01", completed="2026-07-01"),
+        _pm("31", "S1A", "Sander Dust Collector", "2026-08-01", completed="2026-08-03"),
+        _pm("32", "9", "Unrelated Press", "2026-09-01", completed="2026-09-01"),
+    ])
+
+    assert service.last_completed(["4002"])["task_id"] == "31"
+    assert service.last_completed(["S2"]) is None
+
+
+def test_last_done_without_a_completed_pm_is_none(tmp_path):
+    service = _seeded(tmp_path)
+
+    assert service.last_completed(["7"]) is None
+    assert service.last_completed([]) is None
+
+
+def test_the_last_done_endpoint(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.pm_calendar_service._ensure_schema()
+    module.pm_calendar_service.repo.upsert_tasks([
+        _pm("1", "7", "Pump", "2026-08-01", completed="2026-08-02"),
+    ])
+    client = module.app.test_client()
+
+    found = client.get("/pm-calendar/api/last-completed?assets=7")
+    assert found.status_code == 200
+    assert found.get_json()["pm"]["task_id"] == "1"
+
+    assert client.get("/pm-calendar/api/last-completed?assets=8").get_json() == {"pm": None}
+    # Required: "every asset" has no one last PM to jump to.
+    assert client.get("/pm-calendar/api/last-completed").status_code == 400
+    assert client.get("/pm-calendar/api/last-completed?assets=").status_code == 400

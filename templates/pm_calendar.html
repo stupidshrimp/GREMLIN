@@ -206,6 +206,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     let eventsByDate = {};
     let assetColorMap = {};
+    // The day a "Last done" jump landed on ("YYYY-MM-DD"), outlined until the
+    // timer clears it. Held here rather than set on a cell once, because the
+    // month is drawn twice on a jump -- empty straight away, then again when
+    // its events arrive -- and the outline has to survive the redraw.
+    let highlightIso = null;
+    let highlightTimer = null;
 
     // The status line had three writers -- the asset load, the sync poll and
     // the sync button -- and they overwrote each other. On every page load both
@@ -222,15 +228,30 @@ document.addEventListener('DOMContentLoaded', function () {
     // Whether the sync message currently held is a failure rather than
     // progress, which is all `is-error` below is deciding.
     let syncFailed = false;
+    // A short-lived note from a "Last done" jump -- which PM it landed on, or
+    // that there was none. Outranks the sync message while it lasts (it's
+    // the answer to what was just pressed) but never a database error.
+    let noticeMessage = '';
+    let noticeTimer = null;
 
     function renderStatus() {
         const status = document.getElementById('pm-sync-status');
-        status.textContent = databaseError || syncMessage;
+        status.textContent = databaseError || noticeMessage || syncMessage;
         // Two of the messages this line carries report something to act on --
         // an unreadable database, and a sync that did not run. They get the
         // danger ink the banners elsewhere use so they do not read as one more
         // progress update.
-        status.classList.toggle('is-error', Boolean(databaseError) || (!databaseError && syncFailed));
+        status.classList.toggle('is-error', Boolean(databaseError) || (!noticeMessage && syncFailed));
+    }
+
+    function showNotice(message) {
+        noticeMessage = message;
+        renderStatus();
+        clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => {
+            noticeMessage = '';
+            renderStatus();
+        }, 8000);
     }
 
     // Three requests read the same database, and any of them can be the one
@@ -584,6 +605,8 @@ document.addEventListener('DOMContentLoaded', function () {
             cell.appendChild(label);
 
             const iso = isoDate(currentYear, currentMonth, day);
+            cell.dataset.date = iso;
+            if (iso === highlightIso) cell.classList.add('is-highlighted');
             const dayEvents = eventsByDate[iso] || [];
             const shown = dayEvents.slice(0, 3);
 
@@ -642,6 +665,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
             grid.appendChild(cell);
         }
+
+        // Bring a "Last done" landing into view -- on a short screen the day
+        // can be below the fold, and the month changing above it says nothing.
+        const landed = grid.querySelector('.pm-day.is-highlighted');
+        if (landed) {
+            const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            landed.scrollIntoView({ block: 'nearest', behavior: still ? 'auto' : 'smooth' });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -681,6 +712,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 chip.appendChild(meta);
             }
 
+            // "Last done": jump to this chip's most recently completed PM. For
+            // a parent that's the latest across its whole branch, the same way
+            // the chip stands for the branch everywhere else on the page.
+            const jump = document.createElement('button');
+            jump.type = 'button';
+            jump.className = 'pm-asset-jump';
+            jump.textContent = 'Last done';
+            jump.title = 'Jump to the last completed PM' + (asset.descendants > 0 ? ' for this asset or its sub-assets' : '');
+            jump.setAttribute('aria-label', 'Jump to the last completed PM for ' + name);
+            jump.addEventListener('click', () => jumpToLastCompleted(asset, jump));
+            chip.appendChild(jump);
+
             // A button, not a clickable <span>: taking a chip back off is the
             // only thing you can do to it, and it has to be reachable from the
             // keyboard like every other control on the page.
@@ -701,6 +744,50 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         emptyHint.hidden = selectedAssets.length > 0;
+    }
+
+    function jumpToLastCompleted(asset, button) {
+        const name = asset.name || asset.number || asset.id;
+        button.disabled = true;
+        fetch('/pm-calendar/api/last-completed?assets=' + encodeURIComponent(asset.id))
+            .then(r => r.json().then(data => ({ ok: r.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    showNotice('Could not look up the last completed PM: ' + (data.error || 'unknown error'));
+                    return;
+                }
+                const pm = data.pm;
+                if (!pm) {
+                    showNotice('No completed PMs on file for ' + name + '.');
+                    return;
+                }
+
+                // The pill is drawn on its due date, so that's where to land --
+                // the notice says when it was actually completed.
+                const iso = pm.due_date.slice(0, 10);
+                const [year, month] = iso.split('-').map(Number);
+                currentYear = year;
+                currentMonth = month - 1;
+
+                highlightIso = iso;
+                clearTimeout(highlightTimer);
+                highlightTimer = setTimeout(() => {
+                    highlightIso = null;
+                    grid.querySelectorAll('.pm-day.is-highlighted')
+                        .forEach(cell => cell.classList.remove('is-highlighted'));
+                }, 6000);
+
+                buildCalendar(currentMonth, currentYear);
+                refreshEvents();
+
+                const completed = pm.completed_date ? shortDate(pm.completed_date.slice(0, 10)) : '';
+                // PM names here already start with their asset number, so the
+                // name alone says which machine it was.
+                showNotice('Last completed: ' + (pm.task_name || pm.asset_name || 'PM') +
+                    (completed ? ', completed ' + completed : '') + '.');
+            })
+            .catch(() => showNotice('Could not look up the last completed PM. Check the connection and try again.'))
+            .finally(() => { button.disabled = false; });
     }
 
     function addAsset(asset) {

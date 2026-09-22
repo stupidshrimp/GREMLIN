@@ -684,6 +684,21 @@ class PmCalendarService:
         combined.sort(key=lambda row: row["due_date"] or "")
         return combined
 
+    def last_completed(self, asset_ids: list[str]) -> dict[str, Any] | None:
+        """The most recently completed PM for a chip, or None if there isn't one.
+
+        A parent's chip stands for its whole branch everywhere else on the
+        page, so it does here too: the answer can be one of its sub-assets'
+        PMs. Only real rows are ever considered -- an estimate is never
+        completed. An empty selection answers None without opening the
+        database, the same way events() and summary() treat one.
+        """
+
+        if not asset_ids:
+            return None
+        self._ensure_schema()
+        return self.repo.fetch_last_completed(self._with_descendants(asset_ids))
+
     def summary(self, asset_ids: list[str] | None = None) -> dict[str, Any]:
         empty = {"scheduled": 0, "completed": 0, "overdue": 0, "compliance": 0.0}
         if asset_ids is not None and len(asset_ids) == 0:
