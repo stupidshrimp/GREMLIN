@@ -41,6 +41,11 @@
         <button id="pm-open-picker" class="pm-asset-add" type="button">+ Add asset</button>
       </div>
 
+      {# A parent chip's sub-assets, opened from the chip's "+N" button: tick
+         or untick each one to show or hide its PMs. One chip at a time;
+         filled in by renderBranchPanel(). #}
+      <div id="pm-branch-panel" class="pm-branch-panel" hidden></div>
+
       <p class="pm-hint" id="pm-empty-hint">Add an asset above to see its PM schedule.</p>
     </div>
 
@@ -200,6 +205,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // asset id -> its parent's id, for every asset that has one. How a
     // sub-asset's PM finds the colour of the parent it was picked through.
     let parentOf = {};
+    // The reverse: asset id -> its children's ids, in the picker's order.
+    let childrenOf = {};
+    // Which parent chip has its sub-asset list open, if any.
+    let expandedChipId = null;
     // Assets currently chipped in: same shape as allAssets.
     let selectedAssets = [];
     // PM events for the visible month, keyed by "YYYY-MM-DD".
@@ -285,6 +294,40 @@ document.addEventListener('DOMContentLoaded', function () {
         return selectedAssets.map(a => a.id).join(',');
     }
 
+    // An asset and everything under it, parent first, each with its depth
+    // below `rootId` -- the order the expanded list draws them in. The seen
+    // set keeps a loop in the data from running forever.
+    function branchOf(rootId) {
+        const out = [];
+        const seen = new Set();
+        (function walk(id, depth) {
+            if (seen.has(id)) return;
+            seen.add(id);
+            out.push({ id, depth });
+            (childrenOf[id] || []).forEach(child => walk(child, depth + 1));
+        })(rootId, 0);
+        return out;
+    }
+
+    function assetName(id) {
+        const option = allAssets.find(a => a.asset_id === id);
+        return option ? (option.asset_name || option.asset_number || id) : id;
+    }
+
+    // What the server should leave out: every asset some chip has unticked,
+    // except one another chip is still showing. Picking 3103 as its own chip
+    // keeps it on the calendar even after it's unticked under 3101-3107.
+    function excludedIdsCsv() {
+        const hidden = new Set();
+        const shown = new Set();
+        selectedAssets.forEach(chip => {
+            branchOf(chip.id).forEach(({ id }) => {
+                (chip.hidden && chip.hidden.has(id) ? hidden : shown).add(id);
+            });
+        });
+        return [...hidden].filter(id => !shown.has(id)).join(',');
+    }
+
     // ------------------------------------------------------------------
     // Data loading
     // ------------------------------------------------------------------
@@ -306,8 +349,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 reportDatabase('assets', '');
                 allAssets = data.assets || [];
                 parentOf = {};
+                childrenOf = {};
                 allAssets.forEach(asset => {
-                    if (asset.parent_asset_id) parentOf[asset.asset_id] = asset.parent_asset_id;
+                    if (!asset.parent_asset_id) return;
+                    parentOf[asset.asset_id] = asset.parent_asset_id;
+                    (childrenOf[asset.parent_asset_id] = childrenOf[asset.parent_asset_id] || []).push(asset.asset_id);
                 });
                 renderAssetOptions(allAssets);
                 // After a sync the hierarchy may have changed under chips
@@ -321,6 +367,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     asset.descendants = option ? (option.descendant_count || 0) : 0;
                 });
                 renderChips();
+                renderBranchPanel();
                 renderCalendarBody();
             })
             .catch(() => {
@@ -334,7 +381,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // Always send `assets=`, even empty -- an omitted param means "no
         // filter" to the API, but an empty one means "nothing selected,"
         // which is the behaviour we want here.
-        const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv());
+        const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv()) +
+            '&exclude=' + encodeURIComponent(excludedIdsCsv());
         fetch(url)
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
@@ -371,6 +419,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const end = isoDate(currentYear, currentMonth, lastDay);
 
         const url = '/pm-calendar/api/events?assets=' + encodeURIComponent(selectedAssetIdsCsv()) +
+            '&exclude=' + encodeURIComponent(excludedIdsCsv()) +
             '&start=' + start + '&end=' + end;
 
         fetch(url)
@@ -702,14 +751,30 @@ document.addEventListener('DOMContentLoaded', function () {
             const name = asset.name || asset.number || asset.id;
             chip.appendChild(document.createTextNode(name));
 
-            // "+20": picking a parent brings its sub-assets along, and the
-            // chip should say so rather than look like one machine.
+            // "+20 ▾": picking a parent brings its sub-assets along, and the
+            // chip says so. It's also the button that opens the list of them,
+            // and once some are hidden it says how many are left ("7/9").
             if (asset.descendants > 0) {
-                const meta = document.createElement('span');
-                meta.className = 'pm-asset-chip-meta';
-                meta.textContent = '+' + asset.descendants;
-                meta.title = 'Includes ' + asset.descendants + ' sub-asset' + (asset.descendants === 1 ? '' : 's');
-                chip.appendChild(meta);
+                const hiddenCount = branchOf(asset.id).slice(1).filter(n => asset.hidden && asset.hidden.has(n.id)).length;
+                const open = expandedChipId === asset.id;
+                const expand = document.createElement('button');
+                expand.type = 'button';
+                expand.className = 'pm-asset-expand';
+                expand.dataset.assetId = asset.id;
+                expand.textContent = (hiddenCount ? (asset.descendants - hiddenCount) + '/' + asset.descendants : '+' + asset.descendants) +
+                    (open ? ' ▴' : ' ▾');
+                expand.setAttribute('aria-expanded', open ? 'true' : 'false');
+                expand.setAttribute('aria-controls', 'pm-branch-panel');
+                expand.setAttribute('aria-label',
+                    (open ? 'Hide' : 'Show') + ' the sub-assets of ' + name + ' (' +
+                    (asset.descendants - hiddenCount) + ' of ' + asset.descendants + ' shown)');
+                expand.addEventListener('click', () => {
+                    expandedChipId = open ? null : asset.id;
+                    renderChips();
+                    renderBranchPanel();
+                    focusIn('.pm-asset-expand[data-asset-id="' + CSS.escape(asset.id) + '"]');
+                });
+                chip.appendChild(expand);
             }
 
             // "Last done": jump to this chip's most recently completed PM. For
@@ -734,7 +799,9 @@ document.addEventListener('DOMContentLoaded', function () {
             remove.setAttribute('aria-label', 'Remove ' + name);
             remove.addEventListener('click', () => {
                 selectedAssets = selectedAssets.filter(a => a.id !== asset.id);
+                if (expandedChipId === asset.id) expandedChipId = null;
                 renderChips();
+                renderBranchPanel();
                 refreshSummary();
                 refreshEvents();
             });
@@ -746,10 +813,126 @@ document.addEventListener('DOMContentLoaded', function () {
         emptyHint.hidden = selectedAssets.length > 0;
     }
 
+    function focusIn(selector) {
+        const el = document.querySelector(selector);
+        if (el) el.focus();
+    }
+
+    // The open chip's sub-assets, one checkbox each. Ticking a group ticks
+    // everything under it; a group with some of its machines hidden shows
+    // the in-between state. The calendar follows every change straight away.
+    function renderBranchPanel() {
+        const panel = document.getElementById('pm-branch-panel');
+        const chip = selectedAssets.find(a => a.id === expandedChipId);
+        if (!chip) {
+            expandedChipId = null;
+            panel.hidden = true;
+            panel.innerHTML = '';
+            return;
+        }
+        chip.hidden = chip.hidden || new Set();
+
+        const branch = branchOf(chip.id);
+        const subtree = id => branchOf(id).map(n => n.id);
+        const total = branch.length - 1;
+        const shownCount = branch.slice(1).filter(n => !chip.hidden.has(n.id)).length;
+
+        panel.hidden = false;
+        panel.innerHTML = '';
+        panel.setAttribute('aria-label', 'Sub-assets of ' + (chip.name || chip.id));
+
+        const head = document.createElement('div');
+        head.className = 'pm-branch-head';
+        const title = document.createElement('span');
+        title.className = 'pm-branch-title';
+        title.textContent = shownCount + ' of ' + total + ' sub-asset' + (total === 1 ? '' : 's') + ' shown';
+        head.appendChild(title);
+
+        const actions = document.createElement('div');
+        actions.className = 'pm-branch-actions';
+        [
+            ['Show all', () => chip.hidden.clear()],
+            ['Hide all', () => branch.forEach(n => chip.hidden.add(n.id))],
+            ['Done', null],
+        ].forEach(([label, action]) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'pm-branch-action';
+            button.textContent = label;
+            button.addEventListener('click', () => {
+                if (action) {
+                    action();
+                    selectionChanged('.pm-branch-action:nth-child(' + (label === 'Show all' ? 1 : 2) + ')');
+                } else {
+                    expandedChipId = null;
+                    renderChips();
+                    renderBranchPanel();
+                    focusIn('.pm-asset-expand[data-asset-id="' + CSS.escape(chip.id) + '"]');
+                }
+            });
+            actions.appendChild(button);
+        });
+        head.appendChild(actions);
+        panel.appendChild(head);
+
+        const list = document.createElement('ul');
+        list.className = 'pm-branch-list';
+        branch.forEach(({ id, depth }) => {
+            const below = subtree(id);
+            const shownBelow = below.filter(x => !chip.hidden.has(x)).length;
+
+            const item = document.createElement('li');
+            item.className = 'pm-branch-item';
+            item.style.setProperty('--pm-depth', depth);
+
+            const label = document.createElement('label');
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.id = 'pm-branch-' + id;
+            box.dataset.assetId = id;
+            box.checked = shownBelow === below.length;
+            box.indeterminate = shownBelow > 0 && shownBelow < below.length;
+            box.addEventListener('change', () => {
+                // All shown -> hide the lot; anything less -> show the lot.
+                const hideAll = shownBelow === below.length;
+                below.forEach(x => (hideAll ? chip.hidden.add(x) : chip.hidden.delete(x)));
+                selectionChanged('#pm-branch-' + CSS.escape(id));
+            });
+            label.appendChild(box);
+
+            const text = document.createElement('span');
+            text.textContent = assetName(id);
+            label.appendChild(text);
+
+            if (below.length > 1) {
+                const meta = document.createElement('span');
+                meta.className = 'pm-branch-meta';
+                meta.textContent = (below.length - 1) + ' under it';
+                label.appendChild(meta);
+            }
+            item.appendChild(label);
+            list.appendChild(item);
+        });
+        panel.appendChild(list);
+    }
+
+    // After a tick or untick: redraw the chip's count and the panel, put focus
+    // back where it was (the redraw replaces the elements), and refetch.
+    function selectionChanged(focusSelector) {
+        renderChips();
+        renderBranchPanel();
+        if (focusSelector) focusIn('#pm-branch-panel ' + focusSelector);
+        refreshSummary();
+        refreshEvents();
+    }
+
     function jumpToLastCompleted(asset, button) {
         const name = asset.name || asset.number || asset.id;
         button.disabled = true;
-        fetch('/pm-calendar/api/last-completed?assets=' + encodeURIComponent(asset.id))
+        // Only what this chip is showing: an unticked sub-asset isn't a candidate.
+        const hidden = asset.hidden ? [...asset.hidden].join(',') : '';
+        fetch('/pm-calendar/api/last-completed?assets=' + encodeURIComponent(asset.id) +
+            '&exclude=' + encodeURIComponent(hidden))
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
                 if (!ok) {
@@ -792,6 +975,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function addAsset(asset) {
         if (selectedAssets.some(a => a.id === asset.id)) return;
+        asset.hidden = new Set();
         selectedAssets.push(asset);
         renderChips();
         refreshSummary();

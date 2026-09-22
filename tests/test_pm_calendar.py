@@ -1082,3 +1082,81 @@ def test_the_last_done_endpoint(monkeypatch, tmp_path):
     # Required: "every asset" has no one last PM to jump to.
     assert client.get("/pm-calendar/api/last-completed").status_code == 400
     assert client.get("/pm-calendar/api/last-completed?assets=").status_code == 400
+
+
+# ----------------------------------------------------------------------
+# Hiding sub-assets from a parent chip's expanded view
+# ----------------------------------------------------------------------
+def test_hidden_sub_assets_are_left_off_the_calendar(tmp_path):
+    service = _panel_line(tmp_path)
+
+    events = service.events(
+        asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31", exclude=["S1A", "S2"]
+    )
+
+    assert _real_asset_ids(events) == ["4002", "S1"]
+
+
+def test_hiding_is_exact_so_a_re_ticked_machine_under_a_hidden_group_still_shows(tmp_path):
+    """The page sends every unticked id; the server hides exactly those."""
+
+    service = _panel_line(tmp_path)
+
+    events = service.events(
+        asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31", exclude=["4002", "S1", "S2"]
+    )
+
+    assert _real_asset_ids(events) == ["S1A"]
+
+
+def test_hiding_everything_shows_nothing_rather_than_every_asset(tmp_path):
+    """An empty list reaching the repository means "every asset" there."""
+
+    service = _panel_line(tmp_path)
+    everything = ["4002", "S1", "S1A", "S2"]
+
+    assert service.events(
+        asset_ids=["4002"], start_date="2026-10-01", end_date="2026-10-31", exclude=everything
+    ) == []
+    assert service.summary(asset_ids=["4002"], exclude=everything)["scheduled"] == 0
+    assert service.last_completed(["4002"], exclude=everything) is None
+
+
+def test_the_summary_and_last_done_skip_hidden_sub_assets(tmp_path):
+    """summary() reads the real clock, so its rows are dated today."""
+
+    service = _panel_line(tmp_path)
+    today = date.today().isoformat()
+    service.repo.upsert_tasks([
+        _pm("40", "S1A", "Sander Dust Collector", today, completed=today),
+        _pm("41", "4002", "Panel Finishing System", today, completed=today),
+        _pm("42", "S1", "Sander", "2026-05-01", completed="2026-05-01"),
+        _pm("43", "S1A", "Sander Dust Collector", "2020-06-01", completed="2020-06-01"),
+    ])
+
+    # S1A's PM completed today leaves the tile when S1A is hidden.
+    assert service.summary(asset_ids=["4002"], exclude=["S1A"])["completed"] == (
+        service.summary(asset_ids=["4002"])["completed"] - 1
+    )
+    assert service.last_completed(["S1"])["task_id"] == "40"
+    assert service.last_completed(["S1"], exclude=["S1A"])["task_id"] == "42"
+
+
+def test_the_endpoints_pass_exclude_through(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    service = module.pm_calendar_service
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        _pm("1", "P", "Parent", "2026-10-05"),
+        _pm("2", "C", "Child", "2026-10-06", completed="2026-10-06"),
+    ])
+    service.repo.replace_assets([
+        {"asset_id": "P", "asset_name": "Parent", "parent_asset_id": None},
+        {"asset_id": "C", "asset_name": "Child", "parent_asset_id": "P"},
+    ])
+    client = module.app.test_client()
+
+    shown = client.get("/pm-calendar/api/events?assets=P&start=2026-10-01&end=2026-10-31&exclude=C").get_json()
+    assert {e["asset_id"] for e in shown["events"] if not e.get("is_projected")} == {"P"}
+    assert client.get("/pm-calendar/api/last-completed?assets=P&exclude=C").get_json() == {"pm": None}
+    assert client.get("/pm-calendar/api/summary?assets=P&exclude=P,C").get_json()["summary"]["scheduled"] == 0

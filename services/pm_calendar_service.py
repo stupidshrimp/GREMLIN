@@ -654,17 +654,35 @@ class PmCalendarService:
             queue.extend(children.get(asset_id, ()))
         return expanded
 
+    def _selection(self, asset_ids: list[str], exclude: list[str] | None) -> list[str]:
+        """The picked assets with their sub-assets, minus any the page hid.
+
+        `exclude` is the exact set of asset ids unticked in a chip's expanded
+        view -- exact, not expanded: the page already lists every asset under
+        a hidden group, so hiding "Laser Side" arrives as Laser Side plus each
+        of its machines. That keeps one sub-asset re-ticked under a hidden
+        group visible, rather than hidden again by its parent.
+        """
+
+        hidden = set(exclude or ())
+        return [asset_id for asset_id in self._with_descendants(asset_ids) if asset_id not in hidden]
+
     def events(
         self,
         asset_ids: list[str] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        exclude: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if asset_ids is not None and len(asset_ids) == 0:
             return []
         self._ensure_schema()
         if asset_ids is not None:
-            asset_ids = self._with_descendants(asset_ids)
+            asset_ids = self._selection(asset_ids, exclude)
+            # Everything picked has been hidden. An empty list reaching
+            # fetch_tasks would mean "every asset", so stop here.
+            if not asset_ids:
+                return []
         real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
 
         # Projecting reads each series' full history, with no date bound, to
@@ -684,7 +702,9 @@ class PmCalendarService:
         combined.sort(key=lambda row: row["due_date"] or "")
         return combined
 
-    def last_completed(self, asset_ids: list[str]) -> dict[str, Any] | None:
+    def last_completed(
+        self, asset_ids: list[str], exclude: list[str] | None = None
+    ) -> dict[str, Any] | None:
         """The most recently completed PM for a chip, or None if there isn't one.
 
         A parent's chip stands for its whole branch everywhere else on the
@@ -697,16 +717,22 @@ class PmCalendarService:
         if not asset_ids:
             return None
         self._ensure_schema()
-        return self.repo.fetch_last_completed(self._with_descendants(asset_ids))
+        # Only what the chip is currently showing: a sub-asset unticked in
+        # its expanded view isn't a candidate.
+        return self.repo.fetch_last_completed(self._selection(asset_ids, exclude))
 
-    def summary(self, asset_ids: list[str] | None = None) -> dict[str, Any]:
+    def summary(
+        self, asset_ids: list[str] | None = None, exclude: list[str] | None = None
+    ) -> dict[str, Any]:
         empty = {"scheduled": 0, "completed": 0, "overdue": 0, "compliance": 0.0}
         if asset_ids is not None and len(asset_ids) == 0:
             return empty
 
         self._ensure_schema()
         if asset_ids is not None:
-            asset_ids = self._with_descendants(asset_ids)
+            asset_ids = self._selection(asset_ids, exclude)
+            if not asset_ids:
+                return empty
         today = date.today().isoformat()
         year_start = date.today().replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)

@@ -175,6 +175,122 @@
   opacity: 0.6;
 }
 
+/* "+9 ▾" on a parent chip: opens its sub-assets below the chips. Reads as
+   the chip's own count (same weight as before) but is plainly pressable. */
+.pm-asset-expand {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.pm-asset-expand:hover,
+.pm-asset-expand[aria-expanded="true"] {
+  background: var(--surface);
+  border-color: var(--forest-200);
+  color: var(--forest-900);
+}
+
+/* The open chip's sub-assets, as a checklist under the chips. */
+.pm-branch-panel {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-veil);
+}
+
+.pm-branch-panel[hidden] {
+  display: none;
+}
+
+.pm-branch-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.pm-branch-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--forest-800);
+}
+
+.pm-branch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pm-branch-action {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.pm-branch-action:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* Capped and scrolling: 4002 has twenty-odd sub-assets, and the calendar is
+   the thing this page is for. */
+.pm-branch-list {
+  display: grid;
+  gap: 0.1rem;
+  max-height: 18rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.pm-branch-item label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem 0.3rem calc(0.4rem + var(--pm-depth, 0) * 1.4rem);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.pm-branch-item label:hover {
+  background: var(--forest-100);
+}
+
+.pm-branch-item input {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--forest-500);
+  cursor: pointer;
+}
+
+.pm-branch-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 /* Dashed, and the one control on the page that is not solid: it adds a chip to
    the row it sits in rather than acting on what is already there. */
 .pm-asset-add {
@@ -754,6 +870,9 @@
    to lose. */
 .pm-asset-remove:focus-visible,
 .pm-asset-jump:focus-visible,
+.pm-asset-expand:focus-visible,
+.pm-branch-action:focus-visible,
+.pm-branch-item input:focus-visible,
 .pm-asset-add:focus-visible,
 .pm-view-btn:focus-visible,
 .pm-nav-btn:focus-visible,
@@ -815,7 +934,9 @@
   .pm-nav-btn,
   .pm-day,
   .pm-asset-option,
-  .pm-asset-jump {
+  .pm-asset-jump,
+  .pm-asset-expand,
+  .pm-branch-action {
     transition: none;
   }
 
