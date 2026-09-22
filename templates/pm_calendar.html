@@ -911,6 +911,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 label.appendChild(meta);
             }
             item.appendChild(label);
+
+            // "Last done" for just this row: the machine itself, or for a
+            // group everything under it that's still ticked. Outside the
+            // <label> so pressing it doesn't also tick the box. A row whose
+            // PMs are all hidden has nothing on the calendar to land on, so
+            // its button waits until it's ticked again.
+            const rowName = assetName(id);
+            const jump = document.createElement('button');
+            jump.type = 'button';
+            jump.className = 'pm-asset-jump';
+            jump.textContent = 'Last done';
+            jump.setAttribute('aria-label', 'Jump to the last completed PM for ' + rowName);
+            if (shownBelow === 0) {
+                jump.disabled = true;
+                jump.title = 'Hidden -- tick it to show its PMs first';
+            } else {
+                jump.title = 'Jump to the last completed PM' + (below.length > 1 ? ' for this or anything under it' : '');
+                jump.addEventListener('click', () =>
+                    jumpToLastCompleted({ id, name: rowName, hidden: chip.hidden }, jump));
+            }
+            item.appendChild(jump);
+
             list.appendChild(item);
         });
         panel.appendChild(list);

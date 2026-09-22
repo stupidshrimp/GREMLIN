@@ -175,6 +175,12 @@
   opacity: 0.6;
 }
 
+/* In the expanded list a disabled one means "hidden", not "loading". */
+.pm-branch-item .pm-asset-jump:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* "+9 ▾" on a parent chip: opens its sub-assets below the chips. Reads as
    the chip's own count (same weight as before) but is plainly pressable. */
 .pm-asset-expand {
@@ -260,7 +266,16 @@
   list-style: none;
 }
 
+.pm-branch-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.4rem;
+}
+
 .pm-branch-item label {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
