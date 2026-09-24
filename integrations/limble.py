@@ -275,6 +275,9 @@ class LimbleClient:
 
         page = 1
         fetched = 0
+        # The largest page seen so far: what the server is actually willing to
+        # send per page, which may be less than the `limit` asked for.
+        largest_page = 0
         while True:
             page_params = {**params, "limit": self.config.page_limit, "page": page}
             payload = self._request("GET", path, params=page_params)
@@ -288,8 +291,16 @@ class LimbleClient:
                     fetched += 1
             if on_page is not None:
                 on_page(fetched, page)
-            if len(payload) < self.config.page_limit:
+            # A short page is only the last one if it is short of what the
+            # server has already shown it will send. Comparing against
+            # `page_limit` alone would end the pull after page one whenever
+            # the server caps pages below the limit asked for -- a truncated
+            # sync that looks like a complete one. A first page shorter than
+            # the limit therefore costs one more request, which comes back
+            # empty when that really was everything.
+            if len(payload) < self.config.page_limit and len(payload) < largest_page:
                 break
+            largest_page = max(largest_page, len(payload))
             page += 1
 
     def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None) -> Any:
