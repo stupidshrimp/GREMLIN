@@ -181,6 +181,20 @@
   opacity: 0.4;
 }
 
+/* The Limble asset ID ahead of the asset's name in the day details dialog:
+   quieter than the name, and lined up digit for digit down the list. */
+.pm-day-item-id {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pm-day-item-id::after {
+  content: "—";
+  margin: 0 0.35rem;
+  color: var(--border);
+}
+
 /* "+9 ▾" on a parent chip: opens its sub-assets below the chips. Reads as
    the chip's own count (same weight as before) but is plainly pressable. */
 .pm-asset-expand {
@@ -846,7 +860,7 @@
    defined above. */
 .pm-asset-option {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
   padding-left: calc(0.65rem + var(--pm-depth, 0) * 1.25rem);
@@ -865,9 +879,22 @@
   margin-right: 0.35rem;
 }
 
-.pm-asset-option-name {
+/* Name over the building/department it sits in. */
+.pm-asset-option-text {
+  display: grid;
+  gap: 0.1rem;
   flex: 1;
   min-width: 0;
+}
+
+.pm-asset-option-name {
+  min-width: 0;
+}
+
+.pm-asset-option-where {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.3;
 }
 
 /* "+20 sub-assets" in the picker, "+20" on a chip: what picking it brings. */

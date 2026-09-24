@@ -825,12 +825,12 @@ def test_picking_a_parent_and_one_of_its_children_counts_nothing_twice(tmp_path)
 def test_the_summary_covers_the_whole_branch_too(tmp_path):
     """The tiles and the grid have to be counting the same PMs.
 
-    summary() reads the real clock, so the completed PM is dated today --
-    always inside the year to date, whenever this runs.
+    The completed PM is dated "today" as summary() sees it (pinned above),
+    so it's inside the year to date.
     """
 
     service = _panel_line(tmp_path)
-    today = date.today().isoformat()
+    today = pm_calendar_service_module._today().isoformat()
     service.repo.upsert_tasks([
         _pm("10", "S1A", "Sander Dust Collector", today, completed=today),
     ])
@@ -1007,7 +1007,9 @@ def test_a_line_grouped_through_parents_without_pms_is_picked_as_a_whole(tmp_pat
     """
 
     assets = [
-        {"assetID": 9000, "name": "3101-3107 Salvagnini", "parentAssetID": 0},
+        {"assetID": 914, "name": "Dept 914 Machinery Maint", "parentAssetID": 0},
+        {"assetID": 706, "name": "Building 706", "parentAssetID": 914},
+        {"assetID": 9000, "name": "3101-3107 Salvagnini", "parentAssetID": 706},
         {"assetID": 9001, "name": "Salvagnini Forming Side", "parentAssetID": 9000},
         {"assetID": 9002, "name": "Salvagnini Laser Side", "parentAssetID": 9000},
     ]
@@ -1123,10 +1125,10 @@ def test_hiding_everything_shows_nothing_rather_than_every_asset(tmp_path):
 
 
 def test_the_summary_and_last_done_skip_hidden_sub_assets(tmp_path):
-    """summary() reads the real clock, so its rows are dated today."""
+    """Its rows are dated "today" as summary() sees it (pinned above)."""
 
     service = _panel_line(tmp_path)
-    today = date.today().isoformat()
+    today = pm_calendar_service_module._today().isoformat()
     service.repo.upsert_tasks([
         _pm("40", "S1A", "Sander Dust Collector", today, completed=today),
         _pm("41", "4002", "Panel Finishing System", today, completed=today),
@@ -1160,3 +1162,231 @@ def test_the_endpoints_pass_exclude_through(monkeypatch, tmp_path):
     assert {e["asset_id"] for e in shown["events"] if not e.get("is_projected")} == {"P"}
     assert client.get("/pm-calendar/api/last-completed?assets=P&exclude=C").get_json() == {"pm": None}
     assert client.get("/pm-calendar/api/summary?assets=P&exclude=P,C").get_json()["summary"]["scheduled"] == 0
+
+
+def test_the_hierarchy_is_read_once_until_the_next_replace(tmp_path):
+    service = _panel_line(tmp_path)
+    assert service.asset_options()  # warms the cache
+
+    # A cached read never opens the database.
+    def no_connection():
+        raise AssertionError("fetch_assets went back to the database")
+
+    service.repo.connect = no_connection
+    try:
+        assert {row["asset_id"] for row in service.repo.fetch_assets()} == {"4002", "S1", "S1A", "S2", "9"}
+    finally:
+        del service.repo.connect
+
+    # A replace is seen straight away: S2 moved under S1.
+    service.repo.replace_assets([
+        {"asset_id": "4002", "asset_name": "Panel Finishing System", "parent_asset_id": None},
+        {"asset_id": "S1", "asset_name": "Sander", "parent_asset_id": "4002"},
+        {"asset_id": "S2", "asset_name": "Oven", "parent_asset_id": "S1"},
+    ])
+    parents = {row["asset_id"]: row["parent_asset_id"] for row in service.repo.fetch_assets()}
+    assert parents == {"4002": None, "S1": "4002", "S2": "S1"}
+
+
+def test_a_caller_changing_a_row_does_not_change_the_cached_tree(tmp_path):
+    service = _panel_line(tmp_path)
+    service.repo.fetch_assets()[0]["parent_asset_id"] = "tampered"
+
+    assert "tampered" not in {row["parent_asset_id"] for row in service.repo.fetch_assets()}
+
+
+def test_limble_links_use_the_configured_app_host(monkeypatch, tmp_path):
+    monkeypatch.delenv("LIMBLE_APP_URL", raising=False)
+    module = _app(monkeypatch, tmp_path)
+    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    assert 'const LIMBLE_APP_URL = "https://app.limblecmms.com";' in page
+
+    monkeypatch.setenv("LIMBLE_APP_URL", "https://eu.example-limble.test/")
+    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    assert 'const LIMBLE_APP_URL = "https://eu.example-limble.test";' in page
+
+
+def test_only_parent_asset_id_is_read_as_the_parent():
+    """The bug this guards: `parentID` on this account is not the parent.
+
+    Limble sends a `parentID` on assets that sit at the top of the
+    hierarchy too, and reading it hung unrelated machines under whichever
+    asset had the matching ID -- 4002 Panel Finishing System showed up as a
+    sub-asset of a decommissioned water system, and picking that water
+    system dragged in dozens of other assets' PMs.
+    """
+
+    assets = [
+        {"assetID": 900, "name": "4002-S18 Deionized Water System", "parentAssetID": 0, "parentID": 0},
+        {"assetID": 13042, "name": "4002 Panel Finishing System", "parentAssetID": 0, "parentID": 900},
+        {"assetID": 6274, "name": "6274 Sullair Air Compressor", "parentAssetID": 0, "parentID": 900},
+        {"assetID": 4101, "name": "4002-S01 Sander", "parentAssetID": 13042, "parentID": 900},
+    ]
+
+    rows = {
+        r["asset_id"]: r["parent_asset_id"]
+        for r in PmCalendarService._asset_hierarchy(assets, {"13042", "6274", "4101"})
+    }
+
+    # The sander hangs under 4002 and nothing else hangs anywhere: the water
+    # system isn't a parent, so it isn't even stored (it has no PMs of its own).
+    assert rows == {"13042": None, "6274": None, "4101": "13042"}
+
+
+def test_an_asset_that_names_itself_as_its_parent_is_top_level():
+    assets = [{"assetID": 5, "name": "Loop", "parentAssetID": 5}]
+
+    assert PmCalendarService._asset_hierarchy(assets, {"5"}) == [
+        {
+            "asset_id": "5", "asset_name": "Loop", "parent_asset_id": None,
+            "root_asset_id": "5", "building_asset_id": None, "level": 0, "has_children": 0,
+        }
+    ]
+
+
+# ----------------------------------------------------------------------
+# The hierarchy the sync materialises (parent, root, level, has children)
+# ----------------------------------------------------------------------
+def test_the_hierarchy_records_root_level_and_children_for_each_asset():
+    """The four answers the Excel hierarchy sheet materialises, per asset."""
+
+    assets = [
+        {"assetID": 9000, "name": "3101-3107 Salvagnini", "parentAssetID": 0},
+        {"assetID": 9002, "name": "Salvagnini Laser Side", "parentAssetID": 9000},
+        {"assetID": 3103, "name": "3103 Salvagnini Fiber Laser", "parentAssetID": 9002},
+        {"assetID": 7000, "name": "Unrelated branch", "parentAssetID": 0},
+        {"assetID": 7001, "name": "Unrelated machine", "parentAssetID": 7000},
+    ]
+
+    rows = {r["asset_id"]: r for r in PmCalendarService._asset_hierarchy(assets, {"3103"})}
+
+    assert set(rows) == {"3103", "9002", "9000"}  # the branch that leads to a PM
+    assert [(r["asset_id"], r["level"], r["root_asset_id"], r["has_children"]) for r in rows.values()] == [
+        ("3103", 2, "9000", 0),
+        ("9000", 0, "9000", 1),
+        ("9002", 1, "9000", 1),
+    ]
+
+
+def test_ids_that_differ_only_in_spelling_are_the_same_asset():
+    """A parent link written as 4002.0, or with spaces, still connects.
+
+    Limble sends ids as numbers and as strings, and a whole number that has
+    been through a float arrives as "4002.0". Two spellings of one id would
+    break every link between them.
+    """
+
+    assets = [
+        {"assetID": 4002.0, "name": "Panel Finishing System", "parentAssetID": None},
+        {"assetID": "4101", "name": "Sander", "parentAssetID": " 4002 "},
+        {"assetID": 4102, "name": "Chiller", "parentAssetID": {"assetID": "4002"}},
+    ]
+
+    rows = {r["asset_id"]: r["parent_asset_id"] for r in PmCalendarService._asset_hierarchy(assets, {"4101", "4102"})}
+
+    assert rows == {"4002": None, "4101": "4002", "4102": "4002"}
+
+
+def test_a_deep_branch_is_walked_once_per_asset():
+    """Level and root are memoised, not re-walked from every asset.
+
+    A chain 60 deep would be ~1,800 steps re-walked per asset; each asset's
+    answer is worked out once and reused by everything below it.
+    """
+
+    assets = [{"assetID": 1, "name": "root", "parentAssetID": 0}]
+    assets += [{"assetID": i, "name": str(i), "parentAssetID": i - 1} for i in range(2, 61)]
+
+    rows = {r["asset_id"]: r for r in PmCalendarService._asset_hierarchy(assets, {"60"})}
+
+    assert rows["60"]["level"] == 59
+    assert rows["60"]["root_asset_id"] == "1"
+    assert rows["1"]["has_children"] == 1 and rows["60"]["has_children"] == 0
+
+
+def test_a_hierarchy_longer_than_the_hop_cap_still_returns():
+    """Bad data costs a wrong-looking parent, not a hung request."""
+
+    assets = [{"assetID": 1, "name": "root", "parentAssetID": 0}]
+    assets += [{"assetID": i, "name": str(i), "parentAssetID": i - 1} for i in range(2, 401)]
+
+    rows = {r["asset_id"]: r for r in PmCalendarService._asset_hierarchy(assets, {"400"})}
+
+    assert rows["400"]["level"] < pm_calendar_service_module._MAX_HIERARCHY_HOPS
+    # Whatever was cut off, every asset kept points at assets that were kept.
+    assert all(row["root_asset_id"] in rows for row in rows.values())
+    assert all(row["parent_asset_id"] in rows or row["parent_asset_id"] is None for row in rows.values())
+
+
+# ----------------------------------------------------------------------
+# Departments and buildings are labels, not rows
+# ----------------------------------------------------------------------
+def _plant(tmp_path, *, dept_pm=False):
+    """The real shape: Dept > Building > machine line > side > machines."""
+
+    assets = [
+        {"assetID": 914, "name": "Dept 914 Machinery Maint", "parentAssetID": 0},
+        {"assetID": 706, "name": "Building 706", "parentAssetID": 914},
+        {"assetID": 13042, "name": "4002 Panel Finishing System", "parentAssetID": 706},
+        {"assetID": 5001, "name": "4002-S01 Chemical Spray", "parentAssetID": 13042},
+        {"assetID": 9453, "name": "9453 CARRIER AHU 6-4", "parentAssetID": 706},
+    ]
+    with_pms = {"5001", "9453", "13042"}
+    if dept_pm:
+        with_pms.add("914")
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([_pm(a, a, f"Asset {a}", "2026-10-05") for a in sorted(with_pms)])
+    service.repo.replace_assets(PmCalendarService._asset_hierarchy(assets, with_pms))
+    return service
+
+
+def test_the_department_and_building_are_not_rows_in_the_picker(tmp_path):
+    """They group thousands of assets; nobody picks a PM schedule by them."""
+
+    options = _plant(tmp_path).asset_options()
+
+    assert [o["asset_id"] for o in options] == ["13042", "5001", "9453"]
+    # The line is the first row of its branch, its sub-asset one step in.
+    assert [o["depth"] for o in options] == [0, 1, 0]
+
+
+def test_each_row_says_which_building_and_department_it_is_in(tmp_path):
+    """The macro's "Building Name (Dept Name)" label, per row."""
+
+    labels = {o["asset_id"]: o["group_label"] for o in _plant(tmp_path).asset_options()}
+
+    assert labels == {
+        "13042": "Building 706 (Dept 914 Machinery Maint)",
+        "5001": "Building 706 (Dept 914 Machinery Maint)",
+        "9453": "Building 706 (Dept 914 Machinery Maint)",
+    }
+
+
+def test_a_department_with_pms_of_its_own_stays_pickable(tmp_path):
+    """A label can't be ticked, so hiding it would lose its own PMs."""
+
+    options = _plant(tmp_path, dept_pm=True).asset_options()
+
+    assert "914" in [o["asset_id"] for o in options]
+
+
+def test_a_two_level_branch_keeps_its_top_asset(tmp_path):
+    """A machine with sub-assets and nothing above it is not a department."""
+
+    assets = [
+        {"assetID": 7, "name": "Standalone Press", "parentAssetID": 0},
+        {"assetID": 8, "name": "Press Hydraulics", "parentAssetID": 7},
+    ]
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([_pm("8", "8", "Press Hydraulics", "2026-10-05")])
+    service.repo.replace_assets(PmCalendarService._asset_hierarchy(assets, {"8"}))
+
+    options = service.asset_options()
+
+    assert [(o["asset_id"], o["depth"], o["group_label"]) for o in options] == [
+        ("7", 0, ""),
+        ("8", 1, "Standalone Press"),
+    ]

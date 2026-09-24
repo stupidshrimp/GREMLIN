@@ -13,6 +13,7 @@ Limble-related involved at all.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -70,9 +71,35 @@ _CREATE_ASSET_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS pm_asset (
     asset_id TEXT PRIMARY KEY,
     asset_name TEXT,
-    parent_asset_id TEXT
+    parent_asset_id TEXT,
+    root_asset_id TEXT,
+    building_asset_id TEXT,
+    level INTEGER NOT NULL DEFAULT 0,
+    has_children INTEGER NOT NULL DEFAULT 0
 )
 """
+
+# Columns added to pm_asset after it first shipped. CREATE TABLE IF NOT EXISTS
+# leaves an existing table exactly as it is, and SQLite has no ADD COLUMN IF
+# NOT EXISTS, so the current shape is read and anything missing is ALTERed in.
+# The values arrive with the next sync, which rewrites every row anyway.
+_ADDED_ASSET_COLUMNS: dict[str, str] = {
+    "root_asset_id": "TEXT",
+    "building_asset_id": "TEXT",
+    "level": "INTEGER NOT NULL DEFAULT 0",
+    "has_children": "INTEGER NOT NULL DEFAULT 0",
+}
+
+# Every column of pm_asset, in the order replace_assets writes them.
+_ASSET_COLUMNS = (
+    "asset_id",
+    "asset_name",
+    "parent_asset_id",
+    "root_asset_id",
+    "building_asset_id",
+    "level",
+    "has_children",
+)
 
 # Indexes speed up the lookups the calendar page actually does: "PMs for
 # these assets" and "PMs due in this date range." They cost nothing to have
@@ -116,6 +143,14 @@ class PmCalendarRepository:
 
     def __init__(self, db_path: str | Path = DEFAULT_PM_CALENDAR_DB_PATH) -> None:
         self.db_path = Path(db_path)
+        # fetch_assets() is read on every calendar request (to expand a picked
+        # parent into its sub-assets) but only changes when replace_assets()
+        # runs, once per sync -- so it's kept in memory between the two. The
+        # generation stops a read that started before a replace from storing
+        # the old tree after it.
+        self._assets_lock = threading.Lock()
+        self._assets_cache: list[dict[str, Any]] | None = None
+        self._assets_generation = 0
 
     # ------------------------------------------------------------------
     # Connections
@@ -217,8 +252,21 @@ class PmCalendarRepository:
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
             conn.execute(_CREATE_ASSET_TABLE_SQL)
+            self._add_missing_asset_columns(conn)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
+
+    @staticmethod
+    def _add_missing_asset_columns(conn: sqlite3.Connection) -> None:
+        """Add any pm_asset column this version expects that the file lacks.
+
+        A no-op once they are all there, so it costs one PRAGMA per start.
+        """
+
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(pm_asset)")}
+        for column, declared_type in _ADDED_ASSET_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE pm_asset ADD COLUMN {column} {declared_type}")
 
     # ------------------------------------------------------------------
     # Writes
@@ -256,8 +304,14 @@ class PmCalendarRepository:
     def replace_assets(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         """Replace the whole asset hierarchy with `rows`, in one transaction.
 
-        Each dict has asset_id, asset_name and parent_asset_id (None for a
-        top-level asset). Wholesale rather than upserted: an asset moved to
+        Each dict carries the columns in _ASSET_COLUMNS: the asset, its
+        immediate parent (None at the top), the root of its branch, how many
+        steps below that root it sits, and whether anything hangs under it --
+        the same set of answers the Excel hierarchy sheet materialises, worked
+        out once at sync time so no read has to walk the tree again. A row
+        that leaves level, root or has_children out is stored with the column
+        defaults (0, itself, 0), which is what a lone top-level asset looks
+        like. Wholesale rather than upserted: an asset moved to
         another parent, or scrapped, in Limble must not leave its old link
         behind. Readers never see a half-written tree -- the delete and the
         inserts land together or not at all.
@@ -265,35 +319,52 @@ class PmCalendarRepository:
 
         with self.write_connection() as conn:
             conn.execute("DELETE FROM pm_asset")
+            placeholders = ", ".join(f":{column}" for column in _ASSET_COLUMNS)
             conn.executemany(
-                "INSERT OR REPLACE INTO pm_asset (asset_id, asset_name, parent_asset_id) "
-                "VALUES (:asset_id, :asset_name, :parent_asset_id)",
+                f"INSERT OR REPLACE INTO pm_asset ({', '.join(_ASSET_COLUMNS)}) VALUES ({placeholders})",
                 [
                     {
-                        "asset_id": row.get("asset_id"),
-                        "asset_name": row.get("asset_name"),
-                        "parent_asset_id": row.get("parent_asset_id"),
+                        **{column: row.get(column) for column in _ASSET_COLUMNS},
+                        "root_asset_id": row.get("root_asset_id") or row.get("asset_id"),
+                        "level": row.get("level") or 0,
+                        "has_children": row.get("has_children") or 0,
                     }
                     for row in rows
                 ],
             )
+        with self._assets_lock:
+            self._assets_generation += 1
+            self._assets_cache = None
         return {"assets": len(rows)}
 
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
     def fetch_assets(self) -> list[dict[str, Any]]:
-        """Every row of the asset hierarchy (empty until the first sync)."""
+        """Every row of the asset hierarchy (empty until the first sync).
+
+        Served from memory after the first read, until replace_assets() next
+        runs -- the only thing that writes pm_asset. Each call gets its own
+        copies, so a caller changing a row can't change the cached tree.
+        """
+
+        with self._assets_lock:
+            if self._assets_cache is not None:
+                return [dict(row) for row in self._assets_cache]
+            generation = self._assets_generation
 
         with self._reporting_failures():
             conn = self.connect()
             try:
-                rows = conn.execute(
-                    "SELECT asset_id, asset_name, parent_asset_id FROM pm_asset"
-                ).fetchall()
+                rows = conn.execute(f"SELECT {', '.join(_ASSET_COLUMNS)} FROM pm_asset").fetchall()
             finally:
                 conn.close()
-        return [_row_to_dict(row) for row in rows]
+        assets = [_row_to_dict(row) for row in rows]
+
+        with self._assets_lock:
+            if generation == self._assets_generation:
+                self._assets_cache = assets
+        return [dict(row) for row in assets]
 
     def fetch_tasks(
         self,

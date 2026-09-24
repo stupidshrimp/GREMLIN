@@ -212,8 +212,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // Assets currently chipped in: same shape as allAssets.
     let selectedAssets = [];
     // PM events for the visible month, keyed by "YYYY-MM-DD".
-
     let eventsByDate = {};
+    // Which /events and /summary request is the newest; see refreshEvents().
+    let eventsRequest = 0;
+    let summaryRequest = 0;
     let assetColorMap = {};
     // The day a "Last done" jump landed on ("YYYY-MM-DD"), outlined until the
     // timer clears it. Held here rather than set on a cell once, because the
@@ -383,9 +385,13 @@ document.addEventListener('DOMContentLoaded', function () {
         // which is the behaviour we want here.
         const url = '/pm-calendar/api/summary?assets=' + encodeURIComponent(selectedAssetIdsCsv()) +
             '&exclude=' + encodeURIComponent(excludedIdsCsv());
+        const request = ++summaryRequest;
         fetch(url)
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
+                // A newer selection has been asked about since; this answer
+                // is for one that's no longer on screen.
+                if (request !== summaryRequest) return;
                 if (!ok) {
                     // Without this the error payload reads as a summary with no
                     // fields, and the tiles fall back to dashes -- which looks
@@ -405,6 +411,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function refreshEvents() {
         eventsByDate = {};
+        // Bumped even when no request goes out, so one still in flight from
+        // an earlier selection is ignored when it lands.
+        const request = ++eventsRequest;
 
         if (selectedAssets.length === 0) {
             // No request is made, so this source has nothing to report -- clear
@@ -425,6 +434,11 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(url)
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
+                // Ticking boxes or paging months quickly has several of these
+                // in flight at once. Only the newest may draw: an older one
+                // would add its events on top -- every pill twice -- and bring
+                // back assets that were unticked since it was sent.
+                if (request !== eventsRequest) return;
                 if (!ok) {
                     // Same trap as the summary above: an error payload has no
                     // events, so the month would render empty and look correct.
@@ -433,12 +447,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 reportDatabase('events', '');
+                const byDate = {};
                 (data.events || []).forEach(event => {
                     if (!event.due_date) return;
                     const day = event.due_date.slice(0, 10); // "YYYY-MM-DD"
-                    if (!eventsByDate[day]) eventsByDate[day] = [];
-                    eventsByDate[day].push(event);
+                    if (!byDate[day]) byDate[day] = [];
+                    byDate[day].push(event);
                 });
+                eventsByDate = byDate;
                 renderCalendarBody();
             });
     }
@@ -458,17 +474,27 @@ document.addEventListener('DOMContentLoaded', function () {
         return 'is-upcoming';
     }
 
+    // Each chip keeps the palette slot it was given when it was added (see
+    // addAsset), so picking or removing another asset never repaints the
+    // ones already on screen.
     function rebuildAssetColors() {
-    const palette = window.gremlinChartPalette ? window.gremlinChartPalette().series : [];
-    assetColorMap = {};
-    if (!palette.length) return;
-    selectedAssets
-        .slice()
-        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-        .forEach((asset, i) => {
-            assetColorMap[asset.id] = palette[i % palette.length];
+        const palette = window.gremlinChartPalette ? window.gremlinChartPalette().series : [];
+        assetColorMap = {};
+        if (!palette.length) return;
+        selectedAssets.forEach(asset => {
+            assetColorMap[asset.id] = palette[asset.colorSlot % palette.length];
         });
-}
+    }
+
+    // The lowest slot no current chip is using: a removed chip's colour is
+    // the next one handed out, rather than every new chip drifting further
+    // round the palette.
+    function freeColorSlot() {
+        const used = new Set(selectedAssets.map(a => a.colorSlot));
+        let slot = 0;
+        while (used.has(slot)) slot += 1;
+        return slot;
+    }
 
     // A PM takes the colour of the nearest picked asset at or above it: its
     // own if it was picked directly, otherwise the parent (or grandparent)
@@ -492,9 +518,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Limble's web app, not its API. Limble's "TaskList URL" page takes a
     // taskID (or an assetID plus taskType) as query parameters, which is
-    // what the links below use. An account on one of Limble's regional
-    // instances would need its own host here.
-    const LIMBLE_APP_URL = 'https://app.limblecmms.com';
+    // what the links below use. The host comes from LIMBLE_APP_URL (see
+    // app.py), so an account on a regional instance can point it there.
+    const LIMBLE_APP_URL = {{ limble_app_url|tojson }};
 
     const STATUS_LABELS = {
         'is-completed': 'Completed',
@@ -571,6 +597,17 @@ document.addEventListener('DOMContentLoaded', function () {
             dot.className = 'pm-event-dot';
             dot.setAttribute('aria-hidden', 'true');
             asset.appendChild(dot);
+            // Limble's own asset ID ahead of the name, so a PM in this list
+            // can be matched to the asset in Limble (and to a Limble URL)
+            // without guessing from the name. Only here: the calendar pills
+            // are too cramped to carry it.
+            if (event.asset_id) {
+                const id = document.createElement('span');
+                id.className = 'pm-day-item-id';
+                id.textContent = event.asset_id;
+                id.title = 'Limble asset ID';
+                asset.appendChild(id);
+            }
             asset.appendChild(document.createTextNode(event.asset_name || event.asset_number || 'Asset'));
             head.appendChild(asset);
 
@@ -680,30 +717,30 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             shown.forEach(event => {
-              const pill = document.createElement('div');
-              const status = eventClass(event);
-              pill.className = 'pm-event ' + status;
-              pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '') +
-                  (event.is_projected ? ' — estimated from this PM\'s own history; Limble hasn\'t scheduled it yet' : '');
+                const pill = document.createElement('div');
+                const status = eventClass(event);
+                pill.className = 'pm-event ' + status;
+                pill.title = (event.asset_name || event.asset_number || '') + ' — ' + (event.task_name || '') +
+                    (event.is_projected ? ' — estimated from this PM\'s own history; Limble hasn\'t scheduled it yet' : '');
 
-              const label = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM') +
-                  (event.is_projected ? ' (est.)' : '');
+                const label = (event.asset_name || event.asset_number || 'Asset') + ': ' + (event.task_name || 'PM') +
+                    (event.is_projected ? ' (est.)' : '');
 
-              if (status === 'is-overdue') {
-                  pill.textContent = label;
-              } else {
-                  const color = assetColor(event.asset_id);
-                  if (color) pill.style.setProperty('--pm-asset-color', color);
+                if (status === 'is-overdue') {
+                    pill.textContent = label;
+                } else {
+                    const color = assetColor(event.asset_id);
+                    if (color) pill.style.setProperty('--pm-asset-color', color);
 
-                  const dot = document.createElement('span');
-                  dot.className = 'pm-event-dot';
-                  dot.setAttribute('aria-hidden', 'true');
-                  pill.appendChild(dot);
-                  pill.appendChild(document.createTextNode(label));
-              }
+                    const dot = document.createElement('span');
+                    dot.className = 'pm-event-dot';
+                    dot.setAttribute('aria-hidden', 'true');
+                    pill.appendChild(dot);
+                    pill.appendChild(document.createTextNode(label));
+                }
 
-              cell.appendChild(pill);
-          });
+                cell.appendChild(pill);
+            });
 
             if (dayEvents.length > shown.length) {
                 const more = document.createElement('div');
@@ -780,13 +817,22 @@ document.addEventListener('DOMContentLoaded', function () {
             // "Last done": jump to this chip's most recently completed PM. For
             // a parent that's the latest across its whole branch, the same way
             // the chip stands for the branch everywhere else on the page.
+            // Every asset in the branch unticked -- the chip's own row
+            // included -- leaves nothing on the calendar to land on, so the
+            // button waits, the same way a hidden row's does in the panel.
             const jump = document.createElement('button');
             jump.type = 'button';
             jump.className = 'pm-asset-jump';
             jump.textContent = 'Last done';
-            jump.title = 'Jump to the last completed PM' + (asset.descendants > 0 ? ' for this asset or its sub-assets' : '');
             jump.setAttribute('aria-label', 'Jump to the last completed PM for ' + name);
-            jump.addEventListener('click', () => jumpToLastCompleted(asset, jump));
+            const anythingShown = branchOf(asset.id).some(n => !(asset.hidden && asset.hidden.has(n.id)));
+            if (anythingShown) {
+                jump.title = 'Jump to the last completed PM' + (asset.descendants > 0 ? ' for this asset or its sub-assets' : '');
+                jump.addEventListener('click', () => jumpToLastCompleted(asset, jump));
+            } else {
+                jump.disabled = true;
+                jump.title = 'Everything under this chip is hidden -- tick something to show its PMs first';
+            }
             chip.appendChild(jump);
 
             // A button, not a clickable <span>: taking a chip back off is the
@@ -852,7 +898,9 @@ document.addEventListener('DOMContentLoaded', function () {
         actions.className = 'pm-branch-actions';
         [
             ['Show all', () => chip.hidden.clear()],
-            ['Hide all', () => branch.forEach(n => chip.hidden.add(n.id))],
+            // Sub-assets only, the same set the "N of M shown" count above
+            // is about. The chip's own PMs go with its own row's box.
+            ['Hide all', () => branch.slice(1).forEach(n => chip.hidden.add(n.id))],
             ['Done', null],
         ].forEach(([label, action]) => {
             const button = document.createElement('button');
@@ -998,6 +1046,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function addAsset(asset) {
         if (selectedAssets.some(a => a.id === asset.id)) return;
         asset.hidden = new Set();
+        asset.colorSlot = freeColorSlot();
         selectedAssets.push(asset);
         renderChips();
         refreshSummary();
@@ -1020,16 +1069,30 @@ document.addEventListener('DOMContentLoaded', function () {
             option.type = 'button';
             option.className = 'pm-asset-option';
             const depth = asset.depth || 0;
-            if (depth > 0) option.classList.add('is-child');
-            option.style.setProperty('--pm-depth', depth);
+            option.dataset.depth = depth;
             option.dataset.assetId = asset.asset_id;
             option.dataset.assetNumber = asset.asset_number || '';
             option.dataset.assetName = asset.asset_name || '';
 
+            // The name, with the building and department it sits in beneath
+            // it. Those two are not rows of their own -- they group thousands
+            // of assets between them -- so this is where a row says where it
+            // is, and it's what the search box matches on as well as the name.
+            const text = document.createElement('span');
+            text.className = 'pm-asset-option-text';
+
             const label = document.createElement('span');
             label.className = 'pm-asset-option-name';
             label.textContent = asset.asset_name || asset.asset_number || asset.asset_id;
-            option.appendChild(label);
+            text.appendChild(label);
+
+            if (asset.group_label) {
+                const where = document.createElement('span');
+                where.className = 'pm-asset-option-where';
+                where.textContent = asset.group_label;
+                text.appendChild(where);
+            }
+            option.appendChild(text);
 
             const descendants = asset.descendant_count || 0;
             if (descendants > 0) {
@@ -1050,6 +1113,35 @@ document.addEventListener('DOMContentLoaded', function () {
             });
 
             list.appendChild(option);
+        });
+        indentVisibleOptions();
+    }
+
+    // Indentation counts only the rows you can actually see. Searching hides
+    // rows, and a row left indented under a parent that isn't on screen reads
+    // as a sub-asset of whatever happens to sit above it -- which is how
+    // "4002 Panel Finishing System" came to look like part of a
+    // decommissioned water system. Every visible row is drawn one step in
+    // from its nearest visible ancestor, and at the left edge with none.
+    function indentVisibleOptions() {
+        const options = [...document.querySelectorAll('#pm-asset-list .pm-asset-option')];
+        const onScreen = new Set(options.filter(o => !o.hidden).map(o => o.dataset.assetId));
+
+        options.forEach(option => {
+            if (option.hidden) return;
+            // One step in per ancestor that is itself on screen. A row whose
+            // parent is filtered out sits at the left edge rather than under
+            // whatever happens to precede it.
+            let drawn = 0;
+            const seen = new Set();
+            let current = parentOf[option.dataset.assetId];
+            while (current && !seen.has(current)) {
+                seen.add(current);
+                if (onScreen.has(current)) drawn += 1;
+                current = parentOf[current];
+            }
+            option.classList.toggle('is-child', drawn > 0);
+            option.style.setProperty('--pm-depth', drawn);
         });
     }
 
@@ -1211,8 +1303,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const matches = new Set();
         options.forEach(option => {
-            const name = option.querySelector('.pm-asset-option-name');
-            if ((name ? name.textContent : option.textContent).toLowerCase().includes(value)) {
+            // The name and the building/department line both count, so
+            // "706" or "machinery" finds everything in that building or
+            // department even though neither is a row of its own.
+            const searchable = option.querySelector('.pm-asset-option-text') || option;
+            if (searchable.textContent.toLowerCase().includes(value)) {
                 matches.add(option.dataset.assetId);
             }
         });
@@ -1228,6 +1323,8 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             option.hidden = !show;
         });
+
+        indentVisibleOptions();
     });
 
     // ------------------------------------------------------------------

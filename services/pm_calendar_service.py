@@ -19,7 +19,7 @@ from typing import Any
 
 from integrations.limble import LimbleClient, LimbleConfig
 from repositories.pm_calendar_repo import DEFAULT_PM_CALENDAR_DB_PATH, PmCalendarRepository
-from services.ingestion_service import _asset_parent_id, _unix_to_iso_utc
+from services.ingestion_service import _unix_to_iso_utc
 from services.sync_service import LIMBLE_ENV_PREFIX, load_dotenv_files
 
 # Job states, same vocabulary as services/sync_service.py's LimbleSyncRunner.
@@ -143,6 +143,71 @@ _STALE_AFTER_INTERVALS = 3
 # it -- has_open goes false, the anchor moves to the new completion, and
 # projection resumes at its normal, window-bounded pace.
 _OPEN_LINE_PROJECTION_LIMIT = 3
+
+
+# How far a walk up the tree will go before giving up. Same guard, and the
+# same number, as the Excel hierarchy macro this mirrors: real hierarchies are
+# a handful of levels deep, so anything longer is bad data, not a deep tree.
+_MAX_HIERARCHY_HOPS = 100
+
+
+def _normalize_id(value: Any) -> str | None:
+    """An id as a plain string: "4002", never "4002.0" or " 4002 ".
+
+    Ids arrive as numbers, as strings, and occasionally as whole numbers that
+    have been through a float somewhere. Two spellings of the same id would
+    quietly break every parent link between them, so they are folded here,
+    once, the way the Excel macro's NormalizeId does it.
+    """
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # "4002.0" and "4002" are the same asset.
+        number = float(text)
+    except ValueError:
+        return text
+    return str(int(number)) if number.is_integer() else text
+
+
+def _parent_asset_id(asset: dict[str, Any] | None) -> str | None:
+    """The asset this one hangs under in Limble's hierarchy, or None.
+
+    Only `parentAssetID`, and only when it names a different asset. Not the
+    wider set of spellings services/ingestion_service.py accepts: that
+    function also falls back to `parentID`, which on this account's /assets
+    payload is *not* the parent asset -- assets that sit at the top of the
+    hierarchy carry a `parentID` of their own, and reading it as a parent
+    hung dozens of unrelated machines (air compressors, boilers, dryers)
+    under whichever asset's ID happened to match, and made 4002 Panel
+    Finishing System a "sub-asset" of a decommissioned water system.
+    A wrong parent is worse than no parent here: it silently drags other
+    assets' PMs onto the calendar when someone picks one machine.
+    """
+
+    if not asset:
+        return None
+
+    value = None
+    for key, candidate in asset.items():
+        if str(key).lower() == "parentassetid":
+            value = candidate
+            break
+    # Limble has been seen to send an id as a nested object elsewhere in this
+    # payload; the macro unpicks that case too, so this does the same rather
+    # than storing a dict's repr as an id.
+    if isinstance(value, dict):
+        value = value.get("assetID", value.get("id"))
+
+    parent_id = _normalize_id(value)
+    if parent_id in (None, "0"):
+        return None
+    return None if parent_id == _normalize_id(asset.get("assetID")) else parent_id
 
 
 def _today() -> date:
@@ -330,54 +395,128 @@ class PmCalendarService:
     def _asset_hierarchy(
         assets: list[dict[str, Any]], with_pms: set[str]
     ) -> list[dict[str, Any]]:
-        """The pm_asset rows: every asset with PMs, plus everything above one.
+        """The pm_asset rows: the hierarchy, worked out once, at sync time.
 
-        Walks up from each asset that has PMs, adding each parent on the way,
-        so a parent with no PMs of its own (the machine, when every PM is
-        filed against its sub-assets) still ends up pickable. A parent that
-        isn't in /assets at all ends the walk there, and the asset below it
-        is stored as top-level rather than pointing at something the page
-        can't show. Stops at an asset already visited, so a cycle in
-        Limble's data ends the walk instead of looping.
+        Modelled on this account's Excel hierarchy macro (BuildHierarchyOutput
+        and its lookups), which answers the same questions in the same order:
+        build one id -> asset lookup, then for each asset record its immediate
+        parent, the root of its branch, how many steps below that root it sits,
+        and whether anything hangs under it. Materialising those four means no
+        read has to walk the tree again.
+
+        Three differences from the macro, all deliberate:
+
+        * It keeps only assets that lead to a PM -- every asset with PMs, plus
+          every asset above one of those. A parent with no PMs of its own (the
+          machine, when every PM is filed against its sub-assets) is kept, so
+          it stays pickable; a branch with no PMs anywhere could never show a
+          thing on this calendar and is left out.
+        * Each walk is memoised, so an asset's root and level are computed once
+          however many assets sit under it, rather than re-walked per asset.
+        * A parent that /assets doesn't contain leaves its child at the top
+          level rather than pointing at something the page can't show.
+
+        Loops are cut rather than followed: both the memoised walk and the
+        macro's own hop cap stop at an asset already on the path, so bad data
+        costs one wrong-looking parent instead of a hung request.
         """
 
-        by_id = {
-            str(asset.get("assetID")): asset
-            for asset in assets
-            if asset.get("assetID") not in (None, "")
+        by_id: dict[str, dict[str, Any]] = {}
+        for asset in assets:
+            asset_id = _normalize_id(asset.get("assetID"))
+            if asset_id:
+                by_id[asset_id] = asset
+
+        # Step one, as in BuildAssetLookups: id -> name, id -> parent.
+        parent_of: dict[str, str | None] = {}
+        name_of: dict[str, str | None] = {}
+        for asset_id, asset in by_id.items():
+            parent_id = _parent_asset_id(asset)
+            parent_of[asset_id] = parent_id if parent_id in by_id else None
+            name_of[asset_id] = asset.get("name")
+
+        # Step two: keep the assets with PMs and everything above them.
+        keep: set[str] = set()
+        for asset_id in with_pms:
+            current: str | None = _normalize_id(asset_id)
+            hops = 0
+            while current and current not in keep and hops < _MAX_HIERARCHY_HOPS:
+                keep.add(current)
+                current = parent_of.get(current)
+                hops += 1
+
+        # A parent that didn't make it into the set -- the hop cap cut the
+        # walk short on absurd data -- would leave its child pointing at an
+        # asset no read can see, so that child stands as a top-level asset.
+        parent_of = {
+            asset_id: (parent if parent in keep else None)
+            for asset_id, parent in parent_of.items()
+            if asset_id in keep
         }
 
-        keep: dict[str, dict[str, Any]] = {}
-        for asset_id in sorted(with_pms):
+        # Step three: root and level per asset -- GetRootAssetID and
+        # GetAssetLevel, but each answer worked out once and reused.
+        resolved: dict[str, tuple[str, int]] = {}
+
+        def root_and_level(asset_id: str) -> tuple[str, int]:
+            path: list[str] = []
             current = asset_id
-            while current not in keep:
-                asset = by_id.get(current)
-                parent_id = _asset_parent_id(asset) if asset else None
-                if parent_id not in by_id:
-                    parent_id = None
-                keep[current] = {
-                    "asset_id": current,
-                    "asset_name": asset.get("name") if asset else None,
-                    "parent_asset_id": parent_id,
-                }
-                if parent_id is None:
+            while current not in resolved:
+                parent_id = parent_of.get(current)
+                if parent_id is None or parent_id in path or len(path) >= _MAX_HIERARCHY_HOPS:
+                    # Top of the branch, or a loop. A loop is cut here rather
+                    # than merely stopped at: left in place it would leave
+                    # both assets in the ring with a parent and no root, and
+                    # the picker lists a branch from its root down.
+                    if parent_id is not None:
+                        parent_of[current] = None
+                    resolved[current] = (current, 0)
                     break
+                path.append(current)
                 current = parent_id
+            root, level = resolved[current]
+            for step, walked in enumerate(reversed(path), start=1):
+                resolved[walked] = (root, level + step)
+            return resolved[asset_id]
 
-        # A cycle (A's parent is B, B's parent is A) would otherwise leave no
-        # root to hang either one from; cut the link at the asset where the
-        # walk found itself going round.
-        for asset_id in keep:
-            seen = {asset_id}
-            current = keep[asset_id]["parent_asset_id"]
-            while current is not None:
-                if current in seen:
-                    keep[asset_id]["parent_asset_id"] = None
-                    break
-                seen.add(current)
-                current = keep[current]["parent_asset_id"]
+        has_children = {parent_of[asset_id] for asset_id in keep if parent_of.get(asset_id)}
 
-        return list(keep.values())
+        def building_of(asset_id: str) -> str | None:
+            """The asset one step below the root -- the macro's GetBuildingAssetID.
+
+            Dept 914 Machinery Maint   <- root, level 0
+              Building 706             <- building, level 1  *** this
+                3101-3107 Salvagnini   <- level 2
+                  3103 Fiber Laser     <- level 3
+
+            Any of those last three answer "Building 706"; the root itself
+            has no building above it and answers None.
+            """
+
+            current: str | None = asset_id
+            hops = 0
+            while current is not None and hops < _MAX_HIERARCHY_HOPS:
+                if resolved[current][1] <= 1:
+                    return current if resolved[current][1] == 1 else None
+                current = parent_of.get(current)
+                hops += 1
+            return None
+
+        rows = []
+        for asset_id in sorted(keep):
+            root, level = root_and_level(asset_id)
+            rows.append(
+                {
+                    "asset_id": asset_id,
+                    "asset_name": name_of.get(asset_id),
+                    "parent_asset_id": parent_of.get(asset_id),
+                    "root_asset_id": root,
+                    "building_asset_id": building_of(asset_id),
+                    "level": level,
+                    "has_children": 1 if asset_id in has_children else 0,
+                }
+            )
+        return rows
 
     # ------------------------------------------------------------------
     # Projecting PMs beyond whatever Limble has already generated
@@ -569,7 +708,17 @@ class PmCalendarService:
 
         Each option carries `parent_asset_id`, `depth` (0 for top level) and
         `descendant_count` (how many assets picking it brings along), which
-        is what the picker indents by and what the chip's "+N" shows.
+        is what the picker indents by and what the chip's "+N" shows, plus
+        `group_label` -- the building and department this asset sits in.
+
+        The top two levels of Limble's hierarchy are the department and the
+        building, which nobody picks a PM schedule by: picking "Dept 914
+        Machinery Maint" would mean every PM in the department. They are
+        left out of the list and named in each asset's `group_label`
+        instead, so the first row of a branch is the machine line itself. A
+        department or building that carries PMs of its own, or has nothing
+        under it, stays pickable -- otherwise its own PMs could never be
+        shown.
 
         An asset with PMs that the hierarchy doesn't know about -- nothing
         synced since this shipped, or an asset missing from /assets -- is
@@ -580,14 +729,80 @@ class PmCalendarService:
         with_pms = self.repo.asset_options()
         by_id, children = self._parent_links()
 
+        own_pms = set()
         for option in with_pms:
             asset_id = str(option["asset_id"]) if option.get("asset_id") else None
-            if asset_id and asset_id not in by_id:
+            if not asset_id:
+                continue
+            own_pms.add(asset_id)
+            if asset_id not in by_id:
                 by_id[asset_id] = {
                     "asset_id": asset_id,
                     "asset_name": option.get("asset_name"),
                     "parent_asset_id": None,
                 }
+
+        depth_below: dict[str, int] = {}
+
+        def deepest_below(asset_id: str, seen: frozenset[str] = frozenset()) -> int:
+            """How many levels of assets hang under this one (0 for a leaf)."""
+
+            if asset_id in depth_below:
+                return depth_below[asset_id]
+            if asset_id in seen:
+                return 0
+            below = seen | {asset_id}
+            deepest = max(
+                (1 + deepest_below(child_id, below) for child_id in children.get(asset_id, ())),
+                default=0,
+            )
+            depth_below[asset_id] = deepest
+            return deepest
+
+        def is_grouping(asset_id: str) -> bool:
+            """A department or building rather than a rung of the tree.
+
+            Two things have to be true. It sits in the top two levels,
+            where this account keeps departments and buildings. And its
+            branch is deep enough for those two levels to be grouping at
+            all: department, building, machine line, and something under the
+            line. A shallower branch is a machine with sub-assets and
+            nothing above it, which keeps its place -- absolute depth is the
+            only thing separating the two, since Limble marks neither.
+
+            Nothing nests under a grouping asset: its branch is listed as if
+            it were the top. A grouping asset with PMs of its own is still
+            listed -- a label can't be ticked, and those PMs have to be
+            reachable -- but as one row beside that branch rather than above
+            it, because "4002 Panel Finishing System" indented under
+            "Building 706" reads as though the building owns it.
+            """
+
+            row = by_id[asset_id]
+            level = row.get("level") or 0
+            if level > 1:
+                return False
+            root = row.get("root_asset_id") or asset_id
+            return deepest_below(root if root in by_id else asset_id) >= 3
+
+        def label_for(asset_id: str) -> str:
+            """"Building 706 (Dept 914 Machinery Maint)", the macro's label.
+
+            Either half alone when that is all there is, and empty for an
+            asset with neither above it.
+            """
+
+            row = by_id.get(asset_id, {})
+            names = []
+            for key in ("building_asset_id", "root_asset_id"):
+                other = row.get(key)
+                if other and other != asset_id and other in by_id:
+                    name = by_id[other].get("asset_name")
+                    if name and name not in names:
+                        names.append(name)
+            if len(names) == 2:
+                return f"{names[0]} ({names[1]})"
+            return names[0] if names else ""
 
         def name_key(asset_id: str) -> tuple[str, str]:
             name = by_id[asset_id].get("asset_name") or ""
@@ -608,6 +823,24 @@ class PmCalendarService:
             if asset_id in placed:
                 return
             placed.add(asset_id)
+
+            # A department or building doesn't own a rung of the list: its
+            # children take its place at the depth it would have had, and
+            # carry its name as a label instead. It appears as a row of its
+            # own only when it has PMs filed directly against it, beside its
+            # branch rather than above it.
+            if is_grouping(asset_id):
+                if asset_id in own_pms:
+                    append_row(asset_id, depth)
+                for child_id in sorted(children.get(asset_id, ()), key=name_key):
+                    place(child_id, depth)
+                return
+
+            append_row(asset_id, depth)
+            for child_id in sorted(children.get(asset_id, ()), key=name_key):
+                place(child_id, depth + 1)
+
+        def append_row(asset_id: str, depth: int) -> None:
             row = by_id[asset_id]
             options.append(
                 {
@@ -615,12 +848,21 @@ class PmCalendarService:
                     "asset_number": asset_id,
                     "asset_name": row.get("asset_name"),
                     "parent_asset_id": row.get("parent_asset_id") if depth else None,
+                    # Counted while placing, not read from the stored level:
+                    # this is the depth *in the list being drawn*, so it can
+                    # never disagree with the indentation the page renders --
+                    # including for an asset only pm_task knows about, which
+                    # has no hierarchy row at all. The stored level is the
+                    # same number for everything the sync has seen.
                     "depth": depth,
+                    "level": row.get("level", depth),
+                    "root_asset_id": row.get("root_asset_id"),
+                    "building_asset_id": row.get("building_asset_id"),
+                    "group_label": label_for(asset_id),
                     "descendant_count": count_below(asset_id, {asset_id}),
+                    "has_children": row.get("has_children", 0),
                 }
             )
-            for child_id in sorted(children.get(asset_id, ()), key=name_key):
-                place(child_id, depth + 1)
 
         roots = [
             asset_id
@@ -733,8 +975,8 @@ class PmCalendarService:
             asset_ids = self._selection(asset_ids, exclude)
             if not asset_ids:
                 return empty
-        today = date.today().isoformat()
-        year_start = date.today().replace(month=1, day=1).isoformat()
+        today = _today().isoformat()
+        year_start = _today().replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)
 
         scheduled = len(due_ytd)
