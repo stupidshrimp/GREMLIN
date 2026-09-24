@@ -825,12 +825,12 @@ def test_picking_a_parent_and_one_of_its_children_counts_nothing_twice(tmp_path)
 def test_the_summary_covers_the_whole_branch_too(tmp_path):
     """The tiles and the grid have to be counting the same PMs.
 
-    summary() reads the real clock, so the completed PM is dated today --
-    always inside the year to date, whenever this runs.
+    The completed PM is dated "today" as summary() sees it (pinned above),
+    so it's inside the year to date.
     """
 
     service = _panel_line(tmp_path)
-    today = date.today().isoformat()
+    today = pm_calendar_service_module._today().isoformat()
     service.repo.upsert_tasks([
         _pm("10", "S1A", "Sander Dust Collector", today, completed=today),
     ])
@@ -1123,10 +1123,10 @@ def test_hiding_everything_shows_nothing_rather_than_every_asset(tmp_path):
 
 
 def test_the_summary_and_last_done_skip_hidden_sub_assets(tmp_path):
-    """summary() reads the real clock, so its rows are dated today."""
+    """Its rows are dated "today" as summary() sees it (pinned above)."""
 
     service = _panel_line(tmp_path)
-    today = date.today().isoformat()
+    today = pm_calendar_service_module._today().isoformat()
     service.repo.upsert_tasks([
         _pm("40", "S1A", "Sander Dust Collector", today, completed=today),
         _pm("41", "4002", "Panel Finishing System", today, completed=today),
@@ -1160,3 +1160,45 @@ def test_the_endpoints_pass_exclude_through(monkeypatch, tmp_path):
     assert {e["asset_id"] for e in shown["events"] if not e.get("is_projected")} == {"P"}
     assert client.get("/pm-calendar/api/last-completed?assets=P&exclude=C").get_json() == {"pm": None}
     assert client.get("/pm-calendar/api/summary?assets=P&exclude=P,C").get_json()["summary"]["scheduled"] == 0
+
+
+def test_the_hierarchy_is_read_once_until_the_next_replace(tmp_path):
+    service = _panel_line(tmp_path)
+    assert service.asset_options()  # warms the cache
+
+    # A cached read never opens the database.
+    def no_connection():
+        raise AssertionError("fetch_assets went back to the database")
+
+    service.repo.connect = no_connection
+    try:
+        assert {row["asset_id"] for row in service.repo.fetch_assets()} == {"4002", "S1", "S1A", "S2", "9"}
+    finally:
+        del service.repo.connect
+
+    # A replace is seen straight away: S2 moved under S1.
+    service.repo.replace_assets([
+        {"asset_id": "4002", "asset_name": "Panel Finishing System", "parent_asset_id": None},
+        {"asset_id": "S1", "asset_name": "Sander", "parent_asset_id": "4002"},
+        {"asset_id": "S2", "asset_name": "Oven", "parent_asset_id": "S1"},
+    ])
+    parents = {row["asset_id"]: row["parent_asset_id"] for row in service.repo.fetch_assets()}
+    assert parents == {"4002": None, "S1": "4002", "S2": "S1"}
+
+
+def test_a_caller_changing_a_row_does_not_change_the_cached_tree(tmp_path):
+    service = _panel_line(tmp_path)
+    service.repo.fetch_assets()[0]["parent_asset_id"] = "tampered"
+
+    assert "tampered" not in {row["parent_asset_id"] for row in service.repo.fetch_assets()}
+
+
+def test_limble_links_use_the_configured_app_host(monkeypatch, tmp_path):
+    monkeypatch.delenv("LIMBLE_APP_URL", raising=False)
+    module = _app(monkeypatch, tmp_path)
+    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    assert 'const LIMBLE_APP_URL = "https://app.limblecmms.com";' in page
+
+    monkeypatch.setenv("LIMBLE_APP_URL", "https://eu.example-limble.test/")
+    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    assert 'const LIMBLE_APP_URL = "https://eu.example-limble.test";' in page

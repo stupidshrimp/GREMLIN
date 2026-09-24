@@ -733,8 +733,8 @@ class PmCalendarService:
             asset_ids = self._selection(asset_ids, exclude)
             if not asset_ids:
                 return empty
-        today = date.today().isoformat()
-        year_start = date.today().replace(month=1, day=1).isoformat()
+        today = _today().isoformat()
+        year_start = _today().replace(month=1, day=1).isoformat()
         due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)
 
         scheduled = len(due_ytd)

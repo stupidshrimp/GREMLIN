@@ -65,6 +65,7 @@ from services.access_control import (
 )
 from services.sync_service import (
     APP_ENV_KEYS,
+    LIMBLE_ENV_PREFIX,
     LimbleSyncRunner,
     SyncAlreadyRunningError,
     SyncOptionError,
@@ -2490,11 +2491,21 @@ def reliability_links():
         "reliability_links.html",
         page_title="Reliability Links",
     )
+# Limble's web app, where the calendar's "Open in Limble" links go. Not the
+# API host (LIMBLE_BASE_URL): an account on one of Limble's regional instances
+# sets LIMBLE_APP_URL to its own app host.
+DEFAULT_LIMBLE_APP_URL = "https://app.limblecmms.com"
+
+
 @app.route("/pm-calendar")
 def pm_calendar():
+    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
+    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
+    limble_app_url = (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
     return render_template(
         "pm_calendar.html",
         page_title="PM Calendar",
+        limble_app_url=limble_app_url,
     )
 
 

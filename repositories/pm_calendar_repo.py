@@ -13,6 +13,7 @@ Limble-related involved at all.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -116,6 +117,14 @@ class PmCalendarRepository:
 
     def __init__(self, db_path: str | Path = DEFAULT_PM_CALENDAR_DB_PATH) -> None:
         self.db_path = Path(db_path)
+        # fetch_assets() is read on every calendar request (to expand a picked
+        # parent into its sub-assets) but only changes when replace_assets()
+        # runs, once per sync -- so it's kept in memory between the two. The
+        # generation stops a read that started before a replace from storing
+        # the old tree after it.
+        self._assets_lock = threading.Lock()
+        self._assets_cache: list[dict[str, Any]] | None = None
+        self._assets_generation = 0
 
     # ------------------------------------------------------------------
     # Connections
@@ -277,13 +286,26 @@ class PmCalendarRepository:
                     for row in rows
                 ],
             )
+        with self._assets_lock:
+            self._assets_generation += 1
+            self._assets_cache = None
         return {"assets": len(rows)}
 
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
     def fetch_assets(self) -> list[dict[str, Any]]:
-        """Every row of the asset hierarchy (empty until the first sync)."""
+        """Every row of the asset hierarchy (empty until the first sync).
+
+        Served from memory after the first read, until replace_assets() next
+        runs -- the only thing that writes pm_asset. Each call gets its own
+        copies, so a caller changing a row can't change the cached tree.
+        """
+
+        with self._assets_lock:
+            if self._assets_cache is not None:
+                return [dict(row) for row in self._assets_cache]
+            generation = self._assets_generation
 
         with self._reporting_failures():
             conn = self.connect()
@@ -293,7 +315,12 @@ class PmCalendarRepository:
                 ).fetchall()
             finally:
                 conn.close()
-        return [_row_to_dict(row) for row in rows]
+        assets = [_row_to_dict(row) for row in rows]
+
+        with self._assets_lock:
+            if generation == self._assets_generation:
+                self._assets_cache = assets
+        return [dict(row) for row in assets]
 
     def fetch_tasks(
         self,
