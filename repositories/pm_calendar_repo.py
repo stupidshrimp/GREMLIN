@@ -13,6 +13,7 @@ Limble-related involved at all.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -58,6 +59,48 @@ CREATE TABLE IF NOT EXISTS pm_task (
 )
 """
 
+# The asset hierarchy, as far as the calendar needs it: every asset that has
+# PMs, plus every asset above one of those (a parent like 4002 can have no PMs
+# of its own and still be the natural thing to pick). Its own table rather
+# than a column on pm_task for exactly that reason -- a parent with no PMs has
+# no pm_task row to hang a column on. Replaced wholesale on every sync, since
+# /assets always comes back complete. Being a new table, CREATE TABLE IF NOT
+# EXISTS is all an existing database needs; it stays empty until the next
+# sync, and until then the calendar behaves exactly as it did before.
+_CREATE_ASSET_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS pm_asset (
+    asset_id TEXT PRIMARY KEY,
+    asset_name TEXT,
+    parent_asset_id TEXT,
+    root_asset_id TEXT,
+    building_asset_id TEXT,
+    level INTEGER NOT NULL DEFAULT 0,
+    has_children INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+# Columns added to pm_asset after it first shipped. CREATE TABLE IF NOT EXISTS
+# leaves an existing table exactly as it is, and SQLite has no ADD COLUMN IF
+# NOT EXISTS, so the current shape is read and anything missing is ALTERed in.
+# The values arrive with the next sync, which rewrites every row anyway.
+_ADDED_ASSET_COLUMNS: dict[str, str] = {
+    "root_asset_id": "TEXT",
+    "building_asset_id": "TEXT",
+    "level": "INTEGER NOT NULL DEFAULT 0",
+    "has_children": "INTEGER NOT NULL DEFAULT 0",
+}
+
+# Every column of pm_asset, in the order replace_assets writes them.
+_ASSET_COLUMNS = (
+    "asset_id",
+    "asset_name",
+    "parent_asset_id",
+    "root_asset_id",
+    "building_asset_id",
+    "level",
+    "has_children",
+)
+
 # Indexes speed up the lookups the calendar page actually does: "PMs for
 # these assets" and "PMs due in this date range." They cost nothing to have
 # and nothing to maintain -- SQLite keeps them up to date automatically.
@@ -65,6 +108,7 @@ _CREATE_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_id ON pm_task(asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_due_date ON pm_task(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_due ON pm_task(asset_id, due_date)",
+    "CREATE INDEX IF NOT EXISTS idx_pm_asset_parent ON pm_asset(parent_asset_id)",
 )
 
 # Every column in pm_task except the auto-filled synced_at. Used to keep the
@@ -99,6 +143,14 @@ class PmCalendarRepository:
 
     def __init__(self, db_path: str | Path = DEFAULT_PM_CALENDAR_DB_PATH) -> None:
         self.db_path = Path(db_path)
+        # fetch_assets() is read on every calendar request (to expand a picked
+        # parent into its sub-assets) but only changes when replace_assets()
+        # runs, once per sync -- so it's kept in memory between the two. The
+        # generation stops a read that started before a replace from storing
+        # the old tree after it.
+        self._assets_lock = threading.Lock()
+        self._assets_cache: list[dict[str, Any]] | None = None
+        self._assets_generation = 0
 
     # ------------------------------------------------------------------
     # Connections
@@ -199,8 +251,22 @@ class PmCalendarRepository:
 
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
+            conn.execute(_CREATE_ASSET_TABLE_SQL)
+            self._add_missing_asset_columns(conn)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
+
+    @staticmethod
+    def _add_missing_asset_columns(conn: sqlite3.Connection) -> None:
+        """Add any pm_asset column this version expects that the file lacks.
+
+        A no-op once they are all there, so it costs one PRAGMA per start.
+        """
+
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(pm_asset)")}
+        for column, declared_type in _ADDED_ASSET_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE pm_asset ADD COLUMN {column} {declared_type}")
 
     # ------------------------------------------------------------------
     # Writes
@@ -235,9 +301,71 @@ class PmCalendarRepository:
 
         return {"upserted": len(rows)}
 
+    def replace_assets(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """Replace the whole asset hierarchy with `rows`, in one transaction.
+
+        Each dict carries the columns in _ASSET_COLUMNS: the asset, its
+        immediate parent (None at the top), the root of its branch, how many
+        steps below that root it sits, and whether anything hangs under it --
+        the same set of answers the Excel hierarchy sheet materialises, worked
+        out once at sync time so no read has to walk the tree again. A row
+        that leaves level, root or has_children out is stored with the column
+        defaults (0, itself, 0), which is what a lone top-level asset looks
+        like. Wholesale rather than upserted: an asset moved to
+        another parent, or scrapped, in Limble must not leave its old link
+        behind. Readers never see a half-written tree -- the delete and the
+        inserts land together or not at all.
+        """
+
+        with self.write_connection() as conn:
+            conn.execute("DELETE FROM pm_asset")
+            placeholders = ", ".join(f":{column}" for column in _ASSET_COLUMNS)
+            conn.executemany(
+                f"INSERT OR REPLACE INTO pm_asset ({', '.join(_ASSET_COLUMNS)}) VALUES ({placeholders})",
+                [
+                    {
+                        **{column: row.get(column) for column in _ASSET_COLUMNS},
+                        "root_asset_id": row.get("root_asset_id") or row.get("asset_id"),
+                        "level": row.get("level") or 0,
+                        "has_children": row.get("has_children") or 0,
+                    }
+                    for row in rows
+                ],
+            )
+        with self._assets_lock:
+            self._assets_generation += 1
+            self._assets_cache = None
+        return {"assets": len(rows)}
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
+    def fetch_assets(self) -> list[dict[str, Any]]:
+        """Every row of the asset hierarchy (empty until the first sync).
+
+        Served from memory after the first read, until replace_assets() next
+        runs -- the only thing that writes pm_asset. Each call gets its own
+        copies, so a caller changing a row can't change the cached tree.
+        """
+
+        with self._assets_lock:
+            if self._assets_cache is not None:
+                return [dict(row) for row in self._assets_cache]
+            generation = self._assets_generation
+
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(f"SELECT {', '.join(_ASSET_COLUMNS)} FROM pm_asset").fetchall()
+            finally:
+                conn.close()
+        assets = [_row_to_dict(row) for row in rows]
+
+        with self._assets_lock:
+            if generation == self._assets_generation:
+                self._assets_cache = assets
+        return [dict(row) for row in assets]
+
     def fetch_tasks(
         self,
         asset_ids: list[str] | None = None,
@@ -277,6 +405,33 @@ class PmCalendarRepository:
             finally:
                 conn.close()
         return [_row_to_dict(row) for row in rows]
+
+    def fetch_last_completed(self, asset_ids: list[str]) -> dict[str, Any] | None:
+        """The most recently completed PM among `asset_ids`, or None.
+
+        "Most recent" is by completed_date -- when the work was actually
+        signed off -- with due_date breaking a tie. Rows without a due_date
+        are skipped: the calendar draws a PM on its due date, so one without
+        has nowhere to be jumped to. One row, straight from the index on
+        asset_id; this never reads more than the matching assets' rows.
+        """
+
+        if not asset_ids:
+            return None
+        placeholders = ", ".join("?" for _ in asset_ids)
+        sql = (
+            f"SELECT * FROM pm_task WHERE asset_id IN ({placeholders}) "
+            "AND completed_date IS NOT NULL AND completed_date != '' "
+            "AND due_date IS NOT NULL AND due_date != '' "
+            "ORDER BY completed_date DESC, due_date DESC LIMIT 1"
+        )
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                row = conn.execute(sql, list(asset_ids)).fetchone()
+            finally:
+                conn.close()
+        return _row_to_dict(row) if row else None
 
     def asset_options(self) -> list[dict[str, Any]]:
         """Distinct assets that currently have at least one stored PM task."""

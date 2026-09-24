@@ -102,13 +102,25 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.7rem;   /* was 0.8rem */
   border: 1px solid var(--forest-200);
   border-radius: 999px;
   background: var(--forest-100);
   color: var(--forest-800);
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+/* The legend for the dot on that asset's calendar pills, in the same order
+   rebuildAssetColors() assigns them -- so this and the calendar agree without
+   the page having to say so anywhere. */
+.pm-asset-swatch {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--pm-asset-color, var(--forest-500));
+  flex: none;
 }
 
 /* A real button rather than a clickable <span>: it is the only way off a chip,
@@ -134,6 +146,178 @@
 .pm-asset-remove:hover {
   background: var(--forest-200);
   color: var(--forest-900);
+}
+
+/* "Last done" on a chip: jumps the calendar to that asset's most recently
+   completed PM. Quieter than the chip's name -- it's a shortcut, not the
+   thing the chip is about -- but still plainly a button. */
+.pm-asset-jump {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.pm-asset-jump:hover {
+  background: var(--forest-200);
+  border-color: var(--forest-500);
+}
+
+.pm-asset-jump:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* In the expanded list a disabled one means "hidden", not "loading". */
+.pm-branch-item .pm-asset-jump:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* The Limble asset ID ahead of the asset's name in the day details dialog:
+   quieter than the name, and lined up digit for digit down the list. */
+.pm-day-item-id {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pm-day-item-id::after {
+  content: "—";
+  margin: 0 0.35rem;
+  color: var(--border);
+}
+
+/* "+9 ▾" on a parent chip: opens its sub-assets below the chips. Reads as
+   the chip's own count (same weight as before) but is plainly pressable. */
+.pm-asset-expand {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.pm-asset-expand:hover,
+.pm-asset-expand[aria-expanded="true"] {
+  background: var(--surface);
+  border-color: var(--forest-200);
+  color: var(--forest-900);
+}
+
+/* The open chip's sub-assets, as a checklist under the chips. */
+.pm-branch-panel {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-veil);
+}
+
+.pm-branch-panel[hidden] {
+  display: none;
+}
+
+.pm-branch-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.pm-branch-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--forest-800);
+}
+
+.pm-branch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pm-branch-action {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.pm-branch-action:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* Capped and scrolling: 4002 has twenty-odd sub-assets, and the calendar is
+   the thing this page is for. */
+.pm-branch-list {
+  display: grid;
+  gap: 0.1rem;
+  max-height: 18rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.pm-branch-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.4rem;
+}
+
+.pm-branch-item label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem 0.3rem calc(0.4rem + var(--pm-depth, 0) * 1.4rem);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.pm-branch-item label:hover {
+  background: var(--forest-100);
+}
+
+.pm-branch-item input {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--forest-500);
+  cursor: pointer;
+}
+
+.pm-branch-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
 }
 
 /* Dashed, and the one control on the page that is not solid: it adds a chip to
@@ -263,6 +447,10 @@
   color: var(--forest-900);
 }
 
+.pm-projected-hint {
+  margin: -0.3rem 0 0.8rem;
+}
+
 /* ---- month view ---------------------------------------------------------- */
 /* Seven columns have a width below which a day cell stops being able to hold a
    PM's name at all, so the grid keeps its own and scrolls inside this box. The
@@ -367,26 +555,172 @@
    application already reads as done / wrong / neither. */
 .pm-event.is-completed {
   background: var(--success-bg);
-  border-left-color: var(--brand-accent);
+  border-left-color: var(--pm-asset-color, var(--brand-accent));  /* was: var(--brand-accent) */
   color: var(--success-ink);
 }
 
 .pm-event.is-overdue {
   background: var(--danger-bg);
-  border-left-color: var(--danger-strong);
+  border-left-color: var(--danger-strong);   /* unchanged */
   color: var(--danger-ink);
 }
 
 .pm-event.is-upcoming {
   background: var(--forest-100);
-  border-left-color: var(--forest-500);
+  border-left-color: var(--pm-asset-color, var(--forest-500));   /* was: var(--forest-500) */
   color: var(--forest-800);
+}
+
+/* A projected PM is a guess, not a work order -- dashed and faded so it
+   reads as lighter-weight than anything Limble has actually scheduled,
+   even before the "(est.)" suffix on its label or its tooltip is read. */
+.pm-event.is-projected {
+  background: var(--forest-100);
+  border-left-color: var(--pm-asset-color, var(--forest-500));
+  border-left-style: dashed;
+  color: var(--forest-800);
+  opacity: 0.7;
+}
+
+/* The asset marker itself, sized to sit on the pill's own text line rather
+   than push it -- pm-event is a two-line clamp and a tall dot costs a
+   character of room on every pill. Not drawn on is-overdue: that status
+   keeps its plain flat red until it gets the same treatment. */
+.pm-event-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.3rem;
+  border-radius: 50%;
+  background: var(--pm-asset-color, var(--brand-accent));
+  vertical-align: middle;
 }
 
 .pm-event-more {
   font-size: 0.7rem;
   font-weight: 600;
   color: var(--muted);
+}
+
+/* A day with PMs on it opens the details dialog. */
+.pm-day.has-events {
+  cursor: pointer;
+}
+
+/* ---- day details dialog -------------------------------------------------- */
+/* The one band of the dialog that scrolls, same as the picker's list. */
+.pm-day-list {
+  display: grid;
+  gap: 0.7rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* One PM, with the same asset-coloured left edge its pill has on the
+   calendar, so the two read as the same thing at two sizes. */
+.pm-day-item {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--pm-asset-color, var(--forest-500));
+  border-radius: 12px;
+  background: var(--surface-veil);
+}
+
+.pm-day-item.is-overdue {
+  border-left-color: var(--danger-strong);
+}
+
+.pm-day-item.is-projected {
+  border-left-style: dashed;
+}
+
+.pm-day-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.pm-day-item-asset {
+  font-weight: 700;
+  color: var(--forest-900);
+}
+
+.pm-day-item-task {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.pm-day-item-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 0.8rem;
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.pm-day-item-details dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.pm-day-item-details dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.pm-day-item-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Link colour the rest of GREMLIN uses inside a card: forest, not the
+   browser's blue, which no token owns. */
+.pm-day-item-link {
+  justify-self: start;
+  color: var(--forest-700);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.pm-day-item-link:hover {
+  color: var(--forest-900);
+}
+
+/* The four statuses, in the same colours as the pills on the calendar. */
+.pm-status-badge {
+  flex: none;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pm-status-badge.is-completed {
+  background: var(--success-bg);
+  color: var(--success-ink);
+}
+
+.pm-status-badge.is-overdue {
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+
+.pm-status-badge.is-upcoming {
+  background: var(--forest-100);
+  color: var(--forest-800);
+}
+
+.pm-status-badge.is-projected {
+  border: 1px dashed var(--forest-500);
+  color: var(--forest-800);
 }
 
 /* ---- week view ----------------------------------------------------------- */
@@ -521,18 +855,74 @@
   border-color: var(--forest-500);
 }
 
+/* A sub-asset sits under its parent, indented one step per level. The
+   indent is a custom property so the option's own padding stays the one
+   defined above. */
+.pm-asset-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-left: calc(0.65rem + var(--pm-depth, 0) * 1.25rem);
+}
+
+/* The search box hides non-matching options with the `hidden` attribute. The
+   `display: flex` above beats the browser's own `[hidden] { display: none }`,
+   which left every option showing whatever was typed -- so honour it here. */
+.pm-asset-option[hidden] {
+  display: none;
+}
+
+.pm-asset-option.is-child::before {
+  content: "↳";
+  color: var(--muted);
+  margin-right: 0.35rem;
+}
+
+/* Name over the building/department it sits in. */
+.pm-asset-option-text {
+  display: grid;
+  gap: 0.1rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.pm-asset-option-name {
+  min-width: 0;
+}
+
+.pm-asset-option-where {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+/* "+20 sub-assets" in the picker, "+20" on a chip: what picking it brings. */
+.pm-asset-option-meta,
+.pm-asset-chip-meta {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
 /* ---- focus --------------------------------------------------------------- */
 /* One ring for every control on the page, the same one the rest of GREMLIN
    draws. Worth stating once here: several of these are buttons with their
    border removed, and a browser's own focus ring on a transparent pill is easy
    to lose. */
 .pm-asset-remove:focus-visible,
+.pm-asset-jump:focus-visible,
+.pm-asset-expand:focus-visible,
+.pm-branch-action:focus-visible,
+.pm-branch-item input:focus-visible,
 .pm-asset-add:focus-visible,
 .pm-view-btn:focus-visible,
 .pm-nav-btn:focus-visible,
 .pm-modal-close:focus-visible,
 .pm-asset-search:focus-visible,
-.pm-asset-option:focus-visible {
+.pm-asset-option:focus-visible,
+.pm-day.has-events:focus-visible,
+.pm-day-item-link:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;
 }
@@ -560,6 +950,21 @@
   }
 }
 
+/* The day "Last done" landed on: a thick ring in the page's accent, held for
+   a few seconds and then removed by the script. Outline, not border, so the
+   grid doesn't shift by a pixel when it comes and goes; the pulse draws the
+   eye to it once the month has changed under the reader. */
+.pm-day.is-highlighted {
+  outline: 3px solid var(--forest-500);
+  outline-offset: 2px;
+  animation: pm-day-landed 600ms ease-out 3;
+}
+
+@keyframes pm-day-landed {
+  0% { outline-offset: 8px; }
+  100% { outline-offset: 2px; }
+}
+
 /* ---- reduced motion ------------------------------------------------------ */
 /* Nothing here animates on its own; these are all hover and focus transitions,
    and somebody who has asked for less motion gets the same colours without the
@@ -570,7 +975,15 @@
   .pm-view-btn,
   .pm-nav-btn,
   .pm-day,
-  .pm-asset-option {
+  .pm-asset-option,
+  .pm-asset-jump,
+  .pm-asset-expand,
+  .pm-branch-action {
     transition: none;
+  }
+
+  /* The ring stays; only the pulse goes. */
+  .pm-day.is-highlighted {
+    animation: none;
   }
 }

@@ -65,6 +65,7 @@ from services.access_control import (
 )
 from services.sync_service import (
     APP_ENV_KEYS,
+    LIMBLE_ENV_PREFIX,
     LimbleSyncRunner,
     SyncAlreadyRunningError,
     SyncOptionError,
@@ -2490,11 +2491,21 @@ def reliability_links():
         "reliability_links.html",
         page_title="Reliability Links",
     )
+# Limble's web app, where the calendar's "Open in Limble" links go. Not the
+# API host (LIMBLE_BASE_URL): an account on one of Limble's regional instances
+# sets LIMBLE_APP_URL to its own app host.
+DEFAULT_LIMBLE_APP_URL = "https://app.limblecmms.com"
+
+
 @app.route("/pm-calendar")
 def pm_calendar():
+    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
+    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
+    limble_app_url = (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
     return render_template(
         "pm_calendar.html",
         page_title="PM Calendar",
+        limble_app_url=limble_app_url,
     )
 
 
@@ -2531,14 +2542,16 @@ def overdue_wo_tracker():
         page_summary="Work orders past their due date, for Operations & Maintenance.",
     )
 
-def _pm_calendar_asset_ids() -> list[str] | None:
-    """Parse ?assets=1,2,3 from the query string.
+def _pm_calendar_asset_ids(param: str = "assets") -> list[str] | None:
+    """Parse ?assets=1,2,3 (or another comma-separated id list) from the query.
 
     Omitted entirely -> None (no filter, every asset). Present but empty
     (?assets=) -> [] (explicitly zero assets selected, matches nothing).
+    `?exclude=` uses the same format: the sub-assets hidden in a chip's
+    expanded view.
     """
 
-    raw = request.values.get("assets")
+    raw = request.values.get(param)
     if raw is None:
         return None
     raw = raw.strip()
@@ -2567,17 +2580,37 @@ def api_pm_calendar_events():
         return jsonify({"error": "'start' and 'end' query parameters are required (YYYY-MM-DD)."}), 400
     try:
         events = pm_calendar_service.events(
-            asset_ids=_pm_calendar_asset_ids(), start_date=start, end_date=end
+            asset_ids=_pm_calendar_asset_ids(),
+            start_date=start,
+            end_date=end,
+            exclude=_pm_calendar_asset_ids("exclude"),
         )
     except PmCalendarUnavailableError as exc:
         return jsonify({"error": str(exc)}), 503
     return jsonify({"events": events})
 
 
+@app.route("/pm-calendar/api/last-completed")
+def api_pm_calendar_last_completed():
+    # For the "Last done" button on an asset chip: which PM to jump the
+    # calendar to. `assets` is required here -- "every asset" has no sensible
+    # last completed PM to jump to, and would be an unbounded read.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        pm = pm_calendar_service.last_completed(asset_ids, exclude=_pm_calendar_asset_ids("exclude"))
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"pm": pm})
+
+
 @app.route("/pm-calendar/api/summary")
 def api_pm_calendar_summary():
     try:
-        summary = pm_calendar_service.summary(asset_ids=_pm_calendar_asset_ids())
+        summary = pm_calendar_service.summary(
+            asset_ids=_pm_calendar_asset_ids(), exclude=_pm_calendar_asset_ids("exclude")
+        )
     except PmCalendarUnavailableError as exc:
         return jsonify({"error": str(exc)}), 503
     return jsonify({"summary": summary})
