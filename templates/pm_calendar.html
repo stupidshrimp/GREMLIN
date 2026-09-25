@@ -51,6 +51,7 @@
 
     <div class="pm-sync-row">
       <button id="pm-sync-btn" class="btn-secondary" type="button">Sync from Limble</button>
+      <button id="pm-tour-btn" class="pm-tour-btn" type="button">Show me around</button>
       <span id="pm-sync-status" class="pm-sync-status" role="status"></span>
     </div>
   </div>
@@ -167,6 +168,27 @@
 
     <div id="pm-day-list" class="pm-day-list">
       <!-- populated by openDay() -->
+    </div>
+  </div>
+</div>
+
+{# The first-visit tour. Two pieces: a spotlight, which is one transparent
+   box with a very large shadow around it (that shadow is what dims the rest
+   of the page), and the card that explains whatever the spotlight is on.
+   Both are positioned by the script; neither exists in the flow of the
+   page, so nothing here moves when the tour runs. #}
+<div id="pm-tour" class="pm-tour" hidden>
+  <div id="pm-tour-spotlight" class="pm-tour-spotlight" aria-hidden="true"></div>
+  <div id="pm-tour-card" class="pm-tour-card" role="dialog" aria-modal="true"
+       aria-labelledby="pm-tour-title" tabindex="-1">
+    <p class="pm-tour-step" id="pm-tour-step"></p>
+    <h2 class="pm-tour-title" id="pm-tour-title"></h2>
+    <p class="pm-tour-body" id="pm-tour-body"></p>
+    <div class="pm-tour-actions">
+      <button id="pm-tour-skip" class="pm-tour-skip" type="button">Skip</button>
+      <span class="pm-tour-spacer"></span>
+      <button id="pm-tour-back" class="pm-nav-btn" type="button">◄ Back</button>
+      <button id="pm-tour-next" class="btn-secondary" type="button">Next ►</button>
     </div>
   </div>
 </div>
@@ -628,6 +650,37 @@ document.addEventListener('DOMContentLoaded', function () {
             if (event.completed_date) detailRow(details, 'Completed', shortDate(event.completed_date));
             if (!event.is_projected) detailRow(details, 'Limble task', '#' + event.task_id);
             item.appendChild(details);
+
+            // A PM whose name has been edited in Limble arrives under more
+            // than one name. They are one line here -- one estimate, not two
+            // -- and this is where that is said, folded away until asked for.
+            const names = event.also_known_as || [];
+            if (names.length > 1) {
+                const known = document.createElement('details');
+                known.className = 'pm-day-item-names';
+
+                const summary = document.createElement('summary');
+                summary.textContent = 'Known by ' + names.length + ' names in Limble';
+                known.appendChild(summary);
+
+                const list = document.createElement('ul');
+                names.forEach(entry => {
+                    const row = document.createElement('li');
+                    const name = document.createElement('span');
+                    name.className = 'pm-day-item-name';
+                    name.textContent = entry.task_name;
+                    row.appendChild(name);
+                    if (entry.last_seen) {
+                        const seen = document.createElement('span');
+                        seen.className = 'pm-day-item-seen';
+                        seen.textContent = 'last seen ' + shortDate(entry.last_seen);
+                        row.appendChild(seen);
+                    }
+                    list.appendChild(row);
+                });
+                known.appendChild(list);
+                item.appendChild(known);
+            }
 
             if (event.is_projected) {
                 const note = document.createElement('p');
@@ -1328,6 +1381,178 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // ------------------------------------------------------------------
+    // First-visit tour
+    // ------------------------------------------------------------------
+
+    // Which parts of the page the tour stops at, in order. `target` is looked
+    // up when the step is shown rather than now, because the calendar grid
+    // and the chips are drawn after this file runs.
+    const TOUR_STEPS = [
+        {
+            target: '#pm-selected-assets',
+            title: 'Start with your assets',
+            body: 'Add the machines you look after. Picking a line brings its sub-assets with it, ' +
+                  'and the picker says which building and department each one is in.',
+        },
+        {
+            target: '.pm-summary-grid',
+            title: 'Year to date, for what you picked',
+            body: 'How many PMs were due this year, how many were done, and how many went past ' +
+                  'their date. These follow your selection, so they change as you add or remove assets.',
+        },
+        {
+            target: '.pm-projected-hint',
+            title: 'Solid is real, dashed is an estimate',
+            body: "Solid pills are work orders Limble has already made. Dashed ones are this page's " +
+                  "estimate of when the PM comes round next, worked out from when it was last completed.",
+        },
+        {
+            // The grid, not #pm-calendar-body: that one is display: contents,
+            // so it has no box of its own to light up.
+            target: '.pm-calendar-grid',
+            title: 'Open a day for the detail',
+            body: 'Click any day with PMs on it to see everything due that day, with a link that ' +
+                  'opens the work order in Limble.',
+        },
+        {
+            target: '#pm-sync-btn',
+            title: 'Sync when you need fresh data',
+            body: 'This pulls the latest PMs and assets from Limble. It takes a few minutes, and the ' +
+                  'page keeps working while it runs.',
+        },
+    ];
+
+    const TOUR_SEEN_KEY = 'gremlin.pm-calendar.tour-seen';
+    const tour = document.getElementById('pm-tour');
+    const tourCard = document.getElementById('pm-tour-card');
+    const tourSpotlight = document.getElementById('pm-tour-spotlight');
+    let tourStep = 0;
+    let tourReturnFocus = null;
+
+    // Storage throws rather than returning null when site data is blocked --
+    // the same guard layout.js and topbar_tools.js use for their settings.
+    function tourSeen() {
+        try {
+            return localStorage.getItem(TOUR_SEEN_KEY) === 'yes';
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function rememberTourSeen() {
+        try {
+            localStorage.setItem(TOUR_SEEN_KEY, 'yes');
+        } catch (error) {
+            // A browser that won't remember just shows the tour again; the
+            // page itself is unaffected, so there is nothing to report.
+        }
+    }
+
+    function placeTour() {
+        const step = TOUR_STEPS[tourStep];
+        const target = document.querySelector(step.target);
+        const pad = 8;
+
+        if (target) {
+            const box = target.getBoundingClientRect();
+            tourSpotlight.hidden = false;
+            tourSpotlight.style.top = (box.top - pad) + 'px';
+            tourSpotlight.style.left = (box.left - pad) + 'px';
+            tourSpotlight.style.width = (box.width + pad * 2) + 'px';
+            tourSpotlight.style.height = (box.height + pad * 2) + 'px';
+
+            // Below the lit box when there's room, above it when there
+            // isn't, and along the bottom of the screen when the thing being
+            // pointed at is taller than the screen -- the calendar grid is,
+            // and a card pinned to the top would cover the dates.
+            const card = tourCard.getBoundingClientRect();
+            const below = box.bottom + pad * 2;
+            const above = box.top - card.height - pad * 2;
+            let top;
+            if (below + card.height < window.innerHeight) {
+                top = below;
+            } else if (above >= pad) {
+                top = above;
+            } else {
+                top = window.innerHeight - card.height - pad * 2;
+            }
+            const left = Math.min(
+                Math.max(pad, box.left),
+                Math.max(pad, window.innerWidth - card.width - pad)
+            );
+            tourCard.style.top = top + 'px';
+            tourCard.style.left = left + 'px';
+        } else {
+            // Nothing to point at (the week view, say): centre the card and
+            // leave the page evenly dimmed.
+            tourSpotlight.hidden = true;
+            tourCard.style.top = '20vh';
+            tourCard.style.left = 'max(1rem, calc(50vw - 11.5rem))';
+        }
+    }
+
+    function showTourStep() {
+        const step = TOUR_STEPS[tourStep];
+        const target = document.querySelector(step.target);
+        if (target) {
+            const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            target.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+        }
+
+        document.getElementById('pm-tour-step').textContent =
+            'Step ' + (tourStep + 1) + ' of ' + TOUR_STEPS.length;
+        document.getElementById('pm-tour-title').textContent = step.title;
+        document.getElementById('pm-tour-body').textContent = step.body;
+        document.getElementById('pm-tour-back').disabled = tourStep === 0;
+        document.getElementById('pm-tour-next').textContent =
+            tourStep === TOUR_STEPS.length - 1 ? 'Done' : 'Next ►';
+
+        // After the scroll, so the spotlight lands on where the target
+        // actually ends up.
+        requestAnimationFrame(() => requestAnimationFrame(placeTour));
+    }
+
+    function startTour() {
+        tourReturnFocus = document.activeElement;
+        tourStep = 0;
+        tour.hidden = false;
+        showTourStep();
+        tourCard.focus();
+    }
+
+    function endTour() {
+        tour.hidden = true;
+        rememberTourSeen();
+        if (tourReturnFocus && document.body.contains(tourReturnFocus)) tourReturnFocus.focus();
+        tourReturnFocus = null;
+    }
+
+    document.getElementById('pm-tour-btn').addEventListener('click', startTour);
+    document.getElementById('pm-tour-skip').addEventListener('click', endTour);
+    document.getElementById('pm-tour-back').addEventListener('click', () => {
+        if (tourStep > 0) {
+            tourStep -= 1;
+            showTourStep();
+        }
+    });
+    document.getElementById('pm-tour-next').addEventListener('click', () => {
+        if (tourStep < TOUR_STEPS.length - 1) {
+            tourStep += 1;
+            showTourStep();
+        } else {
+            endTour();
+        }
+    });
+
+    // Escape leaves, the same as the two dialogs; the spotlight follows the
+    // page if the window is resized or scrolled under it.
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !tour.hidden) endTour();
+    });
+    window.addEventListener('resize', () => { if (!tour.hidden) placeTour(); });
+    window.addEventListener('scroll', () => { if (!tour.hidden) placeTour(); }, { passive: true });
+
+    // ------------------------------------------------------------------
     // Startup
     // ------------------------------------------------------------------
 
@@ -1337,6 +1562,12 @@ document.addEventListener('DOMContentLoaded', function () {
     refreshSummary();
     refreshEvents();
     pollSyncStatus();
+
+    // First visit on this browser: show the tour once the page has drawn, so
+    // the spotlight has something to land on.
+    if (!tourSeen()) {
+        requestAnimationFrame(() => requestAnimationFrame(startTour));
+    }
 
 });
 

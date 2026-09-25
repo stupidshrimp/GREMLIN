@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import re
 import threading
 from bisect import bisect_left
 from collections import deque
@@ -51,7 +52,7 @@ _PM_TYPE_VALUE = "1"
 # and a fixed table is predictable: the same code always projects the same
 # way. A new code only needs one line added here.
 #
-# These are whole weeks, not calendar months or years, and that is also on
+# These are whole weeks (bar the daily one), not calendar months or years, and that is also on
 # purpose: it's how this account's templates are set up in Limble
 # ("Repeats Every 4 Weeks on Fri", "Every 52 Weeks", "Every 156 Weeks"), so
 # it's what Limble will actually generate. It does mean M comes round 13
@@ -60,13 +61,27 @@ _PM_TYPE_VALUE = "1"
 # calendar ~1,096. Calendar-month arithmetic would look tidier and disagree
 # with Limble. The staleness bound below keeps any projection within a few
 # cycles of real activity, so the drift never has years to build up.
-_CADENCE_WEEKS: dict[str, int] = {
-    "2W": 2,  # Every two weeks
-    "M": 4,  # Monthly
-    "Q": 12,  # Quarterly
-    "SA": 26,  # Semi-annual
-    "A": 52,  # Annual
-    "3Y": 156,  # Every three years
+# In days rather than weeks, because this account has a daily PM ("1435 - D
+# - Stokes Tablet") and a day is not a whole number of weeks. Everything
+# else is still the week count it always was, times seven.
+#
+# Every code below was counted in this account's own PM names; each comment
+# gives how many distinct PMs carry it. Codes not listed here get no
+# estimates at all -- see _cadence_code.
+_CADENCE_DAYS: dict[str, int] = {
+    "D": 1,  # Daily (3)
+    "W": 7,  # Weekly (15)
+    "2W": 14,  # Every two weeks (3)
+    "M": 28,  # Monthly, 4 weeks (381)
+    "2M": 56,  # Every two months, 8 weeks (1)
+    "3M": 84,  # Every three months, 12 weeks -- the same as Q (1)
+    "Q": 84,  # Quarterly, 12 weeks (445)
+    "SA": 182,  # Semi-annual, 26 weeks (403)
+    "A": 364,  # Annual, 52 weeks (307)
+    "2Y": 728,  # Every two years, 104 weeks (22)
+    "3Y": 1092,  # Every three years, 156 weeks (20)
+    "4Y": 1456,  # Every four years, 208 weeks (1)
+    "5Y": 1820,  # Every five years, 260 weeks (12)
 }
 
 
@@ -75,7 +90,7 @@ def _cadence_code(task_name: str | None) -> str | None:
 
     The second " - "-delimited segment, upper-cased so a stray "m" or "sa"
     still matches. Anything that doesn't split that way, or whose middle
-    segment isn't one of _CADENCE_WEEKS, returns None -- silently, on
+    segment isn't one of _CADENCE_DAYS, returns None -- silently, on
     purpose. Most rows this runs against are ordinary work orders and work
     requests that were never going to be cadence-coded in the first place,
     and even among PMs this account's naming convention is the one thing
@@ -90,22 +105,67 @@ def _cadence_code(task_name: str | None) -> str | None:
     if len(parts) < 2:
         return None
     code = parts[1]
-    return code if code in _CADENCE_WEEKS else None
+    return code if code in _CADENCE_DAYS else None
+
+
+# How long the job takes, written on the end of a PM's name: "- 3hrs.",
+# "- 30 min.", "- 2 Hours Req.". Limble users edit these as estimates get
+# revised, and the same PM then arrives under two names -- which split it
+# into two lines, each projecting its own estimates, and stopped an estimate
+# from yielding to the real work order it duplicates. A duration is how long
+# a job takes, not which job it is, so it isn't part of the line's identity.
+#
+# Hours and minutes only, and a plausible number of them. Everything else a
+# name ends in is left alone, because on this account those numbers mean
+# something: "(6D)" on a boiler, "4002-S05 211d", meter readings like
+# "501 hr", street addresses ("10165 W. 52nd street"), and -- the one that
+# matters most -- how often the PM runs. A weekly and a two-weekly PM are
+# told apart by their code (W against 2W), and nothing here touches the
+# code. An earlier, looser version of this also swallowed bare "m" and "d",
+# which turned "PM CNC Okuma Genos L300M" into "PM CNC Okuma Genos L".
+_DURATION_TAIL = re.compile(
+    r"""[\s\-–—]*\(?\s*(?:\d|1\d|2[0-4])(?:[.,]\d+)?\s*
+            (?:h|hr|hrs|hour|hours)\b\s*(?:req(?:uired|\.)?)?[\s.)]*$
+      | [\s\-–—]*\(?\s*\d{1,3}\s*
+            (?:min|mins|minute|minutes)\b\s*(?:req(?:uired|\.)?)?[\s.)]*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_duration(text: str) -> str:
+    """Drop a trailing duration from one segment of a PM name."""
+
+    return _DURATION_TAIL.sub("", text).strip(" -–—").strip()
 
 
 def _series_key(task_name: str) -> str:
-    """One PM line's identity: its name, ignoring case and runs of spaces.
+    """One PM line's identity: its name, minus how long the job takes.
 
     The line, not the cadence code, is what repeats. One asset can carry two
     PMs with the same code -- a monthly on the machine and a monthly on its
     chiller -- and keyed on the code alone their histories were pooled into
     one stream: one anchor, one name, and the other line gone from every
-    future month. The name is what tells them apart; case and spacing are
-    folded so a stray capital or a double space in Limble doesn't split one
-    line in two.
+    future month. The name is what tells them apart.
+
+    Case and runs of spaces are folded, so a stray capital or a double space
+    in Limble doesn't split one line in two, and so is a trailing duration
+    (see _DURATION_TAIL): "3103 - M - Salvagnini Laser - 3hrs." and
+    "3103 - M - Salvagnini Laser" are one PM whose estimate got revised, not
+    two monthly PMs on one laser.
+
+    Anything else after the description is kept, because it usually says
+    *which* thing is being maintained: "- A side" and "- B side" stay two
+    lines.
     """
 
-    return " ".join(task_name.split()).casefold()
+    parts = [part.strip() for part in task_name.split(" - ")]
+    # The last segment is the only place a duration belongs; a duration
+    # written without the spacing convention ("Salvagnini ACN- 30 min") is
+    # inside that segment rather than a segment of its own.
+    if parts:
+        parts[-1] = _strip_duration(parts[-1])
+    kept = [part for part in parts if part]
+    return " ".join(" - ".join(kept).split()).casefold()
 
 
 # A PM line with nothing open in Limble, whose newest occurrence on file is
@@ -535,7 +595,7 @@ class PmCalendarService:
         for every asset. This fills that gap with estimates, built entirely
         from what's already synced locally: no extra Limble call, and no
         dependency on Limble's own recurrence data, which (see
-        _CADENCE_WEEKS above) this account's /tasks endpoint doesn't expose.
+        _CADENCE_DAYS above) this account's /tasks endpoint doesn't expose.
 
         Anchored on the last COMPLETED occurrence of each PM line, never on
         the last due date. A due date on a task that hasn't happened yet is
@@ -586,7 +646,7 @@ class PmCalendarService:
             # Every row in a series has the same name up to case and spacing,
             # so they all parse to the same code.
             code = _cadence_code(rows[0]["task_name"])
-            interval_days = _CADENCE_WEEKS[code] * 7
+            interval_days = _CADENCE_DAYS[code]
             # Short and stable, so two lines projected onto the same day never
             # share a task_id.
             line_tag = hashlib.sha1(line.encode("utf-8")).hexdigest()[:8]
@@ -616,6 +676,24 @@ class PmCalendarService:
             # Names and asset details come from the line's newest row, so an
             # estimate reads the way the PM currently reads in Limble.
             sample = max(rows, key=lambda r: r.get("due_date") or "")
+
+            # When the line has been through more than one name -- someone
+            # revised the duration on the end of it -- the estimate says so,
+            # and the day details can list them. Newest first, each with the
+            # last day it was seen on a real occurrence.
+            last_seen: dict[str, str] = {}
+            for row in rows:
+                name = row.get("task_name")
+                seen = max(
+                    (value[:10] for value in (row.get("due_date"), row.get("completed_date")) if value),
+                    default="",
+                )
+                if name and seen > last_seen.get(name, ""):
+                    last_seen[name] = seen
+            also_known_as = [
+                {"task_name": name, "last_seen": seen}
+                for name, seen in sorted(last_seen.items(), key=lambda item: item[1], reverse=True)
+            ]
 
             if has_open:
                 # A hard ceiling, not a window-jump target: always the first
@@ -679,6 +757,8 @@ class PmCalendarService:
                         "completed_date": None,
                         "is_completed": 0,
                         "is_projected": True,
+                        # Only when there is something to expand.
+                        "also_known_as": also_known_as if len(also_known_as) > 1 else [],
                     }
                 )
 

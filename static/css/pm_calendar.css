@@ -371,6 +371,151 @@
   color: var(--danger-ink);
 }
 
+/* "Known by 2 names in Limble": shut by default, because most PMs have one
+   name and the ones that don't are only interesting when something looks
+   doubled. */
+.pm-day-item-names {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.82rem;
+}
+
+.pm-day-item-names > summary {
+  color: var(--muted);
+  cursor: pointer;
+  list-style: revert;
+}
+
+.pm-day-item-names > summary:hover {
+  color: var(--forest-900);
+}
+
+.pm-day-item-names ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.pm-day-item-name {
+  display: block;
+  color: var(--text);
+}
+
+.pm-day-item-seen {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* "Show me around" sits beside Sync: quieter than the sync button, since it
+   is the thing you press once and then never again. */
+.pm-tour-btn {
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.pm-tour-btn:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* ---- the first-visit tour ------------------------------------------------ */
+/* The overlay itself catches clicks so nothing on the page can be pressed
+   while the tour is up; the spotlight and the card sit on top of it. */
+.pm-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+.pm-tour[hidden] {
+  display: none;
+}
+
+/* The lit box. It is transparent; the huge shadow around it is what darkens
+   everything else, so one element does both jobs and nothing has to be
+   cut out of the page. */
+.pm-tour-spotlight {
+  position: fixed;
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(12, 26, 20, 0.62), 0 0 0 3px var(--forest-500);
+  transition: top 220ms ease, left 220ms ease, width 220ms ease, height 220ms ease;
+  pointer-events: none;
+}
+
+.pm-tour-card {
+  position: fixed;
+  width: min(23rem, calc(100vw - 2rem));
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgba(12, 26, 20, 0.35);
+  transition: top 220ms ease, left 220ms ease;
+}
+
+.pm-tour-step {
+  margin: 0 0 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pm-tour-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  color: var(--forest-900);
+}
+
+.pm-tour-body {
+  margin: 0 0 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.pm-tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pm-tour-spacer {
+  flex: 1;
+}
+
+.pm-tour-skip {
+  padding: 0.3rem 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.pm-tour-skip:hover {
+  color: var(--forest-900);
+}
+
+.pm-tour-btn:focus-visible,
+.pm-tour-skip:focus-visible,
+.pm-tour-card:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
 /* ---- calendar chrome ----------------------------------------------------- */
 .pm-calendar-topbar {
   display: flex;
@@ -978,7 +1123,15 @@
   .pm-asset-option,
   .pm-asset-jump,
   .pm-asset-expand,
-  .pm-branch-action {
+  .pm-branch-action,
+  .pm-tour-btn {
+    transition: none;
+  }
+
+  /* The tour still moves from one thing to the next, it just doesn't
+     glide there. */
+  .pm-tour-spotlight,
+  .pm-tour-card {
     transition: none;
   }
 
