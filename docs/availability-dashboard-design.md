@@ -272,6 +272,12 @@ availability          = max(0, (adjusted_scheduled_h − adjusted_downtime_h)
 Group `Average` is the unweighted mean of its assets' availability for that
 month, matching the workbook's `=AVERAGE(...)`. `Goal` defaults to 0.95.
 
+The table under each chart ends in an `Asset average` column: each row averaged
+across the months shown by the same rule turned the other way — every month
+counts once, however many hours it scheduled, and a month with no defined
+availability is skipped. The Average and Goal rows get one too, averaged the
+same way.
+
 Month labels carry the year whenever the window spans more than one calendar
 year (`Dec 25`, `Jan 26`); a single-year window uses the bare name as the
 workbook does. Those labels head the editable Goal and OT columns, so a repeated

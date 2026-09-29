@@ -581,6 +581,26 @@ table.availability-table th:first-child {
 /* The corner cell is sticky on both axes at once, so it has to outrank the
    header row it sits in as well as the column below it. */
 table.availability-table thead th:first-child { background: var(--forest-100); z-index: 3; }
+
+/* Asset average: each row's summary, frozen to the right edge the way the
+   asset names are frozen to the left, so a long window scrolls its months
+   between the two rather than scrolling the summary out of sight. The inset
+   edge marks where that frozen column begins. */
+table.availability-table .availability-average-col {
+  position: sticky;
+  right: 0;
+  background: inherit;
+  font-weight: 600;
+  z-index: 1;
+  box-shadow: inset 1px 0 0 var(--border);
+}
+/* Keeps the rule under the header, which the edge above would otherwise
+   replace, and outranks the column below it like the other corner does. */
+table.availability-table thead th.availability-average-col {
+  background: var(--forest-100);
+  z-index: 3;
+  box-shadow: inset 1px 0 0 var(--border), inset 0 -1px 0 var(--border);
+}
 .availability-cell { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* A flagged month means downtime exceeded scheduled hours, so the value is
@@ -626,6 +646,13 @@ table.metrics-table td.availability-input-cell { text-align: right; }
 
 @media (max-width: 860px) {
   .availability-control-row { flex-direction: column; align-items: stretch; }
+}
+
+/* On a phone, two frozen columns leave the months a sliver between them, so
+   the average scrolls with the months there. `right: auto` rather than
+   unsticking it outright: the heading still has to stick to the top. */
+@media (max-width: 640px) {
+  table.availability-table .availability-average-col { right: auto; }
 }
 
 /* ---- availability drill-down modal --------------------------------------- */

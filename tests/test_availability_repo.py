@@ -921,6 +921,20 @@ class DashboardTests(AvailabilityTestCase):
         self.add_work_order("3101", "2026-06-15 15:00:00", 1.0)
         self.assertTrue(self.repo.has_any_work_orders())
 
+    def test_the_payload_carries_each_assets_average_across_the_window(self):
+        """What the Asset average column under each chart reads."""
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+        self.add_work_order("3101", "2026-02-12 15:00:00", 40.0)
+        data = build_dashboard(self.repo, months=2, today=date(2026, 3, 15))
+        salvagnini = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        mv = next(a for a in salvagnini["assets"] if a["asset_number"] == "3101")
+        self.assertAlmostEqual(mv["average"], ((396 - 10) / 396 + (360 - 40) / 360) / 2, places=12)
+        self.assertAlmostEqual(
+            salvagnini["overall_average"], sum(salvagnini["average"]) / 2, places=12
+        )
+        self.assertAlmostEqual(salvagnini["goal_average"], 0.95, places=12)
+
     def test_manual_overtime_reaches_the_dashboard(self):
         self.seed_salvagnini_january()
         self.repo.save_manual_ot("3101", "2026-01-01", 40.0)
@@ -1324,6 +1338,7 @@ class ExcludePmsTests(AvailabilityTestCase):
         salvagnini = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
         mv = next(a for a in salvagnini["assets"] if a["asset_number"] == "3101")
         self.assertAlmostEqual(mv["values"][0], expected, places=12)
+        self.assertAlmostEqual(mv["average"], expected, places=12)
 
     def test_a_return_to_service_note_is_not_mistaken_for_a_pm(self):
         """The 623.7 h regression, guarded on the switch as well as the default."""

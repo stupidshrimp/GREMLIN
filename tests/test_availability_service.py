@@ -400,6 +400,48 @@ class GroupHandlingTests(unittest.TestCase):
         self.assertIsNone(series.average[0])
 
 
+class AssetAverageTests(unittest.TestCase):
+    """The table's Asset average column: each row averaged across the window."""
+
+    FEB = date(2026, 2, 1)
+
+    def series(self, **kwargs):
+        months = [JAN, self.FEB]
+        orders = january_work_orders() + [WorkOrder("3101", datetime(2026, 2, 10, 9, 0), 40.0)]
+        rows = compute_rows([SALVAGNINI], months, orders, linked_rules=[], display_names=DISPLAY_NAMES)
+        return build_series(rows, [SALVAGNINI], months, **kwargs)[0]
+
+    def test_each_asset_is_averaged_across_the_window_with_every_month_counting_once(self):
+        """February's shorter schedule still counts as one month, not fewer hours."""
+
+        mv = next(a for a in self.series().assets if a["asset_number"] == "3101")
+        # January: 22 weekdays x 18 h less 10 h. February: 20 x 18 less 40 h.
+        self.assertAlmostEqual(mv["average"], ((396 - 10) / 396 + (360 - 40) / 360) / 2, places=12)
+
+    def test_the_average_and_goal_rows_are_averaged_the_same_way(self):
+        series = self.series(goals={("Salvagnini", JAN): 0.97})
+        self.assertAlmostEqual(series.overall_average, sum(series.average) / 2, places=12)
+        # With every month defined, that is also the mean of the asset averages.
+        self.assertAlmostEqual(
+            series.overall_average,
+            sum(a["average"] for a in series.assets) / len(series.assets),
+            places=12,
+        )
+        self.assertAlmostEqual(series.goal_average, (0.97 + 0.95) / 2, places=12)
+
+    def test_a_month_with_no_defined_availability_is_skipped_not_zeroed(self):
+        group = AssetGroup("G", ("A", "B"), schedule_hours_per_day=0)
+        months = [JAN, self.FEB]
+        # Overtime is the only way an unscheduled group has hours to measure.
+        rows = compute_rows([group], months, [], manual_ot={("A", JAN): 10.0})
+        series = build_series(rows, [group], months)[0]
+        by_asset = {a["asset_number"]: a for a in series.assets}
+        self.assertEqual(by_asset["A"]["values"], [1.0, None])
+        self.assertEqual(by_asset["A"]["average"], 1.0)
+        self.assertIsNone(by_asset["B"]["average"])
+        self.assertEqual(series.overall_average, 1.0)
+
+
 def detail(asset, when, hours, **text):
     return WorkOrderDetail(
         order=WorkOrder(asset_number=asset, created_local=when, downtime_hours=hours), **text

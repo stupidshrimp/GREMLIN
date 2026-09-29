@@ -355,6 +355,8 @@ def build_dashboard(
                 "assets": chart.assets,
                 "average": chart.average,
                 "goal": chart.goal,
+                "overall_average": chart.overall_average,
+                "goal_average": chart.goal_average,
                 "rows": detail.get(chart.asset_group, []),
             }
             for chart in series

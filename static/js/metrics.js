@@ -2720,6 +2720,19 @@
     return el("td", attrs);
   }
 
+  // The Asset average column: each row averaged across the months shown, every
+  // month counting once -- the Average row's rule turned the other way. It is
+  // derived, so it stays read-only text in the OT editing mode too.
+  const ASSET_AVERAGE_TITLE =
+    "Each row averaged across the months shown, with every month counting once";
+
+  function averageCell(value) {
+    return el("td", {
+      class: "availability-cell availability-average-col",
+      text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`,
+    });
+  }
+
   async function saveAvailabilityValue(url, body, onDone) {
     try {
       const response = await fetch(url, {
@@ -2760,7 +2773,15 @@
     const head = el("tr", {}, [
       el("th", { scope: "col", text: mode === "ot" ? "Asset: OT hours" : "Asset" }),
     ].concat(
-      labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label }))
+      labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label })),
+      [
+        el("th", {
+          scope: "col",
+          class: "is-numeric availability-average-col",
+          title: ASSET_AVERAGE_TITLE,
+          text: "Asset average",
+        }),
+      ]
     ));
 
     const body = group.assets.map((asset) =>
@@ -2784,7 +2805,8 @@
             );
           });
           return el("td", { class: "availability-input-cell" }, [input]);
-        })
+        }),
+        [averageCell(asset.average)]
       ))
     );
 
@@ -2794,7 +2816,8 @@
           class: "availability-cell",
           text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`,
         })
-      )
+      ),
+      [averageCell(group.overall_average)]
     ));
 
     const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
@@ -2821,7 +2844,8 @@
           );
         });
         return el("td", { class: "availability-input-cell" }, [input]);
-      })
+      }),
+      [averageCell(group.goal_average)]
     ));
 
     return el("div", { class: "metrics-table-scroll" }, [
