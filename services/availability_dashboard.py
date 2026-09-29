@@ -36,8 +36,6 @@ MAX_WINDOW_MONTHS = 36
 
 WORK_ORDER_TYPE_LABELS = {
     "CORRECTIVE_WO": "Work Request",
-    "PM": "PM",
-    "PM_RESET_CANDIDATE": "PM",
     "PROJECT_WORK": "Project/Misc Repair",
     "INSPECTION": "Inspection",
     "PARTS_ORDER": "Parts Order",
@@ -45,12 +43,66 @@ WORK_ORDER_TYPE_LABELS = {
     "UNKNOWN": "Other/Unknown",
 }
 
+# What counts as a PM -- for the reader's Exclude PMs switch and for the PM
+# segment of the stacked bars alike, so the switch always removes exactly the
+# hours that segment shows.
+#
+# Two sources are trusted, in this order: a person's call on the Disposition
+# page, which every page lets overrule the automatic classification; failing
+# that, Limble's own task type, where type 1 is Preventive Maintenance on this
+# account (design doc §2.1) -- the rule the PM calendar uses too. The text
+# classifier's guess is deliberately not one of them. Its \bpm\b rule matches
+# the clock in return-to-service notes ("RTS at 4:30 PM"), so trusting it would
+# have the switch quietly drop the real breakdowns §2.1 measured at 623.7 h.
+PM_RECORD_CLASSES = frozenset({"PM", "PM_RESET_CANDIDATE"})
+LIMBLE_PM_TYPE = "1"
 
-def _work_order_type(record_class: str) -> str:
-    """Turn the classifier's stable codes into chart-facing labels."""
+# Limble's other task types, for labelling a work order the classifier called
+# a PM when neither Limble nor a person did. Type 2 (request templates) has no
+# category of its own on the chart and falls through to Other/Unknown.
+LIMBLE_TYPE_LABELS = {
+    "4": "Project/Misc Repair",
+    "6": "Work Request",
+    "7": "Parts Order",
+}
 
-    code = str(record_class or "").strip().upper()
+
+def is_preventive_maintenance(detail) -> bool:
+    """Whether a work order is a PM: a person's call if made, else Limble's."""
+
+    final = str(detail.record_class_final or "").strip().upper()
+    if final:
+        return final in PM_RECORD_CLASSES
+    return str(detail.type_raw or "").strip() == LIMBLE_PM_TYPE
+
+
+def _work_order_type(detail) -> str:
+    """Turn a work order's classification into its chart-facing label."""
+
+    if is_preventive_maintenance(detail):
+        return "PM"
+    code = str(detail.record_class or "").strip().upper()
+    if code in PM_RECORD_CLASSES:
+        # Only the classifier thinks this is a PM, so it is not charted as one;
+        # it is labelled by what Limble recorded it as instead.
+        return LIMBLE_TYPE_LABELS.get(str(detail.type_raw or "").strip(), "Other/Unknown")
     return WORK_ORDER_TYPE_LABELS.get(code, code.replace("_", " ").title() if code else "Other/Unknown")
+
+
+def _split_pms(details: list, exclude_pms: bool) -> tuple[list, list]:
+    """Separate the PMs out of ``details`` when, and only when, asked to.
+
+    Returns ``(kept, excluded)``. With the switch off nothing is excluded and
+    ``kept`` is the list it was given, which is the default of design doc §2.1:
+    every work order counts.
+    """
+
+    if not exclude_pms:
+        return details, []
+    kept, excluded = [], []
+    for detail in details:
+        (excluded if is_preventive_maintenance(detail) else kept).append(detail)
+    return kept, excluded
 
 # ---------------------------------------------------------------------------
 # Rounding rule: downtime hours go out unrounded, scheduled hours do not.
@@ -82,6 +134,16 @@ def clamp_window_months(value: Any, default: int = DEFAULT_WINDOW_MONTHS) -> int
     return max(MIN_WINDOW_MONTHS, min(MAX_WINDOW_MONTHS, months))
 
 
+def parse_flag(value: Any) -> bool:
+    """Read an on/off request parameter such as ``exclude_pms``.
+
+    Anything but a recognisable "on" leaves the switch off, because off is the
+    card's default reading: every work order counts.
+    """
+
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -107,9 +169,39 @@ def _empty_reason(repository, charted: list[str], earliest: date | None) -> str:
     return "No complete month of work-order data is available yet."
 
 
-def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: date | None = None) -> dict:
-    """Compute every group's chart series for the requested month window."""
+def _row_note(row, excluded_pms: int) -> str:
+    """The row's data-quality note, allowing for PMs the reader chose to hide.
 
+    With PMs excluded, a month whose only work orders were PMs has none left to
+    count, and the calculator's own note would then say nobody logged anything
+    -- which is exactly what the note exists to distinguish from a month that
+    was merely quiet.
+    """
+
+    if excluded_pms and row.no_wo_entries:
+        return f"No WO entries this month other than {excluded_pms} excluded PM(s)"
+    return row.note
+
+
+def build_dashboard(
+    repository,
+    *,
+    months: int = DEFAULT_WINDOW_MONTHS,
+    today: date | None = None,
+    exclude_pms: bool = False,
+) -> dict:
+    """Compute every group's chart series for the requested month window.
+
+    ``exclude_pms`` is the reader's switch for leaving preventive maintenance
+    out; :func:`is_preventive_maintenance` says what counts as a PM. Off is the
+    default and leaves design doc §2.1 as it is: every work order counts. On,
+    the PMs are taken out before anything is computed, so every figure the card
+    shows -- bars, both lines, counts, notes and stacked segments -- describes
+    the same work orders. The month window is still chosen from all of them,
+    so flipping the switch never changes which months are on screen.
+    """
+
+    exclude_pms = bool(exclude_pms)
     # The plant's clock, not the server's: whether a month has finished must be
     # judged on the same timezone the work orders are bucketed by, or a UTC
     # server charts July as complete while the plant is still working July 31.
@@ -167,8 +259,20 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
             "generated_at": datetime.now().replace(microsecond=0).isoformat(),
             "data_earliest": _iso(earliest),
             "data_latest": _iso(latest),
+            "exclude_pms": exclude_pms,
             "empty_reason": _empty_reason(repository, charted, earliest),
         }
+
+    # Classification never affects availability arithmetic unless the reader
+    # asks for PMs to be left out. Otherwise it only explains the
+    # already-counted downtime when the reader enables stacked bars.
+    details, excluded_pms = _split_pms(
+        repository.load_work_order_classifications(scope, set(window)), exclude_pms
+    )
+    if exclude_pms:
+        # The window's work orders less the PMs. The calculator reads nothing
+        # outside the window, so this is its whole input.
+        work_orders = [item.order for item in details]
 
     rows = compute_rows(
         included,
@@ -180,13 +284,18 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
     )
     series = build_series(rows, included, window, goals=repository.load_goals())
 
-    # Classification never affects availability arithmetic; it only explains
-    # the already-counted downtime when the reader enables stacked bars.
-    details = repository.load_work_order_classifications(scope, set(window))
     details_by_month: dict[date, list] = {}
     for item in details:
         created = item.order.created_local
         details_by_month.setdefault(date(created.year, created.month, 1), []).append(item)
+
+    # Each asset-month's own PMs, counted the way total_wo_count counts work
+    # orders, so the two read side by side.
+    excluded_counts: dict[tuple[str, date], int] = {}
+    for item in excluded_pms:
+        created = item.order.created_local
+        key = (str(item.order.asset_number).strip(), date(created.year, created.month, 1))
+        excluded_counts[key] = excluded_counts.get(key, 0) + 1
 
     detail: dict[str, list[dict]] = {}
     for row in rows:
@@ -198,8 +307,9 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
         )
         type_hours: dict[str, float] = {}
         for contribution in contributions:
-            label = _work_order_type(contribution.detail.record_class)
+            label = _work_order_type(contribution.detail)
             type_hours[label] = type_hours.get(label, 0.0) + contribution.counted_hours
+        excluded = excluded_counts.get((row.asset_number, row.month), 0)
         detail.setdefault(row.asset_group, []).append(
             {
                 "asset_number": row.asset_number,
@@ -219,7 +329,8 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
                 "total_wo_count": row.total_wo_count,
                 "zero_downtime_wo_count": row.zero_downtime_wo_count,
                 "no_wo_entries": row.no_wo_entries,
-                "note": row.note,
+                "note": _row_note(row, excluded),
+                "excluded_pm_count": excluded,
                 "downtime_logic": row.downtime_logic,
                 "work_order_type_hours": type_hours,
             }
@@ -234,6 +345,7 @@ def build_dashboard(repository, *, months: int = DEFAULT_WINDOW_MONTHS, today: d
         "generated_at": datetime.now().replace(microsecond=0).isoformat(),
         "data_earliest": _iso(earliest),
         "data_latest": _iso(latest),
+        "exclude_pms": exclude_pms,
         "all_asset_numbers": charted,
         "groups": [
             {
@@ -308,7 +420,12 @@ def _wo_json(contribution) -> dict:
 
 
 def build_work_order_detail(
-    repository, *, asset_group: str, asset_number: str, month: date | str
+    repository,
+    *,
+    asset_group: str,
+    asset_number: str,
+    month: date | str,
+    exclude_pms: bool = False,
 ) -> dict:
     """The work orders behind a single bar, with the totals they add up to.
 
@@ -320,6 +437,11 @@ def build_work_order_detail(
     The asset-month totals are recomputed here through :func:`compute_rows`
     rather than read back from the caller, so the header of this view and the
     bar it explains are produced by the same code and cannot drift apart.
+
+    ``exclude_pms`` must match the chart the bar was drawn with. On, the PMs
+    leave the totals and the list together -- a row may only be missing from
+    the list when it is missing from the total too -- and
+    ``excluded_pm_count`` says how many rows that took out.
     """
 
     month = month if isinstance(month, date) else parse_month(month)
@@ -345,7 +467,8 @@ def build_work_order_detail(
         if str(rule.parent_asset_number).strip() == asset and rule.impact_factor > 0
     ]
     scope = sorted({asset} | {str(rule.linked_asset_number).strip() for rule in rules})
-    details = repository.load_work_order_details(scope, month)
+    exclude_pms = bool(exclude_pms)
+    details, excluded_pms = _split_pms(repository.load_work_order_details(scope, month), exclude_pms)
     display_names = repository.load_display_names()
 
     rows = compute_rows(
@@ -361,6 +484,8 @@ def build_work_order_detail(
     row = next(candidate for candidate in rows if candidate.asset_number == asset)
 
     contributions = work_order_contributions(asset, month, details, linked_rules=rules)
+    # The rows the PMs would have added to this list, direct and linked alike.
+    hidden = work_order_contributions(asset, month, excluded_pms, linked_rules=rules)
     linked_assets = sorted({str(rule.linked_asset_number).strip() for rule in rules})
 
     return {
@@ -387,7 +512,9 @@ def build_work_order_detail(
         "total_wo_count": row.total_wo_count,
         "zero_downtime_wo_count": row.zero_downtime_wo_count,
         "overlap_count": row.overlap_count,
-        "note": row.note,
+        "note": _row_note(row, sum(1 for c in hidden if c.source == "direct")),
+        "exclude_pms": exclude_pms,
+        "excluded_pm_count": len(hidden),
         # Named so the view can say *why* a machine the reader did not click on
         # is in the list, without the client having to fetch the rule set.
         "linked_assets": [

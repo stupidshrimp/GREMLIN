@@ -527,17 +527,21 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 }
 .availability-control-row .metrics-field { min-width: 12rem; }
 .availability-control-row .metrics-hint { flex: 1 1 18rem; margin: 0; }
-.availability-stack-control {
+/* The view switches, one above the other. The column bottom-aligns with the
+   Months select beside it, so the lower switch sits level with that control
+   and the upper one with its label. */
+.availability-toggles { display: flex; flex-direction: column; gap: 0.15rem; }
+.availability-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 2.4rem;
+  min-height: 1.9rem;
   color: var(--forest-900);
   font-size: 0.86rem;
   font-weight: 600;
   cursor: pointer;
 }
-.availability-stack-control input { width: 1.15rem; height: 1.15rem; accent-color: var(--forest-700); }
+.availability-toggle input { width: 1.15rem; height: 1.15rem; accent-color: var(--forest-700); }
 
 .availability-charts { display: grid; gap: 1.1rem; }
 
@@ -906,7 +910,8 @@ table.availability-detail-table tbody tr.is-focused td:first-child {
   font-weight: 600;
 }
 .availability-detail-flag.is-flagged { background: var(--danger-tint); color: var(--danger-strong); }
-.availability-detail-flag.is-no-data { background: rgba(94, 112, 130, 0.16); color: var(--muted); }
+.availability-detail-flag.is-no-data,
+.availability-detail-flag.is-pm { background: rgba(94, 112, 130, 0.16); color: var(--muted); }
 .availability-detail-flag.is-overlap { background: var(--warning-tint); color: var(--warning-ink); }
 .availability-detail-flag.is-linked { background: rgba(47, 143, 91, 0.14); color: var(--forest-900); }
 .availability-detail-quiet { color: var(--muted); }

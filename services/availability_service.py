@@ -18,7 +18,10 @@ Two behaviours are deliberate and easy to mistake for bugs:
 * **Every work order with downtime counts**, whatever its Limble ``type`` or
   its classification. Both earlier implementations filtered and both filtered
   wrongly -- see the design doc §2.1 for the measurements. Callers must not
-  pre-filter by PM/corrective either.
+  pre-filter by PM/corrective either. The one exception is the reader's own
+  *Exclude PMs* switch, which ``availability_dashboard`` applies before calling
+  in here -- by Limble's task type, never by the text classifier -- so this
+  module still never sees a type.
 * **Linked downtime does not cascade.** A parent's share is computed from each
   linked asset's *direct* downtime, never from an already-adjusted figure.
 """
@@ -108,6 +111,12 @@ class WorkOrderDetail:
     request title fields the source system actually filled in -- Limble
     populates a different one depending on whether a work order began as a
     request.
+
+    ``record_class`` is the classification a reader is shown: a person's call
+    from the Disposition page when there is one, the classifier's guess
+    otherwise. ``record_class_final`` holds the person's call on its own,
+    because only that half is trusted to say a work order is a PM -- see
+    ``availability_dashboard.is_preventive_maintenance``.
     """
 
     order: WorkOrder
@@ -115,6 +124,7 @@ class WorkOrderDetail:
     status: str = ""
     type_raw: str = ""
     record_class: str = ""
+    record_class_final: str = ""
     asset_name: str = ""
     description: str = ""
     completion_notes: str = ""

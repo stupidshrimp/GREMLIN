@@ -215,7 +215,7 @@
           </button>
         </div>
         <p class="metrics-card-desc">Open the card and click any bar to see the rows it was computed from.</p>
-        <p class="metrics-card-scope">All asset groups · all downtime · monthly. Not affected by the filters above.</p>
+        <p class="metrics-card-scope" id="availability-scope">All asset groups · all downtime · monthly. Not affected by the filters above.</p>
       </div>
       <button type="button" class="metrics-card-toggle" aria-expanded="false"
               aria-controls="availability-expanded" aria-labelledby="availability-card-title"></button>
@@ -242,10 +242,17 @@
               <option value="24">Last 24 months</option>
             </select>
           </div>
-          <label class="availability-stack-control" for="availability-stacked">
-            <input id="availability-stacked" type="checkbox" role="switch">
-            <span>Stack by work order type</span>
-          </label>
+          <div class="availability-toggles">
+            <label class="availability-toggle" for="availability-stacked">
+              <input id="availability-stacked" type="checkbox" role="switch">
+              <span>Stack by work order type</span>
+            </label>
+            <label class="availability-toggle" for="availability-exclude-pms"
+                   title="Leave out work orders Limble records as PMs, or that were classified as PMs on the Disposition page">
+              <input id="availability-exclude-pms" type="checkbox" role="switch">
+              <span>Exclude PMs</span>
+            </label>
+          </div>
           <p class="metrics-hint" id="availability-basis"></p>
         </div>
       </div>
@@ -281,6 +288,7 @@
       <ol class="availability-info-steps">
         <li><strong>Scheduled time.</strong> Weekdays in the month are multiplied by the asset group’s daily production hours. Breaks, lunch, and setup time are removed, then any recorded overtime is added. Overtime hours can be added by clicking the top right of an asset group graph.</li>
         <li><strong>Count the downtime.</strong> Positive downtime from every work order created in that month is included, regardless of the work order’s name, type, or classification. If configured, a share of downtime from a linked asset is also included. The configuration can be edited on the Configuration page. <strong class="availability-info-warning">Please refrain from editing values unless you are authorized to do so.</strong></li>
+        <li><strong>Optionally leave out PMs.</strong> Tick <em>Exclude PMs</em> to recalculate every chart and table without preventive maintenance work orders. A work order counts as a PM when someone has classified it as one on the Disposition page or, if nobody has, when Limble records it as a PM task. The text of a work order is never used to decide, because return-to-service notes such as “RTS at 4:30 PM” would make real breakdowns look like PMs.</li>
         <li><strong>Calculate the percentage.</strong> Counted downtime is subtracted from scheduled hours, then divided by scheduled hours. For example, 160 scheduled hours and 8 downtime hours produces 95% availability.</li>
       </ol>
 

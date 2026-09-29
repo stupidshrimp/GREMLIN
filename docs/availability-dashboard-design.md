@@ -61,6 +61,32 @@ PMs currently carry 0.0 downtime hours across 842 rows, so including them
 changes nothing today. It only matters if Limble starts recording PM downtime,
 which is the intended behaviour.
 
+**Excluding PMs is the reader's choice, never the default.** The card's
+*Exclude PMs* switch recomputes everything without preventive maintenance, for
+a reader who wants availability against unplanned downtime only. Off, which is
+where the page opens, nothing above changes. On, the PMs are removed in
+`availability_dashboard` before `compute_rows` runs — the calculator still never
+sees a type — so the bars, both lines, the counts and notes, the stacked
+segments and the drill-down all describe the same work orders. The month window
+is still chosen from every work order, so the switch never changes which months
+are shown.
+
+What counts as a PM is the part that matters, because the obvious answer is the
+one this section rejects. In order:
+
+- a person's call on the Disposition page (`record_class_final` of `PM` or
+  `PM_RESET_CANDIDATE`), which every page lets overrule the automatic class;
+- failing that, Limble's own task type, `type_raw = 1` — the cross-tabulation
+  above, and the rule the PM calendar uses.
+
+`record_class_auto` and `is_pm_candidate` are never consulted: trusting them
+would have the switch drop the return-to-service breakdowns — the 623.7 h
+failure — the moment it is ticked. The stacked bars' PM segment uses the same
+definition, so the switch removes exactly the hours that segment showed, and a
+work order only the classifier calls a PM is charted under its Limble type
+instead (type 6 as a Work Request, 4 as Project/Misc Repair, 7 as Parts Order,
+anything else as Other/Unknown).
+
 ### 2.2 The card owns its own month window
 
 The Availability card **ignores the Metrics page's shared date-range filter** and
@@ -574,6 +600,9 @@ Plus regression guards for the decisions above:
 - A work order whose `completionNotes` contain `"RTS at 4:30 PM"` **is counted**
   (guards §2.1 — this is the 623.7 h failure).
 - A `type = 1` PM carrying non-zero downtime **is counted**.
+- With *Exclude PMs* ticked, that PM **is left out** while the `"RTS at 4:30 PM"`
+  breakdown **is still counted**, and a Disposition call overrules Limble's type
+  in either direction.
 - Adjusted downtime exceeding scheduled hours clamps to 0% and sets `Flagged`.
 - An asset with no work orders reports 100% **and** its no-entries note.
 - The current partial month is absent from the window.

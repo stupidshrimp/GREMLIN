@@ -14,7 +14,9 @@ The one rule this module must never break: **work orders are loaded without any
 filter on type or classification**. Both earlier implementations filtered and
 both filtered wrongly; excluding ``is_pm_candidate`` alone would drop 16.3% of
 downtime, because a ``\\bpm\\b`` regex matches the clock time in
-return-to-service completion notes. See design doc §2.1.
+return-to-service completion notes. See design doc §2.1. The reader's *Exclude
+PMs* switch is applied afterwards, by ``availability_dashboard``, and only when
+asked for; nothing here filters on its behalf.
 """
 
 from __future__ import annotations
@@ -564,6 +566,10 @@ class AvailabilityRepository:
                     # above it (§2.1); it is shown so a reader can see what a row
                     # was called, not so anything can filter on it.
                     record_class=self._text(row, "record_class_final", "record_class_auto"),
+                    # The person's call alone. Read only by the reader's own
+                    # Exclude PMs switch, which trusts it and Limble's type but
+                    # never the classifier's guess.
+                    record_class_final=self._text(row, "record_class_final"),
                     asset_name=self._text(row, "asset_name"),
                     description=self._text(
                         row, "description_raw", "requestor_description", "request_title"
@@ -587,11 +593,15 @@ class AvailabilityRepository:
         names. Those potentially large fields remain on-demand behind the
         per-bar drill-down endpoint. Month filtering happens after plant-time
         localization for the same boundary correctness as the detail loader.
+
+        ``type_raw`` rides along because it is short and because Limble's own
+        task type is what decides whether a work order is a PM -- for the
+        stacked bars' PM segment and for the reader's Exclude PMs switch.
         """
 
         zone = self._zone()
         columns = self._OPTIONAL_MAPPED_COLUMNS + (
-            "record_class_final", "record_class_auto",
+            "type_raw", "record_class_final", "record_class_auto",
         )
         rows = self._fetch_work_order_rows(asset_numbers, columns)
         wanted = {(month.year, month.month) for month in (months or set())}
@@ -605,7 +615,9 @@ class AvailabilityRepository:
             classifications.append(
                 WorkOrderDetail(
                     order=order,
+                    type_raw=self._text(row, "type_raw"),
                     record_class=self._text(row, "record_class_final", "record_class_auto"),
+                    record_class_final=self._text(row, "record_class_final"),
                 )
             )
         return classifications
