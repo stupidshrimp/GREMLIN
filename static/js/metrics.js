@@ -3409,6 +3409,9 @@
   }
 
   function placeTour() {
+    // Run a frame or two after a step is shown, by when Skip or Escape may
+    // have closed the tour.
+    if (!tour) return;
     const card = $("metrics-tour-card");
     const spotlight = $("metrics-tour-spotlight");
     const target = tourTarget(tour.steps[tourStep]);
