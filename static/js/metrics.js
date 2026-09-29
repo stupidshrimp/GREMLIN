@@ -3197,6 +3197,254 @@
     });
   }
 
+  // ---- first-visit tour ----------------------------------------------------
+  // The same walk-through the PM calendar gives: a spotlight on one part of the
+  // page at a time and a card saying what it is for. It only points; it never
+  // presses anything, so a card that was collapsed when the tour began is still
+  // collapsed when it ends.
+  //
+  // `target` is looked up as each step is shown rather than now, because the
+  // chips and charts are drawn after this file runs and a card changes height
+  // as it opens and closes.
+  const TOUR_STEPS = [
+    {
+      target: ".metrics-filters",
+      title: "Pick the assets to compare",
+      body:
+        "Search by asset name or number and click one to add it. The page opens on the plant's " +
+        "usual equipment: Reset filters brings that back, and Clear all assets compares every " +
+        "asset. From and To set the dates the numbers cover.",
+    },
+    {
+      target: "#card-kpis",
+      title: "Operational KPIs",
+      body:
+        "MTBF, MTTR, corrective work orders and downtime for the assets you picked, largest " +
+        "first. Click the card to open all four charts and a summary table.",
+    },
+    {
+      target: "#card-alerts",
+      title: "Alerting readiness",
+      body:
+        "A risk score from 0 to 100 for each asset, with 70 or above flagged. Open the card to " +
+        "see which assets crossed the line and how their downtime compares with an earlier period.",
+    },
+    {
+      target: "#card-availability",
+      title: "Availability, month by month",
+      body:
+        "How much of its scheduled time each asset was able to run, for every asset group over " +
+        "completed months. The filters above don't apply here. Open the card and click any bar " +
+        "to see the work orders behind it.",
+    },
+    {
+      target: "#availability-info-open",
+      title: "How availability is worked out",
+      body:
+        "This button explains the formula: what counts as scheduled time, what counts as " +
+        "downtime, and why a month gets flagged.",
+    },
+    {
+      target: "#metrics-tour-btn",
+      title: "Come back any time",
+      body: "The tour only opens by itself once. Press Show me around to take it again.",
+    },
+  ];
+
+  const TOUR_SEEN_KEY = "gremlin.metrics.tour-seen";
+  let tourStep = 0;
+  let tourReturnFocus = null;
+  let tourLayoutWatch = null;
+
+  // Storage throws rather than returning null when site data is blocked -- the
+  // same guard layout.js and topbar_tools.js use for their settings.
+  function tourSeen() {
+    try {
+      return localStorage.getItem(TOUR_SEEN_KEY) === "yes";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function rememberTourSeen() {
+    try {
+      localStorage.setItem(TOUR_SEEN_KEY, "yes");
+    } catch (err) {
+      // A browser that won't remember just shows the tour again; the page
+      // itself is unaffected, so there is nothing to report.
+    }
+  }
+
+  function tourOpen() {
+    return !$("metrics-tour").hidden;
+  }
+
+  // The step's target, but only if it is actually drawn. Anything inside a
+  // collapsed card is in the document with no box at all, and lighting that up
+  // would put a ring round the top-left corner of the screen.
+  function tourTarget(step) {
+    const node = document.querySelector(step.target);
+    return node && node.getClientRects().length ? node : null;
+  }
+
+  function placeTour() {
+    const card = $("metrics-tour-card");
+    const spotlight = $("metrics-tour-spotlight");
+    const target = tourTarget(TOUR_STEPS[tourStep]);
+    const pad = 8;
+
+    if (target) {
+      const box = target.getBoundingClientRect();
+      // Something taller than the screen -- an open card, or the filter bar on
+      // a phone -- runs up under the sticky top bar, which would then sit
+      // undimmed inside the lit box. Stop the box at the bar's lower edge.
+      const topbar = document.querySelector(".topbar");
+      const ceiling = topbar ? topbar.getBoundingClientRect().bottom : 0;
+      const litTop = Math.max(box.top - pad, ceiling);
+      spotlight.hidden = false;
+      spotlight.style.top = `${litTop}px`;
+      spotlight.style.left = `${box.left - pad}px`;
+      spotlight.style.width = `${box.width + pad * 2}px`;
+      spotlight.style.height = `${Math.max(0, box.bottom + pad - litTop)}px`;
+
+      // Below the lit box when there's room, above it when there isn't, and
+      // along the bottom of the screen when the thing being pointed at is
+      // taller than the screen -- an open card is, and a card pinned to the
+      // top would cover its heading.
+      const size = card.getBoundingClientRect();
+      const below = box.bottom + pad * 2;
+      const above = box.top - size.height - pad * 2;
+      let top;
+      if (below + size.height < window.innerHeight) {
+        top = below;
+      } else if (above >= pad) {
+        top = above;
+      } else {
+        top = window.innerHeight - size.height - pad * 2;
+      }
+      const left = Math.min(
+        Math.max(pad, box.left),
+        Math.max(pad, window.innerWidth - size.width - pad)
+      );
+      card.style.top = `${top}px`;
+      card.style.left = `${left}px`;
+    } else {
+      // Nothing to point at: centre the card and leave the page evenly dimmed.
+      spotlight.hidden = true;
+      card.style.top = "20vh";
+      card.style.left = "max(1rem, calc(50vw - 11.5rem))";
+    }
+  }
+
+  function showTourStep() {
+    const step = TOUR_STEPS[tourStep];
+    const target = tourTarget(step);
+    if (target) {
+      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      target.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
+    }
+
+    $("metrics-tour-step").textContent = `Step ${tourStep + 1} of ${TOUR_STEPS.length}`;
+    $("metrics-tour-title").textContent = step.title;
+    $("metrics-tour-body").textContent = step.body;
+    $("metrics-tour-back").disabled = tourStep === 0;
+    $("metrics-tour-next").textContent = tourStep === TOUR_STEPS.length - 1 ? "Done" : "Next ►";
+
+    // After the scroll, so the spotlight lands on where the target actually
+    // ends up.
+    requestAnimationFrame(() => requestAnimationFrame(placeTour));
+  }
+
+  // Escape leaves, the same as the page's dialogs. Tab stays on the card's
+  // buttons: the overlay stops the page behind it being clicked, and without
+  // this a keyboard could still walk into it and drive controls it can't see.
+  function onTourKeydown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      endTour();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = Array.from($("metrics-tour-card").querySelectorAll("button:not([disabled])"));
+    if (!buttons.length) return;
+    const index = buttons.indexOf(document.activeElement);
+    if (event.shiftKey && index <= 0) {
+      event.preventDefault();
+      buttons[buttons.length - 1].focus();
+    } else if (!event.shiftKey && (index === -1 || index === buttons.length - 1)) {
+      event.preventDefault();
+      buttons[0].focus();
+    }
+  }
+
+  function startTour() {
+    tourReturnFocus = document.activeElement;
+    tourStep = 0;
+    hideTooltip();
+    if (state.dropdownOpen) {
+      state.dropdownOpen = false;
+      renderAssetMenu();
+    }
+    $("metrics-tour").hidden = false;
+    document.addEventListener("keydown", onTourKeydown, true);
+    // Numbers landing under the tour move things -- a banner above the
+    // filters, chips filling in -- and neither fires a scroll or a resize.
+    // Anything that shifts the page changes the height of <main>.
+    if (typeof ResizeObserver === "function") {
+      tourLayoutWatch = new ResizeObserver(() => {
+        if (tourOpen()) placeTour();
+      });
+      tourLayoutWatch.observe(document.querySelector("main") || document.body);
+    }
+    showTourStep();
+    $("metrics-tour-card").focus();
+  }
+
+  function endTour() {
+    $("metrics-tour").hidden = true;
+    document.removeEventListener("keydown", onTourKeydown, true);
+    if (tourLayoutWatch) {
+      tourLayoutWatch.disconnect();
+      tourLayoutWatch = null;
+    }
+    rememberTourSeen();
+    if (tourReturnFocus && document.body.contains(tourReturnFocus)) tourReturnFocus.focus();
+    tourReturnFocus = null;
+  }
+
+  function wireTour() {
+    $("metrics-tour-btn").addEventListener("click", startTour);
+    $("metrics-tour-skip").addEventListener("click", endTour);
+    $("metrics-tour-back").addEventListener("click", () => {
+      if (tourStep === 0) return;
+      tourStep -= 1;
+      showTourStep();
+      // Back disables itself on the first step, and a disabled button drops
+      // focus on the floor.
+      if (tourStep === 0) $("metrics-tour-next").focus();
+    });
+    $("metrics-tour-next").addEventListener("click", () => {
+      if (tourStep < TOUR_STEPS.length - 1) {
+        tourStep += 1;
+        showTourStep();
+      } else {
+        endTour();
+      }
+    });
+
+    // The spotlight follows the page if the window is resized or scrolled
+    // under it, and once the sections have finished sliding into place.
+    window.addEventListener("resize", () => {
+      if (tourOpen()) placeTour();
+    });
+    window.addEventListener("scroll", () => {
+      if (tourOpen()) placeTour();
+    }, { passive: true });
+    document.addEventListener("animationend", () => {
+      if (tourOpen()) placeTour();
+    });
+  }
+
   // ---- init ----------------------------------------------------------------
   async function init() {
     wireCards();
@@ -3205,6 +3453,7 @@
     wireAvailabilityInfo();
     wireResize();
     wireThemeRepaint();
+    wireTour();
 
     // Availability loads first because it also supplies the curated equipment
     // list the KPI and Alerts cards default to comparing. That list used to be
@@ -3218,7 +3467,17 @@
     renderAvailability();
 
     loadAssets();
-    loadMetrics();
+    await loadMetrics();
+
+    // First visit on this browser: show the tour once the first numbers are
+    // in. Any sooner and the spotlight lands on the loading veil, and on cards
+    // that are about to change shape. Not over a dialog someone has already
+    // opened with the keyboard, though, and not a second time if they found
+    // the button while the page was loading.
+    const busy = tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
+    if (!tourSeen() && !busy) {
+      requestAnimationFrame(() => requestAnimationFrame(startTour));
+    }
   }
 
   if (document.readyState === "loading") {
