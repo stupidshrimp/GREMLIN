@@ -10,6 +10,7 @@
   <h1>Track the health of reliability operations.</h1>
   <p>Turn raw event and maintenance data into clear operational KPIs for engineering and leadership.
      Compare assets side by side, then click a card to drill into the detailed charts and tables.</p>
+  <button type="button" class="metrics-tour-btn" id="metrics-tour-btn">Show me around</button>
 </section>
 
 <div id="metrics-status" class="metrics-banner" role="status" hidden></div>
@@ -309,6 +310,31 @@
 <div id="metrics-loading" class="metrics-loading" hidden>
   <div class="metrics-spinner" aria-hidden="true"></div>
   <span>Loading metrics…</span>
+</div>
+
+{# The first-visit tour, built the way the PM calendar's is: a spotlight, which
+   is one transparent box with a very large shadow around it (that shadow is
+   what dims the rest of the page), and the card that explains whatever the
+   spotlight is on. Both are positioned by the script; neither is in the flow
+   of the page, so nothing here moves when the tour runs. #}
+<div id="metrics-tour" class="metrics-tour" hidden>
+  <div id="metrics-tour-spotlight" class="metrics-tour-spotlight" aria-hidden="true"></div>
+  <div id="metrics-tour-card" class="metrics-tour-card" role="dialog" aria-modal="true"
+       aria-labelledby="metrics-tour-title" tabindex="-1">
+    {# Polite, so a screen reader hears each new step as Next moves on;
+       focus stays on the button, which would otherwise announce nothing. #}
+    <div aria-live="polite">
+      <p class="metrics-tour-step" id="metrics-tour-step"></p>
+      <h2 class="metrics-tour-title" id="metrics-tour-title"></h2>
+      <p class="metrics-tour-body" id="metrics-tour-body"></p>
+    </div>
+    <div class="metrics-tour-actions">
+      <button id="metrics-tour-skip" class="metrics-tour-skip" type="button">Skip</button>
+      <span class="metrics-tour-spacer"></span>
+      <button id="metrics-tour-back" class="metrics-tour-back" type="button">◄ Back</button>
+      <button id="metrics-tour-next" class="btn-secondary" type="button">Next ►</button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 

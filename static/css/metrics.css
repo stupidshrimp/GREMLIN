@@ -497,6 +497,148 @@ table.metrics-table td.metrics-empty-row { text-align: center; color: var(--mute
 }
 @keyframes metrics-spin { to { transform: rotate(360deg); } }
 
+/* ---- the first-visit tour ------------------------------------------------ */
+/* The same tour the PM calendar has (pm_calendar.css), so the two pages feel
+   like one application. */
+
+/* "Show me around" sits under the page's introduction: quieter than the
+   filter buttons, since it is the thing you press once and then never again. */
+.metrics-tour-btn {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.metrics-tour-btn:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* The overlay itself catches clicks so nothing on the page can be pressed
+   while the tour is up; the spotlight and the card sit on top of it. Above the
+   loading veil and the chart tooltip, below the toasts. */
+.metrics-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+/* The lit box. It is transparent; the huge shadow around it is what darkens
+   everything else, so one element does both jobs and nothing has to be cut
+   out of the page. */
+.metrics-tour-spotlight {
+  position: fixed;
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(12, 26, 20, 0.62), 0 0 0 3px var(--forest-500);
+  transition: top 220ms ease, left 220ms ease, width 220ms ease, height 220ms ease;
+  pointer-events: none;
+}
+
+.metrics-tour-card {
+  position: fixed;
+  width: min(23rem, calc(100vw - 2rem));
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgba(12, 26, 20, 0.35);
+  transition: top 220ms ease, left 220ms ease;
+}
+
+.metrics-tour-step {
+  margin: 0 0 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.metrics-tour-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  color: var(--forest-900);
+}
+
+.metrics-tour-body {
+  margin: 0 0 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.metrics-tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.metrics-tour-spacer {
+  flex: 1;
+}
+
+.metrics-tour-skip {
+  padding: 0.3rem 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.metrics-tour-skip:hover {
+  color: var(--forest-900);
+}
+
+/* The calendar's ◄ / ► pill, which this page has no other use for. */
+.metrics-tour-back {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.metrics-tour-back:hover:not(:disabled) {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+.metrics-tour-back:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.metrics-tour-btn:focus-visible,
+.metrics-tour-skip:focus-visible,
+.metrics-tour-back:focus-visible,
+.metrics-tour-card:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
+/* The tour still moves from one thing to the next, it just doesn't glide
+   there. */
+@media (prefers-reduced-motion: reduce) {
+  .metrics-tour-btn,
+  .metrics-tour-back,
+  .metrics-tour-spotlight,
+  .metrics-tour-card {
+    transition: none;
+  }
+}
+
 @media (max-width: 900px) {
   .metrics-chart-grid { grid-template-columns: 1fr; }
   .metrics-field-grow { flex-basis: 100%; }
