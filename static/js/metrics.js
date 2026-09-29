@@ -3579,13 +3579,16 @@
   // The first time someone opens the Availability card on this browser. Not
   // over another tour or a dialog, and not before there is a chart to show:
   // without one most of the tour would be left out, and the part that is left
-  // would be the one time it opens by itself.
+  // would be the one time it opens by itself. The card can be opened before its
+  // first numbers arrive, so init offers it again once they have. True when
+  // the tour is on its way.
   function offerAvailabilityTour() {
-    if (tourSeen(AVAILABILITY_TOUR_SEEN_KEY)) return;
-    if (tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]")) return;
+    if (tourSeen(AVAILABILITY_TOUR_SEEN_KEY)) return false;
+    if (tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]")) return false;
     const data = state.availability;
-    if (!data || !(data.groups || []).length) return;
+    if (!data || !(data.groups || []).length) return false;
     startAvailabilityTour();
+    return true;
   }
 
   function wireTour() {
@@ -3651,8 +3654,15 @@
     // that are about to change shape. Not over a dialog someone has already
     // opened with the keyboard, though, and not a second time if they found
     // the button while the page was loading.
+    //
+    // Someone who opened the Availability card while its numbers were still
+    // loading was too early for its tour, which waits for a chart to point at.
+    // That one goes first: they've already gone to the card, and the page tour
+    // is still unseen next visit.
     const busy = tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
-    if (!tourSeen(TOUR_SEEN_KEY) && !busy) {
+    if (busy) return;
+    if (state.expanded === "availability" && offerAvailabilityTour()) return;
+    if (!tourSeen(TOUR_SEEN_KEY)) {
       requestAnimationFrame(() => requestAnimationFrame(startPageTour));
     }
   }
