@@ -169,17 +169,19 @@ def _empty_reason(repository, charted: list[str], earliest: date | None) -> str:
     return "No complete month of work-order data is available yet."
 
 
-def _row_note(row, excluded_pms: int) -> str:
+def _row_note(row, hidden: list) -> str:
     """The row's data-quality note, allowing for PMs the reader chose to hide.
 
-    With PMs excluded, a month whose only work orders were PMs has none left to
-    count, and the calculator's own note would then say nobody logged anything
-    -- which is exactly what the note exists to distinguish from a month that
-    was merely quiet.
+    ``hidden`` is the PM rows the bar lost. With PMs excluded, a month whose
+    own work orders were all PMs has none left to count, and the calculator's
+    note would then say nobody logged anything -- which is exactly what the
+    note exists to distinguish from a month that was merely quiet. Only the
+    asset's own PMs change that: a linked machine's PM was never this asset's
+    entry. How many PMs were hidden is ``excluded_pm_count``'s to say.
     """
 
-    if excluded_pms and row.no_wo_entries:
-        return f"No WO entries this month other than {excluded_pms} excluded PM(s)"
+    if row.no_wo_entries and any(item.source == "direct" for item in hidden):
+        return "No WO entries this month other than excluded PMs"
     return row.note
 
 
@@ -288,14 +290,10 @@ def build_dashboard(
     for item in details:
         created = item.order.created_local
         details_by_month.setdefault(date(created.year, created.month, 1), []).append(item)
-
-    # Each asset-month's own PMs, counted the way total_wo_count counts work
-    # orders, so the two read side by side.
-    excluded_counts: dict[tuple[str, date], int] = {}
+    excluded_by_month: dict[date, list] = {}
     for item in excluded_pms:
         created = item.order.created_local
-        key = (str(item.order.asset_number).strip(), date(created.year, created.month, 1))
-        excluded_counts[key] = excluded_counts.get(key, 0) + 1
+        excluded_by_month.setdefault(date(created.year, created.month, 1), []).append(item)
 
     detail: dict[str, list[dict]] = {}
     for row in rows:
@@ -309,7 +307,14 @@ def build_dashboard(
         for contribution in contributions:
             label = _work_order_type(contribution.detail)
             type_hours[label] = type_hours.get(label, 0.0) + contribution.counted_hours
-        excluded = excluded_counts.get((row.asset_number, row.month), 0)
+        # Every PM this bar lost, its own or a linked machine's: the rows the
+        # drill-down says it left out, found the same way so the two agree.
+        hidden = work_order_contributions(
+            row.asset_number,
+            row.month,
+            excluded_by_month.get(row.month, []),
+            linked_rules=linked_rules,
+        )
         detail.setdefault(row.asset_group, []).append(
             {
                 "asset_number": row.asset_number,
@@ -329,8 +334,8 @@ def build_dashboard(
                 "total_wo_count": row.total_wo_count,
                 "zero_downtime_wo_count": row.zero_downtime_wo_count,
                 "no_wo_entries": row.no_wo_entries,
-                "note": _row_note(row, excluded),
-                "excluded_pm_count": excluded,
+                "note": _row_note(row, hidden),
+                "excluded_pm_count": len(hidden),
                 "downtime_logic": row.downtime_logic,
                 "work_order_type_hours": type_hours,
             }
@@ -514,7 +519,7 @@ def build_work_order_detail(
         "total_wo_count": row.total_wo_count,
         "zero_downtime_wo_count": row.zero_downtime_wo_count,
         "overlap_count": row.overlap_count,
-        "note": _row_note(row, sum(1 for c in hidden if c.source == "direct")),
+        "note": _row_note(row, hidden),
         "exclude_pms": exclude_pms,
         "excluded_pm_count": len(hidden),
         # Named so the view can say *why* a machine the reader did not click on

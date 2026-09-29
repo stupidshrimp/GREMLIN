@@ -1182,9 +1182,9 @@
     if (row && row.overlap_count > 0) {
       notes.push(`${row.overlap_count} work order(s) cross a month boundary.`);
     }
-    // The work order count above leaves them out too; a month that had nothing
-    // else already says so in its no-entries note.
-    if (row && row.excluded_pm_count > 0 && !row.no_wo_entries) {
+    // Every PM this bar lost, its own or a linked machine's -- the same count
+    // the drill-down behind the bar gives.
+    if (row && row.excluded_pm_count > 0) {
       notes.push(`${fmtNum(row.excluded_pm_count, 0)} PM work order(s) excluded.`);
     }
 
@@ -1453,7 +1453,7 @@
         text: `Includes ${fmtNum(row.linked_downtime_hours, 1)} h linked from another asset`,
       });
     }
-    if (row.excluded_pm_count > 0 && !row.no_wo_entries) {
+    if (row.excluded_pm_count > 0) {
       notes.push({ kind: "pm", text: `${fmtNum(row.excluded_pm_count, 0)} PM(s) excluded` });
     }
     return notes;

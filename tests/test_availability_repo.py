@@ -1366,9 +1366,29 @@ class ExcludePmsTests(AvailabilityTestCase):
         # 3104's only rule charges it half of 3101's downtime.
         self.add_work_order("3101", "2026-01-12 15:00:00", 10.0, type="1", name="MV monthly PM")
         self.assertEqual(self.row(self.dashboard(), "3104")["linked_downtime_hours"], 5.0)
-        self.assertEqual(
-            self.row(self.dashboard(exclude_pms=True), "3104")["linked_downtime_hours"], 0.0
-        )
+        row = self.row(self.dashboard(exclude_pms=True), "3104")
+        self.assertEqual(row["linked_downtime_hours"], 0.0)
+        # The bar says what it lost, though the PM was never 3104's own entry.
+        self.assertEqual(row["excluded_pm_count"], 1)
+        self.assertEqual(row["note"], "No WO entries this month")
+
+    def test_every_bar_and_its_drill_down_agree_on_the_pms_left_out(self):
+        """The tooltip and the list behind the same bar count the same rows."""
+
+        self.add_work_order("3101", "2026-01-12 15:00:00", 10.0, type="1", name="MV monthly PM")
+        self.add_work_order("3105", "2026-01-13 15:00:00", 3.0, type="1", name="S4 monthly PM")
+        self.add_work_order("3105", "2026-01-14 15:00:00", 2.0, type="6", name="S4 jam")
+        data = self.dashboard(exclude_pms=True)
+        counts = {}
+        for asset in ("3101", "3102", "3103", "3104", "3105", "3106", "3107"):
+            with self.subTest(asset=asset):
+                counts[asset] = self.row(data, asset)["excluded_pm_count"]
+                self.assertEqual(
+                    counts[asset], self.drill(asset, exclude_pms=True)["excluded_pm_count"]
+                )
+        # 3101 and 3105 lose their own; the rest lose them through linked rules.
+        self.assertEqual(counts["3101"], 1)
+        self.assertEqual(counts["3102"], 2)  # linked to both 3101 and 3105
 
     def test_the_window_does_not_move_when_pms_are_excluded(self):
         """Flipping the switch changes the numbers, never which months are shown."""
@@ -1389,7 +1409,7 @@ class ExcludePmsTests(AvailabilityTestCase):
         self.assertEqual(row["availability"], 1.0)
         self.assertTrue(row["no_wo_entries"])
         self.assertEqual(row["excluded_pm_count"], 1)
-        self.assertEqual(row["note"], "No WO entries this month other than 1 excluded PM(s)")
+        self.assertEqual(row["note"], "No WO entries this month other than excluded PMs")
 
     def test_the_stacked_pm_segment_is_exactly_what_the_switch_removes(self):
         """One definition for both, or the switch leaves a PM segment behind."""
