@@ -49,6 +49,11 @@
     availability: null,
     availabilityWindow: 5,
     availabilityStacked: false,
+    // Leave preventive maintenance out of every availability figure. Unlike
+    // stacking this changes the numbers themselves, so the server recomputes
+    // them and flipping it refetches.
+    availabilityExcludePms: false,
+    availabilityFetchToken: 0,
     availabilityError: "",
     // A misconfiguration the page can compute around but must not hide -- kept
     // separate from availabilityError so a warning never reads as a failure,
@@ -1177,6 +1182,11 @@
     if (row && row.overlap_count > 0) {
       notes.push(`${row.overlap_count} work order(s) cross a month boundary.`);
     }
+    // Every PM this bar lost, its own or a linked machine's -- the same count
+    // the drill-down behind the bar gives.
+    if (row && row.excluded_pm_count > 0) {
+      notes.push(`${fmtNum(row.excluded_pm_count, 0)} PM work order(s) excluded.`);
+    }
 
     return {
       title: asset.display_name || asset.asset_number,
@@ -1442,6 +1452,9 @@
         kind: "linked",
         text: `Includes ${fmtNum(row.linked_downtime_hours, 1)} h linked from another asset`,
       });
+    }
+    if (row.excluded_pm_count > 0) {
+      notes.push({ kind: "pm", text: `${fmtNum(row.excluded_pm_count, 0)} PM(s) excluded` });
     }
     return notes;
   }
@@ -1961,7 +1974,7 @@
     };
   }
 
-  async function loadWorkOrders(assetGroup, target, key) {
+  async function loadWorkOrders(assetGroup, target, key, excludePms) {
     const detail = state.availabilityDetail;
     if (!detail) return;
     const wo = detail.wo;
@@ -1977,6 +1990,9 @@
         asset_number: target.assetNumber,
         month: target.month,
       });
+      // The chart's own setting, so the rows add up to the bar that was
+      // clicked rather than to the one the other setting would draw.
+      if (excludePms) params.set("exclude_pms", "1");
       const payload = await getJson(`${WORK_ORDER_API}?${params.toString()}`);
       if (token !== wo.token) return;
       wo.data = payload;
@@ -2084,6 +2100,16 @@
         })
       );
     }
+    if (payload.exclude_pms && payload.excluded_pm_count > 0) {
+      children.push(
+        el("p", {
+          class: "availability-wo-caveat",
+          text:
+            `PMs are excluded, so ${fmtNum(payload.excluded_pm_count, 0)} PM work order(s) ` +
+            "are left out of the rows below and of the totals above.",
+        })
+      );
+    }
     // Said out loud rather than papered over. This month's hours fall either
     // side of a rounding boundary, so no column width makes the rows add to the
     // figures above them; the totals stay authoritative and the reader is told
@@ -2103,6 +2129,14 @@
   }
 
   function workOrderEmptyText(payload) {
+    // Nothing is listed because the reader hid it, which is neither of the two
+    // cases below: the machine was worked on, just only by PMs.
+    if (payload.exclude_pms && payload.excluded_pm_count > 0) {
+      return (
+        `Every work order behind this bar was a PM, and PMs are excluded. ` +
+        `Untick Exclude PMs to list them.`
+      );
+    }
     // Distinguishing these two matters: one is a machine with a clean month and
     // the other is a machine nobody wrote anything down about, and both draw the
     // same 100% bar.
@@ -2158,8 +2192,9 @@
       // Kicked off from the render rather than from the click, so the same path
       // covers opening the view, changing the picker, and a recompute landing
       // underneath the dialog.
-      const key = `${target.assetNumber}|${target.month}|${data.generated_at || ""}`;
-      if (wo.key !== key) loadWorkOrders(detail.assetGroup, target, key);
+      const excludePms = Boolean(data.exclude_pms);
+      const key = `${target.assetNumber}|${target.month}|${data.generated_at || ""}|${excludePms}`;
+      if (wo.key !== key) loadWorkOrders(detail.assetGroup, target, key, excludePms);
     }
 
     if (wo.error) {
@@ -2184,8 +2219,13 @@
 
     const payload = wo.data;
     // Rows from the previously selected bar are worse than none: they would sit
-    // under the new bar's heading and read as its evidence.
-    const stale = payload && (payload.asset_number !== target.assetNumber || payload.month !== target.month);
+    // under the new bar's heading and read as its evidence. So are rows counted
+    // with the other PM setting, which add up to a different bar.
+    const stale =
+      payload &&
+      (payload.asset_number !== target.assetNumber ||
+        payload.month !== target.month ||
+        Boolean(payload.exclude_pms) !== Boolean(data.exclude_pms));
     if (!payload || stale) {
       children.push(
         el("p", {
@@ -2472,7 +2512,8 @@
               class: "metrics-modal-sub",
               text:
                 `${(group.assets || []).length} asset(s) · ${monthSpan} month(s) · ` +
-                `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day`,
+                `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day` +
+                (data.exclude_pms ? " · PMs excluded" : ""),
             }),
             focused
               ? el("p", { class: "metrics-modal-focus" }, [
@@ -2559,8 +2600,20 @@
   }
 
   async function loadAvailability() {
+    const token = ++state.availabilityFetchToken;
+    const params = new URLSearchParams({ months: String(state.availabilityWindow) });
+    if (state.availabilityExcludePms) params.set("exclude_pms", "1");
     try {
-      const data = await getJson(`${AVAILABILITY_API}?months=${state.availabilityWindow}`);
+      const data = await getJson(`${AVAILABILITY_API}?${params.toString()}`);
+      // The equipment list is the same whatever the window or the PM switch,
+      // so even a response that has been overtaken can still supply it.
+      if (Array.isArray(data.all_asset_numbers) && data.all_asset_numbers.length) {
+        state.defaultAssets = data.all_asset_numbers.slice();
+      }
+      // A newer request -- the window or the PM switch changed again while
+      // this one was in flight -- owns the card now. Landing this one late
+      // would put back numbers for a setting the reader has already left.
+      if (token !== state.availabilityFetchToken) return null;
       state.availability = data;
       state.availabilityError = "";
       // A timezone that could not be loaded is a misconfiguration, not a
@@ -2568,11 +2621,9 @@
       // orders created near local midnight into the wrong month. Surface it
       // rather than letting the numbers look ordinary.
       state.availabilityWarning = data.timezone_warning || "";
-      if (Array.isArray(data.all_asset_numbers) && data.all_asset_numbers.length) {
-        state.defaultAssets = data.all_asset_numbers.slice();
-      }
       return data;
     } catch (err) {
+      if (token !== state.availabilityFetchToken) return null;
       state.availability = null;
       state.availabilityError = err.message || "Could not load availability data.";
       return null;
@@ -2590,7 +2641,20 @@
       .map((g) => `${g.asset_group} ${Number(g.net_scheduled_hours_per_day).toFixed(1)} net h/day`)
       .join(" · ");
     const stamp = (data.generated_at || "").replace("T", " ");
-    return `Computed ${stamp} · ${data.timezone || "local"} · ${schedules}`;
+    const pms = data.exclude_pms ? " · PMs excluded" : "";
+    return `Computed ${stamp} · ${data.timezone || "local"}${pms} · ${schedules}`;
+  }
+
+  // The card header says what the numbers count, and with PMs excluded that is
+  // no longer all downtime. Read from the data on screen rather than from the
+  // checkbox, which runs ahead of it while a refetch is in flight.
+  function renderAvailabilityScope() {
+    const scope = $("availability-scope");
+    if (!scope) return;
+    const counted = state.availability && state.availability.exclude_pms
+      ? "all downtime except PMs"
+      : "all downtime";
+    scope.textContent = `All asset groups · ${counted} · monthly. Not affected by the filters above.`;
   }
 
   function renderAvailabilityPreview() {
@@ -2622,7 +2686,9 @@
     const label = $("availability-preview-label");
     if (label && lastIndex >= 0) {
       const months = data.groups[0].month_labels || [];
-      label.textContent = `Average availability by group: ${months[lastIndex] || ""}`;
+      label.textContent =
+        `Average availability by group: ${months[lastIndex] || ""}` +
+        (data.exclude_pms ? " (PMs excluded)" : "");
     }
     drawBarChart(canvas, sortedDesc(items), { height: 160, valueSuffix: "%" });
   }
@@ -2652,6 +2718,19 @@
       ? "—"
       : `${(row.availability * 100).toFixed(2)}%`;
     return el("td", attrs);
+  }
+
+  // The Asset average column: each row averaged across the months shown, every
+  // month counting once -- the Average row's rule turned the other way. It is
+  // derived, so it stays read-only text in the OT editing mode too.
+  const ASSET_AVERAGE_TITLE =
+    "Each row averaged across the months shown, with every month counting once";
+
+  function averageCell(value) {
+    return el("td", {
+      class: "availability-cell availability-average-col",
+      text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`,
+    });
   }
 
   async function saveAvailabilityValue(url, body, onDone) {
@@ -2694,7 +2773,15 @@
     const head = el("tr", {}, [
       el("th", { scope: "col", text: mode === "ot" ? "Asset: OT hours" : "Asset" }),
     ].concat(
-      labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label }))
+      labels.map((label) => el("th", { scope: "col", class: "is-numeric", text: label })),
+      [
+        el("th", {
+          scope: "col",
+          class: "is-numeric availability-average-col",
+          title: ASSET_AVERAGE_TITLE,
+          text: "Asset average",
+        }),
+      ]
     ));
 
     const body = group.assets.map((asset) =>
@@ -2718,7 +2805,8 @@
             );
           });
           return el("td", { class: "availability-input-cell" }, [input]);
-        })
+        }),
+        [averageCell(asset.average)]
       ))
     );
 
@@ -2728,7 +2816,8 @@
           class: "availability-cell",
           text: value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`,
         })
-      )
+      ),
+      [averageCell(group.overall_average)]
     ));
 
     const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
@@ -2755,7 +2844,8 @@
           );
         });
         return el("td", { class: "availability-input-cell" }, [input]);
-      })
+      }),
+      [averageCell(group.goal_average)]
     ));
 
     return el("div", { class: "metrics-table-scroll" }, [
@@ -2788,6 +2878,8 @@
     if (basis) basis.textContent = availabilityBasisText();
     const stackedControl = $("availability-stacked");
     if (stackedControl) stackedControl.checked = state.availabilityStacked;
+    const excludeControl = $("availability-exclude-pms");
+    if (excludeControl) excludeControl.checked = state.availabilityExcludePms;
 
     if (!data || !(data.groups || []).length) {
       setEmpty(
@@ -2841,6 +2933,7 @@
             class: "metrics-hint",
             text:
               `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day · ` +
+              (data.exclude_pms ? "PMs excluded · " : "") +
               "click a bar to open the rows behind it, and the work orders behind those",
           }),
           el("div", { class: "metrics-chart-wrap" }, [canvas]),
@@ -2865,6 +2958,7 @@
   // fetch is still in flight gets drawn as soon as the data lands instead of
   // keeping the empty state it was opened with.
   function renderAvailability() {
+    renderAvailabilityScope();
     renderAvailabilityPreview();
     if (state.expanded === "availability") renderAvailabilityExpanded();
     // The modal reads from state rather than from a snapshot, so a refresh that
@@ -3072,6 +3166,11 @@
     if (stacked) stacked.addEventListener("change", () => {
       state.availabilityStacked = stacked.checked;
       renderAvailabilityExpanded();
+    });
+    const excludePms = $("availability-exclude-pms");
+    if (excludePms) excludePms.addEventListener("change", () => {
+      state.availabilityExcludePms = excludePms.checked;
+      refreshAvailability();
     });
   }
 

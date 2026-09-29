@@ -20,6 +20,7 @@ from services.availability_dashboard import (
     build_dashboard,
     build_work_order_detail,
     clamp_window_months,
+    parse_flag,
 )
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
@@ -1730,12 +1731,14 @@ def api_availability():
 
     ``months`` sets the window length and defaults to the five most recent
     complete months, clamped to the months that hold work-order data.
+    ``exclude_pms=1`` leaves preventive maintenance work orders out.
     """
 
     repository = get_availability_repository()
     _bootstrap_mapped_records()
     months = clamp_window_months(request.values.get("months"))
-    return jsonify(build_dashboard(repository, months=months))
+    exclude_pms = parse_flag(request.values.get("exclude_pms"))
+    return jsonify(build_dashboard(repository, months=months, exclude_pms=exclude_pms))
 
 
 @app.route("/metrics/api/availability/work-orders")
@@ -1745,7 +1748,8 @@ def api_availability_work_orders():
 
     Fetched only when a reader opens a bar, not shipped with the chart payload:
     the card draws several hundred asset-months and each one's work orders carry
-    names, descriptions and completion notes.
+    names, descriptions and completion notes. ``exclude_pms`` must match the
+    chart the bar came from, so the list adds up to the bar that was clicked.
     """
 
     repository = get_availability_repository()
@@ -1756,6 +1760,7 @@ def api_availability_work_orders():
             asset_group=str(request.values.get("asset_group") or "").strip(),
             asset_number=str(request.values.get("asset_number") or "").strip(),
             month=request.values.get("month"),
+            exclude_pms=parse_flag(request.values.get("exclude_pms")),
         )
     )
 

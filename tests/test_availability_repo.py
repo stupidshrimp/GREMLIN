@@ -27,6 +27,7 @@ from services.availability_dashboard import (
     build_dashboard,
     build_work_order_detail,
     clamp_window_months,
+    parse_flag,
     parse_month,
 )
 from services.life_data_service import DatabaseWriteError, LifeDataService
@@ -337,6 +338,30 @@ class WorkOrderClassificationLoadingTests(AvailabilityTestCase):
         january = self.repo.load_work_order_classifications(["3101"], {date(2026, 1, 1)})
         self.assertEqual(len(january), 1)
         self.assertEqual(january[0].order.downtime_hours, 4.0)
+
+    def test_both_loaders_keep_the_persons_call_apart_from_the_classifiers(self):
+        """What decides a PM: Limble's type, and a person's call on its own.
+
+        ``record_class`` merges the Disposition page's call with the
+        classifier's guess, which is right for display and wrong for deciding
+        anything -- the guess is the one that mistakes "RTS at 4:30 PM" for a
+        PM. So the person's half travels separately.
+        """
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 4.0, type="1", name="MV monthly PM")
+        january = {date(2026, 1, 1)}
+        chart = self.repo.load_work_order_classifications(["3101"], january)[0]
+        self.assertEqual(chart.type_raw, "1")
+        self.assertEqual(chart.record_class, "PM")
+        self.assertEqual(chart.record_class_final, "")
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE mapped_cmms_record SET record_class_final = 'INSPECTION'")
+        chart = self.repo.load_work_order_classifications(["3101"], january)[0]
+        drill = self.repo.load_work_order_details(["3101"], date(2026, 1, 1))[0]
+        for loaded in (chart, drill):
+            self.assertEqual(loaded.record_class_final, "INSPECTION")
+            self.assertEqual(loaded.record_class, "INSPECTION")
 
 
 # The schema the earlier Availability Dashboard attempt left in real databases.
@@ -696,6 +721,17 @@ class UnmigratedMappedTableTests(AvailabilityTestCase):
         row = next(r for r in group["rows"] if r["asset_number"] == "3101")
         self.assertEqual(row["direct_downtime_hours"], 2.0)
 
+    def test_the_pm_switch_survives_a_missing_type_column(self):
+        """Without Limble's type nothing can be shown to be a PM, so it all counts."""
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 2.0, type="1")
+        self._drop_column("type_raw")
+        data = build_dashboard(self.repo, months=1, today=date(2026, 2, 15), exclude_pms=True)
+        group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        row = next(r for r in group["rows"] if r["asset_number"] == "3101")
+        self.assertEqual(row["direct_downtime_hours"], 2.0)
+        self.assertEqual(row["excluded_pm_count"], 0)
+
 
 class ConfigWriteTests(AvailabilityTestCase):
     def test_schedule_edits_persist_and_net_is_rederived(self):
@@ -884,6 +920,20 @@ class DashboardTests(AvailabilityTestCase):
         self.assertFalse(self.repo.has_any_work_orders())
         self.add_work_order("3101", "2026-06-15 15:00:00", 1.0)
         self.assertTrue(self.repo.has_any_work_orders())
+
+    def test_the_payload_carries_each_assets_average_across_the_window(self):
+        """What the Asset average column under each chart reads."""
+
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0)
+        self.add_work_order("3101", "2026-02-12 15:00:00", 40.0)
+        data = build_dashboard(self.repo, months=2, today=date(2026, 3, 15))
+        salvagnini = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        mv = next(a for a in salvagnini["assets"] if a["asset_number"] == "3101")
+        self.assertAlmostEqual(mv["average"], ((396 - 10) / 396 + (360 - 40) / 360) / 2, places=12)
+        self.assertAlmostEqual(
+            salvagnini["overall_average"], sum(salvagnini["average"]) / 2, places=12
+        )
+        self.assertAlmostEqual(salvagnini["goal_average"], 0.95, places=12)
 
     def test_manual_overtime_reaches_the_dashboard(self):
         self.seed_salvagnini_january()
@@ -1224,6 +1274,190 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         self.assertEqual(parse_month("2026-03-17"), date(2026, 3, 1))
 
 
+class ExcludePmsTests(AvailabilityTestCase):
+    """The reader's Exclude PMs switch: off by default, and never fooled by a clock.
+
+    It is the one place availability leaves a work order out, so what it leaves
+    out has to be a PM by Limble's task type or a person's call -- never by the
+    text classifier, whose ``\\bpm\\b`` rule is the 623.7 h failure of §2.1.
+    """
+
+    def dashboard(self, **kwargs):
+        return build_dashboard(self.repo, months=1, today=date(2026, 2, 15), **kwargs)
+
+    def drill(self, asset, **kwargs):
+        return build_work_order_detail(
+            self.repo, asset_group="Salvagnini", asset_number=asset, month="2026-01-01", **kwargs
+        )
+
+    @staticmethod
+    def row(data, asset, group="Salvagnini"):
+        rows = next(g for g in data["groups"] if g["asset_group"] == group)["rows"]
+        return next(r for r in rows if r["asset_number"] == asset)
+
+    def seed_a_pm_and_a_breakdown(self):
+        self.add_work_order(
+            "3101", "2026-01-12 15:00:00", 4.0, type="1", name="3101 - M - Salvagnini Laser"
+        )
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0, type="6", name="MV hydraulic fault")
+
+    def seed_a_return_to_service_breakdown(self, hours=10.0):
+        self.add_work_order(
+            "3101", "2026-01-20 15:00:00", hours, type="6",
+            name="L3 down", completionNotes="Repair complete. RTS at 4:30 PM on 01/20/26.",
+        )
+
+    def dispose(self, task_name, record_class):
+        """A person's call on the Disposition page, as it lands on the row."""
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE mapped_cmms_record SET record_class_final = ? WHERE task_name = ?",
+                (record_class, task_name),
+            )
+
+    def test_every_work_order_still_counts_by_default(self):
+        self.seed_a_pm_and_a_breakdown()
+        data = self.dashboard()
+        self.assertFalse(data["exclude_pms"])
+        row = self.row(data, "3101")
+        self.assertEqual(row["direct_downtime_hours"], 14.0)
+        self.assertEqual(row["total_wo_count"], 2)
+        self.assertEqual(row["excluded_pm_count"], 0)
+
+    def test_a_limble_pm_is_left_out_when_asked(self):
+        self.seed_a_pm_and_a_breakdown()
+        data = self.dashboard(exclude_pms=True)
+        self.assertTrue(data["exclude_pms"])
+        row = self.row(data, "3101")
+        self.assertEqual(row["direct_downtime_hours"], 10.0)
+        self.assertEqual(row["total_wo_count"], 1)
+        self.assertEqual(row["excluded_pm_count"], 1)
+        expected = (396.0 - 10.0) / 396.0
+        self.assertAlmostEqual(row["availability"], expected, places=12)
+        salvagnini = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+        mv = next(a for a in salvagnini["assets"] if a["asset_number"] == "3101")
+        self.assertAlmostEqual(mv["values"][0], expected, places=12)
+        self.assertAlmostEqual(mv["average"], expected, places=12)
+
+    def test_a_return_to_service_note_is_not_mistaken_for_a_pm(self):
+        """The 623.7 h regression, guarded on the switch as well as the default."""
+
+        self.seed_a_return_to_service_breakdown()
+        # The premise: the classifier really does call it a PM.
+        self.assertEqual(self.mapped_column("record_class_auto"), ["PM"])
+        row = self.row(self.dashboard(exclude_pms=True), "3101")
+        self.assertEqual(row["direct_downtime_hours"], 10.0)
+        self.assertEqual(row["excluded_pm_count"], 0)
+
+    def test_a_persons_call_on_the_disposition_page_wins_either_way(self):
+        """A PM dispositioned as a failure counts; a work order dispositioned as
+        a PM does not -- whatever Limble's type says."""
+
+        self.add_work_order("3101", "2026-01-12 15:00:00", 4.0, type="1", name="PM found a cracked weld")
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0, type="6", name="Quarterly lube")
+        self.dispose("PM found a cracked weld", "CORRECTIVE_WO")
+        self.dispose("Quarterly lube", "PM")
+        row = self.row(self.dashboard(exclude_pms=True), "3101")
+        self.assertEqual(row["direct_downtime_hours"], 4.0)
+        self.assertEqual(row["excluded_pm_count"], 1)
+
+    def test_a_linked_assets_pms_leave_its_parents_share_too(self):
+        # 3104's only rule charges it half of 3101's downtime.
+        self.add_work_order("3101", "2026-01-12 15:00:00", 10.0, type="1", name="MV monthly PM")
+        self.assertEqual(self.row(self.dashboard(), "3104")["linked_downtime_hours"], 5.0)
+        row = self.row(self.dashboard(exclude_pms=True), "3104")
+        self.assertEqual(row["linked_downtime_hours"], 0.0)
+        # The bar says what it lost, though the PM was never 3104's own entry.
+        self.assertEqual(row["excluded_pm_count"], 1)
+        self.assertEqual(row["note"], "No WO entries this month")
+
+    def test_every_bar_and_its_drill_down_agree_on_the_pms_left_out(self):
+        """The tooltip and the list behind the same bar count the same rows."""
+
+        self.add_work_order("3101", "2026-01-12 15:00:00", 10.0, type="1", name="MV monthly PM")
+        self.add_work_order("3105", "2026-01-13 15:00:00", 3.0, type="1", name="S4 monthly PM")
+        self.add_work_order("3105", "2026-01-14 15:00:00", 2.0, type="6", name="S4 jam")
+        data = self.dashboard(exclude_pms=True)
+        counts = {}
+        for asset in ("3101", "3102", "3103", "3104", "3105", "3106", "3107"):
+            with self.subTest(asset=asset):
+                counts[asset] = self.row(data, asset)["excluded_pm_count"]
+                self.assertEqual(
+                    counts[asset], self.drill(asset, exclude_pms=True)["excluded_pm_count"]
+                )
+        # 3101 and 3105 lose their own; the rest lose them through linked rules.
+        self.assertEqual(counts["3101"], 1)
+        self.assertEqual(counts["3102"], 2)  # linked to both 3101 and 3105
+
+    def test_the_window_does_not_move_when_pms_are_excluded(self):
+        """Flipping the switch changes the numbers, never which months are shown."""
+
+        self.add_work_order("3101", "2026-01-12 15:00:00", 2.0, type="1")
+        self.add_work_order("3101", "2026-02-12 15:00:00", 2.0, type="6")
+        for exclude in (False, True):
+            with self.subTest(exclude_pms=exclude):
+                data = build_dashboard(
+                    self.repo, months=12, today=date(2026, 3, 15), exclude_pms=exclude
+                )
+                self.assertEqual(data["months"], ["2026-01-01", "2026-02-01"])
+
+    def test_a_month_of_only_pms_does_not_claim_nothing_was_logged(self):
+        # Building 6 Finishing, so no linked rule feeds the count.
+        self.add_work_order("4001", "2026-01-12 15:00:00", 2.0, type="1")
+        row = self.row(self.dashboard(exclude_pms=True), "4001", group="Building 6 Finishing")
+        self.assertEqual(row["availability"], 1.0)
+        self.assertTrue(row["no_wo_entries"])
+        self.assertEqual(row["excluded_pm_count"], 1)
+        self.assertEqual(row["note"], "No WO entries this month other than excluded PMs")
+
+    def test_the_stacked_pm_segment_is_exactly_what_the_switch_removes(self):
+        """One definition for both, or the switch leaves a PM segment behind."""
+
+        self.seed_a_pm_and_a_breakdown()
+        self.seed_a_return_to_service_breakdown(hours=3.0)
+        shown = self.row(self.dashboard(), "3101")["work_order_type_hours"]
+        self.assertEqual(shown.get("PM"), 4.0)
+        # The return-to-service breakdown is charted as the work request it was.
+        self.assertEqual(shown.get("Work Request"), 13.0)
+
+        excluded = self.row(self.dashboard(exclude_pms=True), "3101")["work_order_type_hours"]
+        self.assertNotIn("PM", excluded)
+        self.assertEqual(excluded.get("Work Request"), 13.0)
+
+    def test_the_drill_down_lists_only_what_the_bar_counted(self):
+        self.seed_a_pm_and_a_breakdown()
+        detail = self.drill("3101", exclude_pms=True)
+        self.assertTrue(detail["exclude_pms"])
+        self.assertEqual(detail["direct_downtime_hours"], 10.0)
+        self.assertEqual(
+            detail["availability"], self.row(self.dashboard(exclude_pms=True), "3101")["availability"]
+        )
+        self.assertEqual([o["task_name"] for o in detail["work_orders"]], ["MV hydraulic fault"])
+        self.assertEqual(detail["excluded_pm_count"], 1)
+
+    def test_the_drill_down_counts_the_linked_pms_it_hides(self):
+        self.add_work_order("3101", "2026-01-12 15:00:00", 10.0, type="1", name="MV monthly PM")
+        detail = self.drill("3104", exclude_pms=True)
+        self.assertEqual(detail["linked_downtime_hours"], 0.0)
+        self.assertEqual(detail["work_orders"], [])
+        self.assertEqual(detail["excluded_pm_count"], 1)
+
+    def test_the_drill_down_still_lists_pms_by_default(self):
+        self.seed_a_pm_and_a_breakdown()
+        detail = self.drill("3101")
+        self.assertFalse(detail["exclude_pms"])
+        self.assertEqual(detail["direct_downtime_hours"], 14.0)
+        self.assertEqual(len(detail["work_orders"]), 2)
+        self.assertEqual(detail["excluded_pm_count"], 0)
+
+    def test_the_switch_reads_the_usual_spellings(self):
+        for value in ("1", "true", "TRUE", "yes", "on", " on "):
+            self.assertTrue(parse_flag(value), value)
+        for value in (None, "", "0", "false", "no", "off", "treu"):
+            self.assertFalse(parse_flag(value), value)
+
+
 class ApiTests(AvailabilityTestCase):
     def setUp(self):
         super().setUp()
@@ -1341,6 +1575,32 @@ class ApiTests(AvailabilityTestCase):
             data["adjusted_downtime_hours"],
             places=2,
         )
+
+    def test_both_endpoints_take_the_pm_switch(self):
+        self.add_work_order("3101", "2026-01-12 15:00:00", 4.0, type="1")
+        self.add_work_order("3101", "2026-01-15 15:00:00", 10.0, type="6")
+
+        def mv(data):
+            group = next(g for g in data["groups"] if g["asset_group"] == "Salvagnini")
+            return next(r for r in group["rows"] if r["asset_number"] == "3101")
+
+        default = self.client.get("/metrics/api/availability?months=1").get_json()
+        self.assertFalse(default["exclude_pms"])
+        self.assertEqual(mv(default)["direct_downtime_hours"], 14.0)
+
+        excluded = self.client.get("/metrics/api/availability?months=1&exclude_pms=1").get_json()
+        self.assertTrue(excluded["exclude_pms"])
+        self.assertEqual(mv(excluded)["direct_downtime_hours"], 10.0)
+
+        response = self.client.get(
+            "/metrics/api/availability/work-orders"
+            "?asset_group=Salvagnini&asset_number=3101&month=2026-01-01&exclude_pms=1"
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        detail = response.get_json()
+        self.assertEqual(detail["adjusted_downtime_hours"], 10.0)
+        self.assertEqual(len(detail["work_orders"]), 1)
+        self.assertEqual(detail["excluded_pm_count"], 1)
 
     def test_a_group_name_with_an_ampersand_reaches_the_work_order_endpoint(self):
         response = self.client.get(

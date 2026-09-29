@@ -18,7 +18,10 @@ Two behaviours are deliberate and easy to mistake for bugs:
 * **Every work order with downtime counts**, whatever its Limble ``type`` or
   its classification. Both earlier implementations filtered and both filtered
   wrongly -- see the design doc §2.1 for the measurements. Callers must not
-  pre-filter by PM/corrective either.
+  pre-filter by PM/corrective either. The one exception is the reader's own
+  *Exclude PMs* switch, which ``availability_dashboard`` applies before calling
+  in here -- by Limble's task type, never by the text classifier -- so this
+  module still never sees a type.
 * **Linked downtime does not cascade.** A parent's share is computed from each
   linked asset's *direct* downtime, never from an already-adjusted figure.
 """
@@ -108,6 +111,12 @@ class WorkOrderDetail:
     request title fields the source system actually filled in -- Limble
     populates a different one depending on whether a work order began as a
     request.
+
+    ``record_class`` is the classification a reader is shown: a person's call
+    from the Disposition page when there is one, the classifier's guess
+    otherwise. ``record_class_final`` holds the person's call on its own,
+    because only that half is trusted to say a work order is a PM -- see
+    ``availability_dashboard.is_preventive_maintenance``.
     """
 
     order: WorkOrder
@@ -115,6 +124,7 @@ class WorkOrderDetail:
     status: str = ""
     type_raw: str = ""
     record_class: str = ""
+    record_class_final: str = ""
     asset_name: str = ""
     description: str = ""
     completion_notes: str = ""
@@ -185,6 +195,10 @@ class GroupSeries:
     average: list[float | None] = field(default_factory=list)
     goal: list[float | None] = field(default_factory=list)
     net_scheduled_hours_per_day: float = 0.0
+    # The two lines, each averaged across the window by the same rule as every
+    # asset's own average: the foot of the table's average column.
+    overall_average: float | None = None
+    goal_average: float | None = None
 
 
 # ----------------------------------------------------------------------
@@ -306,6 +320,13 @@ def _crosses_month(order: WorkOrder) -> bool:
         # confined to its own month.
         return True
     return _month_key(end) != start
+
+
+def _mean(values: list[float | None]) -> float | None:
+    """Unweighted mean of the defined values, or ``None`` when there are none."""
+
+    defined = [value for value in values if value is not None]
+    return sum(defined) / len(defined) if defined else None
 
 
 def availability_percent(downtime_hours: float, scheduled_hours: float) -> float | None:
@@ -514,6 +535,12 @@ def build_series(
     downtime of another still counts once. Months where no asset has a defined
     availability produce ``None`` so the line breaks rather than dropping to
     zero.
+
+    Each asset also carries its own ``average`` across the window -- the same
+    rule turned the other way, so a month with ten times the downtime of
+    another still counts once, and a month with no defined availability is
+    skipped rather than read as zero. ``overall_average`` and ``goal_average``
+    apply that rule to the Average and Goal lines themselves.
     """
 
     goals = goals or {}
@@ -543,11 +570,13 @@ def build_series(
             if not any(cells):
                 continue
             first = next(cell for cell in cells if cell)
+            values = [cell.availability if cell else None for cell in cells]
             chart.assets.append(
                 {
                     "asset_number": asset,
                     "display_name": first.display_name,
-                    "values": [cell.availability if cell else None for cell in cells],
+                    "values": values,
+                    "average": _mean(values),
                     "flagged": [bool(cell.flagged) if cell else False for cell in cells],
                     "notes": [cell.note if cell else "" for cell in cells],
                 }
@@ -561,6 +590,8 @@ def build_series(
             ]
             chart.average.append(sum(defined) / len(defined) if defined else None)
             chart.goal.append(goals.get((group.asset_group, month), DEFAULT_GOAL_PERCENT))
+        chart.overall_average = _mean(chart.average)
+        chart.goal_average = _mean(chart.goal)
 
         series.append(chart)
     return series
