@@ -203,7 +203,7 @@
        line is a group-level statistic, and linked downtime makes an asset's
        number depend on assets an filter could hide. -->
   <article class="glass-card metrics-card" id="card-availability" data-card="availability">
-    <header class="metrics-card-head">
+    <header class="metrics-card-head" id="availability-card-head">
       <div>
         <p class="eyebrow">Availability</p>
         <div class="availability-title-row">
@@ -217,6 +217,11 @@
         </div>
         <p class="metrics-card-desc">Open the card and click any bar to see the rows it was computed from.</p>
         <p class="metrics-card-scope" id="availability-scope">All asset groups · all downtime · monthly. Not affected by the filters above.</p>
+        {# This card's own walk-through, separate from the page's Show me around:
+           it opens the card and goes through the charts and tables inside it. #}
+        <div>
+          <button type="button" class="metrics-tour-btn" id="availability-tour-btn">Walk me through this card</button>
+        </div>
       </div>
       <button type="button" class="metrics-card-toggle" aria-expanded="false"
               aria-controls="availability-expanded" aria-labelledby="availability-card-title"></button>
@@ -233,7 +238,7 @@
     <div class="metrics-expanded" id="availability-expanded" hidden>
       <div class="metrics-panel availability-controls">
         <div class="availability-control-row">
-          <div class="metrics-field">
+          <div class="metrics-field" id="availability-window-field">
             <label for="availability-window">Months shown</label>
             <select id="availability-window">
               <option value="3">Last 3 months</option>
@@ -244,11 +249,11 @@
             </select>
           </div>
           <div class="availability-toggles">
-            <label class="availability-toggle" for="availability-stacked">
+            <label class="availability-toggle" id="availability-stacked-toggle" for="availability-stacked">
               <input id="availability-stacked" type="checkbox" role="switch">
               <span>Stack by work order type</span>
             </label>
-            <label class="availability-toggle" for="availability-exclude-pms"
+            <label class="availability-toggle" id="availability-exclude-pms-toggle" for="availability-exclude-pms"
                    title="Leave out work orders Limble records as PMs, or that were classified as PMs on the Disposition page">
               <input id="availability-exclude-pms" type="checkbox" role="switch">
               <span>Exclude PMs</span>

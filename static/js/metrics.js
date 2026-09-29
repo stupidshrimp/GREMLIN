@@ -2848,7 +2848,7 @@
       [averageCell(group.goal_average)]
     ));
 
-    return el("div", { class: "metrics-table-scroll" }, [
+    return el("div", { class: "metrics-table-scroll availability-table-scroll" }, [
       el("table", { class: "metrics-table availability-table" }, [
         el("thead", {}, [head]),
         el("tbody", {}, body.concat([averageRow, goalRow])),
@@ -2898,7 +2898,7 @@
       const mode = state.availabilityTableMode[group.asset_group] || "availability";
       const toggle = el("button", {
         type: "button",
-        class: "btn-secondary availability-mode-toggle",
+        class: "btn-secondary availability-mode-toggle availability-ot-toggle",
         text: mode === "ot" ? "Show availability %" : "Edit OT hours",
       });
       toggle.addEventListener("click", () => {
@@ -2911,7 +2911,7 @@
       // way in when the question is about the group rather than one bad month.
       const detailButton = el("button", {
         type: "button",
-        class: "btn-secondary availability-mode-toggle",
+        class: "btn-secondary availability-mode-toggle availability-view-data",
         // Named so the dialog can find it again on close. This button is
         // rebuilt on every availability render, so it cannot be held by
         // reference across one.
@@ -2936,7 +2936,7 @@
               (data.exclude_pms ? "PMs excluded · " : "") +
               "click a bar to open the rows behind it, and the work orders behind those",
           }),
-          el("div", { class: "metrics-chart-wrap" }, [canvas]),
+          el("div", { class: "metrics-chart-wrap availability-chart" }, [canvas]),
           renderAvailabilityTable(group, data),
         ])
       );
@@ -3037,7 +3037,12 @@
     const INTERACTIVE = "a, button, input, select, textarea, .metrics-table-scroll";
     document.querySelectorAll(".metrics-card").forEach((card) => {
       const key = card.getAttribute("data-card");
-      const activate = () => setExpanded(key);
+      const activate = () => {
+        setExpanded(key);
+        // The Availability card has a tour of its own, which offers itself the
+        // first time the card is opened (see the tour further down).
+        if (key === "availability" && state.expanded === key) offerAvailabilityTour();
+      };
       const fromControl = (event) => Boolean(event.target.closest(INTERACTIVE));
       const toggle = card.querySelector(".metrics-card-toggle");
       if (toggle) {
@@ -3197,11 +3202,13 @@
     });
   }
 
-  // ---- first-visit tour ----------------------------------------------------
-  // The same walk-through the PM calendar gives: a spotlight on one part of the
-  // page at a time and a card saying what it is for. It only points; it never
-  // presses anything, so a card that was collapsed when the tour began is still
-  // collapsed when it ends.
+  // ---- tours ---------------------------------------------------------------
+  // Two walk-throughs share one overlay: the page's, below, and the Availability
+  // card's, after it. Both are the one the PM calendar gives -- a spotlight on
+  // one part of the page at a time and a card saying what it is for.
+  //
+  // The page tour only points; it never presses anything, so a card that was
+  // collapsed when the tour began is still collapsed when it ends.
   //
   // `target` is looked up as each step is shown rather than now, because the
   // chips and charts are drawn after this file runs and a card changes height
@@ -3234,8 +3241,8 @@
       title: "Availability, month by month",
       body:
         "How much of its scheduled time each asset was able to run, for every asset group over " +
-        "completed months. The filters above don't apply here. Open the card and click any bar " +
-        "to see the work orders behind it.",
+        "completed months. The filters above don't apply here. The card's own Walk me through " +
+        "this card button goes through its charts and tables one at a time.",
     },
     {
       target: "#availability-info-open",
@@ -3251,24 +3258,138 @@
     },
   ];
 
+  // The Availability card's own walk-through, taken from the button on the card
+  // or offered the first time the card is opened. The page tour gives the card
+  // one stop; this one goes inside it, so unlike the page tour it opens the card
+  // before it starts -- nearly everything it points at is only drawn while the
+  // card is open.
+  //
+  // A step whose target isn't on the page is left out when the tour starts
+  // rather than shown with nothing lit: Edit OT hours is only there for people
+  // who can edit, and the charts and tables only once there is data to draw.
+  // `.availability-chart` and the other classes here are put on the first
+  // group's chart, table and buttons by renderAvailabilityExpanded, and the
+  // first group is the one the tour lands on.
+  const AVAILABILITY_TOUR_STEPS = [
+    {
+      target: "#availability-card-head",
+      title: "Asset availability by month",
+      body:
+        "How much of its scheduled time each asset was able to run, month by month. There is " +
+        "one chart for every asset group, only completed months are shown, and the asset and " +
+        "date filters at the top of the page don't apply here.",
+    },
+    {
+      target: "#availability-info-open",
+      title: "The formula",
+      body:
+        "Availability is scheduled hours minus downtime, divided by scheduled hours. Scheduled " +
+        "hours are the month's weekdays times the group's net hours a day, plus any overtime. " +
+        "This button has the full explanation.",
+    },
+    {
+      target: "#availability-window-field",
+      title: "How many months",
+      body: "Show the last 3, 5, 6, 12 or 24 completed months. Every chart and table on the card follows it.",
+    },
+    {
+      target: "#availability-stacked-toggle",
+      title: "Stack by work order type",
+      body:
+        "Fills each bar to 100%: availability at the bottom, and above it the downtime split by " +
+        "the type of work order behind it. The asset's colour moves to the bar's outline. Only " +
+        "the drawing changes, not the numbers.",
+    },
+    {
+      target: "#availability-exclude-pms-toggle",
+      title: "Exclude PMs",
+      body:
+        "Works every chart and table out again without preventive maintenance. A work order is " +
+        "a PM if it was classified as one on the Disposition page or, when nobody has classified " +
+        "it, if Limble records it as a PM task.",
+    },
+    {
+      target: "#availability-basis",
+      title: "What the numbers assume",
+      body:
+        "When the numbers were worked out, in which time zone, and each group's net scheduled " +
+        "hours a day. It sits on the card so a screenshot carries it along.",
+      // Empty until the first numbers land, and an empty line is nothing to
+      // point at.
+      when: () => Boolean($("availability-basis").textContent.trim()),
+    },
+    {
+      target: ".availability-chart",
+      title: "Reading a chart",
+      body:
+        "Each month has one bar per asset, named by the legend across the top. The solid line " +
+        "is the group's average, with every asset counted equally, and the dashed line is the " +
+        "goal. A red strip along the foot of a bar means downtime ran past scheduled hours, so " +
+        "that month counts as 0%.",
+    },
+    {
+      target: ".availability-chart",
+      title: "Point at a bar, then click it",
+      body:
+        "Hover over a bar for its scheduled hours, downtime and work orders, and anything " +
+        "unusual about that month. Click it to open the rows behind the chart with that bar " +
+        "picked out, then choose Work orders to see the jobs its downtime came from.",
+    },
+    {
+      target: ".availability-table-scroll",
+      title: "The table under each chart",
+      body:
+        "The same numbers as the bars, one row per asset. The Average row is the solid line " +
+        "and Goal % the dashed one" +
+        (CAN_EDIT ? "; type in a Goal % cell to change the target for that month" : "") +
+        ". Asset average averages each row across the months shown. Hover a cell for what's " +
+        "behind it: linked downtime, work orders that cross into another month, or a month " +
+        "that ran over.",
+    },
+    {
+      target: ".availability-view-data",
+      title: "View data",
+      body:
+        "Opens the same rows as clicking a bar, for the whole group, without picking a bar " +
+        "first. It is also the way in from the keyboard.",
+    },
+    {
+      target: ".availability-ot-toggle",
+      title: "Edit OT hours",
+      body:
+        "Swaps the percentages in the table for overtime hours. Hours typed in are added to " +
+        "that asset's scheduled time for the month and its availability is worked out again. " +
+        "Show availability % switches back.",
+    },
+    {
+      target: "#availability-tour-btn",
+      title: "Come back any time",
+      body: "Press Walk me through this card to take this tour again.",
+    },
+  ];
+
   const TOUR_SEEN_KEY = "gremlin.metrics.tour-seen";
+  const AVAILABILITY_TOUR_SEEN_KEY = "gremlin.metrics.availability-tour-seen";
+  // The tour on screen: the steps it is showing and the key that remembers it
+  // was seen. Null while neither tour is open.
+  let tour = null;
   let tourStep = 0;
   let tourReturnFocus = null;
   let tourLayoutWatch = null;
 
   // Storage throws rather than returning null when site data is blocked -- the
   // same guard layout.js and topbar_tools.js use for their settings.
-  function tourSeen() {
+  function tourSeen(key) {
     try {
-      return localStorage.getItem(TOUR_SEEN_KEY) === "yes";
+      return localStorage.getItem(key) === "yes";
     } catch (err) {
       return false;
     }
   }
 
-  function rememberTourSeen() {
+  function rememberTourSeen(key) {
     try {
-      localStorage.setItem(TOUR_SEEN_KEY, "yes");
+      localStorage.setItem(key, "yes");
     } catch (err) {
       // A browser that won't remember just shows the tour again; the page
       // itself is unaffected, so there is nothing to report.
@@ -3290,7 +3411,7 @@
   function placeTour() {
     const card = $("metrics-tour-card");
     const spotlight = $("metrics-tour-spotlight");
-    const target = tourTarget(TOUR_STEPS[tourStep]);
+    const target = tourTarget(tour.steps[tourStep]);
     const pad = 8;
 
     if (target) {
@@ -3336,19 +3457,40 @@
     }
   }
 
-  function showTourStep() {
-    const step = TOUR_STEPS[tourStep];
-    const target = tourTarget(step);
-    if (target) {
-      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      target.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
-    }
+  // Brings the target on screen with room for the card beside it. Centred when
+  // that leaves room above or below it; otherwise just under the top bar, with
+  // the card underneath. A table or an open card centred on a laptop screen
+  // leaves too little on either side, and the card, pinned to the bottom of
+  // the screen, would cover the rows the step is about -- and something taller
+  // than the screen, centred, has its heading scrolled out of sight.
+  function scrollToTourTarget(target) {
+    const pad = 8;
+    const box = target.getBoundingClientRect();
+    const topbar = document.querySelector(".topbar");
+    const ceiling = topbar ? topbar.getBoundingClientRect().bottom : 0;
+    const cardHeight = $("metrics-tour-card").getBoundingClientRect().height;
+    const beside = (window.innerHeight - ceiling - box.height) / 2;
+    const landAt = beside >= cardHeight + pad * 3 ? ceiling + beside : ceiling + pad * 2;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({
+      top: Math.max(0, window.pageYOffset + box.top - landAt),
+      behavior: still ? "auto" : "smooth",
+    });
+  }
 
-    $("metrics-tour-step").textContent = `Step ${tourStep + 1} of ${TOUR_STEPS.length}`;
+  function showTourStep() {
+    const steps = tour.steps;
+    const step = steps[tourStep];
+
+    $("metrics-tour-step").textContent = `Step ${tourStep + 1} of ${steps.length}`;
     $("metrics-tour-title").textContent = step.title;
     $("metrics-tour-body").textContent = step.body;
     $("metrics-tour-back").disabled = tourStep === 0;
-    $("metrics-tour-next").textContent = tourStep === TOUR_STEPS.length - 1 ? "Done" : "Next ►";
+    $("metrics-tour-next").textContent = tourStep === steps.length - 1 ? "Done" : "Next ►";
+
+    // After the text, which is what sets the card's height.
+    const target = tourTarget(step);
+    if (target) scrollToTourTarget(target);
 
     // After the scroll, so the spotlight lands on where the target actually
     // ends up.
@@ -3377,7 +3519,13 @@
     }
   }
 
-  function startTour() {
+  function startTour(steps, seenKey) {
+    if (tourOpen()) return;
+    const shown = steps.filter(
+      (step) => document.querySelector(step.target) && (!step.when || step.when())
+    );
+    if (!shown.length) return;
+    tour = { steps: shown, seenKey };
     tourReturnFocus = document.activeElement;
     tourStep = 0;
     hideTooltip();
@@ -3407,13 +3555,42 @@
       tourLayoutWatch.disconnect();
       tourLayoutWatch = null;
     }
-    rememberTourSeen();
+    if (tour) rememberTourSeen(tour.seenKey);
+    tour = null;
     if (tourReturnFocus && document.body.contains(tourReturnFocus)) tourReturnFocus.focus();
     tourReturnFocus = null;
   }
 
+  function startPageTour() {
+    startTour(TOUR_STEPS, TOUR_SEEN_KEY);
+  }
+
+  function startAvailabilityTour() {
+    if (tourOpen()) return;
+    if (state.expanded !== "availability") setExpanded("availability");
+    // Two frames: one for the charts to take their size, and one for the
+    // scroll that opening the card starts, which the first step's own scroll
+    // then takes over from rather than racing.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => startTour(AVAILABILITY_TOUR_STEPS, AVAILABILITY_TOUR_SEEN_KEY))
+    );
+  }
+
+  // The first time someone opens the Availability card on this browser. Not
+  // over another tour or a dialog, and not before there is a chart to show:
+  // without one most of the tour would be left out, and the part that is left
+  // would be the one time it opens by itself.
+  function offerAvailabilityTour() {
+    if (tourSeen(AVAILABILITY_TOUR_SEEN_KEY)) return;
+    if (tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]")) return;
+    const data = state.availability;
+    if (!data || !(data.groups || []).length) return;
+    startAvailabilityTour();
+  }
+
   function wireTour() {
-    $("metrics-tour-btn").addEventListener("click", startTour);
+    $("metrics-tour-btn").addEventListener("click", startPageTour);
+    $("availability-tour-btn").addEventListener("click", startAvailabilityTour);
     $("metrics-tour-skip").addEventListener("click", endTour);
     $("metrics-tour-back").addEventListener("click", () => {
       if (tourStep === 0) return;
@@ -3424,7 +3601,7 @@
       if (tourStep === 0) $("metrics-tour-next").focus();
     });
     $("metrics-tour-next").addEventListener("click", () => {
-      if (tourStep < TOUR_STEPS.length - 1) {
+      if (tourStep < tour.steps.length - 1) {
         tourStep += 1;
         showTourStep();
       } else {
@@ -3475,8 +3652,8 @@
     // opened with the keyboard, though, and not a second time if they found
     // the button while the page was loading.
     const busy = tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
-    if (!tourSeen() && !busy) {
-      requestAnimationFrame(() => requestAnimationFrame(startTour));
+    if (!tourSeen(TOUR_SEEN_KEY) && !busy) {
+      requestAnimationFrame(() => requestAnimationFrame(startPageTour));
     }
   }
 
