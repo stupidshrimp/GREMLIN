@@ -3373,6 +3373,10 @@
   // The tour on screen: the steps it is showing and the key that remembers it
   // was seen. Null while neither tour is open.
   let tour = null;
+  // Set by init once the first numbers are in. Until then the Availability
+  // card's charts aren't drawn, and its tour, asked for early, waits.
+  let pageReady = false;
+  let availabilityTourQueued = false;
   let tourStep = 0;
   let tourReturnFocus = null;
   let tourLayoutWatch = null;
@@ -3571,6 +3575,14 @@
   function startAvailabilityTour() {
     if (tourOpen()) return;
     if (state.expanded !== "availability") setExpanded("availability");
+    // Pressed while the page is still loading: started now, the tour would
+    // leave out the charts and tables it is mostly about, which aren't drawn
+    // yet. The card opens straight away and init starts the tour once they
+    // are.
+    if (!pageReady) {
+      availabilityTourQueued = true;
+      return;
+    }
     // Two frames: one for the charts to take their size, and one for the
     // scroll that opening the card starts, which the first step's own scroll
     // then takes over from rather than racing.
@@ -3662,8 +3674,18 @@
     // loading was too early for its tour, which waits for a chart to point at.
     // That one goes first: they've already gone to the card, and the page tour
     // is still unseen next visit.
+    //
+    // A card tour asked for with the button while the page loaded goes ahead
+    // of both, as long as the card it opened is still open.
+    pageReady = true;
+    const queued = availabilityTourQueued;
+    availabilityTourQueued = false;
     const busy = tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
     if (busy) return;
+    if (queued && state.expanded === "availability") {
+      startAvailabilityTour();
+      return;
+    }
     if (state.expanded === "availability" && offerAvailabilityTour()) return;
     if (!tourSeen(TOUR_SEEN_KEY)) {
       requestAnimationFrame(() => requestAnimationFrame(startPageTour));
