@@ -1694,47 +1694,6 @@ class LifeDataService:
         return options
 
 
-    def calculate_all_weibull_results(self, asset_number: str) -> dict[str, Any]:
-        """Run and save Weibull MLE results for every available mode/mechanism group on an asset."""
-
-        group_options = self.weibull_group_options(asset_number)
-        summary: dict[str, Any] = {
-            "asset_number": asset_number,
-            "total": len(group_options),
-            "completed": 0,
-            "failed": 0,
-            "results": [],
-            "errors": [],
-        }
-        for option in group_options:
-            label = str(option.get("label") or "Unknown failure group")
-            try:
-                result = self.perform_weibull_analysis(
-                    asset_number,
-                    grouping_level=str(option["grouping_level"]),
-                    failure_mode_id=int(option["failure_mode_id"]),
-                    failure_mechanism_id=int(option["failure_mechanism_id"]) if option.get("failure_mechanism_id") is not None else None,
-                )
-            except Exception as exc:  # Keep processing independent groups even when one fit needs review.
-                summary["failed"] += 1
-                summary["errors"].append(f"{label}: {exc}")
-                continue
-            summary["completed"] += 1
-            summary["results"].append({
-                "label": label,
-                "grouping_level": option.get("grouping_level"),
-                "failure_mode_id": option.get("failure_mode_id"),
-                "failure_mechanism_id": option.get("failure_mechanism_id"),
-                "run_id": result.run_id,
-                "result_id": result.result_id,
-                "beta_mle": result.beta_mle,
-                "eta_mle": result.eta_mle,
-                "failure_count": result.failure_count,
-                "censored_count": result.censored_count,
-            })
-        return summary
-
-
     def latest_failure_mechanism_beta_rankings(self, asset_number: str, *, limit: int = 5) -> list[dict[str, Any]]:
         """Return latest saved Weibull beta values for this asset's failure-mechanism populations."""
 

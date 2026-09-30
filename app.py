@@ -508,7 +508,6 @@ reliability_service = ReliabilityService(
 # with the GREMLIN_DB_PATH environment variable so the Flask app can run wherever
 # GREMLIN.db is reachable. The service is created lazily and any startup failure is
 # surfaced to the page instead of crashing the whole app.
-MLE_CALCULATION_PASSWORD = "1336"
 _life_data_service: LifeDataService | None = None
 _life_data_service_error: str | None = None
 
@@ -2546,20 +2545,6 @@ def api_saved_analysis():
         failure_mechanism_id=failure_mechanism_id,
     )
     return jsonify({"result": _serialize_analysis_result(result) if result is not None else None})
-
-
-@app.route("/life-data-analysis/api/calculate-all", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-def api_calculate_all():
-    service = _service_or_api_error()
-    payload = request.get_json(silent=True) or {}
-    asset_number = (payload.get("asset") or "").strip()
-    if not asset_number:
-        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
-    if str(payload.get("password") or "") != MLE_CALCULATION_PASSWORD:
-        raise LifeDataApiError("The password was incorrect. No Weibull MLE calculations were performed.", status_code=403)
-    return jsonify({"summary": service.calculate_all_weibull_results(asset_number)})
 
 
 @app.route("/life-data-analysis/api/parameter-adjustment", methods=["POST"])
