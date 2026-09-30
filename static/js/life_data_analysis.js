@@ -472,7 +472,10 @@
   }
   function endLoading() {
     loadingDepth = Math.max(0, loadingDepth - 1);
-    if (loadingDepth === 0) $("lda-loading").hidden = true;
+    if (loadingDepth === 0) {
+      $("lda-loading").hidden = true;
+      startOwedDispositionTour();
+    }
   }
 
   function showBanner(message, kind) {
@@ -543,6 +546,7 @@
         document.removeEventListener("keydown", onKey);
         backdrop.remove();
         resolve(value);
+        startOwedDispositionTour();
       }
       function onKey(event) {
         if (event.key === "Escape") close(null);
@@ -667,6 +671,7 @@
     $("lda-asset").setAttribute("aria-expanded", "false");
     state.assetDropdownOpen = false;
     state.assetActiveIndex = -1;
+    startOwedDispositionTour();
   }
 
   // Resolves once the asset's summary is on the page, which is what the tour
@@ -2559,6 +2564,7 @@
     });
 
     const checkAllButton = el("button", {
+      id: "lda-disp-check-all",
       class: "btn-secondary",
       text: "Check all Include in Weibull Candidate",
       onclick: () => {
@@ -2583,7 +2589,7 @@
       disabled: endRow >= data.displayed_count,
       onclick: () => maybeChangePage(data, changed, data.page_index + 1),
     });
-    const pager = el("div", { class: "lda-pager" }, [
+    const pager = el("div", { class: "lda-pager", id: "lda-disp-pager" }, [
       prev,
       el("span", { class: "lda-page-status", text: `Page ${data.page_index + 1} of ${data.max_page_index + 1}` }),
       next,
@@ -2605,6 +2611,7 @@
     // from -- see the reload below.
     const editableKeys = new Set(extraColumns.map((column) => column.key));
     const save = el("button", {
+      id: "lda-disp-save",
       class: "btn-primary",
       text: "Save Dispositions",
       onclick: () =>
@@ -2623,9 +2630,10 @@
           loadDispositionPage(data.kind, data.scope, data.page_index);
         }),
     });
+    // The ids are what the page's tour points at (see DISPOSITION_EDITOR_TOUR_STEPS).
     const card = el("section", { class: "glass-card lda-card" }, [
       el("h2", { text: isPm ? "Disposition PMs" : "Disposition Work Orders" }),
-      el("div", { class: "lda-disposition-meta" }, [
+      el("div", { class: "lda-disposition-meta", id: "lda-disp-meta" }, [
         el("p", { text: `Selected asset: ${data.asset_number}` }),
         el("p", { class: "lda-hint", text: metaText }),
         el("p", {
@@ -2643,9 +2651,9 @@
           "selection, not just this page, so the first page holds the top of the sort. A value filter is " +
           "picked from the values on the current page and stays on while you sort and page.",
       }),
-      el("div", { class: "lda-table-scroll" }, [table]),
+      el("div", { class: "lda-table-scroll", id: "lda-disp-table" }, [table]),
       pager,
-      el("div", { class: "lda-row-actions" }, [
+      el("div", { class: "lda-row-actions", id: "lda-disp-actions" }, [
         excelHelpButton(),
         withTooltip(
           download,
@@ -2668,6 +2676,7 @@
     ]);
     $("lda-workspace").appendChild(card);
     card.scrollIntoView({ behavior: "smooth", block: "start" });
+    offerDispositionTour();
   }
 
   function buildSelect(options, current) {
@@ -2848,6 +2857,7 @@
       input.setAttribute("aria-expanded", "false");
       window.removeEventListener("scroll", reflowList, true);
       window.removeEventListener("resize", reflowList, true);
+      startOwedDispositionTour();
     }
 
     function choose(opt) {
@@ -3024,6 +3034,7 @@
       // Only that closes it, never a click on the content inside.
       if (event.target === dialog) dialog.close();
     });
+    dialog.addEventListener("close", startOwedDispositionTour);
   }
 
   // The Rows selector travels with the download: the workbook is the offline
@@ -5014,6 +5025,7 @@
     if (openColumnMenu) {
       openColumnMenu.remove();
       openColumnMenu = null;
+      startOwedDispositionTour();
     }
   }
   document.addEventListener("mousedown", (event) => {
@@ -5847,6 +5859,252 @@
     button.addEventListener("click", startAnalysisPageTour);
   }
 
+  // The Disposition page's "Show me around", on the same engine. Before an asset
+  // is picked it is the page's purpose and the Step 1 controls; once one is, the
+  // editor under them too: what the table holds, how a row is filled in, and the
+  // ways to save it. The editor part offers itself the first time an editor is
+  // drawn on a browser that hasn't seen it, which is also when the whole tour
+  // offers itself if the page was opened with an asset already picked -- the
+  // Disposition buttons on Perform an Analysis do that.
+  const DISPOSITION_SETUP_TOUR_STEPS = [
+    {
+      target: "#lda-disp-intro",
+      title: "What dispositioning is for",
+      body:
+        "Dispositioning says what each of an asset's work orders and PMs was, and whether a Weibull " +
+        "fit may use it. Perform an Analysis only counts records dispositioned here. Skip or Esc ends " +
+        "this tour at any time.",
+    },
+    {
+      target: "#lda-asset-field",
+      title: "Pick an asset",
+      body: () =>
+        "Type part of an Asset Number or an asset's name and choose it from the list. The Disposition " +
+        "buttons on Perform an Analysis open this page with their asset already picked." +
+        (state.selectedAsset ? "" : " Its records appear below once an asset is picked."),
+    },
+    {
+      target: "#lda-disp-kind-field",
+      title: "Work orders or PMs",
+      body:
+        "Work Orders are the corrective jobs: say whether each was a failure, and of which failure " +
+        "mode and mechanism. PM Reset Events are completed PMs: say whether each one renewed the " +
+        "asset against a failure mode, which starts that mode's clock again in the fit.",
+    },
+    {
+      target: "#lda-disp-scope-field",
+      title: "Everything, or just the backlog",
+      body: () =>
+        "All eligible rows shows every record. Only new / undispositioned shows the ones still without " +
+        (state.dispositionKind === "pm" ? "a reset target failure mode or mechanism" : "a failure mode or mechanism") +
+        ", which is where to start when catching up.",
+    },
+    {
+      target: "#lda-disp-search-field",
+      title: "Find a record",
+      body:
+        "Narrows the table to rows with this text or number in any column: a task ID, a date, a word " +
+        "from the notes. It searches the whole selection, not just the page on screen.",
+    },
+  ];
+
+  const DISPOSITION_EDITOR_TOUR_STEPS = [
+    {
+      target: "#lda-disp-meta",
+      title: "What the table holds",
+      body: () =>
+        "Which asset this is, how many records the selection has and which of them are on screen. " +
+        (state.dispositionKind === "pm"
+          ? "A PM only reaches a Weibull fit as INCLUDED_PM_RESET_EVENT with APPROVED_RESET, a reset " +
+            "target, a rationale, and Include in Weibull Candidate ticked."
+          : "A work order only reaches a Weibull fit as INCLUDED_FAILURE with a failure mode and " +
+            "Include in Weibull Candidate ticked."),
+    },
+    {
+      target: "#lda-disp-table",
+      title: "One row per record",
+      body:
+        "The columns up to Failure Narrative are what was recorded in the CMMS, and can't be changed " +
+        "here. The ones after it, off to the right, are yours to fill in, apart from Modeled Population, " +
+        "which fills itself in when you save. The ▾ on any column header sorts the whole selection by " +
+        "it, or filters this page to the values you pick.",
+    },
+    {
+      target: "#lda-disp-table",
+      title: "Filling in a row",
+      body: () =>
+        state.dispositionKind === "pm"
+          ? "Pick a Disposition Category and a PM Reset Decision. For an approved reset, choose the " +
+            "Reset Target Failure Mode and Mechanism it renewed (only ones work orders already use), give " +
+            "the evidence under PM Reset Renewal Rationale, and tick Include in Weibull Candidate. " +
+            "HELD_AMBIGUOUS needs a note saying why."
+          : "Pick a Disposition Category: INCLUDED_FAILURE for a real failure, EXCLUDED_NON_FAILURE for " +
+            "a job that wasn't one, HELD_AMBIGUOUS (with a note saying why) if you can't tell yet. Choose " +
+            "the Failure Mode and Mechanism, or type a new name to add one, and tick Include in Weibull " +
+            "Candidate on the rows the fit should use.",
+    },
+    {
+      target: "#lda-disp-check-all",
+      title: "Include a whole page",
+      body:
+        "Ticks Include in Weibull Candidate on every row showing. Rows a column filter hides are left " +
+        "as they are, and nothing is kept until you save.",
+    },
+    {
+      target: "#lda-disp-pager",
+      title: "Fifty rows to a page",
+      body:
+        "Changing page reloads the table, and so do sorting, searching and the Step 1 controls. Each " +
+        "asks before throwing away unsaved changes, but it's simplest to save a page before moving on.",
+    },
+    {
+      target: "#lda-disp-save",
+      title: "Save as you go",
+      body:
+        "Writes every row you changed on this page, and leaves the rest alone. The rows are saved " +
+        "together: if one is refused, say a HELD_AMBIGUOUS row with no note, none are, and the " +
+        "message says which rule it broke.",
+    },
+    {
+      target: "#lda-disp-actions",
+      title: "Or do it in Excel",
+      body:
+        "Download Excel gets this asset's records as a workbook with the same dropdowns, to fill in " +
+        "offline: all of them, or only the new ones if that's what Rows says. Disposition via Excel " +
+        "uploads it back and saves every row that changed. How dispositioning on Excel works explains " +
+        "the rest.",
+    },
+  ];
+
+  const DISPOSITION_TOUR_END_STEPS = [
+    {
+      target: "#disposition-tour-btn",
+      title: "Come back any time",
+      body: () =>
+        state.selectedAsset
+          ? "The tour only opens by itself once. Press Show me around to take it again."
+          : "Pick an asset and press Show me around again to be walked through its records too.",
+    },
+  ];
+
+  const DISPOSITION_TOUR_SEEN_KEY = "gremlin.disposition.tour-seen";
+  const DISPOSITION_EDITOR_TOUR_SEEN_KEY = "gremlin.disposition.editor-tour-seen";
+
+  // Anything a tour mustn't open over by itself: the same as on the analysis
+  // page, plus a column's ▾ menu or a failure mode list open in the table,
+  // somebody typing a search -- each search draws the editor again -- and a
+  // mouse button or finger still down. A click elsewhere closes a list, or
+  // takes the focus from the search box, as it goes down, so a tour opened
+  // then would be under the pointer when it comes up and take the click.
+  let pointerHeld = false;
+
+  function dispositionTourBlocked() {
+    return (
+      analysisTourBlocked() ||
+      pointerHeld ||
+      Boolean(document.querySelector(".lda-col-menu, body > .lda-portal-list")) ||
+      document.activeElement === $("lda-disp-search")
+    );
+  }
+
+  function startDispositionTour(steps, seenKey) {
+    closeAssetDropdown();
+    window.gremlinTour.start(steps.concat(DISPOSITION_TOUR_END_STEPS), {
+      seenKey,
+      returnFocus: tourReturnFocus,
+      // A page tour that got as far as the editor has covered what the editor
+      // tour would, so that one needn't offer itself as well.
+      onEnd: (shown) => {
+        if (shown.some((step) => DISPOSITION_EDITOR_TOUR_STEPS.includes(step))) {
+          window.gremlinTour.remember(DISPOSITION_EDITOR_TOUR_SEEN_KEY);
+        }
+        startOwedDispositionTour();
+      },
+    });
+  }
+
+  function startDispositionPageTour() {
+    startDispositionTour(
+      DISPOSITION_SETUP_TOUR_STEPS.concat(DISPOSITION_EDITOR_TOUR_STEPS),
+      DISPOSITION_TOUR_SEEN_KEY
+    );
+  }
+
+  // Set when the tour has offered itself and hasn't been able to start yet:
+  // something was in the way, or the editor it waits for isn't drawn. The
+  // places those clear -- the loading veil going down, a list, menu, dialog or
+  // modal closing, the search box losing focus, a click being let go, another
+  // tour ending -- each call startOwedDispositionTour, which runs it once
+  // nothing stands in the way.
+  let dispositionTourOwed = false;
+
+  // Called once the Asset Numbers are in and each time the editor is drawn.
+  function offerDispositionTour() {
+    if (!window.gremlinTour || state.pageMode !== "disposition") return;
+    if (
+      window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY) &&
+      window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY)
+    ) {
+      return;
+    }
+    dispositionTourOwed = true;
+    startOwedDispositionTour();
+  }
+
+  // The whole tour, if this browser hasn't had it; otherwise the editor part,
+  // the first time there is an editor to show. Not while an asset is still being
+  // chosen, since the tour would take the box from under them -- unless one is
+  // picked already, when it waits for that asset's editor instead. Two frames,
+  // so the table has taken its size before the spotlight goes round anything.
+  // Anything in the way leaves it owed.
+  function startOwedDispositionTour() {
+    if (!dispositionTourOwed) return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!dispositionTourOwed || dispositionTourBlocked()) return;
+        const editorDrawn = Boolean($("lda-disp-meta"));
+        if (!window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY)) {
+          const input = $("lda-asset");
+          const choosing = !state.selectedAsset && (input.value.trim() || document.activeElement === input);
+          if (choosing || (state.selectedAsset && !editorDrawn)) return;
+          dispositionTourOwed = false;
+          stopScrolling();
+          startDispositionPageTour();
+          return;
+        }
+        // Without an editor there is nothing more to show; the next one drawn
+        // offers the tour again.
+        dispositionTourOwed = false;
+        if (window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY) || !state.selectedAsset || !editorDrawn) return;
+        stopScrolling();
+        startDispositionTour(DISPOSITION_EDITOR_TOUR_STEPS, DISPOSITION_EDITOR_TOUR_SEEN_KEY);
+      })
+    );
+  }
+
+  // A freshly drawn editor is still gliding into view when the tour starts. The
+  // tour moves the page to each step itself, and leaves it alone when the step
+  // is already on screen -- which the page tour's first step, at the top, still
+  // is as the glide begins, so the glide would then carry it off the top with
+  // the card following. A scroll to where the page is now cuts the glide short.
+  function stopScrolling() {
+    window.scrollTo({ top: window.pageYOffset, behavior: "auto" });
+  }
+
+  function wireDispositionTour() {
+    const button = $("disposition-tour-btn");
+    if (!button || !window.gremlinTour) return;
+    button.addEventListener("click", startDispositionPageTour);
+    // Captured, so a control that stops the event can't hide it from here.
+    document.addEventListener("pointerdown", () => { pointerHeld = true; }, true);
+    ["pointerup", "pointercancel"].forEach((type) =>
+      document.addEventListener(type, () => {
+        pointerHeld = false;
+        startOwedDispositionTour();
+      }, true)
+    );
+  }
+
   // ---- wiring ---------------------------------------------------------------
   function init() {
     const assetInput = $("lda-asset");
@@ -6017,7 +6275,11 @@
         if (searchDebounce) clearTimeout(searchDebounce);
         searchDebounce = setTimeout(applySearch, 300);
       });
+      // Somebody typing a search is one of the things an owed tour waits out.
+      searchInput.addEventListener("blur", startOwedDispositionTour);
     }
+
+    wireDispositionTour();
 
     // Preselect the asset passed from the Perform Analysis page once the asset
     // list has loaded, then open its disposition editor.
@@ -6027,6 +6289,7 @@
         $("lda-asset").value = requestedAsset;
         evaluateAssetSelection();
       }
+      offerDispositionTour();
     });
   }
 
