@@ -1,0 +1,156 @@
+/* ---- the "Show me around" tour ------------------------------------------- */
+/* The same tour the PM calendar and Metrics pages have (pm_calendar.css,
+   metrics.css), for the pages that use page_tour.js, so every page's tour looks
+   and behaves alike. */
+
+.page-tour-btn {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--forest-200);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.page-tour-btn:hover {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+
+/* For the Home card, whose copy runs light over dark footage in both themes
+   (see .home-hero-copy in theme.css), where the usual forest ink would vanish. */
+.page-tour-btn.is-on-dark {
+  margin-top: 0.9rem;
+  border-color: rgba(255, 255, 255, 0.7);
+  background: rgba(6, 20, 14, 0.3);
+  color: #fff;
+}
+.page-tour-btn.is-on-dark:hover {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+.page-tour-btn.is-on-dark:focus-visible {
+  outline-color: #fff;
+}
+
+/* The overlay itself catches clicks so nothing on the page can be pressed
+   while the tour is up; the spotlight and the card sit on top of it. Above the
+   top bar, the loading veils and the pages' own modals, below the toasts. */
+.page-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+/* The lit box. It is transparent; the huge shadow around it is what darkens
+   everything else, so one element does both jobs and nothing has to be cut
+   out of the page. */
+.page-tour-spotlight {
+  position: fixed;
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(12, 26, 20, 0.62), 0 0 0 3px var(--forest-500);
+  transition: top 220ms ease, left 220ms ease, width 220ms ease, height 220ms ease;
+  pointer-events: none;
+}
+
+.page-tour-card {
+  position: fixed;
+  width: min(23rem, calc(100vw - 2rem));
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgba(12, 26, 20, 0.35);
+  transition: top 220ms ease, left 220ms ease;
+}
+
+.page-tour-step {
+  margin: 0 0 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.page-tour-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  color: var(--forest-900);
+}
+
+.page-tour-body {
+  margin: 0 0 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.page-tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.page-tour-spacer {
+  flex: 1;
+}
+
+.page-tour-skip {
+  padding: 0.3rem 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.page-tour-skip:hover {
+  color: var(--forest-900);
+}
+
+/* The calendar's ◄ / ► pill. */
+.page-tour-back {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.page-tour-back:hover:not(:disabled) {
+  background: var(--forest-100);
+  border-color: var(--forest-500);
+}
+.page-tour-back:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.page-tour-btn:focus-visible,
+.page-tour-skip:focus-visible,
+.page-tour-back:focus-visible,
+.page-tour-card:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
+/* The tour still moves from one thing to the next, it just doesn't glide
+   there. */
+@media (prefers-reduced-motion: reduce) {
+  .page-tour-btn,
+  .page-tour-back,
+  .page-tour-spotlight,
+  .page-tour-card {
+    transition: none;
+  }
+}
