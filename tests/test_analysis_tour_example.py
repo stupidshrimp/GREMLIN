@@ -176,6 +176,8 @@ const state = {
   selectedAsset: null,
   assetByNumber: new Map([["P-100", { asset_number: "P-100" }], ["P-200", { asset_number: "P-200" }]]),
 };
+// The asset list is in already; test_disposition_tour_example.py covers it arriving late.
+const assetsLoaded = Promise.resolve();
 const chosen = [];
 let whileLoading = () => {};
 const chooseAsset = async (asset) => {

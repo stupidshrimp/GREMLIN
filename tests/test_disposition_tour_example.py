@@ -158,11 +158,14 @@ const grab = (name) => {
 let answer;
 const asked = [];
 const getJson = (url) => { asked.push(url); return new Promise((resolve) => { answer = resolve; }); };
+const LISTED = () => new Map([["P-100", { asset_number: "P-100" }]]);
 const state = {
   pageMode: "disposition",
   selectedAsset: null,
-  assetByNumber: new Map([["P-100", { asset_number: "P-100" }]]),
+  assetByNumber: LISTED(),
 };
+let assetsLoaded = Promise.resolve();
+let assetsArrive = () => {};
 let whileLoading = () => {};
 const chooseAsset = async (asset) => {
   state.selectedAsset = asset.asset_number;
@@ -196,19 +199,36 @@ const scenarios = {
     answered: () => { whileLoading = () => { tourOpen = false; offerDispositionTour(); }; },
     after: () => { offerDispositionTour(); },
   },
+  // Show me around works before the asset list is in, so the example can
+  // answer first. It is looked up once the list arrives, not taken for missing.
+  assets_late: {
+    before: () => {
+      state.assetByNumber = new Map();
+      assetsLoaded = new Promise((resolve) => {
+        assetsArrive = () => { state.assetByNumber = LISTED(); resolve(); };
+      });
+    },
+    late: () => { assetsArrive(); },
+  },
 };
 
 (async () => {
   const scenario = scenarios[process.argv[3]];
+  if (scenario.before) scenario.before();
   const picking = pickTourExampleAsset("/life-data-analysis/api/disposition-tour-example?kind=wo&scope=all");
   if (scenario.answered) scenario.answered();
   answer({ asset_number: "P-100" });
+  if (scenario.late) {
+    // Let the example's answer be taken in while the list is still out.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    scenario.late();
+  }
   await picking;
   const offeredWhileLoading = offered.length;
   const owedWhileLoading = dispositionTourOwed;
   if (scenario.after) scenario.after();
   console.log(JSON.stringify({
-    asked, selected: state.selectedAsset, example: tourExampleAsset,
+    asked, selected: state.selectedAsset, example: tourExampleAsset, noExample: tourNoExample,
     offeredWhileLoading, owedWhileLoading, offeredAfter: offered.length - offeredWhileLoading,
   }));
 })();
@@ -232,6 +252,15 @@ def test_the_example_is_picked_and_its_editor_drawn_under_the_tour(tmp_path):
     assert (seen["selected"], seen["example"]) == ("P-100", "P-100")
     # The tour is already showing that editor; it isn't a reason to offer another.
     assert (seen["offeredWhileLoading"], seen["owedWhileLoading"]) == (0, False)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
+def test_an_example_answering_before_the_asset_list_waits_for_it(tmp_path):
+    """Show me around can be pressed as soon as the page is drawn, before the
+    asset list is in. An example looked up in the empty list would be taken for
+    missing, and the tour, which offers its action once, couldn't try again."""
+    seen = _offer(tmp_path, "assets_late")
+    assert (seen["selected"], seen["example"], seen["noExample"]) == ("P-100", "P-100", False)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")

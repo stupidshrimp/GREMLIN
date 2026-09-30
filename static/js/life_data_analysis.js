@@ -588,6 +588,11 @@
     state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
   }
 
+  // The asset list's first load, set as the page starts. The tour waits on it
+  // before it looks its example up in the list: Show me around works from the
+  // moment the page is drawn, so it can ask for an example before the list is in.
+  let assetsLoaded = Promise.resolve();
+
   async function loadAssets() {
     const hint = $("lda-asset-hint");
     try {
@@ -5503,7 +5508,10 @@
     const run = tourRun;
     let number = null;
     try {
-      number = (await getJson(url)).asset_number || null;
+      // The list it is looked up in may still be on its way. loadAssets never
+      // rejects, so this only fails when the example request does.
+      const [example] = await Promise.all([getJson(url), assetsLoaded]);
+      number = example.asset_number || null;
     } catch (err) {
       // The step says there's no example, which is all the tour can do about it.
     }
@@ -6257,7 +6265,8 @@
     });
 
     wireAnalysisTour();
-    loadAssets().then(() => {
+    assetsLoaded = loadAssets();
+    assetsLoaded.then(() => {
       if (window.gremlinTour) offerAnalysisPageTour();
     });
   }
@@ -6352,7 +6361,8 @@
     // Preselect the asset passed from the Perform Analysis page once the asset
     // list has loaded, then open its disposition editor.
     const requestedAsset = (params.get("asset") || "").trim();
-    loadAssets().then(() => {
+    assetsLoaded = loadAssets();
+    assetsLoaded.then(() => {
       if (requestedAsset && state.assetByNumber.has(requestedAsset)) {
         $("lda-asset").value = requestedAsset;
         evaluateAssetSelection();
