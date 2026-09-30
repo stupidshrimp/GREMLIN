@@ -2395,11 +2395,16 @@
       mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, { allowFreeText: true });
     }
 
+    // A saved disposition always stores an explicit include flag, so the box
+    // shows that: an INCLUDED_FAILURE saved unticked has to stay unticked, or an
+    // edit to anything else on the row would save it back into the Weibull fit.
+    // Only a record never dispositioned falls back to what its category implies.
     const currentCategory = row.disposition_category || "UNKNOWN";
     const defaultInclude =
-      Boolean(row.include_in_weibull_candidate) ||
-      (!isPm && currentCategory === "INCLUDED_FAILURE") ||
-      (isPm && currentCategory === "INCLUDED_PM_RESET_EVENT" && row.pm_reset_inclusion_decision === "APPROVED_RESET");
+      row.event_disposition_id != null
+        ? Boolean(row.include_in_weibull_candidate)
+        : (!isPm && currentCategory === "INCLUDED_FAILURE") ||
+          (isPm && currentCategory === "INCLUDED_PM_RESET_EVENT" && row.pm_reset_inclusion_decision === "APPROVED_RESET");
     const include = el("input", { type: "checkbox" });
     include.checked = defaultInclude;
 

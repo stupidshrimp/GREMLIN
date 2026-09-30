@@ -100,6 +100,7 @@ _DISPOSITION_ROW_SELECT = """
            m.cause,
            m.action_taken,
            COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto) AS effective_record_class,
+           d.event_disposition_id,
            d.disposition_category,
            d.pm_reset_inclusion_decision,
            d.disposition_text,
@@ -2955,15 +2956,6 @@ class LifeDataService:
             )
             for field in NARRATIVE_FIELDS
         )
-        # The screen's checkbox is ticked either because a saved disposition says
-        # so or because the saved category implies it (see renderDispositionEditor),
-        # so the ordering has to read the same rule or it disagrees with the
-        # boxes it is sorting.
-        implied_include = (
-            "d.disposition_category = 'INCLUDED_FAILURE'"
-            if kind == "wo"
-            else "d.disposition_category = 'INCLUDED_PM_RESET_EVENT' AND d.pm_reset_inclusion_decision = 'APPROVED_RESET'"
-        )
         # The read-only source columns come straight from DISPLAY_COLUMN_SOURCES,
         # so every column the table draws is one the table can be sorted by.
         columns: dict[str, tuple[str, str]] = dict(DISPLAY_COLUMN_SOURCES)
@@ -2978,10 +2970,12 @@ class LifeDataService:
                 ),
                 COLUMN_TYPE_TEXT,
             ),
-            "include_in_weibull_candidate": (
-                f"(CASE WHEN COALESCE(d.include_in_weibull_candidate, 0) = 1 OR ({implied_include}) THEN 1 ELSE 0 END)",
-                COLUMN_TYPE_BOOLEAN,
-            ),
+            # The screen's checkbox shows the flag a saved disposition stores
+            # (see buildDispositionControls), so the ordering reads the same
+            # flag or it disagrees with the boxes it is sorting. The category
+            # default the screen falls back to only applies without a saved
+            # disposition, where there is no category to imply one either.
+            "include_in_weibull_candidate": ("COALESCE(d.include_in_weibull_candidate, 0)", COLUMN_TYPE_BOOLEAN),
         })
         if kind == "pm":
             columns.update(
