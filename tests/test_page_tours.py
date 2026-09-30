@@ -136,6 +136,27 @@ def test_each_analysis_type_panel_step_says_which_type_it_is_for():
     assert checked >= 8
 
 
+def test_no_analysis_step_describes_a_mechanism_before_the_tour_shows_one():
+    """A step about "the selected mechanism" needs one on screen to point at.
+
+    Started with none picked, the tour only shows one at the first step carrying
+    the mechanism action, so a step before it would light empty cards while
+    describing their numbers.
+    """
+    steps = _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS")
+
+    def type_of(step):
+        match = re.search(r"when: forType\(ANALYSIS_TYPES\.(\w+)\)", step)
+        return match.group(1) if match else None
+
+    for analysis_type in ("WEIBULL", "TREND", "PM", "DOWNTIME"):
+        own = [step for step in steps if type_of(step) in (analysis_type, None)]
+        shows = [i for i, step in enumerate(own) if "action: TOUR_MECHANISM_ACTION" in step]
+        describes = [i for i, step in enumerate(own) if "selected mechanism" in step]
+        if describes:
+            assert shows and shows[0] <= describes[0], analysis_type
+
+
 def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
     """An editor's Pareto click runs and stores a fit; the tour's must not."""
     source = ANALYSIS_JS.read_text(encoding="utf-8")

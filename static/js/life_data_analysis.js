@@ -1030,6 +1030,9 @@
   const STICKY_TOPBAR_HEIGHT = 74;
   function scrollBelowSticky(node) {
     if (!node) return;
+    // While the tour is open it decides what is on screen. A scroll of the page's
+    // own, landing a frame after the tour's, would carry the lit part away.
+    if (window.gremlinTour && window.gremlinTour.isOpen()) return;
     const step1 = $("lda-step1-card");
     const pinned = STICKY_TOPBAR_HEIGHT + (step1 && !step1.hidden ? step1.offsetHeight : 0);
     node.style.scrollMarginTop = `${pinned + 12}px`;
@@ -5598,7 +5601,11 @@
       target: "#lda-pm-summary",
       title: "PM effectiveness at a glance",
       when: forType(ANALYSIS_TYPES.PM),
-      body:
+      // These cards are empty until a mechanism is picked, so the example is
+      // shown here rather than on the chart further down.
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("shows") +
         "For the selected mechanism: how many PMs were done, how many were followed by a failure, " +
         "the average days from a PM to that failure, and a rating for how well the PM holds it off.",
     },
@@ -5606,7 +5613,10 @@
       target: "#lda-downtime-summary",
       title: "Downtime at a glance",
       when: forType(ANALYSIS_TYPES.DOWNTIME),
-      body:
+      // Empty until a mechanism is picked, as PM's are.
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("shows") +
         "For the selected mechanism: its total, average, median and longest downtime, and how many " +
         "work orders it came from.",
     },
