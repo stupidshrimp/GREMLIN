@@ -1843,6 +1843,34 @@ class LifeDataService:
             ).fetchone()
         return str(row["asset_number"]) if row else None
 
+    def disposition_tour_example_asset(self, kind: str, *, only_needing_disposition: bool = False, search: str | None = None) -> str | None:
+        """The asset the Disposition walk-through picks for somebody who hasn't.
+
+        Whichever has the most rows in the table the page would draw for it: of
+        the Record Type showing, only the new ones when Rows says so, and only
+        those matching the Search box. Built from the same WHERE clauses as that
+        table, so the example is never an asset whose table would come up empty.
+        None when no asset has any.
+        """
+
+        where = self._disposition_where(kind)
+        needs_disposition_where = self._needs_disposition_where(kind) if only_needing_disposition else ""
+        search_clause, search_params = self._disposition_search_clause(search)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT m.asset_number, COUNT(*) AS record_count
+                FROM mapped_cmms_record m
+                LEFT JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
+                WHERE TRIM(COALESCE(m.asset_number, '')) <> '' AND {where} {needs_disposition_where}{search_clause}
+                GROUP BY m.asset_number
+                ORDER BY record_count DESC, m.asset_number
+                LIMIT 1
+                """,
+                search_params,
+            ).fetchone()
+        return str(row["asset_number"]) if row else None
+
     def failure_mechanism_pareto(self, asset_number: str) -> list[dict[str, Any]]:
         """Return included failure counts and downtime by failure mechanism for the asset summary Pareto chart."""
 

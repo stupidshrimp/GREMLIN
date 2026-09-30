@@ -1,9 +1,9 @@
 """The Home, Perform an Analysis and Disposition tours: what they point at has to be on the page.
 
 All three are driven by page_tour.js, which finds each step's element by
-selector as the tour starts. The Home and Disposition tours leave out any step
-whose element isn't drawn, and the analysis tour, which picks an example asset
-to draw the rest of the page, shows such a step as a card pointing at nothing.
+selector as the tour starts. The Home tour leaves out any step whose element
+isn't drawn, and the analysis and Disposition tours, which pick an example asset
+to draw the rest of the page, show such a step as a card pointing at nothing.
 Either way a selector that matches nothing is not an error, so renaming an id in
 a template would quietly drop or blank a step. These tests are what notice, the
 same as test_metrics_tour.py does for Metrics.
@@ -214,6 +214,29 @@ def test_every_disposition_editor_step_points_at_something_the_editor_draws(sele
 
 def test_the_disposition_editor_offers_its_tour_once_drawn():
     assert "offerDispositionTour();" in _disposition_editor_source()
+
+
+def test_the_disposition_tour_picks_an_example_for_the_rows_showing():
+    """With no asset picked the editor steps have nothing to point at, so the
+    Asset Number step picks one -- whose table has rows for the Record Type, Rows
+    and search the page is set to, or the tour would light an empty one."""
+    [asset_step] = [
+        step for step in _analysis_steps("const DISPOSITION_SETUP_TOUR_STEPS") if '"#lda-asset-field"' in step
+    ]
+    assert 'label: "Pick an example ►"' in asset_step
+    assert "run: () => pickTourExampleAsset(dispositionTourExampleUrl())," in asset_step
+    url = _function_body("dispositionTourExampleUrl")
+    assert "/disposition-tour-example?" in url
+    for control in ("state.dispositionKind", "state.dispositionScope", "state.dispositionSearch"):
+        assert control in url, control
+
+
+def test_the_disposition_editor_leaves_the_scrolling_to_an_open_tour():
+    """The tour draws the editor for its example, then shows the Asset Number
+    step again; the editor's own glide into view would carry that step away."""
+    source = _disposition_editor_source()
+    guard = source.index("if (!(window.gremlinTour && window.gremlinTour.isOpen())) {")
+    assert guard < source.index("card.scrollIntoView(")
 
 
 @pytest.mark.parametrize(

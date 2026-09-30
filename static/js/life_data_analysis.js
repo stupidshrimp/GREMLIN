@@ -674,8 +674,8 @@
     startOwedDispositionTour();
   }
 
-  // Resolves once the asset's summary is on the page, which is what the tour
-  // waits for after picking its example.
+  // Resolves once the asset's summary is on the page, or on the Disposition
+  // page its editor, which is what the tour waits for after picking its example.
   function chooseAsset(asset) {
     $("lda-asset").value = asset.asset_number;
     closeAssetDropdown();
@@ -776,8 +776,8 @@
       $("lda-asset-hint").textContent = asset.asset_name
         ? `Selected ${asset.asset_number}: ${asset.asset_name}.`
         : `Selected ${asset.asset_number}.`;
-      if (state.pageMode === "disposition") reloadDispositionForSelection();
-      else return refreshSummary();
+      if (state.pageMode === "disposition") return reloadDispositionForSelection();
+      return refreshSummary();
     } else if (value) {
       if (state.pageMode === "disposition") clearWorkspace();
       $("lda-asset-hint").textContent = `"${value}" is not a known Asset Number. Choose one from the list.`;
@@ -2263,13 +2263,13 @@
   }
 
   // On the dedicated disposition page, (re)load the editor whenever the asset,
-  // record kind, or scope changes.
+  // record kind, or scope changes. Resolves once the editor is drawn.
   function reloadDispositionForSelection() {
     if (!state.selectedAsset) {
       clearWorkspace();
-      return;
+      return Promise.resolve();
     }
-    loadDispositionPage(state.dispositionKind, state.dispositionScope, state.dispositionPageIndex || 0);
+    return loadDispositionPage(state.dispositionKind, state.dispositionScope, state.dispositionPageIndex || 0);
   }
 
   async function loadDispositionPage(kind, scope, pageIndex) {
@@ -2675,7 +2675,12 @@
       ]),
     ]);
     $("lda-workspace").appendChild(card);
-    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Not under the tour, which draws the editor when it picks its example and
+    // then decides for itself what is on screen: the glide would carry the step
+    // it had just lit off the top.
+    if (!(window.gremlinTour && window.gremlinTour.isOpen())) {
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
     offerDispositionTour();
   }
 
@@ -5470,16 +5475,18 @@
   // The asset this tour picked as its example, so the cards can say so rather
   // than leave somebody wondering where it came from; whether there was none to
   // pick; and whether it has shown a mechanism. All three are for the tour that
-  // is open, and start over with the next.
+  // is open, and start over with the next. The Disposition page's tour picks an
+  // example too, and uses the first two and what follows the same way.
   let tourExampleAsset = null;
   let tourNoExample = false;
   let tourMechanismTried = false;
   // Counts the tours started, so an answer arriving for one that has since
   // closed can tell.
   let tourRun = 0;
-  // Set while the example's summary loads. Those numbers are the tour's doing,
-  // so the results tour mustn't take them as a reason to offer itself -- least
-  // of all when Skip has closed the tour that picked them before they land.
+  // Set while the example's summary loads, or on the Disposition page its
+  // editor. Those are the tour's doing, so the results or editor tour mustn't
+  // take them as a reason to offer itself -- least of all when Skip has closed
+  // the tour that picked them before they land.
   let tourExampleLoading = false;
 
   const forType = (type) => () => state.analysisType === type;
@@ -5489,13 +5496,14 @@
     return asset && asset.asset_name ? `${number} (${asset.asset_name})` : number;
   }
 
-  // Asks the server for the asset with the most to show and picks it the way
-  // choosing it from the list would. Resolves once its summary is on the page.
-  async function pickTourExampleAsset() {
+  // Asks the server, at `url`, for the asset with the most to show and picks it
+  // the way choosing it from the list would. Resolves once its summary is on the
+  // page, or its editor on the Disposition page.
+  async function pickTourExampleAsset(url) {
     const run = tourRun;
     let number = null;
     try {
-      number = (await getJson(`${API}/tour-example`)).asset_number || null;
+      number = (await getJson(url)).asset_number || null;
     } catch (err) {
       // The step says there's no example, which is all the tour can do about it.
     }
@@ -5586,7 +5594,7 @@
       action: {
         label: "Pick an example ►",
         needed: () => !state.selectedAsset,
-        run: pickTourExampleAsset,
+        run: () => pickTourExampleAsset(`${API}/tour-example`),
       },
     },
     {
@@ -5859,13 +5867,35 @@
     button.addEventListener("click", startAnalysisPageTour);
   }
 
-  // The Disposition page's "Show me around", on the same engine. Before an asset
-  // is picked it is the page's purpose and the Step 1 controls; once one is, the
-  // editor under them too: what the table holds, how a row is filled in, and the
-  // ways to save it. The editor part offers itself the first time an editor is
-  // drawn on a browser that hasn't seen it, which is also when the whole tour
-  // offers itself if the page was opened with an asset already picked -- the
-  // Disposition buttons on Perform an Analysis do that.
+  // The Disposition page's "Show me around", on the same engine: the page's
+  // purpose and the Step 1 controls, then the editor under them -- what the table
+  // holds, how a row is filled in, and the ways to save it. The editor is only
+  // drawn once an asset is picked, so the tour does the picking, as it does on
+  // Perform an Analysis: with no asset chosen, Next on the Asset Number step
+  // picks an example, the asset with the most rows for the Record Type, Rows and
+  // search showing, and draws its editor. That only reads; nothing is saved. The
+  // editor part offers itself the first time an editor is drawn on a browser that
+  // hasn't seen it, which is also when the whole tour offers itself if the page
+  // was opened with an asset already picked -- the Disposition buttons on Perform
+  // an Analysis do that.
+
+  // The records the table shows, as Record Type, Rows and the search have it,
+  // for the cards that name them.
+  function dispositionRecordWords() {
+    const records =
+      (state.dispositionScope === "new" ? "undispositioned " : "") +
+      (state.dispositionKind === "pm" ? "PM reset events" : "work orders");
+    return state.dispositionSearch ? `${records} matching "${state.dispositionSearch}"` : records;
+  }
+
+  // Where the tour asks for its example: the Step 1 controls as they stand, so
+  // the table it draws has rows in it.
+  function dispositionTourExampleUrl() {
+    const params = new URLSearchParams({ kind: state.dispositionKind, scope: state.dispositionScope });
+    if (state.dispositionSearch) params.set("search", state.dispositionSearch);
+    return `${API}/disposition-tour-example?${params.toString()}`;
+  }
+
   const DISPOSITION_SETUP_TOUR_STEPS = [
     {
       target: "#lda-disp-intro",
@@ -5878,10 +5908,32 @@
     {
       target: "#lda-asset-field",
       title: "Pick an asset",
-      body: () =>
-        "Type part of an Asset Number or an asset's name and choose it from the list. The Disposition " +
-        "buttons on Perform an Analysis open this page with their asset already picked." +
-        (state.selectedAsset ? "" : " Its records appear below once an asset is picked."),
+      body: () => {
+        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
+          return (
+            `The tour has picked ${tourAssetLabel(tourExampleAsset)} as its example, being the asset with the ` +
+            `most ${dispositionRecordWords()} to show, and the rest of it is about that one's records. To ` +
+            "disposition your own, type part of its Asset Number or name here and choose it from the list."
+          );
+        }
+        const how =
+          "Type part of an Asset Number or an asset's name and choose it from the list. The Disposition " +
+          "buttons on Perform an Analysis open this page with their asset already picked.";
+        if (state.selectedAsset) return how;
+        if (tourNoExample) {
+          return (
+            how +
+            ` There's no asset with ${dispositionRecordWords()} to use as an example, so the rest of the tour ` +
+            "describes the page instead."
+          );
+        }
+        return how + " Its records appear below once one is picked, so for this tour, Pick an example chooses one for you.";
+      },
+      action: {
+        label: "Pick an example ►",
+        needed: () => !state.selectedAsset,
+        run: () => pickTourExampleAsset(dispositionTourExampleUrl()),
+      },
     },
     {
       target: "#lda-disp-kind-field",
@@ -5980,10 +6032,17 @@
     {
       target: "#disposition-tour-btn",
       title: "Come back any time",
-      body: () =>
-        state.selectedAsset
-          ? "The tour only opens by itself once. Press Show me around to take it again."
-          : "Pick an asset and press Show me around again to be walked through its records too.",
+      body: () => {
+        const again = "The tour only opens by itself once. Press Show me around to take it again.";
+        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
+          return (
+            `${tourExampleAsset} stays selected from the tour. Its records are real, so anything you save on ` +
+            `them is kept; pick your own in the Asset Number box whenever you like. ${again}`
+          );
+        }
+        if (state.selectedAsset) return again;
+        return "Pick an asset and press Show me around again to see each of those parts on the page.";
+      },
     },
   ];
 
@@ -6008,14 +6067,20 @@
   }
 
   function startDispositionTour(steps, seenKey) {
+    if (window.gremlinTour.isOpen()) return;
     closeAssetDropdown();
+    tourRun += 1;
+    tourExampleAsset = null;
+    tourNoExample = false;
     window.gremlinTour.start(steps.concat(DISPOSITION_TOUR_END_STEPS), {
       seenKey,
       returnFocus: tourReturnFocus,
-      // A page tour that got as far as the editor has covered what the editor
-      // tour would, so that one needn't offer itself as well.
+      // A page tour that got as far as the editor, with one drawn to show it on,
+      // has covered what the editor tour would, so that one needn't offer itself
+      // as well. Without one -- there was no example to pick -- its steps were
+      // cards pointing at nothing, and the first real editor still offers it.
       onEnd: (shown) => {
-        if (shown.some((step) => DISPOSITION_EDITOR_TOUR_STEPS.includes(step))) {
+        if ($("lda-disp-meta") && shown.some((step) => DISPOSITION_EDITOR_TOUR_STEPS.includes(step))) {
           window.gremlinTour.remember(DISPOSITION_EDITOR_TOUR_SEEN_KEY);
         }
         startOwedDispositionTour();
@@ -6038,9 +6103,12 @@
   // nothing stands in the way.
   let dispositionTourOwed = false;
 
-  // Called once the Asset Numbers are in and each time the editor is drawn.
+  // Called once the Asset Numbers are in and each time the editor is drawn --
+  // except the editor the tour draws for its example, which it is already
+  // showing, or which somebody skipped past before it landed.
   function offerDispositionTour() {
     if (!window.gremlinTour || state.pageMode !== "disposition") return;
+    if (tourExampleLoading) return;
     if (
       window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY) &&
       window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY)
