@@ -1,11 +1,12 @@
 """The Home, Perform an Analysis and Disposition tours: what they point at has to be on the page.
 
 All three are driven by page_tour.js, which finds each step's element by
-selector as the tour starts and leaves out any step whose element isn't drawn. A
-selector that matches nothing is therefore not an error -- the step just never
-appears. So renaming an id in a template would quietly drop a step from the
-tour. These tests are what notice, the same as test_metrics_tour.py does for
-Metrics.
+selector as the tour starts. The Home and Disposition tours leave out any step
+whose element isn't drawn, and the analysis tour, which picks an example asset
+to draw the rest of the page, shows such a step as a card pointing at nothing.
+Either way a selector that matches nothing is not an error, so renaming an id in
+a template would quietly drop or blank a step. These tests are what notice, the
+same as test_metrics_tour.py does for Metrics.
 """
 
 import importlib
@@ -115,6 +116,70 @@ def test_the_analysis_tour_has_steps():
 @pytest.mark.parametrize("selector", _analysis_targets())
 def test_every_analysis_step_points_at_something_on_the_page(analysis_page, selector):
     assert _on_page(analysis_page, selector)
+
+
+def _analysis_steps(declaration):
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    steps = re.search(rf"{re.escape(declaration)} = \[(.*?)\n  \];", source, re.S)
+    assert steps, f"{declaration} was not found in {ANALYSIS_JS.name}"
+    return re.split(r"\n    \{\n", steps.group(1))[1:]
+
+
+def _panels_shown_by_analysis_type():
+    """The ids applyAnalysisTypeUI shows for one Analysis Type and hides for the rest."""
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    shown = dict(re.findall(r'setHidden\(\$\("([\w-]+)"\), !is(\w+)\);', source))
+    assert shown, "applyAnalysisTypeUI no longer toggles panels by type; update this test"
+    return shown
+
+
+def test_each_analysis_type_panel_step_says_which_type_it_is_for():
+    """The tour can't rely on what is drawn to tell it which panels apply.
+
+    With no asset picked none of them is, and the tour keeps its steps anyway so
+    the example it picks has something to be shown on. So a step for one Analysis
+    Type's panel has to say so, or it would appear, pointing at nothing, in every
+    other type's tour.
+    """
+    types = {"Weibull": "WEIBULL", "Trend": "TREND", "Pm": "PM", "Downtime": "DOWNTIME"}
+    shown = _panels_shown_by_analysis_type()
+    checked = 0
+    for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS"):
+        target = re.search(r'target: "#([\w-]+)"', step).group(1)
+        if target not in shown:
+            continue
+        checked += 1
+        assert f"when: forType(ANALYSIS_TYPES.{types[shown[target]]})" in step, target
+    assert checked >= 8
+
+
+def test_no_analysis_step_describes_a_mechanism_before_the_tour_shows_one():
+    """A step about "the selected mechanism" needs one on screen to point at.
+
+    Started with none picked, the tour only shows one at the first step carrying
+    the mechanism action, so a step before it would light empty cards while
+    describing their numbers.
+    """
+    steps = _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS")
+
+    def type_of(step):
+        match = re.search(r"when: forType\(ANALYSIS_TYPES\.(\w+)\)", step)
+        return match.group(1) if match else None
+
+    for analysis_type in ("WEIBULL", "TREND", "PM", "DOWNTIME"):
+        own = [step for step in steps if type_of(step) in (analysis_type, None)]
+        shows = [i for i, step in enumerate(own) if "action: TOUR_MECHANISM_ACTION" in step]
+        describes = [i for i, step in enumerate(own) if "selected mechanism" in step]
+        if describes:
+            assert shows and shows[0] <= describes[0], analysis_type
+
+
+def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
+    """An editor's Pareto click runs and stores a fit; the tour's must not."""
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    action = re.search(r"const TOUR_MECHANISM_ACTION = \{(.*?)\n  \};", source, re.S)
+    assert action, "TOUR_MECHANISM_ACTION was not found"
+    assert "runParetoMechanism(row, { savedOnly: true })" in action.group(1)
 
 
 def test_the_disposition_tour_has_steps():

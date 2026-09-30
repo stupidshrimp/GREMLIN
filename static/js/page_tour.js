@@ -6,16 +6,29 @@
 //
 //   window.gremlinTour.start(steps, options)
 //
-// Each step is { target, title, body, when }. `target` is a selector, looked up
-// as the step is shown rather than now, because pages draw their content after
-// their scripts run; null means a step about the whole page, with the card in
-// the middle and nothing lit. `body` may be a function, for text that depends
-// on what is on screen. `when`, if given, is asked once as the tour starts and
-// leaves the step out when it says no.
+// Each step is { target, title, body, when, action }. `target` is a selector,
+// looked up as the step is shown rather than now, because pages draw their
+// content after their scripts run; null means a step about the whole page, with
+// the card in the middle and nothing lit. `body` may be a function, for text
+// that depends on what is on screen. `when`, if given, is asked once as the tour
+// starts and leaves the step out when it says no.
 //
 // A step whose target isn't drawn when the tour starts is left out too, rather
-// than shown with a ring round nothing: a panel that only appears once an asset
-// is picked, a button the account can't use, a control that narrow screens hide.
+// than shown with a ring round nothing: a button the account can't use, a
+// control that narrow screens hide.
+//
+// `action` is for a page that draws most of itself only once something is
+// chosen, so that the tour can do the choosing rather than stop short of
+// everything after it: { label, needed, run }. While `needed()` says yes, Next
+// reads `label` and, pressed, awaits `run()` and shows the same step again,
+// now with whatever it drew; each action is offered once a tour. From the first
+// step with an action on, steps are kept whether or not their target is drawn
+// yet, since the action may be what draws it, so the count on the card is the
+// whole tour rather than the part of it the page happened to be showing when it
+// started. A page with actions therefore says with `when` which of those steps
+// apply to it. One whose target still isn't drawn by the time it is shown --
+// the action had nothing to show -- gets the card in the middle, as a step
+// about the whole page does.
 //
 // Options:
 //   seenKey    localStorage key set to "yes" when the tour closes, so a page
@@ -23,7 +36,8 @@
 //   pinned     selectors for things that stay stuck to the top of the window as
 //              the page scrolls. The spotlight stops at their lower edge, and a
 //              target is scrolled to below them. The top bar by default.
-//   onEnd      called with the steps that were shown once the tour has closed.
+//   onEnd      called once the tour has closed with the steps it got as far as,
+//              which is fewer than it had when it was skipped part way.
 //   returnFocus  called with the element that had focus before the tour, to put
 //              it back. Plain .focus() by default.
 (function () {
@@ -77,6 +91,13 @@
 
   function targetOf(step) {
     return step.target ? drawn(document.querySelector(step.target)) : null;
+  }
+
+  // Whether Next is the step's action rather than a move on: it has one, the
+  // page still wants it, and this tour hasn't run it already. Asked afresh at
+  // each show, since the page's answer changes as the tour's actions land.
+  function actionDue(step) {
+    return Boolean(step.action && !(tour && tour.ran.includes(step)) && step.action.needed());
   }
 
   // Where the room for the target starts: the lower edge of whatever is pinned
@@ -147,6 +168,9 @@
     const card = $("page-tour-card");
     const spotlight = $("page-tour-spotlight");
     const target = targetOf(tour.steps[tour.index]);
+    // With nothing lit there is no spotlight to cast the shadow that dims the
+    // page, so the overlay does it instead.
+    $("page-tour").classList.toggle("is-whole-page", !target);
 
     if (!target) {
       // Nothing to point at: centre the card and leave the page evenly dimmed.
@@ -204,7 +228,13 @@
     $("page-tour-title").textContent = step.title;
     $("page-tour-body").textContent = typeof step.body === "function" ? step.body() : step.body;
     $("page-tour-back").disabled = tour.index === 0;
-    $("page-tour-next").textContent = tour.index === steps.length - 1 ? "Done" : "Next ►";
+    $("page-tour-next").disabled = false;
+    $("page-tour-next").textContent = actionDue(step)
+      ? step.action.label
+      : tour.index === steps.length - 1
+      ? "Done"
+      : "Next ►";
+    tour.furthest = Math.max(tour.furthest, tour.index);
 
     // After the text, which is what sets the card's height.
     const target = targetOf(step);
@@ -247,18 +277,48 @@
     }
   }
 
+  // Runs the step's action with the card's buttons held, then shows the step
+  // again. Skip still works while it runs: the page carries on without the
+  // tour, and a tour that has closed, or been closed and opened again, by the
+  // time it lands is left alone. Focus goes to the card for the wait, as Next
+  // is disabled and a disabled button drops it.
+  async function runAction(step) {
+    const running = tour;
+    running.ran.push(step);
+    $("page-tour-card").focus();
+    $("page-tour-back").disabled = true;
+    $("page-tour-next").disabled = true;
+    $("page-tour-next").textContent = "Loading…";
+    $("page-tour-card").setAttribute("aria-busy", "true");
+    try {
+      await step.action.run();
+    } catch (err) {
+      // The page reports its own failures; the step is shown again either way,
+      // and its text can say what didn't happen.
+    }
+    if (tour !== running) return;
+    $("page-tour-card").removeAttribute("aria-busy");
+    show();
+    $("page-tour-next").focus();
+  }
+
   // True when the tour opened. It doesn't when another is already open, when
   // the page has no overlay, or when none of the steps has anything to show.
   function start(steps, options) {
     if (isOpen() || !$("page-tour")) return false;
-    const shown = steps.filter(
-      (step) => (!step.when || step.when()) && (!step.target || targetOf(step))
-    );
+    let gated = false;
+    const shown = steps.filter((step) => {
+      if (step.when && !step.when()) return false;
+      if (step.action) gated = true;
+      return gated || !step.target || Boolean(targetOf(step));
+    });
     if (!shown.length) return false;
     tour = {
       steps: shown,
       options: options || {},
       index: 0,
+      furthest: 0,
+      ran: [],
       focusBefore: document.activeElement,
     };
     $("page-tour").hidden = false;
@@ -277,9 +337,10 @@
 
   function end() {
     if (!tour) return;
-    const { steps, options, focusBefore } = tour;
+    const { steps, furthest, options, focusBefore } = tour;
     tour = null;
     $("page-tour").hidden = true;
+    $("page-tour-card").removeAttribute("aria-busy");
     document.removeEventListener("keydown", onKeydown, true);
     if (layoutWatch) {
       layoutWatch.disconnect();
@@ -290,7 +351,7 @@
       if (options.returnFocus) options.returnFocus(focusBefore);
       else focusBefore.focus();
     }
-    if (options.onEnd) options.onEnd(steps);
+    if (options.onEnd) options.onEnd(steps.slice(0, furthest + 1));
   }
 
   function wire() {
@@ -306,7 +367,10 @@
     });
     $("page-tour-next").addEventListener("click", () => {
       if (!tour) return;
-      if (tour.index < tour.steps.length - 1) {
+      const step = tour.steps[tour.index];
+      if (actionDue(step)) {
+        runAction(step);
+      } else if (tour.index < tour.steps.length - 1) {
         tour.index += 1;
         show();
       } else {

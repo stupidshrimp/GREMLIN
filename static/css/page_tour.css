@@ -46,6 +46,13 @@
   z-index: 1200;
 }
 
+/* A step about the whole page, or one whose part isn't drawn: the spotlight is
+   hidden, and with it the shadow that dims everything else, so the overlay
+   darkens the page itself, to the same shade. */
+.page-tour.is-whole-page {
+  background: rgba(12, 26, 20, 0.62);
+}
+
 /* The lit box. It is transparent; the huge shadow around it is what darkens
    everything else, so one element does both jobs and nothing has to be cut
    out of the page. */

@@ -80,6 +80,9 @@
     assetActiveIndex: -1,
     selectedAsset: null,
     paretoRows: [],
+    // Highest-beta mechanisms, as the summary last sent them: the fits already
+    // saved on this asset, which the tour picks its Weibull example from.
+    rankings: [],
     paretoMetric: "downtime_hours",
     // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
     // Trend panel. `trend` is the latest payload returned alongside the summary;
@@ -671,10 +674,12 @@
     startOwedDispositionTour();
   }
 
+  // Resolves once the asset's summary is on the page, which is what the tour
+  // waits for after picking its example.
   function chooseAsset(asset) {
     $("lda-asset").value = asset.asset_number;
     closeAssetDropdown();
-    evaluateAssetSelection();
+    return evaluateAssetSelection();
   }
 
   function moveAssetActive(delta) {
@@ -772,7 +777,7 @@
         ? `Selected ${asset.asset_number}: ${asset.asset_name}.`
         : `Selected ${asset.asset_number}.`;
       if (state.pageMode === "disposition") reloadDispositionForSelection();
-      else refreshSummary();
+      else return refreshSummary();
     } else if (value) {
       if (state.pageMode === "disposition") clearWorkspace();
       $("lda-asset-hint").textContent = `"${value}" is not a known Asset Number. Choose one from the list.`;
@@ -803,7 +808,8 @@
       const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}`);
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
-      renderRankings(data.rankings || []);
+      state.rankings = data.rankings || [];
+      renderRankings(state.rankings);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
       drawPareto();
@@ -1029,6 +1035,9 @@
   const STICKY_TOPBAR_HEIGHT = 74;
   function scrollBelowSticky(node) {
     if (!node) return;
+    // While the tour is open it decides what is on screen. A scroll of the page's
+    // own, landing a frame after the tour's, would carry the lit part away.
+    if (window.gremlinTour && window.gremlinTour.isOpen()) return;
     const step1 = $("lda-step1-card");
     const pinned = STICKY_TOPBAR_HEIGHT + (step1 && !step1.hidden ? step1.offsetHeight : 0);
     node.style.scrollMarginTop = `${pinned + 12}px`;
@@ -1059,31 +1068,35 @@
   // A Pareto bar click drives the active analysis: Weibull runs the clicked
   // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. The
   // not-yet-implemented types have no secondary action, so the click is ignored.
+  // Resolves once the analysis has drawn, for the tour, which clicks one too.
   function onParetoBarSelected(row) {
     if (state.analysisType === ANALYSIS_TYPES.TREND) {
-      selectTrendMechanism(row);
+      return selectTrendMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.PM) {
-      selectPmMechanism(row);
+      return selectPmMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
-      selectDowntimeMechanism(row);
+      return selectDowntimeMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
-      runParetoMechanism(row);
+      return runParetoMechanism(row);
     }
+    return undefined;
   }
 
-  function runParetoMechanism(row) {
+  // `options` goes on to runAnalysisForGroup.
+  function runParetoMechanism(row, options) {
     if (row.failure_mode_id == null || row.failure_mechanism_id == null) {
       showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
-      return;
+      return undefined;
     }
     setActiveMechanism(row);
-    runAnalysisForGroup(
+    return runAnalysisForGroup(
       {
         grouping_level: "FAILURE_MECHANISM",
         failure_mode_id: row.failure_mode_id,
         failure_mechanism_id: row.failure_mechanism_id,
       },
-      "Running clicked mechanism Weibull analysis…"
+      "Running clicked mechanism Weibull analysis…",
+      options
     );
   }
 
@@ -1909,7 +1922,7 @@
     // Scroll only once the response has rendered: the summary cards sit above the
     // chart panel and change height when they populate, which would drag the panel
     // out from under a scroll started now.
-    loadPmEffectiveness({ scrollToPanel: true });
+    return loadPmEffectiveness({ scrollToPanel: true });
   }
 
   async function loadPmEffectiveness(opts) {
@@ -3396,7 +3409,7 @@
     renderDowntime();
     // Scroll only once the response has rendered, for the same reason as PM: the
     // summary cards above the first chart panel resize when they populate.
-    loadDowntime({ scrollToPanel: true });
+    return loadDowntime({ scrollToPanel: true });
   }
 
   async function loadDowntime(opts) {
@@ -3968,8 +3981,12 @@
   // `options.changedRecord` marks a re-run after a disposition saved from the data
   // table ({ mappedRecordId, label }): the new table scrolls back to that record,
   // and a fit the change has made impossible clears the old one off the screen.
+  // `options.savedOnly` opens the fit already saved even for an editor, the way a
+  // viewer always does: what the tour uses, so that showing somebody around never
+  // runs and stores a fit of its own.
   async function runAnalysisForGroup(group, message, options) {
     const changedRecord = (options && options.changedRecord) || null;
+    const savedOnly = !CAN_EDIT || Boolean(options && options.savedOnly);
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     // Capture the analysis type too: if the user switches away from Weibull while
@@ -3993,9 +4010,9 @@
     // a run and a result, so it is an editor-only write. A viewer (or a signed-out
     // visitor) reads back the fit an editor already saved for the same group instead:
     // same shape, same rendered view, nothing written.
-    beginLoading(CAN_EDIT ? message || "Running Weibull analysis…" : "Loading the saved Weibull analysis…");
+    beginLoading(savedOnly ? "Loading the saved Weibull analysis…" : message || "Running Weibull analysis…");
     try {
-      const data = CAN_EDIT
+      const data = !savedOnly
         ? await postJson(`${API}/perform-analysis`, {
             asset,
             grouping_level: group.grouping_level,
@@ -5437,29 +5454,149 @@
   // of the page at a time and a card saying what it is for, the same as the
   // Metrics page and the PM calendar have.
   //
-  // Most of the page is only drawn once an asset is picked, and which panels
-  // are drawn then depends on the Analysis Type. page_tour.js leaves out any
-  // step whose target isn't on screen, so before an asset is picked the tour is
-  // the two Step 1 controls and the button, and after, it is those and whatever
-  // the chosen analysis shows. That makes a first visit's tour a short one, so
-  // the part about the results offers itself as well, the first time an
-  // asset's numbers arrive on a browser that hasn't seen it.
+  // Most of the page is only drawn once an asset is picked, and the Weibull
+  // results only once a mechanism is. Rather than stop at whatever is on screen,
+  // the tour does the picking: with no asset chosen, Next on the first step picks
+  // an example, and with no mechanism shown, Next on the results step shows one.
+  // So the tour is the same length however far somebody had got, and the first
+  // card says how long. Which panels it covers depends on the Analysis Type,
+  // which can't change while it is open, so each step says which type it is for
+  // and which account, rather than page_tour.js finding out from what is drawn.
+  //
+  // It opens by itself on a first visit. The part about the results offers
+  // itself as well, the first time an asset's numbers arrive on a browser that
+  // hasn't seen it, for somebody who skipped the first before it got that far.
+
+  // The asset this tour picked as its example, so the cards can say so rather
+  // than leave somebody wondering where it came from; whether there was none to
+  // pick; and whether it has shown a mechanism. All three are for the tour that
+  // is open, and start over with the next.
+  let tourExampleAsset = null;
+  let tourNoExample = false;
+  let tourMechanismTried = false;
+  // Counts the tours started, so an answer arriving for one that has since
+  // closed can tell.
+  let tourRun = 0;
+  // Set while the example's summary loads. Those numbers are the tour's doing,
+  // so the results tour mustn't take them as a reason to offer itself -- least
+  // of all when Skip has closed the tour that picked them before they land.
+  let tourExampleLoading = false;
+
+  const forType = (type) => () => state.analysisType === type;
+
+  function tourAssetLabel(number) {
+    const asset = state.assetByNumber.get(number);
+    return asset && asset.asset_name ? `${number} (${asset.asset_name})` : number;
+  }
+
+  // Asks the server for the asset with the most to show and picks it the way
+  // choosing it from the list would. Resolves once its summary is on the page.
+  async function pickTourExampleAsset() {
+    const run = tourRun;
+    let number = null;
+    try {
+      number = (await getJson(`${API}/tour-example`)).asset_number || null;
+    } catch (err) {
+      // The step says there's no example, which is all the tour can do about it.
+    }
+    // Skip stays live while this is out, and nothing covers the page, so the
+    // tour may have closed and somebody picked an asset of their own since.
+    // The page is theirs again then; an example now would undo their choice.
+    if (run !== tourRun || !window.gremlinTour.isOpen() || state.selectedAsset) return;
+    const asset = number ? state.assetByNumber.get(number) : null;
+    if (!asset) {
+      tourNoExample = true;
+      return;
+    }
+    tourExampleAsset = asset.asset_number;
+    tourExampleLoading = true;
+    try {
+      await chooseAsset(asset);
+    } finally {
+      tourExampleLoading = false;
+    }
+  }
+
+  // Whether the chosen analysis is showing a mechanism yet.
+  function tourMechanismShown() {
+    if (state.analysisType === ANALYSIS_TYPES.WEIBULL) return Boolean(state.latestResult);
+    if (state.analysisType === ANALYSIS_TYPES.TREND) return Boolean(state.selectedTrend);
+    if (state.analysisType === ANALYSIS_TYPES.PM) return Boolean(state.pmSelection);
+    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return Boolean(state.downtimeSelection);
+    return true;
+  }
+
+  // The mechanism the tour shows: the first bar on the Pareto as it is ranked
+  // now. For Weibull, the first bar with a saved fit, since the tour only opens
+  // fits already saved, or failing that the first Highest-beta mechanism, every
+  // one of which is. Null when there is nothing to show.
+  function tourMechanism() {
+    const bars = paretoDisplayRows();
+    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) return bars[0] || null;
+    const saved = (bar) => state.rankings.some((fit) => selectionMatches(bar, fit));
+    return bars.find(saved) || state.rankings[0] || null;
+  }
+
+  function tourMechanismName() {
+    const row = tourMechanism();
+    return (row && (row.failure_mechanism_name || row.failure_mode_name)) || "the top mechanism";
+  }
+
+  const TOUR_MECHANISM_ACTION = {
+    label: "Show an example ►",
+    needed: () => !tourMechanismTried && Boolean(state.selectedAsset) && !tourMechanismShown() && Boolean(tourMechanism()),
+    run: () => {
+      tourMechanismTried = true;
+      const row = tourMechanism();
+      // Clicking the bar would run and save a new fit for an editor. Showing
+      // somebody around shouldn't write anything, so it opens the saved one.
+      if (state.analysisType === ANALYSIS_TYPES.WEIBULL) return runParetoMechanism(row, { savedOnly: true });
+      return onParetoBarSelected(row);
+    },
+  };
+
+  // Ahead of a step's own text while its button is still to show a mechanism.
+  function tourMechanismLead(what) {
+    return TOUR_MECHANISM_ACTION.needed()
+      ? `Show an example ${what} ${tourMechanismName()}, the top bar on the Pareto, as if it had been clicked. `
+      : "";
+  }
+
   const ANALYSIS_SETUP_TOUR_STEPS = [
     {
       target: "#lda-asset-field",
       title: "Pick an asset",
-      body: () =>
-        "Type part of an Asset Number or an asset's name and choose it from the list. The list is " +
-        "every asset mapped from the CMMS." +
-        (state.selectedAsset ? "" : " The rest of the page appears once an asset is picked."),
+      body: () => {
+        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
+          return (
+            `The tour has picked ${tourAssetLabel(tourExampleAsset)} as its example, being the asset with the ` +
+            "most to show, and the rest of it is about that one. To look at your own, type part of its Asset " +
+            "Number or name here and choose it from the list."
+          );
+        }
+        const how =
+          "Type part of an Asset Number or an asset's name and choose it from the list. The list is every " +
+          "asset mapped from the CMMS.";
+        if (state.selectedAsset) return how;
+        if (tourNoExample) {
+          return how + " There's no asset with failures to use as an example, so the rest of the tour describes the page instead.";
+        }
+        return how + " The rest of the page appears once one is picked, so for this tour, Pick an example chooses one for you.";
+      },
+      action: {
+        label: "Pick an example ►",
+        needed: () => !state.selectedAsset,
+        run: pickTourExampleAsset,
+      },
     },
     {
       target: "#lda-type-field",
       title: "Choose the analysis",
-      body:
+      body: () =>
         "Weibull Analysis fits a life distribution to one failure mode or mechanism. Failure Mode " +
         "Trend counts it month by month, Downtime Driver shows where its downtime comes from, and " +
-        "PM Effectiveness how soon it fails after a PM. Switching keeps the mechanism you last picked.",
+        "PM Effectiveness how soon it fails after a PM. Switching keeps the mechanism you last picked. " +
+        `The rest of this tour is about ${state.analysisType}; choose another and take the tour again for its panels.`,
     },
   ];
 
@@ -5474,6 +5611,7 @@
     {
       target: "#lda-weibull-summary",
       title: "Is there enough to fit?",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
       body:
         "How many records this asset has, how many work orders and PMs a Weibull fit can use, and " +
         "how many are still to be dispositioned. A record is only usable once it has been " +
@@ -5482,6 +5620,7 @@
     {
       target: "#lda-trend-summary",
       title: "Trends at a glance",
+      when: forType(ANALYSIS_TYPES.TREND),
       body:
         "The mechanisms with the most work orders and the most downtime on this asset, and the ones " +
         "growing fastest and improving most. Growth compares the last three months with the three " +
@@ -5490,20 +5629,30 @@
     {
       target: "#lda-pm-summary",
       title: "PM effectiveness at a glance",
-      body:
-        "For the mechanism you pick: how many PMs were done, how many were followed by a failure, " +
+      when: forType(ANALYSIS_TYPES.PM),
+      // These cards are empty until a mechanism is picked, so the example is
+      // shown here rather than on the chart further down.
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("shows") +
+        "For the selected mechanism: how many PMs were done, how many were followed by a failure, " +
         "the average days from a PM to that failure, and a rating for how well the PM holds it off.",
     },
     {
       target: "#lda-downtime-summary",
       title: "Downtime at a glance",
-      body:
-        "For the mechanism you pick: its total, average, median and longest downtime, and how many " +
+      when: forType(ANALYSIS_TYPES.DOWNTIME),
+      // Empty until a mechanism is picked, as PM's are.
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("shows") +
+        "For the selected mechanism: its total, average, median and longest downtime, and how many " +
         "work orders it came from.",
     },
     {
       target: "#lda-beta-panel",
       title: "Highest-beta mechanisms",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
       body:
         "The five mechanisms with the highest beta in their last saved Weibull fit. A beta above 1 " +
         "means failures get likelier with age, which a PM can get ahead of; below 1 points to " +
@@ -5531,41 +5680,70 @@
     {
       target: "#lda-workspace",
       title: "Weibull results",
-      body: () =>
-        "Beta and eta with their confidence bounds, the fitted curves, what they mean, and the data " +
-        "behind them. Hover a plotted point for its work order, and click it to find its row in the " +
-        "table." +
-        (CAN_EDIT
-          ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
-            "generate a Weibull report."
-          : ""),
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      action: TOUR_MECHANISM_ACTION,
+      body: () => {
+        if (TOUR_MECHANISM_ACTION.needed()) {
+          return (
+            "Clicking a bar on the Pareto opens its Weibull fit here, under the chart. Show an example opens " +
+            `the fit already saved for ${tourMechanismName()}.`
+          );
+        }
+        if (!state.latestResult) {
+          return (
+            "Clicking a bar on the Pareto " +
+            (CAN_EDIT ? "runs a Weibull fit on it" : "opens the fit last saved for it") +
+            ", and the results appear under the chart: beta and eta with their confidence bounds, the " +
+            "fitted curves, what they mean, and the data behind them."
+          );
+        }
+        return (
+          "Beta and eta with their confidence bounds, the fitted curves, what they mean, and the data " +
+          "behind them. Hover a plotted point for its work order, and click it to find its row in the " +
+          "table." +
+          (CAN_EDIT
+            ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
+              "generate a Weibull report."
+            : "")
+        );
+      },
     },
     {
       target: "#lda-trend-chart-panel",
       title: "The trend",
-      body:
-        "Work orders a month for the mechanism you picked. From and To narrow the months. The table " +
+      when: forType(ANALYSIS_TYPES.TREND),
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("charts") +
+        "Work orders a month for the selected mechanism. From and To narrow the months. The table " +
         "under it has the same numbers, and clicking a month there lists only that month's work " +
         "orders in the table after it.",
     },
     {
       target: "#lda-pm-chart-panel",
       title: "Failures following PM",
-      body:
-        "Failures of the mechanism you picked that came after a completed PM, month by month. From " +
+      when: forType(ANALYSIS_TYPES.PM),
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("shows") +
+        "Failures of the selected mechanism that came after a completed PM, month by month. From " +
         "and To narrow the months, and the table under it pairs each PM with the failure that " +
         "followed it.",
     },
     {
       target: "#lda-downtime-trend-panel",
       title: "Where the downtime comes from",
-      body:
-        "Downtime a month for the mechanism you picked. Below it: how long its outages run, which " +
+      when: forType(ANALYSIS_TYPES.DOWNTIME),
+      action: TOUR_MECHANISM_ACTION,
+      body: () =>
+        tourMechanismLead("breaks down") +
+        "Downtime a month for the selected mechanism. Below it: how long its outages run, which " +
         "assets or locations they hit, and the ten work orders with the most downtime.",
     },
     {
       target: "#lda-calculate-all-card",
       title: "Fit everything at once",
+      when: () => CAN_EDIT,
       body:
         "Runs and saves a Weibull fit for every failure mode and mechanism on this asset, which is " +
         "what Highest-beta mechanisms ranks. It asks for the calculation password first.",
@@ -5576,10 +5754,14 @@
     {
       target: "#analysis-tour-btn",
       title: "Come back any time",
-      body: () =>
-        state.selectedAsset
-          ? "The tour only opens by itself once. Press Show me around to take it again."
-          : "Pick an asset and press Show me around again to be walked through the results too.",
+      body: () => {
+        const again = "The tour only opens by itself once. Press Show me around to take it again.";
+        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
+          return `${tourExampleAsset} stays selected from the tour; pick your own in the Asset Number box whenever you like. ${again}`;
+        }
+        if (state.selectedAsset) return again;
+        return "Pick an asset and press Show me around again to see each of those parts on the page.";
+      },
     },
   ];
 
@@ -5615,15 +5797,21 @@
   }
 
   function startAnalysisTour(steps, seenKey) {
+    if (window.gremlinTour.isOpen()) return;
     closeAssetDropdown();
+    tourRun += 1;
+    tourExampleAsset = null;
+    tourNoExample = false;
+    tourMechanismTried = false;
     window.gremlinTour.start(steps.concat(ANALYSIS_TOUR_END_STEPS), {
       seenKey,
       pinned: [".topbar", "#lda-step1-card"],
       returnFocus: tourReturnFocus,
-      // A page tour that got as far as the results has covered what the
-      // results tour would, so that one needn't offer itself as well.
-      onEnd: (shown) => {
-        if (shown.some((step) => ANALYSIS_RESULTS_TOUR_STEPS.includes(step))) {
+      // A page tour that got as far as the results, with an asset to show them
+      // on, has covered what the results tour would, so that one needn't offer
+      // itself as well.
+      onEnd: (reached) => {
+        if (state.selectedAsset && reached.some((step) => ANALYSIS_RESULTS_TOUR_STEPS.includes(step))) {
           window.gremlinTour.remember(ANALYSIS_RESULTS_TOUR_SEEN_KEY);
         }
       },
@@ -5655,6 +5843,7 @@
   // just means it offers itself again the next time numbers land.
   function offerAnalysisResultsTour() {
     if (!window.gremlinTour || window.gremlinTour.seen(ANALYSIS_RESULTS_TOUR_SEEN_KEY)) return;
+    if (tourExampleLoading) return;
     if (analysisTourBlocked()) return;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
