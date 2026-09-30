@@ -2195,6 +2195,18 @@ def api_summary():
     )
 
 
+@app.route("/life-data-analysis/api/tour-example")
+@life_data_api
+def api_tour_example():
+    """The asset "Show me around" picks as its example when none is selected.
+
+    Only a read: the tour then loads it the way picking it from the list would.
+    ``asset_number`` is null when no asset has an included failure to show.
+    """
+    service = _service_or_api_error()
+    return jsonify({"asset_number": service.tour_example_asset()})
+
+
 # The Record Class choices each disposition kind offers. PM records cannot be
 # reclassed as corrective work orders (save_disposition refuses it), so the PM
 # list leaves it out rather than offering a choice that fails on save.

@@ -1761,6 +1761,8 @@ class LifeDataService:
                 )
                 SELECT
                     mp.modeled_population_id,
+                    mp.failure_mode_id,
+                    mp.failure_mechanism_id,
                     fm.failure_mode_name,
                     fmech.failure_mechanism_name,
                     lr.beta_mle,
@@ -1783,6 +1785,9 @@ class LifeDataService:
         return [
             {
                 "modeled_population_id": int(row["modeled_population_id"]),
+                # What the page asks saved-analysis for, to open this fit.
+                "failure_mode_id": int(row["failure_mode_id"]),
+                "failure_mechanism_id": int(row["failure_mechanism_id"]),
                 "failure_mode_name": row["failure_mode_name"],
                 "failure_mechanism_name": row["failure_mechanism_name"],
                 "beta_mle": float(row["beta_mle"]),
@@ -1793,6 +1798,50 @@ class LifeDataService:
             }
             for row in rows
         ]
+
+    def tour_example_asset(self) -> str | None:
+        """The asset the Perform an Analysis walk-through picks for somebody who hasn't.
+
+        The one with the most to show: an asset with a saved failure-mechanism
+        Weibull fit first, since a saved fit is the only kind the tour can open
+        without running and storing one of its own, then whichever has the most
+        included failures, which are what fill the Pareto and the trend, PM and
+        downtime charts. None when no asset has an included failure to show.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                WITH failures AS (
+                    SELECT m.asset_number, COUNT(*) AS failure_count
+                    FROM mapped_cmms_record m
+                    JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id
+                    WHERE d.is_current = 1
+                      AND d.include_in_weibull_candidate = 1
+                      AND d.disposition_category = 'INCLUDED_FAILURE'
+                      AND d.failure_mechanism_id IS NOT NULL
+                      AND TRIM(COALESCE(m.asset_number, '')) <> ''
+                    GROUP BY m.asset_number
+                ),
+                fitted AS (
+                    SELECT DISTINCT mp.asset_number
+                    FROM weibull_result wr
+                    JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+                    JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+                    JOIN modeled_population mp ON mp.modeled_population_id = ad.modeled_population_id
+                    JOIN failure_mode fm ON fm.failure_mode_id = mp.failure_mode_id
+                    JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = mp.failure_mechanism_id
+                    WHERE mp.asset_number = ad.asset_number
+                      AND mp.grouping_level_used = 'FAILURE_MECHANISM'
+                )
+                SELECT f.asset_number
+                FROM failures f
+                LEFT JOIN fitted ON fitted.asset_number = f.asset_number
+                ORDER BY fitted.asset_number IS NULL, f.failure_count DESC, f.asset_number
+                LIMIT 1
+                """
+            ).fetchone()
+        return str(row["asset_number"]) if row else None
 
     def failure_mechanism_pareto(self, asset_number: str) -> list[dict[str, Any]]:
         """Return included failure counts and downtime by failure mechanism for the asset summary Pareto chart."""

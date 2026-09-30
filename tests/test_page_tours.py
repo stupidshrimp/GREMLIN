@@ -1,10 +1,12 @@
 """The Home and Perform an Analysis tours: what they point at has to be on the page.
 
 Both are driven by page_tour.js, which finds each step's element by selector as
-the tour starts and leaves out any step whose element isn't drawn. A selector
-that matches nothing is therefore not an error -- the step just never appears.
-So renaming an id in a template would quietly drop a step from the tour. These
-tests are what notice, the same as test_metrics_tour.py does for Metrics.
+the tour starts. Home's tour leaves out any step whose element isn't drawn, and
+the analysis tour, which picks an example asset to draw the rest of the page,
+shows such a step as a card pointing at nothing. Either way a selector that
+matches nothing is not an error, so renaming an id in a template would quietly
+drop or blank a step. These tests are what notice, the same as
+test_metrics_tour.py does for Metrics.
 """
 
 import importlib
@@ -97,6 +99,49 @@ def test_the_analysis_tour_has_steps():
 @pytest.mark.parametrize("selector", _analysis_targets())
 def test_every_analysis_step_points_at_something_on_the_page(analysis_page, selector):
     assert _on_page(analysis_page, selector)
+
+
+def _analysis_steps(declaration):
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    steps = re.search(rf"{re.escape(declaration)} = \[(.*?)\n  \];", source, re.S)
+    assert steps, f"{declaration} was not found in {ANALYSIS_JS.name}"
+    return re.split(r"\n    \{\n", steps.group(1))[1:]
+
+
+def _panels_shown_by_analysis_type():
+    """The ids applyAnalysisTypeUI shows for one Analysis Type and hides for the rest."""
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    shown = dict(re.findall(r'setHidden\(\$\("([\w-]+)"\), !is(\w+)\);', source))
+    assert shown, "applyAnalysisTypeUI no longer toggles panels by type; update this test"
+    return shown
+
+
+def test_each_analysis_type_panel_step_says_which_type_it_is_for():
+    """The tour can't rely on what is drawn to tell it which panels apply.
+
+    With no asset picked none of them is, and the tour keeps its steps anyway so
+    the example it picks has something to be shown on. So a step for one Analysis
+    Type's panel has to say so, or it would appear, pointing at nothing, in every
+    other type's tour.
+    """
+    types = {"Weibull": "WEIBULL", "Trend": "TREND", "Pm": "PM", "Downtime": "DOWNTIME"}
+    shown = _panels_shown_by_analysis_type()
+    checked = 0
+    for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS"):
+        target = re.search(r'target: "#([\w-]+)"', step).group(1)
+        if target not in shown:
+            continue
+        checked += 1
+        assert f"when: forType(ANALYSIS_TYPES.{types[shown[target]]})" in step, target
+    assert checked >= 8
+
+
+def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
+    """An editor's Pareto click runs and stores a fit; the tour's must not."""
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    action = re.search(r"const TOUR_MECHANISM_ACTION = \{(.*?)\n  \};", source, re.S)
+    assert action, "TOUR_MECHANISM_ACTION was not found"
+    assert "runParetoMechanism(row, { savedOnly: true })" in action.group(1)
 
 
 @pytest.mark.parametrize("page_name, button", [("home_page", "home-tour-btn"), ("analysis_page", "analysis-tour-btn")])
