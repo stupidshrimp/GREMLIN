@@ -2565,6 +2565,16 @@
       class: "btn-secondary",
       text: "Check all Include in Weibull Candidate",
       onclick: async () => {
+        // These rows are only worth ticking while this render is the table on
+        // screen and nothing is loading to replace it. A search or asset change
+        // can start a reload while the confirmation is open, or before it opens
+        // (the loading veil stops a mouse, not a keyboard); ticking rows that are
+        // gone, or about to be, would quietly do nothing the user can see or save.
+        const settled = () => table.isConnected && loadingDepth === 0;
+        if (!settled()) {
+          showToast("The table is still loading. Try Check all again once it has finished.", "info");
+          return;
+        }
         // Respect an active column filter: only check rows the user can currently
         // see, so filtering to a subset and clicking this never silently flips
         // (and later saves) the Weibull inclusion of hidden rows.
@@ -2581,7 +2591,6 @@
         }
         // One click can put a whole page of records into the fit, so say what it
         // does and let the user back out before anything changes.
-        const token = state.dispositionToken;
         const confirmed = await openModal({
           title: "Check all Include in Weibull Candidate?",
           bodyNodes: [
@@ -2610,13 +2619,10 @@
           ],
         });
         if (!confirmed) return;
-        // A search or asset debounce can reload the editor while the modal is
-        // open. These rows then belong to a table that is gone (or about to be),
-        // and ticking them would quietly do nothing the user can see or save.
-        if (token !== state.dispositionToken) {
+        if (!settled()) {
           showToast(
             "The table reloaded while you were confirming, so nothing was ticked. Click Check all again " +
-              "if you still want it.",
+              "once it has loaded if you still want it.",
             "info"
           );
           return;
