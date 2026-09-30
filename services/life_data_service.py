@@ -251,7 +251,10 @@ _DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours":
 # service construction (see _mapped_records_need_remap). v2 == downtime seconds fix;
 # v3 == the Area Affected / Condition / Cause / Action narrative boxes, which have to
 # be re-read out of raw JSON for every row imported before they were mapped.
-_MAPPING_VERSION = "v3"
+# v4 == asset_number / asset_name stored stripped: the asset list shows them
+# trimmed and every per-asset query matches that exactly, so a padded " C-3 "
+# row was listed as C-3 and then found by nothing.
+_MAPPING_VERSION = "v4"
 
 DISPLAY_COLUMNS = (
     "name",
@@ -1313,6 +1316,18 @@ class LifeDataService:
                 return raw[key]
         return None
 
+    def _get_alias_stripped(self, raw: dict[str, Any], *keys: str) -> Any:
+        """``_get_alias`` for an identifying field, without surrounding whitespace.
+
+        The asset list trims what it shows, and the pages ask for exactly what
+        was picked from it, so a value stored padded is one no page can find.
+        Whitespace-only reads as absent; non-text values pass through as they are.
+        """
+        value = self._get_alias(raw, *keys)
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
     def _json_text(self, value: Any) -> str | None:
         if value in (None, ""):
             return None
@@ -1344,8 +1359,8 @@ class LifeDataService:
             "status_raw": self._get_alias(raw, "status"),
             "status_id_raw": self._get_alias(raw, "statusID"),
             "asset_id_raw": self._get_alias(raw, "assetID"),
-            "asset_name": self._get_alias(raw, "Asset Name"),
-            "asset_number": self._get_alias(raw, "Asset Number"),
+            "asset_name": self._get_alias_stripped(raw, "Asset Name"),
+            "asset_number": self._get_alias_stripped(raw, "Asset Number"),
             "immediate_parent_asset_id": self._get_alias(raw, "Immediate Parent Asset ID"),
             "immediate_parent_asset_name": self._get_alias(raw, "Immediate Parent Asset Name"),
             "root_asset_id": self._get_alias(raw, "Root Asset ID"),
