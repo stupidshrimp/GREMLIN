@@ -3585,9 +3585,14 @@
     }
     // Two frames: one for the charts to take their size, and one for the
     // scroll that opening the card starts, which the first step's own scroll
-    // then takes over from rather than racing.
+    // then takes over from rather than racing. The card can be closed again
+    // inside them, and a tour over a closed card has nothing drawn to point at.
     requestAnimationFrame(() =>
-      requestAnimationFrame(() => startTour(AVAILABILITY_TOUR_STEPS, AVAILABILITY_TOUR_SEEN_KEY))
+      requestAnimationFrame(() => {
+        if (state.expanded === "availability") {
+          startTour(AVAILABILITY_TOUR_STEPS, AVAILABILITY_TOUR_SEEN_KEY);
+        }
+      })
     );
   }
 
