@@ -1851,6 +1851,11 @@ class LifeDataService:
         those matching the Search box. Built from the same WHERE clauses as that
         table, so the example is never an asset whose table would come up empty.
         None when no asset has any.
+
+        Only rows stored under the number exactly as the asset list offers it
+        count. The list trims the stored number, and the table matches the one
+        picked from the list exactly, so a row stored as " A-1 " is in neither
+        the example's lookup nor its table.
         """
 
         where = self._disposition_where(kind)
@@ -1862,7 +1867,8 @@ class LifeDataService:
                 SELECT m.asset_number, COUNT(*) AS record_count
                 FROM mapped_cmms_record m
                 LEFT JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
-                WHERE TRIM(COALESCE(m.asset_number, '')) <> '' AND {where} {needs_disposition_where}{search_clause}
+                WHERE m.asset_number = TRIM(m.asset_number) AND m.asset_number <> ''
+                  AND {where} {needs_disposition_where}{search_clause}
                 GROUP BY m.asset_number
                 ORDER BY record_count DESC, m.asset_number
                 LIMIT 1

@@ -107,6 +107,16 @@ class DispositionTourExampleAssetTests(unittest.TestCase):
         self.assertEqual(self._example("wo", search="B-2-wo-1"), "B-2")
         self.assertIsNone(self._example("wo", search="nothing like this"))
 
+    def test_it_is_a_number_the_asset_list_offers(self):
+        # The list offers " C-3 " as "C-3", and the table asked for "C-3" matches
+        # none of those rows, so C-3 has nothing to show as an example.
+        _records(self.service, " C-3 ", 9, kind="wo")
+        _records(self.service, "A-1", 2, kind="wo")
+
+        example = self._example("wo")
+        self.assertEqual(example, "A-1")
+        self.assertIn(example, [option["asset_number"] for option in self.service.asset_number_options()])
+
     def test_the_example_has_rows_for_the_table_to_show(self):
         _records(self.service, "A-1", 4, kind="pm", reviewed=1)
         for kind, new in (("pm", False), ("pm", True)):
