@@ -73,7 +73,7 @@ def _on_page(page, selector):
 def client(monkeypatch, tmp_path):
     client = _app(monkeypatch, tmp_path).app.test_client()
     # Signed in as the administrator, so every editor-only target -- the
-    # Perform Analysis buttons, Calculate all -- is in the markup to be found.
+    # Perform Analysis buttons -- is in the markup to be found.
     assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
     return client
 

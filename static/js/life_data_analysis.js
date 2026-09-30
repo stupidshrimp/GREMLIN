@@ -760,18 +760,15 @@
       clearWorkspace();
     }
     const ready = Boolean(state.selectedAsset);
-    // The summary / action / calculate cards only exist on the Perform Analysis
-    // page; guard so the same asset combobox can drive the disposition page too.
+    // The summary / action cards only exist on the Perform Analysis page; guard
+    // so the same asset combobox can drive the disposition page too.
     const summaryCard = $("lda-summary-card");
     const actionsBar = $("lda-actions");
-    const calcCard = $("lda-calculate-all-card");
     if (summaryCard) summaryCard.hidden = !ready;
     // The action bar holds a read-only Pareto toggle alongside the write
     // buttons, so it still appears; its buttons are hidden by the template for
-    // a viewer. The calculate-all card is nothing but a write, so selecting an
-    // asset must not be what puts it on screen.
+    // a viewer.
     if (actionsBar) actionsBar.hidden = !ready;
-    if (calcCard) calcCard.hidden = !ready || !CAN_EDIT;
     if (asset) {
       $("lda-asset-hint").textContent = asset.asset_name
         ? `Selected ${asset.asset_number}: ${asset.asset_name}.`
@@ -2567,12 +2564,71 @@
       id: "lda-disp-check-all",
       class: "btn-secondary",
       text: "Check all Include in Weibull Candidate",
-      onclick: () => {
+      onclick: async () => {
+        // These rows are only worth ticking while this render is the table on
+        // screen and nothing is loading to replace it. A search or asset change
+        // can start a reload while the confirmation is open, or before it opens
+        // (the loading veil stops a mouse, not a keyboard); ticking rows that are
+        // gone, or about to be, would quietly do nothing the user can see or save.
+        const settled = () => table.isConnected && loadingDepth === 0;
+        if (!settled()) {
+          showToast("The table is still loading. Try Check all again once it has finished.", "info");
+          return;
+        }
         // Respect an active column filter: only check rows the user can currently
         // see, so filtering to a subset and clicking this never silently flips
         // (and later saves) the Weibull inclusion of hidden rows.
-        rowStates.forEach((rs) => {
-          if (rs.tr.style.display !== "none") rs.include.checked = true;
+        const visible = rowStates.filter((rs) => rs.tr.style.display !== "none");
+        const toCheck = visible.filter((rs) => !rs.include.checked);
+        if (!toCheck.length) {
+          showToast(
+            visible.length
+              ? "Include in Weibull Candidate is already ticked on every row showing."
+              : "No rows are showing, so there is nothing to tick.",
+            "info"
+          );
+          return;
+        }
+        // One click can put a whole page of records into the fit, so say what it
+        // does and let the user back out before anything changes.
+        const confirmed = await openModal({
+          title: "Check all Include in Weibull Candidate?",
+          bodyNodes: [
+            el("p", {
+              text:
+                `This ticks Include in Weibull Candidate on ${toCheck.length} of the ${visible.length} ` +
+                "row(s) showing on this page. Rows a column filter hides and rows on other pages are left " +
+                "as they are.",
+            }),
+            el("p", {
+              text: isPm
+                ? "A ticked PM reset event is used by the Weibull analysis only once it is also " +
+                  "INCLUDED_PM_RESET_EVENT with APPROVED_RESET, a reset target and a rationale."
+                : "A ticked work order is used by the Weibull analysis only once it is also " +
+                  "INCLUDED_FAILURE with a failure mode.",
+            }),
+            el("p", {
+              text:
+                "Nothing is saved until you click Save Dispositions, so any row you did not mean to include " +
+                "can still be unticked before then.",
+            }),
+          ],
+          actions: [
+            { label: "Cancel", primary: false, value: () => false },
+            { label: "Check all", primary: true, value: () => true },
+          ],
+        });
+        if (!confirmed) return;
+        if (!settled()) {
+          showToast(
+            "The table reloaded while you were confirming, so nothing was ticked. Click Check all again " +
+              "once it has loaded if you still want it.",
+            "info"
+          );
+          return;
+        }
+        toCheck.forEach((rs) => {
+          rs.include.checked = true;
         });
       },
     });
@@ -4425,43 +4481,6 @@
     }
   }
 
-  // ---- calculate all --------------------------------------------------------
-  async function calculateAll() {
-    if (!state.selectedAsset) return;
-    const passwordInput = el("input", { class: "lda-input", type: "password", placeholder: "Calculation password" });
-    const password = await openModal({
-      title: "Password required",
-      bodyNodes: [
-        el("p", { text: "Enter the password to calculate MLE beta/eta for every available failure mode and mechanism on this asset:" }),
-        passwordInput,
-      ],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        { label: "Calculate", primary: true, value: () => passwordInput.value },
-      ],
-    });
-    if (password === null || password === undefined) return;
-    beginLoading("Calculating all Weibull MLE results…");
-    try {
-      const data = await postJson(`${API}/calculate-all`, { asset: state.selectedAsset, password });
-      const summary = data.summary || {};
-      state.latestResult = null;
-      clearWorkspace();
-      refreshSummary();
-      let message = `Calculated and saved Weibull MLE beta/eta results for ${summary.completed || 0} of ${summary.total || 0} available failure mode/mechanism group(s).`;
-      const errors = summary.errors || [];
-      if ((summary.failed || 0) && errors.length) {
-        message += " Groups needing review: " + errors.slice(0, 8).join("; ");
-        if (errors.length > 8) message += ` …and ${errors.length - 8} more.`;
-      }
-      showBanner(message, (summary.failed || 0) ? "info" : "success");
-    } catch (err) {
-      showBanner(err.message, "error");
-    } finally {
-      endLoading();
-    }
-  }
-
   // ---- charts ---------------------------------------------------------------
   // Size the backing store to the on-screen width and return the CSS dimensions the
   // drawing code should use. Measuring the parent (not the canvas) avoids reading a
@@ -5740,14 +5759,6 @@
         "Downtime a month for the selected mechanism. Below it: how long its outages run, which " +
         "assets or locations they hit, and the ten work orders with the most downtime.",
     },
-    {
-      target: "#lda-calculate-all-card",
-      title: "Fit everything at once",
-      when: () => CAN_EDIT,
-      body:
-        "Runs and saves a Weibull fit for every failure mode and mechanism on this asset, which is " +
-        "what Highest-beta mechanisms ranks. It asks for the calculation password first.",
-    },
   ];
 
   const ANALYSIS_TOUR_END_STEPS = [
@@ -5947,8 +5958,8 @@
       target: "#lda-disp-check-all",
       title: "Include a whole page",
       body:
-        "Ticks Include in Weibull Candidate on every row showing. Rows a column filter hides are left " +
-        "as they are, and nothing is kept until you save.",
+        "Ticks Include in Weibull Candidate on every row showing, after asking you to confirm. Rows a " +
+        "column filter hides are left as they are, and nothing is kept until you save.",
     },
     {
       target: "#lda-disp-pager",
@@ -6137,7 +6148,6 @@
       $("lda-perform").addEventListener("click", performAnalysis);
       $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
       $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
-      $("lda-calculate-all").addEventListener("click", calculateAll);
     }
     $("lda-pareto-toggle").addEventListener("change", (event) => {
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";

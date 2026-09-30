@@ -19,7 +19,6 @@ def test_write_routes_require_login(monkeypatch, tmp_path):
         "/life-data-analysis/api/dispositions/save",
         "/life-data-analysis/api/dispositions/excel",
         "/life-data-analysis/api/perform-analysis",
-        "/life-data-analysis/api/calculate-all",
         "/life-data-analysis/api/parameter-adjustment",
         "/life-data-analysis/api/weibull-report",
     ]
@@ -217,13 +216,9 @@ def _assert_read_only_ui(client, *, has_account=True):
         assert b'id="lda-perform" hidden' in analysis
         assert b'id="lda-disposition-wo" hidden' in analysis
         assert b'id="lda-disposition-pm" hidden' in analysis
-        # Not merely hidden: this card is nothing but a write, and selecting an
-        # asset is what un-hides it, so it must not be in the page at all.
-        assert b"lda-calculate-all" not in analysis
     else:
         refused = client.get("/life-data-analysis/perform-analysis")
         assert refused.status_code == 403
-        assert b"lda-calculate-all" not in refused.data
     assert client.get("/life-data-analysis/disposition").status_code == 403
     # The workflow cards moved onto the home page, so that is where the
     # Disposition card explains itself to a caller who may only read: still on
@@ -280,7 +275,6 @@ def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_pat
     assert b"Refresh CMMS mapping" in configuration
     analysis = client.get("/life-data-analysis/perform-analysis").data
     assert b'id="lda-perform" hidden' not in analysis
-    assert b"lda-calculate-all" in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 200
     # An editor gets the card as a working link, with nothing left to explain.
     landing = client.get("/").data
