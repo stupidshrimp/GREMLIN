@@ -224,7 +224,12 @@ def test_the_disposition_tour_picks_an_example_for_the_rows_showing():
         step for step in _analysis_steps("const DISPOSITION_SETUP_TOUR_STEPS") if '"#lda-asset-field"' in step
     ]
     assert 'label: "Pick an example ►"' in asset_step
-    assert "run: () => pickTourExampleAsset(dispositionTourExampleUrl())," in asset_step
+    # A search still in its debounce is applied first, or the example would be
+    # picked for the last search and its table reloaded for the new one.
+    assert asset_step.index("await flushDispositionSearch();") < asset_step.index(
+        "return pickTourExampleAsset(dispositionTourExampleUrl());"
+    )
+    assert "flushDispositionSearch = () => {" in _function_body("initDispositionPage")
     url = _function_body("dispositionTourExampleUrl")
     assert "/disposition-tour-example?" in url
     for control in ("state.dispositionKind", "state.dispositionScope", "state.dispositionSearch"):

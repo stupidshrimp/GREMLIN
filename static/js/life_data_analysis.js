@@ -5896,6 +5896,11 @@
     return state.dispositionSearch ? `${records} matching "${state.dispositionSearch}"` : records;
   }
 
+  // Applies a search still waiting out its debounce; initDispositionPage sets it.
+  // The example is chosen for the search in the box, and one landing after it
+  // would reload the example's table for rows it wasn't chosen for.
+  let flushDispositionSearch = () => Promise.resolve();
+
   // Where the tour asks for its example: the Step 1 controls as they stand, so
   // the table it draws has rows in it.
   function dispositionTourExampleUrl() {
@@ -5940,7 +5945,11 @@
       action: {
         label: "Pick an example ►",
         needed: () => !state.selectedAsset,
-        run: () => pickTourExampleAsset(dispositionTourExampleUrl()),
+        run: async () => {
+          // No asset is picked, so there are no unsaved rows for it to ask about.
+          await flushDispositionSearch();
+          return pickTourExampleAsset(dispositionTourExampleUrl());
+        },
       },
     },
     {
@@ -6352,6 +6361,12 @@
         if (searchDebounce) clearTimeout(searchDebounce);
         searchDebounce = setTimeout(applySearch, 300);
       });
+      // For the tour, which picks its example for what is in the box now.
+      // applySearch does nothing if the search has been applied already.
+      flushDispositionSearch = () => {
+        clearTimeout(searchDebounce);
+        return applySearch();
+      };
       // Somebody typing a search is one of the things an owed tour waits out.
       searchInput.addEventListener("blur", startOwedDispositionTour);
     }
