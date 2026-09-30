@@ -157,7 +157,14 @@
    table. The option list is portaled to <body> with position:fixed (set inline
    from the input's bounding box) so it is never clipped by the scrollable table
    container, while reusing the combobox option styling above. */
-.lda-portal-list { position: fixed; right: auto; }
+.lda-portal-list {
+  position: fixed;
+  right: auto;
+  /* Above the modal backdrop (70): the analysis page's single-record editor puts
+     these comboboxes in a modal, and a list portaled to <body> at the base
+     layer would open out of sight behind it. */
+  z-index: 75;
+}
 .lda-combobox-option-label { font-weight: 600; color: var(--forest-900); font-size: 0.86rem; }
 
 /* Buttons rendered as <button> reuse theme btn classes, which now normalise the
@@ -601,6 +608,61 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
 .lda-modal-option { display: flex; gap: 0.55rem; align-items: flex-start; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .lda-modal-option:hover { border-color: var(--forest-500); background: var(--forest-100); }
 .lda-modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap; }
+
+/* A record's number in an analysis table, as the button that opens its
+   disposition (editors only). It still reads as the number it stands in for,
+   with a pencil beside it saying the record can be corrected from here. */
+.lda-record-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: -0.15rem -0.4rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--forest-800);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lda-record-link-number { text-decoration: underline dotted; text-underline-offset: 3px; }
+.lda-record-link-icon { font-size: 0.9em; opacity: 0.65; }
+.lda-record-link:hover { background: var(--forest-100); border-color: var(--forest-200); color: var(--forest-900); }
+.lda-record-link:hover .lda-record-link-number { text-decoration-style: solid; }
+.lda-record-link:hover .lda-record-link-icon { opacity: 1; }
+.lda-record-link:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+
+/* The single-record disposition editor those buttons open. Wider than the
+   picker modals, since it carries the record's own details above the form. */
+.lda-record-modal { width: min(760px, 100%); }
+.lda-record-modal .eyebrow { margin: 0 0 0.2rem; }
+.lda-record-modal .lda-banner { margin: 0; }
+.lda-record-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 0.9rem;
+  margin: 0;
+  padding: 0.8rem 0.95rem;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil);
+  font-size: 0.86rem;
+}
+.lda-record-facts dt { color: var(--muted); font-weight: 600; }
+.lda-record-facts dd { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.lda-record-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem 0.9rem; }
+.lda-record-fields .is-wide { grid-column: 1 / -1; }
+.lda-record-check { display: flex; align-items: center; }
+.lda-record-field-label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
+.lda-record-readonly { margin: 0; color: var(--muted); font-size: 0.88rem; }
+@media (max-width: 640px) {
+  .lda-record-fields,
+  .lda-record-facts { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Button help tooltips -------------------------------------------------------
    For a control whose label has no room to say what it does -- the two Excel

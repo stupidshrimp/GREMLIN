@@ -2128,6 +2128,36 @@ def api_summary():
     )
 
 
+# The Record Class choices each disposition kind offers. PM records cannot be
+# reclassed as corrective work orders (save_disposition refuses it), so the PM
+# list leaves it out rather than offering a choice that fails on save.
+WO_RECORD_CLASS_OPTIONS = ("CORRECTIVE_WO", "PM", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN")
+PM_RECORD_CLASS_OPTIONS = ("PM", "PM_RESET_CANDIDATE", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN")
+
+
+def _disposition_editor_options(service: LifeDataService, asset_number: str, kind: str) -> dict:
+    """What a disposition editor is built from, beyond the records themselves.
+
+    Shared by the paged disposition table and the single-record editor the
+    analysis tables open, so a record offers the same choices in either place.
+    """
+    return {
+        "display_columns": list(DISPLAY_COLUMNS),
+        # The narrative boxes travel with their labels rather than as bare
+        # column keys: the table renders them as one stacked cell, so it needs
+        # to caption each line it draws.
+        "narrative_columns": [dict(column) for column in NARRATIVE_COLUMNS],
+        # The Modeled Population cell for a row that has none yet. The screen
+        # renders it, so the ORDER BY sorts by it; both read this one copy.
+        "modeled_population_placeholder": MODELED_POPULATION_PLACEHOLDER,
+        "mode_options": service.get_asset_failure_mode_options(asset_number),
+        "mechanism_options": service.get_asset_failure_mechanism_options(asset_number),
+        "categories": list(PM_DISPOSITION_CATEGORIES if kind == "pm" else WO_DISPOSITION_CATEGORIES),
+        "record_classes": list(PM_RECORD_CLASS_OPTIONS if kind == "pm" else WO_RECORD_CLASS_OPTIONS),
+        "pm_reset_decisions": list(PM_RESET_DECISIONS),
+    }
+
+
 @app.route("/life-data-analysis/api/dispositions")
 @life_data_api
 def api_dispositions():
@@ -2171,8 +2201,6 @@ def api_dispositions():
         sort_dir=sort_dir,
     )
 
-    wo_record_classes = ["CORRECTIVE_WO", "PM", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN"]
-    pm_record_classes = ["PM", "PM_RESET_CANDIDATE", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN"]
     return jsonify(
         {
             "asset_number": asset_number,
@@ -2186,25 +2214,47 @@ def api_dispositions():
             "sort_dir": sort_dir,
             "sortable_columns": sortable_columns,
             "rows": rows,
-            "display_columns": list(DISPLAY_COLUMNS),
-            # The narrative boxes travel with their labels rather than as bare
-            # column keys: the table renders them as one stacked cell, so it needs
-            # to caption each line it draws.
-            "narrative_columns": [dict(column) for column in NARRATIVE_COLUMNS],
-            # The Modeled Population cell for a row that has none yet. The screen
-            # renders it, so the ORDER BY sorts by it; both read this one copy.
-            "modeled_population_placeholder": MODELED_POPULATION_PLACEHOLDER,
-            "mode_options": service.get_asset_failure_mode_options(asset_number),
-            "mechanism_options": service.get_asset_failure_mechanism_options(asset_number),
-            "categories": list(PM_DISPOSITION_CATEGORIES if kind == "pm" else WO_DISPOSITION_CATEGORIES),
-            "record_classes": pm_record_classes if kind == "pm" else wo_record_classes,
-            "pm_reset_decisions": list(PM_RESET_DECISIONS),
+            **_disposition_editor_options(service, asset_number, kind),
             "page_index": page_index,
             "max_page_index": max_page_index,
             "page_size": page_size,
             "offset": offset,
             "displayed_count": displayed_count,
             "all_count": all_count,
+        }
+    )
+
+
+@app.route("/life-data-analysis/api/dispositions/record")
+@life_data_api
+def api_disposition_record():
+    """One record's current disposition, for the analysis tables' in-place editor.
+
+    An analysis lists the work orders it was built from, and the one that turns
+    out to be misclassified is found there rather than on the disposition page.
+    This hands the editor that record plus the same dropdown options the
+    disposition table is built from; the save goes through
+    /api/dispositions/save like any other, so the rules it enforces are the same.
+    """
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    kind = _disposition_kind()
+    try:
+        mapped_record_id = int(request.values.get("mapped_record_id") or "")
+    except (TypeError, ValueError):
+        raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400)
+    row = service.disposition_record(asset_number, mapped_record_id)
+    if row is None:
+        raise LifeDataApiError(
+            f"That record was not found on asset {asset_number}. Reload the analysis and try again.",
+            status_code=404,
+        )
+    return jsonify(
+        {
+            "asset_number": asset_number,
+            "kind": kind,
+            "row": row,
+            **_disposition_editor_options(service, asset_number, kind),
         }
     )
 

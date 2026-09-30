@@ -48,6 +48,10 @@ _LOCK_WAIT_CONTEXT = threading.local()
 # is clamped to zero the same way failure_mechanism_pareto() clamps it; a missing value
 # stays NULL and renders blank rather than as a real zero.
 #
+# The closing record's mapped_record_id and its event role travel too, so the table can
+# open that record's disposition in place: a FAILURE_EVENT is a corrective work order
+# and a PM_RESET_EVENT a PM, which is the disposition kind the editor has to ask for.
+#
 # Shared by perform_weibull_analysis() (fresh fit) and load_saved_weibull_analysis()
 # (read-back of a saved fit) so both describe an observation identically. Callers append
 # their own WHERE and ORDER BY.
@@ -55,6 +59,8 @@ _WEIBULL_OBSERVATION_SELECT = """
     SELECT wo.weibull_observation_id, wo.observation_type, wo.start_datetime, wo.end_datetime,
            wo.analysis_cutoff_datetime, wo.life_hours_for_weibull, wo.failure_indicator,
            wo.is_right_censored, wo.weibull_life_note,
+           m.mapped_record_id AS source_mapped_record_id,
+           ep.event_role AS source_event_role,
            m.task_id AS source_task_id,
            m.task_name AS source_work_title,
            m.requestor_description AS source_request_description,
@@ -71,6 +77,52 @@ _WEIBULL_OBSERVATION_SELECT = """
     FROM weibull_observation wo
     LEFT JOIN event_processing_record ep ON ep.event_processing_id = wo.end_event_processing_id
     LEFT JOIN mapped_cmms_record m ON m.mapped_record_id = ep.mapped_record_id
+"""
+
+
+# One record as the disposition screens show it: the read-only CMMS columns, the
+# four narrative boxes, and the current disposition with its taxonomy names.
+# Shared by disposition_rows() (the paged table) and disposition_record() (the
+# single-record editor the analysis tables open), so a record reads the same in
+# both. Callers append their own WHERE, ORDER BY and paging.
+_DISPOSITION_ROW_SELECT = """
+    SELECT m.mapped_record_id,
+           m.task_name AS name,
+           m.task_id AS taskID,
+           m.created_date_final AS createdDate_Final,
+           m.completed_date_final AS completedDate_Final,
+           ROUND(m.downtime_hours, 2) AS downtime,
+           m.completion_notes AS completionNotes,
+           m.request_title AS requestTitle,
+           m.requestor_description AS requestorDescription,
+           m.area_affected,
+           m.condition_found,
+           m.cause,
+           m.action_taken,
+           COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto) AS effective_record_class,
+           d.disposition_category,
+           d.pm_reset_inclusion_decision,
+           d.disposition_text,
+           d.disposition_notes,
+           d.pm_reset_renewal_rationale,
+           d.failure_mode_id,
+           fm.failure_mode_name AS failure_mode,
+           d.failure_mechanism_id,
+           fmech.failure_mechanism_name AS failure_mechanism,
+           d.reset_target_failure_mode_id,
+           rtfm.failure_mode_name AS reset_target_failure_mode,
+           d.reset_target_failure_mechanism_id,
+           rtfmech.failure_mechanism_name AS reset_target_failure_mechanism,
+           d.include_in_weibull_candidate,
+           d.modeled_population_id,
+           mp.population_name AS modeled_population_name
+    FROM mapped_cmms_record m
+    LEFT JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
+    LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
+    LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
+    LEFT JOIN failure_mode rtfm ON rtfm.failure_mode_id = d.reset_target_failure_mode_id
+    LEFT JOIN failure_mechanism rtfmech ON rtfmech.failure_mechanism_id = d.reset_target_failure_mechanism_id
+    LEFT JOIN modeled_population mp ON mp.modeled_population_id = d.modeled_population_id
 """
 
 
@@ -2188,6 +2240,9 @@ class LifeDataService:
                     "failure_mechanism_name": failure.get("failure_mechanism_name") or mechanism_name,
                     "downtime_hours": round(float(failure.get("downtime_hours") or 0.0), 4),
                     "corrective_wo_number": failure.get("task_id"),
+                    # The work order behind that number, so the table can open its
+                    # disposition when it turns out to be misclassified.
+                    "corrective_mapped_record_id": failure.get("mapped_record_id"),
                 }
             )
 
@@ -3066,43 +3121,7 @@ class LifeDataService:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT m.mapped_record_id,
-                       m.task_name AS name,
-                       m.task_id AS taskID,
-                       m.created_date_final AS createdDate_Final,
-                       m.completed_date_final AS completedDate_Final,
-                       ROUND(m.downtime_hours, 2) AS downtime,
-                       m.completion_notes AS completionNotes,
-                       m.request_title AS requestTitle,
-                       m.requestor_description AS requestorDescription,
-                       m.area_affected,
-                       m.condition_found,
-                       m.cause,
-                       m.action_taken,
-                       COALESCE(d.record_class_final, m.record_class_final, m.record_class_auto) AS effective_record_class,
-                       d.disposition_category,
-                       d.pm_reset_inclusion_decision,
-                       d.disposition_text,
-                       d.disposition_notes,
-                       d.pm_reset_renewal_rationale,
-                       d.failure_mode_id,
-                       fm.failure_mode_name AS failure_mode,
-                       d.failure_mechanism_id,
-                       fmech.failure_mechanism_name AS failure_mechanism,
-                       d.reset_target_failure_mode_id,
-                       rtfm.failure_mode_name AS reset_target_failure_mode,
-                       d.reset_target_failure_mechanism_id,
-                       rtfmech.failure_mechanism_name AS reset_target_failure_mechanism,
-                       d.include_in_weibull_candidate,
-                       d.modeled_population_id,
-                       mp.population_name AS modeled_population_name
-                FROM mapped_cmms_record m
-                LEFT JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
-                LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
-                LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
-                LEFT JOIN failure_mode rtfm ON rtfm.failure_mode_id = d.reset_target_failure_mode_id
-                LEFT JOIN failure_mechanism rtfmech ON rtfmech.failure_mechanism_id = d.reset_target_failure_mechanism_id
-                LEFT JOIN modeled_population mp ON mp.modeled_population_id = d.modeled_population_id
+                {_DISPOSITION_ROW_SELECT}
                 WHERE m.asset_number = ? AND {where} {needs_disposition_where}{search_clause}
                 {order_by}
                 {pagination}
@@ -3110,6 +3129,32 @@ class LifeDataService:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def disposition_record(self, asset_number: str, mapped_record_id: int) -> dict[str, Any] | None:
+        """One record's current disposition, shaped like a disposition_rows() row.
+
+        For the analysis tables, which open a single work order's disposition in
+        place rather than sending the user to page through the disposition screen
+        for it. Deliberately not narrowed by the record-type filter the table
+        uses: a record that is in an analysis is worth being able to correct even
+        if a saved record class has since moved it out of that screen's list.
+        Scoped to the asset, since the taxonomy options offered beside it are that
+        asset's. Returns ``None`` when the record is not on the asset.
+        """
+
+        mapped_record_id = int(mapped_record_id)
+        # Wider than SQLite can bind is an id no record has, not a server error.
+        if not -SQLITE_INTEGER_LIMIT <= mapped_record_id < SQLITE_INTEGER_LIMIT:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                {_DISPOSITION_ROW_SELECT}
+                WHERE m.asset_number = ? AND m.mapped_record_id = ?
+                """,
+                (asset_number, mapped_record_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def disposition_excel_headers(self, kind: str) -> tuple[str, ...]:
         """Return the Excel template columns for a disposition screen."""
