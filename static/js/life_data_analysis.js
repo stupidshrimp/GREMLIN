@@ -5462,6 +5462,9 @@
   let tourExampleAsset = null;
   let tourNoExample = false;
   let tourMechanismTried = false;
+  // Counts the tours started, so an answer arriving for one that has since
+  // closed can tell.
+  let tourRun = 0;
 
   const forType = (type) => () => state.analysisType === type;
 
@@ -5473,12 +5476,17 @@
   // Asks the server for the asset with the most to show and picks it the way
   // choosing it from the list would. Resolves once its summary is on the page.
   async function pickTourExampleAsset() {
+    const run = tourRun;
     let number = null;
     try {
       number = (await getJson(`${API}/tour-example`)).asset_number || null;
     } catch (err) {
       // The step says there's no example, which is all the tour can do about it.
     }
+    // Skip stays live while this is out, and nothing covers the page, so the
+    // tour may have closed and somebody picked an asset of their own since.
+    // The page is theirs again then; an example now would undo their choice.
+    if (run !== tourRun || !window.gremlinTour.isOpen() || state.selectedAsset) return;
     const asset = number ? state.assetByNumber.get(number) : null;
     if (!asset) {
       tourNoExample = true;
@@ -5770,6 +5778,7 @@
   function startAnalysisTour(steps, seenKey) {
     if (window.gremlinTour.isOpen()) return;
     closeAssetDropdown();
+    tourRun += 1;
     tourExampleAsset = null;
     tourNoExample = false;
     tourMechanismTried = false;

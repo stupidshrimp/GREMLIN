@@ -7,11 +7,18 @@ and the fit is read back through saved-analysis rather than run again.
 """
 
 import importlib
+import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from services.life_data_service import LifeDataService
+
+ANALYSIS_JS = Path(__file__).resolve().parent.parent / "static" / "js" / "life_data_analysis.js"
 
 
 def _seed(service: LifeDataService, asset_number: str, mechanism: str, completed_dates, *, category="INCLUDED_FAILURE"):
@@ -140,6 +147,91 @@ def test_the_example_is_readable_without_logging_in(monkeypatch, tmp_path):
     response = module.app.test_client().get("/life-data-analysis/api/tour-example")
     assert response.status_code == 200
     assert response.get_json() == {"asset_number": None}
+
+
+# pickTourExampleAsset lifted out of the page script, the way
+# test_disposition_sorting.py lifts the date parser, and run against stand-ins
+# for what it calls: a request for the example that answers when told to, the
+# asset list, and whether the tour is still open. Each scenario prints what the
+# page ended up with.
+_PICK_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const grab = (name) => {
+  const start = src.indexOf("function " + name + "(");
+  if (start < 0) throw new Error("missing " + name);
+  let depth = 0;
+  for (let i = src.indexOf("{", start); i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error("unbalanced " + name);
+};
+
+const API = "/life-data-analysis/api";
+let answer;
+const getJson = () => new Promise((resolve) => { answer = resolve; });
+const state = {
+  selectedAsset: null,
+  assetByNumber: new Map([["P-100", { asset_number: "P-100" }], ["P-200", { asset_number: "P-200" }]]),
+};
+const chosen = [];
+const chooseAsset = async (asset) => { chosen.push(asset.asset_number); state.selectedAsset = asset.asset_number; };
+let tourOpen = true;
+const window = { gremlinTour: { isOpen: () => tourOpen } };
+let tourRun = 1;
+let tourExampleAsset = null;
+let tourNoExample = false;
+eval("async " + grab("pickTourExampleAsset"));
+
+const scenarios = {
+  // Nothing happens while the request is out: the example is picked.
+  waited: async () => {},
+  // Skip, then the user's own pick from the list.
+  skipped_then_picked: async () => { tourOpen = false; state.selectedAsset = "P-200"; },
+  // Skip and nothing else: the page is theirs again, example or no.
+  skipped: async () => { tourOpen = false; },
+  // Skip and straight back in: a new tour, which asks for its own example.
+  skipped_and_reopened: async () => { tourRun += 1; },
+};
+
+(async () => {
+  const picking = pickTourExampleAsset();
+  await scenarios[process.argv[3]]();
+  answer({ asset_number: "P-100" });
+  await picking;
+  console.log(JSON.stringify({ chosen, selected: state.selectedAsset, example: tourExampleAsset }));
+})();
+"""
+
+
+def _pick(tmp_path, scenario):
+    runner = tmp_path / "pick.js"
+    runner.write_text(_PICK_HARNESS)
+    result = subprocess.run(
+        ["node", str(runner), str(ANALYSIS_JS), scenario],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
+def test_the_example_is_picked_when_the_tour_waits_for_it(tmp_path):
+    assert _pick(tmp_path, "waited") == {"chosen": ["P-100"], "selected": "P-100", "example": "P-100"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
+@pytest.mark.parametrize(
+    "scenario, selected",
+    [("skipped_then_picked", "P-200"), ("skipped", None), ("skipped_and_reopened", None)],
+)
+def test_an_example_arriving_after_skip_is_not_applied(tmp_path, scenario, selected):
+    """Skip stays live while the example is requested, and there is no loading veil.
+
+    So somebody can close the tour and pick their own asset before the answer
+    comes back. Applying it then would swap their choice for the example.
+    """
+    assert _pick(tmp_path, scenario) == {"chosen": [], "selected": selected, "example": None}
 
 
 if __name__ == "__main__":
