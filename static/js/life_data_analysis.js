@@ -589,8 +589,10 @@
   }
 
   // The asset list's first load, set as the page starts. The tour waits on it
-  // before it looks its example up in the list: Show me around works from the
-  // moment the page is drawn, so it can ask for an example before the list is in.
+  // before it asks for its example: Show me around works from the moment the
+  // page is drawn, before the list it looks the example up in is in, and before
+  // the records it is chosen from have been mapped on a first visit after an
+  // import (see asset_number_options).
   let assetsLoaded = Promise.resolve();
 
   async function loadAssets() {
@@ -5508,10 +5510,11 @@
     const run = tourRun;
     let number = null;
     try {
-      // The list it is looked up in may still be on its way. loadAssets never
-      // rejects, so this only fails when the example request does.
-      const [example] = await Promise.all([getJson(url), assetsLoaded]);
-      number = example.asset_number || null;
+      // Not until the asset list is in: the example is looked up in it, and on
+      // the first visit after an import, loading it is what maps the records the
+      // example is chosen from. loadAssets never rejects.
+      await assetsLoaded;
+      number = (await getJson(url)).asset_number || null;
     } catch (err) {
       // The step says there's no example, which is all the tour can do about it.
     }

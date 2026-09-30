@@ -165,9 +165,11 @@ const grab = (name) => {
   throw new Error("unbalanced " + name);
 };
 
+// Answerable before it is asked: the picker waits for the asset list first.
 let answer;
+const answered = new Promise((resolve) => { answer = resolve; });
 const asked = [];
-const getJson = (url) => { asked.push(url); return new Promise((resolve) => { answer = resolve; }); };
+const getJson = (url) => { asked.push(url); return answered; };
 const LISTED = () => new Map([["P-100", { asset_number: "P-100" }]]);
 const state = {
   pageMode: "disposition",
@@ -209,8 +211,9 @@ const scenarios = {
     answered: () => { whileLoading = () => { tourOpen = false; offerDispositionTour(); }; },
     after: () => { offerDispositionTour(); },
   },
-  // Show me around works before the asset list is in, so the example can
-  // answer first. It is looked up once the list arrives, not taken for missing.
+  // Show me around works before the asset list is in. The example isn't asked
+  // for until it is: it is looked up in that list, and on a first visit after
+  // an import, loading the list is what maps the records it is chosen from.
   assets_late: {
     before: () => {
       state.assetByNumber = new Map();
@@ -228,9 +231,12 @@ const scenarios = {
   const picking = pickTourExampleAsset("/life-data-analysis/api/disposition-tour-example?kind=wo&scope=all");
   if (scenario.answered) scenario.answered();
   answer({ asset_number: "P-100" });
+  let askedBeforeList = null;
   if (scenario.late) {
-    // Let the example's answer be taken in while the list is still out.
+    // Give the picker every chance to ask, and to take the answer in, while
+    // the list is still out.
     await new Promise((resolve) => setTimeout(resolve, 0));
+    askedBeforeList = asked.length;
     scenario.late();
   }
   await picking;
@@ -238,7 +244,7 @@ const scenarios = {
   const owedWhileLoading = dispositionTourOwed;
   if (scenario.after) scenario.after();
   console.log(JSON.stringify({
-    asked, selected: state.selectedAsset, example: tourExampleAsset, noExample: tourNoExample,
+    asked, askedBeforeList, selected: state.selectedAsset, example: tourExampleAsset, noExample: tourNoExample,
     offeredWhileLoading, owedWhileLoading, offeredAfter: offered.length - offeredWhileLoading,
   }));
 })();
@@ -265,11 +271,14 @@ def test_the_example_is_picked_and_its_editor_drawn_under_the_tour(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
-def test_an_example_answering_before_the_asset_list_waits_for_it(tmp_path):
+def test_the_example_is_not_asked_for_until_the_asset_list_is_in(tmp_path):
     """Show me around can be pressed as soon as the page is drawn, before the
     asset list is in. An example looked up in the empty list would be taken for
-    missing, and the tour, which offers its action once, couldn't try again."""
+    missing; and on a first visit after an import, the list's request is what
+    maps the records, so an example asked for alongside it can find none. Either
+    way the tour, which offers its action once, couldn't try again."""
     seen = _offer(tmp_path, "assets_late")
+    assert seen["askedBeforeList"] == 0
     assert (seen["selected"], seen["example"], seen["noExample"]) == ("P-100", "P-100", False)
 
 

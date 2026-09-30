@@ -170,8 +170,10 @@ const grab = (name) => {
 };
 
 const API = "/life-data-analysis/api";
+// Answerable before it is asked: the picker waits for the asset list first.
 let answer;
-const getJson = () => new Promise((resolve) => { answer = resolve; });
+const answered = new Promise((resolve) => { answer = resolve; });
+const getJson = () => answered;
 const state = {
   selectedAsset: null,
   assetByNumber: new Map([["P-100", { asset_number: "P-100" }], ["P-200", { asset_number: "P-200" }]]),
