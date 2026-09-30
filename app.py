@@ -2206,6 +2206,28 @@ def api_tour_example():
     return jsonify({"asset_number": service.tour_example_asset()})
 
 
+@app.route("/life-data-analysis/api/disposition-tour-example")
+@life_data_api
+def api_disposition_tour_example():
+    """The asset the Disposition page's "Show me around" picks when none is selected.
+
+    The one whose table, for the Record Type, Rows and search asked for, has the
+    most rows. Only a read, like the analysis tour's; ``asset_number`` is null
+    when no asset has a record that fits.
+    """
+    service = _service_or_api_error()
+    kind = _disposition_kind()
+    only_needing = (request.values.get("scope") or "all").strip().lower() == "new"
+    search = (request.values.get("search") or "").strip()
+    return jsonify(
+        {
+            "asset_number": service.disposition_tour_example_asset(
+                kind, only_needing_disposition=only_needing, search=search or None
+            )
+        }
+    )
+
+
 # The Record Class choices each disposition kind offers. PM records cannot be
 # reclassed as corrective work orders (save_disposition refuses it), so the PM
 # list leaves it out rather than offering a choice that fails on save.
