@@ -357,6 +357,78 @@ def test_every_department_page_declares_both_of_its_keys(monkeypatch, tmp_path):
         assert page["staff_level"] == "all", route
 
 
+# --- Home's cards ---------------------------------------------------------------
+
+# The card ids Home draws for an account inside Operations & Maintenance, in the
+# order drawn, against the page each one opens.
+DEPARTMENT_CARDS = [
+    ("home-card-pm-tasks", "/pm-task-tracker"),
+    ("home-card-safety", "/safety-report"),
+    ("home-card-overdue-wo", "/overdue-wo-tracker"),
+]
+USUAL_CARDS = ["home-card-analysis", "home-card-disposition", "home-card-standards"]
+
+
+def _home_cards(body):
+    """The id of every card in Home's card grid, in drawn order."""
+    grid = re.search(r'<section class="card-grid" id="home-cards">(.*?)</section>', body, re.S)
+    assert grid, "Home rendered no card grid"
+    return re.findall(r'id="(home-card-[\w-]+)"', grid.group(1))
+
+
+@pytest.mark.parametrize("department", WITHHELD_FROM)
+@pytest.mark.parametrize("staff_level", ["engineer", "leadership", "associate", "all"])
+def test_operations_and_maintenance_get_the_three_dashboards_on_home(
+    monkeypatch, tmp_path, department, staff_level
+):
+    """In place of the usual cards, not beside them, and at every level."""
+    client = _client(
+        _app(monkeypatch, tmp_path), department=department, staff_level=staff_level
+    )
+    body = client.get("/").get_data(as_text=True)
+    assert _home_cards(body) == [card for card, _ in DEPARTMENT_CARDS]
+    for card, route in DEPARTMENT_CARDS:
+        assert re.search(rf'id="{card}" href="{re.escape(route)}"', body), card
+        assert client.get(route).status_code == 200, route
+
+
+def test_the_dashboard_cards_carry_the_coming_soon_mark(monkeypatch, tmp_path):
+    """The pages are still placeholders, so the cards say so, as the sidebar does."""
+    module = _app(monkeypatch, tmp_path)
+    body = _client(module, department="operations").get("/").get_data(as_text=True)
+    grid = re.search(r'id="home-cards">(.*?)</section>', body, re.S).group(1)
+    assert grid.count(module.COMING_SOON_LABEL) == len(DEPARTMENT_CARDS)
+
+
+@pytest.mark.parametrize("department", KEEPS_THEM)
+def test_every_other_department_keeps_the_usual_cards(monkeypatch, tmp_path, department):
+    """"All departments" is offered the dashboards in the sidebar, but it is not
+    inside Operations & Maintenance, so its Home is unchanged."""
+    client = _client(_app(monkeypatch, tmp_path), department=department, role="editor")
+    assert _home_cards(client.get("/").get_data(as_text=True)) == USUAL_CARDS
+
+
+def test_a_visitor_keeps_the_usual_cards(monkeypatch, tmp_path):
+    body = _app(monkeypatch, tmp_path).app.test_client().get("/").get_data(as_text=True)
+    assert _home_cards(body) == USUAL_CARDS
+
+
+@pytest.mark.parametrize("department", [None, "facilities", *WITHHELD_FROM, "all"])
+def test_no_card_on_home_plays_an_animation_on_hover(monkeypatch, tmp_path, department):
+    """Removed for every department and level: nothing in the card grid loads an
+    image, and the script that used to swap one in is gone."""
+    module = _app(monkeypatch, tmp_path)
+    client = (
+        module.app.test_client() if department is None
+        else _client(module, department=department, role="editor")
+    )
+    body = client.get("/").get_data(as_text=True)
+    grid = re.search(r'id="home-cards">(.*?)</section>', body, re.S).group(1)
+    assert "<img" not in grid
+    assert "<video" not in grid
+    assert "data-hover-src" not in body
+
+
 # --- the placeholder pages themselves ----------------------------------------
 
 def test_each_new_page_renders_and_says_it_is_not_built_yet(monkeypatch, tmp_path):

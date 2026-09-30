@@ -295,6 +295,10 @@ def auth_context():
         # account already resolved above rather than exposed as a global that
         # would have to resolve it again per call.
         "auth_may_open": lambda path: _path_is_offered(path, user),
+        # Home's cards for an account inside Operations & Maintenance, and empty
+        # for everybody else. Here rather than in the home view because the 404
+        # page draws home.html as well.
+        "home_department_cards": _home_cards_for(user),
     }
 
 ICONS = {
@@ -737,10 +741,23 @@ def _page_is_withheld_from(page: dict, user: dict | None) -> bool:
     """
 
     withheld = page.get("withheld_from_department")
-    if withheld is None or user is None:
+    return withheld is not None and _account_is_within(user, withheld)
+
+
+def _account_is_within(user: dict | None, department: str) -> bool:
+    """Whether every department this account covers is one ``department`` names.
+
+    The containment test on its own, for the two things that ask it: a page kept
+    out of a department (above), and Home, which draws a department's own cards
+    only for an account that is wholly inside it. An Operations account is
+    inside Operations & Maintenance; an "all departments" account is not,
+    because it covers Facilities too. A signed-out visitor is inside nothing.
+    """
+
+    if user is None:
         return False
     account = set(department_scope(user.get("department", DEFAULT_DEPARTMENT)))
-    return bool(account) and account <= set(department_scope(withheld))
+    return bool(account) and account <= set(department_scope(department))
 
 
 def _withheld_section_for(path: str) -> dict | None:
@@ -846,6 +863,56 @@ def _nav_links_for(user: dict | None) -> list[dict]:
             "group": page.get("group"),
         })
     return links
+
+
+# The cards Home draws for an account inside Operations & Maintenance, in the
+# order drawn. That account is kept out of everything the usual three cards open
+# except Standards and Documentation, and is the one the three dashboards are
+# for, so Home puts its own pages in front of it instead. The title, address and
+# "coming soon" mark are read off each page's PAGES entry rather than restated,
+# so building a tracker out takes the mark off its card as well as its sidebar
+# entry.
+OPERATIONS_MAINTENANCE_HOME_CARDS = (
+    {
+        "route": "/pm-task-tracker",
+        "id": "home-card-pm-tasks",
+        "summary": "Follow preventive maintenance tasks from scheduled through complete.",
+        "detail": "See what is due, what has been done, and what is falling behind.",
+    },
+    {
+        "route": "/safety-report",
+        "id": "home-card-safety",
+        "summary": "Review safety findings and incident reports for your area.",
+        "detail": "Record safety observations, near misses and incidents, and follow them up.",
+    },
+    {
+        "route": "/overdue-wo-tracker",
+        "id": "home-card-overdue-wo",
+        "summary": "Keep work orders that are past their due date in view.",
+        "detail": "Work through the overdue backlog by age and priority to decide what to close out first.",
+    },
+)
+
+
+def _home_cards_for(user: dict | None) -> list[dict]:
+    """Home's department cards for this account, or [] for the usual three.
+
+    Only an account wholly inside Operations & Maintenance gets them. One
+    recorded as "all departments" is offered the dashboards in the sidebar too,
+    but it is also offered Life Data Analysis, so its Home stays as it was.
+    """
+
+    if not _account_is_within(user, DEPARTMENT_OPERATIONS_MAINTENANCE):
+        return []
+    cards = []
+    for card in OPERATIONS_MAINTENANCE_HOME_CARDS:
+        page = PAGES_BY_ROUTE[card["route"]]
+        cards.append({
+            **card,
+            "title": page["title"],
+            "coming_soon": bool(page.get("coming_soon")),
+        })
+    return cards
 
 
 def _nav_sections_for(user: dict | None) -> list[dict]:

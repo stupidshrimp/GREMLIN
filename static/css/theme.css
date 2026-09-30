@@ -709,11 +709,9 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
 
 /* The workflow cards use .card-grid's own three columns. A .life-data-card-grid
    rule used to restate them here, below the responsive override, which quietly
-   kept the cards three-abreast on a phone. */
-/* `isolation` is what lets the hover artwork below blend against this card's own
-   gradient rather than against whatever the page has behind it, and it pins the
-   negative-z-index layer inside the card. `overflow` clips it to the rounded
-   corners. */
+   kept the cards three-abreast on a phone. `overflow` keeps the extra copy
+   that unfolds on hover inside the card's rounded corners while it slides into
+   place. */
 .life-data-card {
   display: flex;
   flex-direction: column;
@@ -721,71 +719,7 @@ p { margin: 0; line-height: 1.6; color: var(--muted); }
   text-decoration: none;
   color: inherit;
   min-height: 220px;
-  position: relative;
-  isolation: isolate;
   overflow: hidden;
-}
-
-/* The animation a card plays while it is pointed at. It covers the card edge to
-   edge: `inset: 0` against .life-data-card's own positioning, whose
-   `overflow: hidden` crops it back to the rounded corners. All three GIFs are
-   square and no card is, so `cover` scales to whichever side is long and lets
-   the overflow fall off the other -- and since they are drawn with a wide
-   margin around the artwork, what the crop takes is that margin rather than the
-   drawing. `contain` would instead letterbox the square inside the card and
-   leave the ends of a wide one bare.
-
-   `multiply` is why this reads as part of the card rather than a picture pasted
-   onto it. The GIFs are green line work on a near-white ground -- around 246 of
-   255 -- and multiplying drops that ground out: white is the identity for it,
-   so only the ink lands and the glass gradient carries on underneath.
-   Compositing normally would instead lay a pale rectangle over the card and
-   show its edges. It is also what keeps a full-bleed animation off the copy:
-   everywhere the artwork is ground rather than line, the card shows through
-   unchanged and the text is sitting on the same background it always was. */
-.card-hover-media {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: -1;
-  pointer-events: none;
-  object-fit: cover;
-  object-position: center;
-  mix-blend-mode: multiply;
-  opacity: 0;
-  visibility: hidden;
-  /* `visibility` takes the image out of the page entirely between hovers,
-     rather than leaving it present at zero opacity. It is not what stops the
-     animation -- Chromium advances a hidden GIF just the same, which is why
-     home.js drops the source instead -- it is what makes the element inert
-     while there is nothing to see. Delayed out so the fade survives on the way
-     out, undelayed in so the first frame is not held back.
-
-     The 260ms here is the fade home.js waits out before releasing the source.
-     Shorten one without the other and the artwork blinks off mid-fade. */
-  transition: opacity 260ms ease, visibility 0s linear 260ms;
-}
-
-/* `multiply` only works as described while the card underneath is light. Over
-   the dark theme's card it does the opposite of what it is there for: the ink is
-   multiplied down into the background and vanishes, and only the ground -- the
-   part meant to drop out -- survives at all. `screen` is multiply's mirror, so
-   the inverted artwork behaves under it exactly as the original does under
-   multiply: inverting turns the near-white ground near-black, which is screen's
-   identity and therefore drops out, and turns the line work light, which is what
-   screen keeps. `hue-rotate` then puts back the hue the inversion took, so the
-   artwork is still green rather than the magenta its complement would be. */
-:root[data-theme="dark"] .card-hover-media {
-  mix-blend-mode: screen;
-  filter: invert(1) hue-rotate(180deg);
-}
-
-.life-data-card:hover .card-hover-media,
-.life-data-card:focus-visible .card-hover-media {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity 260ms ease, visibility 0s;
 }
 
 /* The Disposition card is a <button> for a visitor who may only read, so that
@@ -823,7 +757,7 @@ button.life-data-card {
    number, and the padding below is what made it one.
 
    Wanted only here. The developer dashboard's .dev-card keeps the max-height
-   reveal it already had; its cards carry no artwork and never narrow the copy. */
+   reveal it already had; its cards never narrow the copy. */
 .life-data-card .card-hover-copy {
   display: grid;
   grid-template-rows: 0fr;
@@ -837,26 +771,11 @@ button.life-data-card {
   overflow: hidden;
 }
 
-/* The copy uses the full width of the card. It used to give up a column on the
-   right to keep clear of the animation, which was worth doing while the artwork
-   was a fixed corner illustration; now that it covers the whole card there is no
-   corner to reserve, and reserving one would only narrow the sentence for
-   nothing. */
 .life-data-card:hover .card-hover-copy,
 .life-data-card:focus-visible .card-hover-copy {
   opacity: 1;
   grid-template-rows: 1fr;
   transform: translateY(0);
-}
-
-/* A GIF has no pause and no still to fall back on, and this one loops for as
-   long as the pointer rests on the card -- precisely the continuous motion the
-   preference is asking us not to start. So it is never revealed. home.js reads
-   the same preference and does not fetch the file either. */
-@media (prefers-reduced-motion: reduce) {
-  .card-hover-media {
-    display: none;
-  }
 }
 
 .life-data-card:hover > p,
