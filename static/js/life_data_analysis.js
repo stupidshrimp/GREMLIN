@@ -22,6 +22,9 @@
   // decided. The API enforces the same rule on its own -- this only keeps the
   // page from offering an action that would be refused.
   const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
+  // Added to the hint over each analysis table whose record numbers open that
+  // record's disposition, for the accounts that get those buttons.
+  const RECORD_EDIT_HINT = CAN_EDIT ? " Click a WO number to review or change its disposition." : "";
   // Analysis types offered by the Step 1 selector. Weibull and Failure Mode Trend
   // are implemented; the rest render a "Coming soon" placeholder for now. The
   // selected type only controls the secondary analysis panel — the Pareto chart
@@ -31,6 +34,33 @@
     TREND: "Failure Mode Trend Analysis",
     DOWNTIME: "Downtime Driver Analysis",
     PM: "PM Effectiveness Analysis",
+  };
+  // The editable half of a disposition, per record kind, as columns: what the
+  // disposition table draws after the read-only record columns, and what the
+  // analysis page's single-record editor labels its fields with, so the two
+  // always call a field the same thing. Each key is the name the server orders
+  // that column by.
+  const DISPOSITION_EDIT_COLUMNS = {
+    wo: [
+      { key: "disposition_notes", label: "Disposition Notes" },
+      { key: "disposition_category", label: "Disposition Category" },
+      { key: "effective_record_class", label: "Record Class" },
+      { key: "failure_mode", label: "Failure Mode" },
+      { key: "failure_mechanism", label: "Failure Mechanism" },
+      { key: "modeled_population_name", label: "Modeled Population" },
+      { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
+    ],
+    pm: [
+      { key: "disposition_notes", label: "Disposition Notes" },
+      { key: "disposition_category", label: "Disposition Category" },
+      { key: "effective_record_class", label: "Record Class" },
+      { key: "pm_reset_inclusion_decision", label: "PM Reset Decision" },
+      { key: "reset_target_failure_mode", label: "Reset Target Failure Mode" },
+      { key: "reset_target_failure_mechanism", label: "Reset Target Failure Mechanism" },
+      { key: "modeled_population_name", label: "Modeled Population" },
+      { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
+      { key: "pm_reset_renewal_rationale", label: "PM Reset Renewal Rationale / Evidence" },
+    ],
   };
   const SUMMARY_FIELDS = [
     ["total_entries", "Total entries for this asset"],
@@ -85,6 +115,10 @@
     // older group's result -- or its "nothing saved" empty state -- cannot land on top
     // of a newer one.
     latestResult: null,
+    // The failure group `latestResult` was fitted for, so a disposition changed
+    // from its data table can run the same group again. Only read alongside a
+    // non-null latestResult, which every path that drops the result clears.
+    latestResultGroup: null,
     analysisToken: 0,
     // Operating schedule (hours per day the asset actually runs) used to convert the
     // Weibull MTTF from operating hours into approximate calendar months/days. 24 =
@@ -1556,9 +1590,13 @@
       if (!state.selectedTrend) {
         hint.textContent = "The specific work orders that populate the months plotted above.";
       } else if (state.trendSelectedMonth) {
-        hint.textContent = `Work orders for ${monthLabel(state.trendSelectedMonth)}. Click the month again to show every month in range.`;
+        hint.textContent =
+          `Work orders for ${monthLabel(state.trendSelectedMonth)}. Click the month again to show every month in range.` +
+          RECORD_EDIT_HINT;
       } else {
-        hint.textContent = "The specific work orders that populate the months plotted above. Click a month/data point to drill in.";
+        hint.textContent =
+          "The specific work orders that populate the months plotted above. Click a month/data point to drill in." +
+          RECORD_EDIT_HINT;
       }
     }
     const headers = ["WO #", "WO Title", "Month", "Downtime (h)", "Request Description", "Completion Notes", "Failure Narrative"];
@@ -1581,7 +1619,7 @@
       records.forEach((record) => {
         tbody.appendChild(
           el("tr", {}, [
-            el("td", { text: record.task_id != null ? String(record.task_id) : "" }),
+            recordNumberCell(record.task_id, { mappedRecordId: record.mapped_record_id, kind: "wo" }),
             el("td", { text: record.task_name || "" }),
             el("td", { text: monthLabel(record.month) }),
             el("td", { text: record.downtime_hours != null ? fmtFixed(record.downtime_hours) : "" }),
@@ -2184,7 +2222,7 @@
           el("td", { class: pmDaysClass(row.days_to_failure), text: fmt(row.days_to_failure) }),
           el("td", { text: row.failure_mechanism_name || "" }),
           el("td", { text: row.downtime_hours != null ? `${fmt(row.downtime_hours)} h` : "" }),
-          el("td", { text: row.corrective_wo_number != null ? String(row.corrective_wo_number) : "" }),
+          recordNumberCell(row.corrective_wo_number, { mappedRecordId: row.corrective_mapped_record_id, kind: "wo" }),
         ])
       );
     });
@@ -2285,17 +2323,107 @@
     return null;
   }
 
+  // The name -> id maps a WO save resolves typed taxonomy through. Built once per
+  // payload rather than once per row: every row of a page shares the options.
+  function dispositionTaxonomy(data) {
+    return {
+      // Failure-mode names are globally unique, so a name -> id map is safe.
+      modeMap: new Map(data.mode_options.map((o) => [o.failure_mode_name, o.failure_mode_id])),
+      // Mechanism names can repeat across modes, so key by (name, parent mode id).
+      mechByNameMode: new Map(
+        data.mechanism_options.map((o) => [mechKey(o.failure_mechanism_name, o.failure_mode_id), o.failure_mechanism_id])
+      ),
+    };
+  }
+
+  // The editable half of one record's disposition: a control per
+  // DISPOSITION_EDIT_COLUMNS key, plus the row state a save is read from. Shared
+  // by the disposition table (a row per record) and the analysis tables'
+  // single-record editor, so a record starts from the same defaults and saves the
+  // same payload wherever it is edited. Each cell carries the nodes to place, the
+  // class the table gives its <td>, and the one control a <label> points at.
+  function buildDispositionControls(row, data, taxonomy) {
+    const isPm = data.kind === "pm";
+    const notes = el("textarea", { class: "lda-textarea" });
+    notes.value = row.disposition_notes || row.disposition_text || "";
+
+    const category = buildSelect(data.categories, row.disposition_category || "UNKNOWN");
+    const recordClass = buildSelect(data.record_classes, row.effective_record_class || (isPm ? "PM" : "CORRECTIVE_WO"));
+
+    let decision = null;
+    let mode;
+    let mech;
+    let rationale = null;
+    if (isPm) {
+      decision = buildSelect(data.pm_reset_decisions, row.pm_reset_inclusion_decision || "NEEDS_REVIEW");
+      // PMs may only reference existing modes/mechanisms, so the searchable
+      // dropdown is restricted to known options (allowFreeText: false).
+      mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id, { allowFreeText: false });
+      mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, {
+        allowFreeText: false,
+        contextIdKey: "failure_mode_id",
+        getContextId: () => mode.getSelectedId(),
+      });
+      rationale = el("textarea", { class: "lda-textarea" });
+      rationale.value = row.pm_reset_renewal_rationale || "";
+    } else {
+      // WO failure mode/mechanism allow typing a new value as well as picking
+      // an existing one (allowFreeText: true); ids resolve by name on save.
+      mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.failure_mode_id, { allowFreeText: true });
+      mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, { allowFreeText: true });
+    }
+
+    const currentCategory = row.disposition_category || "UNKNOWN";
+    const defaultInclude =
+      Boolean(row.include_in_weibull_candidate) ||
+      (!isPm && currentCategory === "INCLUDED_FAILURE") ||
+      (isPm && currentCategory === "INCLUDED_PM_RESET_EVENT" && row.pm_reset_inclusion_decision === "APPROVED_RESET");
+    const include = el("input", { type: "checkbox" });
+    include.checked = defaultInclude;
+
+    const rowState = {
+      mapped_record_id: Number(row.mapped_record_id),
+      notes,
+      category,
+      recordClass,
+      include,
+      decision,
+      rationale,
+      mode,
+      mech,
+      modeOptions: taxonomy.modeMap,
+      mechByNameMode: taxonomy.mechByNameMode,
+    };
+    rowState.initial = JSON.stringify(dispositionPayloadFromRow(rowState, data.kind));
+
+    const cells = {
+      disposition_notes: { nodes: [notes], control: notes },
+      disposition_category: { nodes: [category], control: category },
+      effective_record_class: { nodes: [recordClass], control: recordClass },
+      [isPm ? "reset_target_failure_mode" : "failure_mode"]: { nodes: mode.nodes, control: mode.input },
+      [isPm ? "reset_target_failure_mechanism" : "failure_mechanism"]: { nodes: mech.nodes, control: mech.input },
+      modeled_population_name: {
+        cls: "lda-readonly",
+        // Named by the server, which also orders this column by it, so the two
+        // cannot drift into sorting by something the cell does not say.
+        nodes: [row.modeled_population_name || data.modeled_population_placeholder],
+        control: null,
+      },
+      include_in_weibull_candidate: { cls: "lda-check", nodes: [include], control: include },
+    };
+    if (isPm) {
+      cells.pm_reset_inclusion_decision = { nodes: [decision], control: decision };
+      cells.pm_reset_renewal_rationale = { nodes: [rationale], control: rationale };
+    }
+    return { rowState, cells };
+  }
+
   function renderDispositionEditor(data) {
     const isPm = data.kind === "pm";
     const workspace = $("lda-workspace");
     workspace.innerHTML = "";
 
-    // Failure-mode names are globally unique, so a name -> id map is safe.
-    const modeMap = new Map(data.mode_options.map((o) => [o.failure_mode_name, o.failure_mode_id]));
-    // Mechanism names can repeat across modes, so key by (name, parent mode id).
-    const mechByNameMode = new Map(
-      data.mechanism_options.map((o) => [mechKey(o.failure_mechanism_name, o.failure_mode_id), o.failure_mechanism_id])
-    );
+    const taxonomy = dispositionTaxonomy(data);
 
     // Every column of the table, in the order it is drawn, each named by the key
     // the server orders that column by and typed by what its values really are.
@@ -2311,28 +2439,7 @@
       typed({ key, label: key, cls: key === "name" ? "lda-col-name" : null })
     );
     const narrativeColumn = typed({ key: "failure_narrative", label: "Failure Narrative" });
-    const extraColumns = (isPm
-      ? [
-          { key: "disposition_notes", label: "Disposition Notes" },
-          { key: "disposition_category", label: "Disposition Category" },
-          { key: "effective_record_class", label: "Record Class" },
-          { key: "pm_reset_inclusion_decision", label: "PM Reset Decision" },
-          { key: "reset_target_failure_mode", label: "Reset Target Failure Mode" },
-          { key: "reset_target_failure_mechanism", label: "Reset Target Failure Mechanism" },
-          { key: "modeled_population_name", label: "Modeled Population" },
-          { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
-          { key: "pm_reset_renewal_rationale", label: "PM Reset Renewal Rationale / Evidence" },
-        ]
-      : [
-          { key: "disposition_notes", label: "Disposition Notes" },
-          { key: "disposition_category", label: "Disposition Category" },
-          { key: "effective_record_class", label: "Record Class" },
-          { key: "failure_mode", label: "Failure Mode" },
-          { key: "failure_mechanism", label: "Failure Mechanism" },
-          { key: "modeled_population_name", label: "Modeled Population" },
-          { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
-        ]
-    ).map(typed);
+    const extraColumns = DISPOSITION_EDIT_COLUMNS[isPm ? "pm" : "wo"].map(typed);
     const columns = sourceColumns.concat([narrativeColumn], extraColumns);
 
     const startRow = data.rows.length ? data.offset + 1 : 0;
@@ -2357,7 +2464,7 @@
     ]);
     const tbody = el("tbody");
 
-    data.rows.forEach((row, index) => {
+    data.rows.forEach((row) => {
       const tr = el("tr");
       sourceColumns.forEach((column) => {
         const value = row[column.key];
@@ -2378,82 +2485,13 @@
         })
       );
 
-      const notes = el("textarea", { class: "lda-textarea" });
-      notes.value = row.disposition_notes || row.disposition_text || "";
-      tr.appendChild(el("td", {}, [notes]));
-
-      const category = buildSelect(data.categories, row.disposition_category || "UNKNOWN");
-      tr.appendChild(el("td", {}, [category]));
-
-      const recordClass = buildSelect(data.record_classes, row.effective_record_class || (isPm ? "PM" : "CORRECTIVE_WO"));
-      tr.appendChild(el("td", {}, [recordClass]));
-
-      let decision = null;
-      let mode;
-      let mech;
-      let rationale = null;
-      if (isPm) {
-        decision = buildSelect(data.pm_reset_decisions, row.pm_reset_inclusion_decision || "NEEDS_REVIEW");
-        tr.appendChild(el("td", {}, [decision]));
-        // PMs may only reference existing modes/mechanisms, so the searchable
-        // dropdown is restricted to known options (allowFreeText: false).
-        mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id, { allowFreeText: false });
-        tr.appendChild(el("td", {}, mode.nodes));
-        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, {
-          allowFreeText: false,
-          contextIdKey: "failure_mode_id",
-          getContextId: () => mode.getSelectedId(),
-        });
-        tr.appendChild(el("td", {}, mech.nodes));
-      } else {
-        // WO failure mode/mechanism allow typing a new value as well as picking
-        // an existing one (allowFreeText: true); ids resolve by name on save.
-        mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.failure_mode_id, { allowFreeText: true });
-        tr.appendChild(el("td", {}, mode.nodes));
-        mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, { allowFreeText: true });
-        tr.appendChild(el("td", {}, mech.nodes));
-      }
-
-      tr.appendChild(
-        el("td", {
-          class: "lda-readonly",
-          // Named by the server, which also orders this column by it, so the two
-          // cannot drift into sorting by something the cell does not say.
-          text: row.modeled_population_name || data.modeled_population_placeholder,
-        })
-      );
-
-      const currentCategory = row.disposition_category || "UNKNOWN";
-      const defaultInclude =
-        Boolean(row.include_in_weibull_candidate) ||
-        (!isPm && currentCategory === "INCLUDED_FAILURE") ||
-        (isPm && currentCategory === "INCLUDED_PM_RESET_EVENT" && row.pm_reset_inclusion_decision === "APPROVED_RESET");
-      const include = el("input", { type: "checkbox" });
-      include.checked = defaultInclude;
-      tr.appendChild(el("td", { class: "lda-check" }, [include]));
-
-      if (isPm) {
-        rationale = el("textarea", { class: "lda-textarea" });
-        rationale.value = row.pm_reset_renewal_rationale || "";
-        tr.appendChild(el("td", {}, [rationale]));
-      }
-
-      const rowState = {
-        mapped_record_id: Number(row.mapped_record_id),
-        notes,
-        category,
-        recordClass,
-        include,
-        decision,
-        rationale,
-        mode,
-        mech,
-        modeOptions: modeMap,
-        mechByNameMode,
-        tr,
-      };
-      rowState.initial = JSON.stringify(dispositionPayloadFromRow(rowState, data.kind));
-      rowStates.push(rowState);
+      const controls = buildDispositionControls(row, data, taxonomy);
+      extraColumns.forEach((column) => {
+        const cell = controls.cells[column.key];
+        tr.appendChild(el("td", { class: cell.cls || null }, cell.nodes));
+      });
+      controls.rowState.tr = tr;
+      rowStates.push(controls.rowState);
       tbody.appendChild(tr);
     });
 
@@ -2743,10 +2781,11 @@
     // <body>, a row can be scrolled above/left of the table's visible area while
     // its rect is still inside the page viewport — so the menu must be dismissed
     // against this box, not the viewport alone. Falls back to the viewport when
-    // there is no scroll container (defensive; these always render inside one).
+    // there is no scroll container. The single-record editor on the analysis page
+    // puts these in a scrolling modal instead of a table, so that clips too.
     function visibleClip() {
       const view = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
-      const scroller = input.closest(".lda-table-scroll");
+      const scroller = input.closest(".lda-table-scroll, .lda-modal");
       if (!scroller) return view;
       const r = scroller.getBoundingClientRect();
       return {
@@ -2853,6 +2892,9 @@
           choose(filtered[activeIndex]);
         }
       } else if (event.key === "Escape") {
+        // An Escape that closes the open list is spent on it: marked so a modal
+        // this combobox sits in keeps itself open rather than closing too.
+        if (isOpen) event.preventDefault();
         closeList();
       }
     });
@@ -3017,6 +3059,298 @@
       }
     });
     fileInput.click();
+  }
+
+  // ---- single-record disposition (analysis tables) -------------------------
+  // An analysis lists the records it was built from, and that is where a
+  // misclassified one gets noticed: a work order sitting under the wrong
+  // mechanism, or one that was never a failure at all. Its number in those
+  // tables opens that one record's disposition here, with the controls the
+  // disposition table uses, rather than sending the user off to page through the
+  // disposition screen for it. Saving refreshes the analysis on screen, so the
+  // effect of the change shows up where it was spotted.
+
+  // The disposition kind behind a Weibull observation: the event that closed its
+  // life interval was either a failure (a corrective work order) or a PM reset.
+  // The trailing current-life row has no closing event, so no record to open.
+  function observationRecordKind(obs) {
+    if (obs.source_event_role === "FAILURE_EVENT") return "wo";
+    if (obs.source_event_role === "PM_RESET_EVENT") return "pm";
+    return null;
+  }
+
+  // A table cell holding a record's number. For an editor, on a row with a
+  // record behind it, the number is a button that opens that record's
+  // disposition; everyone else gets the number as plain text, since saving a
+  // disposition is an editor's write. `ref` is { mappedRecordId, kind }, with
+  // kind "wo" or "pm".
+  function recordNumberCell(taskId, ref, emptyText) {
+    const number = taskId != null && String(taskId).trim() !== "" ? String(taskId) : "";
+    if (!CAN_EDIT || !ref || ref.mappedRecordId == null || !ref.kind) {
+      return el("td", { text: number || emptyText || "" });
+    }
+    const noun = ref.kind === "pm" ? "PM" : "work order";
+    const description = number
+      ? `Review or change the disposition of ${noun} ${number}`
+      : `Review or change this ${noun}'s disposition`;
+    const button = el(
+      "button",
+      {
+        type: "button",
+        class: "lda-record-link",
+        title: description,
+        "aria-label": description,
+        onclick: (event) => {
+          // A row that is clickable itself (the Weibull data table jumps to the
+          // graph) must not also act on a click meant for this one record.
+          event.stopPropagation();
+          openRecordDisposition({ mappedRecordId: ref.mappedRecordId, kind: ref.kind, trigger: button });
+        },
+      },
+      [
+        el("span", { class: "lda-record-link-number", text: number || "Edit" }),
+        el("span", { class: "lda-record-link-icon", "aria-hidden": "true", text: "✎" }),
+      ]
+    );
+    // Column sorting and filtering read the number, not the pencil beside it.
+    return el("td", { class: "lda-record-cell", "data-column-text": number }, [button]);
+  }
+
+  async function openRecordDisposition(ref) {
+    if (!CAN_EDIT || !state.selectedAsset || ref.mappedRecordId == null) return;
+    const asset = state.selectedAsset;
+    const params = new URLSearchParams({
+      asset,
+      kind: ref.kind === "pm" ? "pm" : "wo",
+      mapped_record_id: String(ref.mappedRecordId),
+    });
+    beginLoading("Loading this record's disposition…");
+    let data;
+    try {
+      data = await getJson(`${API}/dispositions/record?${params.toString()}`);
+    } catch (err) {
+      if (!err.toastShown) showToast(err.message, "error");
+      return;
+    } finally {
+      endLoading();
+    }
+    // Nothing can change the asset under the loading overlay today, but an editor
+    // opened for one asset must never save beside another asset's analysis.
+    if (state.selectedAsset !== asset) return;
+    const saved = await editRecordDisposition(data);
+    if (ref.trigger && ref.trigger.isConnected) ref.trigger.focus();
+    if (saved) refreshAfterRecordDisposition(saved);
+  }
+
+  // Field order in the editor: what decides a disposition first, free text last.
+  // The table leads with the notes, which suits scanning rows but not one form.
+  const RECORD_EDITOR_FIELDS = {
+    wo: [
+      "disposition_category",
+      "effective_record_class",
+      "failure_mode",
+      "failure_mechanism",
+      "include_in_weibull_candidate",
+      "modeled_population_name",
+      "disposition_notes",
+    ],
+    pm: [
+      "disposition_category",
+      "pm_reset_inclusion_decision",
+      "reset_target_failure_mode",
+      "reset_target_failure_mechanism",
+      "effective_record_class",
+      "include_in_weibull_candidate",
+      "modeled_population_name",
+      "pm_reset_renewal_rationale",
+      "disposition_notes",
+    ],
+  };
+  // Fields that take the editor's full width rather than half of it.
+  const RECORD_EDITOR_WIDE = {
+    wo: new Set(["include_in_weibull_candidate", "modeled_population_name", "disposition_notes"]),
+    pm: new Set(["modeled_population_name", "pm_reset_renewal_rationale", "disposition_notes"]),
+  };
+  let recordEditorSeq = 0;
+
+  // The editor itself: the record's own details for reference, then the same
+  // disposition controls its table row would have. Resolves with the saved
+  // record, or null when it is closed without saving. A refused save leaves it
+  // open with the reason, so what was entered can be corrected rather than
+  // entered again.
+  //
+  // Its own modal rather than openModal(), which closes on any button and on a
+  // backdrop click: a form should not lose its edits to a stray click, and it
+  // has to stay open across a save that fails. Not a native <dialog> either --
+  // the mode/mechanism option lists are portaled to <body>, which sits beneath a
+  // dialog's top layer, so they would open out of sight behind it.
+  function editRecordDisposition(data) {
+    return new Promise((resolve) => {
+      const row = data.row;
+      const kind = data.kind === "pm" ? "pm" : "wo";
+      const isPm = kind === "pm";
+      const number =
+        row.taskID != null && String(row.taskID).trim() !== "" ? String(row.taskID) : `record ${row.mapped_record_id}`;
+      const recordLabel = `${isPm ? "PM" : "WO"} ${number}`;
+      const controls = buildDispositionControls(row, data, dispositionTaxonomy(data));
+      const rowState = controls.rowState;
+      const labels = new Map(DISPOSITION_EDIT_COLUMNS[kind].map((column) => [column.key, column.label]));
+      const idPrefix = `lda-record-${++recordEditorSeq}`;
+
+      const facts = [
+        ["Title", row.name],
+        ["Request title", row.requestTitle],
+        ["Created", formatRecordDate(row.createdDate_Final)],
+        ["Completed", formatRecordDate(row.completedDate_Final)],
+        ["Downtime", row.downtime != null && row.downtime !== "" ? `${fmtFixed(row.downtime)} h` : ""],
+        ["Request description", row.requestorDescription],
+        ["Completion notes", row.completionNotes],
+        ...narrativeLines(row, "", data.narrative_columns).map((line) => [line.label, line.text]),
+      ].filter(([, value]) => value != null && String(value).trim() !== "");
+
+      const fields = RECORD_EDITOR_FIELDS[kind].map((key) => {
+        const cell = controls.cells[key];
+        const label = labels.get(key);
+        const wide = RECORD_EDITOR_WIDE[kind].has(key) ? " is-wide" : "";
+        if (key === "include_in_weibull_candidate") {
+          // Not an .lda-field: its input rules would pad and border the checkbox.
+          return el("div", { class: "lda-record-check" + wide }, [
+            el("label", { class: "lda-checkbox" }, [cell.control, document.createTextNode(label)]),
+          ]);
+        }
+        const cls = "lda-field" + wide;
+        if (!cell.control) {
+          // Modeled Population is derived on save from the asset and the
+          // mode/mechanism, so it is shown rather than edited.
+          return el("div", { class: cls }, [
+            el("span", { class: "lda-record-field-label", text: label }),
+            el("p", { class: "lda-record-readonly", text: String(cell.nodes[0] || "") }),
+          ]);
+        }
+        cell.control.id = `${idPrefix}-${key}`;
+        return el("div", { class: cls }, [el("label", { for: cell.control.id, text: label }), ...cell.nodes]);
+      });
+
+      const message = el("p", { class: "lda-banner", role: "alert", hidden: true });
+      const cancelButton = el("button", { type: "button", class: "btn-secondary", text: "Cancel" });
+      const saveButton = el("button", { type: "button", class: "btn-primary", text: "Save disposition" });
+      const titleId = `${idPrefix}-title`;
+      const modal = el(
+        "div",
+        { class: "lda-modal lda-record-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
+        [
+          el("div", {}, [
+            el("p", { class: "eyebrow", text: `Asset ${data.asset_number}` }),
+            el("h3", { id: titleId, text: `Edit disposition: ${recordLabel}` }),
+          ]),
+          facts.length
+            ? el(
+                "dl",
+                { class: "lda-record-facts" },
+                facts.flatMap(([label, value]) => [el("dt", { text: label }), el("dd", { text: String(value).trim() })])
+              )
+            : null,
+          el("div", { class: "lda-record-fields" }, fields),
+          el("p", {
+            class: "lda-hint",
+            text:
+              (isPm
+                ? "A PM only feeds the Weibull as INCLUDED_PM_RESET_EVENT with APPROVED_RESET, an existing reset " +
+                  "target and a rationale, with Include in Weibull Candidate checked."
+                : "A corrective WO only feeds the Weibull as INCLUDED_FAILURE with a failure mode and Include in " +
+                  "Weibull Candidate checked. Moving it to another mode or mechanism moves it to that group's analysis.") +
+              " Saving keeps the previous disposition in the record's history and refreshes this analysis.",
+          }),
+          message,
+          el("div", { class: "lda-modal-actions" }, [cancelButton, saveButton]),
+        ]
+      );
+      const backdrop = el("div", { class: "lda-modal-backdrop" }, [modal]);
+
+      let saving = false;
+      function showMessage(text, kindClass) {
+        message.textContent = text;
+        message.className = `lda-banner is-${kindClass}`;
+        message.hidden = false;
+      }
+      function close(value) {
+        document.removeEventListener("keydown", onKey);
+        // A focused combobox closes its portaled list on blur, and removing the
+        // modal from under it would skip that, stranding the list on the page.
+        if (modal.contains(document.activeElement)) document.activeElement.blur();
+        document.querySelectorAll("body > .lda-portal-list").forEach((node) => node.remove());
+        backdrop.remove();
+        resolve(value);
+      }
+      function onKey(event) {
+        if (saving) return;
+        // An Escape that closed a mode/mechanism list is marked as spent there.
+        if (event.key === "Escape" && !event.defaultPrevented) {
+          close(null);
+          return;
+        }
+        if (event.key !== "Tab") return;
+        // Keep Tab inside the dialog; aria-modal promises the page behind is inert.
+        const focusable = Array.from(modal.querySelectorAll("button, input, select, textarea")).filter(
+          (node) => !node.disabled
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+      async function save() {
+        const payload = dispositionPayloadFromRow(rowState, kind);
+        if (JSON.stringify(payload) === rowState.initial) {
+          showMessage("Nothing has changed yet. Change a field and save, or cancel to leave it as it is.", "info");
+          return;
+        }
+        message.hidden = true;
+        saving = true;
+        saveButton.disabled = true;
+        cancelButton.disabled = true;
+        saveButton.textContent = "Saving…";
+        try {
+          await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
+        } catch (err) {
+          saving = false;
+          saveButton.disabled = false;
+          cancelButton.disabled = false;
+          saveButton.textContent = "Save disposition";
+          showMessage(err.message, "error");
+          return;
+        }
+        close({ mappedRecordId: rowState.mapped_record_id, kind, label: recordLabel });
+      }
+
+      cancelButton.addEventListener("click", () => close(null));
+      saveButton.addEventListener("click", save);
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+      controls.cells.disposition_category.control.focus();
+    });
+  }
+
+  // After a save from the editor, bring what is on screen back in line with the
+  // data: the readiness counts, rankings and Pareto always, and the analysis the
+  // record was opened from. Trend, PM and downtime re-read inside
+  // refreshSummary(); a Weibull fit has to be run again, and
+  // runAnalysisForGroup() refreshes the summary itself once it has.
+  function refreshAfterRecordDisposition(saved) {
+    showToast(`Saved the disposition for ${saved.label}. Updating the analysis…`, "success");
+    if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.latestResult && state.latestResultGroup) {
+      runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis with the updated disposition…", {
+        changedRecord: saved,
+      });
+      return;
+    }
+    refreshSummary();
   }
 
   // ---- downtime driver analysis ---------------------------------------------
@@ -3310,7 +3644,8 @@
       hint.textContent =
         !state.downtimeSelection || !hasRecords
           ? downtimeEmptyText()
-          : "The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).";
+          : "The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10)." +
+            RECORD_EDIT_HINT;
     }
     const headers = ["Date", "Asset", "Location", "Failure Mechanism", "Downtime (h)", "Operator", "WO #", "Description", "Failure Narrative"];
     const table = el("table", { class: "lda-table" });
@@ -3339,7 +3674,7 @@
             el("td", { text: ev.failure_mechanism_name || "—" }),
             el("td", { text: fmt(ev.downtime_hours) }),
             el("td", { text: ev.operator || "—" }),
-            el("td", { text: ev.task_id != null ? String(ev.task_id) : "—" }),
+            recordNumberCell(ev.task_id, { mappedRecordId: ev.mapped_record_id, kind: "wo" }, "—"),
             el("td", { class: "lda-wo-text", text: description }),
             narrativeCell(ev),
           ])
@@ -3619,7 +3954,11 @@
     return params.toString();
   }
 
-  async function runAnalysisForGroup(group, message) {
+  // `options.changedRecord` marks a re-run after a disposition saved from the data
+  // table ({ mappedRecordId, label }): the new table scrolls back to that record,
+  // and a fit the change has made impossible clears the old one off the screen.
+  async function runAnalysisForGroup(group, message, options) {
+    const changedRecord = (options && options.changedRecord) || null;
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     // Capture the analysis type too: if the user switches away from Weibull while
@@ -3665,10 +4004,22 @@
         return;
       }
       state.latestResult = data.result;
-      renderAnalysisResult(data.result);
+      state.latestResultGroup = group;
+      renderAnalysisResult(data.result, { changedRecord });
       refreshSummary();
     } catch (err) {
-      if (!isStale()) showBanner(err.message, "error");
+      if (isStale()) return;
+      if (changedRecord) {
+        // The fit on screen predates the change -- the change may have taken away
+        // the last failure it rested on -- so leaving it up would show numbers the
+        // data no longer supports. The summary still has to catch up with the save.
+        state.latestResult = null;
+        clearWorkspace();
+        showBanner(`The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run: ${err.message}`, "error");
+        refreshSummary();
+      } else {
+        showBanner(err.message, "error");
+      }
     } finally {
       endLoading();
     }
@@ -3687,7 +4038,8 @@
     return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
   }
 
-  function renderAnalysisResult(result) {
+  function renderAnalysisResult(result, options) {
+    const changedRecord = (options && options.changedRecord) || null;
     clearWorkspace();
     // The table and the charts point at each other: clicking a plotted point highlights
     // its data row, and clicking a data row rings that observation on the graph that
@@ -3758,6 +4110,9 @@
 
         "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
         "Click a row to jump back up to the graph that plots it, with that observation ringed. " +
+        (CAN_EDIT
+          ? "Click a Task ID to review or change that work order's disposition; the analysis re-runs when you save it. "
+          : "") +
         "Use the ▾ menu in any column header to sort or filter the rows."),
       // Generating the report reserves a REL report number, which is a write, so the
       // whole section is editor-only.
@@ -3765,7 +4120,12 @@
 
     ]);
     $("lda-workspace").appendChild(card);
+    // After a disposition saved from the data table, land back on that record
+    // rather than at the top of the card it was edited from. A change that took
+    // it out of this failure group leaves nothing to land on, so say so.
+    if (changedRecord && dataTable.revealRecord(changedRecord.mappedRecordId)) return;
     scrollBelowSticky(card);
+    if (changedRecord) showToast(`${changedRecord.label} is no longer part of this Weibull analysis.`, "info");
   }
 
   // Action bar at the bottom of the results: generates a formal, high-level
@@ -3935,7 +4295,16 @@
     const columns = [
       { label: "#", type: "number", get: (obs) => String(obs.ordered_index ?? "") },
       { label: "Observation ID", type: "number", get: (obs) => String(obs.weibull_observation_id ?? "") },
-      { label: "Task ID", type: "number", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : "") },
+      {
+        label: "Task ID",
+        type: "number",
+        get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : ""),
+        node: (obs) =>
+          recordNumberCell(obs.source_task_id, {
+            mappedRecordId: obs.source_mapped_record_id,
+            kind: observationRecordKind(obs),
+          }),
+      },
       { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
       { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
       { label: "Type", get: (obs) => obs.observation_type || "" },
@@ -3960,6 +4329,7 @@
     );
     const tbody = el("tbody");
     const rowByObs = new Map();
+    const rowByRecord = new Map();
     const activate = typeof onRowActivate === "function" ? onRowActivate : null;
     (result.observations || []).forEach((obs) => {
       const tr = el("tr", {}, columns.map((c) =>
@@ -3977,6 +4347,7 @@
         });
       }
       rowByObs.set(Number(obs.weibull_observation_id), tr);
+      if (obs.source_mapped_record_id != null) rowByRecord.set(Number(obs.source_mapped_record_id), tr);
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
@@ -3986,9 +4357,7 @@
       tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
       tr.classList.add("is-highlight");
     }
-    function highlight(observationId) {
-      const tr = rowByObs.get(Number(observationId));
-      if (!tr) return;
+    function reveal(tr) {
       // A click-to-jump from a chart point may target a row that an active column
       // filter is hiding (e.g. filtered to Failure=Yes, then clicking a censored
       // point). Clear the filters so the jump actually reveals the row.
@@ -3996,7 +4365,20 @@
       markRow(tr);
       tr.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-    return { node, highlight };
+    function highlight(observationId) {
+      const tr = rowByObs.get(Number(observationId));
+      if (tr) reveal(tr);
+    }
+    // The row a record closes, by the record's id. False when the record closes
+    // no row here -- it has left the failure group, or it is the group's first
+    // event, which only ever opens an interval.
+    function revealRecord(mappedRecordId) {
+      const tr = rowByRecord.get(Number(mappedRecordId));
+      if (!tr) return false;
+      reveal(tr);
+      return true;
+    }
+    return { node, highlight, revealRecord };
   }
 
   async function saveAdjustedParameters(resultId, beta, eta, reason) {

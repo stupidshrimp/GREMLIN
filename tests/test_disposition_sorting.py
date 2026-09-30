@@ -656,7 +656,10 @@ def test_the_editable_columns_the_script_draws_are_columns_the_server_can_sort()
     """The disposition columns are built in JS, so only the names tie them together."""
 
     service = LifeDataService.__new__(LifeDataService)
-    block = re.search(r"const extraColumns = \(isPm(.*?)\)\.map\(typed\);", SCRIPT, re.S)
+    # The list lives in one constant the table and the analysis page's
+    # single-record editor both read, so check the table still draws from it.
+    assert 'const extraColumns = DISPOSITION_EDIT_COLUMNS[isPm ? "pm" : "wo"].map(typed);' in SCRIPT
+    block = re.search(r"const DISPOSITION_EDIT_COLUMNS = \{(.*?)\n  \};", SCRIPT, re.S)
     assert block, "the disposition table no longer builds its editable columns from a list"
     keys = re.findall(r'\{ key: "([a-zA-Z_]+)", label: "[^"]+" \}', block.group(1))
     assert keys, "the disposition table no longer names its columns"

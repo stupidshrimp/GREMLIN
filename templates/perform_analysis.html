@@ -167,7 +167,7 @@
   <!-- PM-to-Failure summary table (PM Effectiveness Analysis only). -->
   <div class="lda-panel" id="lda-pm-table-panel" hidden>
     <h3>PM-to-Failure Detail</h3>
-    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.</p>
+    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.{% if auth_can_edit %} Click a Corrective WO Number to review or change its disposition.{% endif %}</p>
     <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
   </div>
 
