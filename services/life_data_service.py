@@ -275,6 +275,14 @@ EXCEL_PM_DISPOSITION_COLUMNS = EXCEL_BASE_COLUMNS + EXCEL_COMMON_DISPOSITION_COL
     "reset_target_failure_mechanism",
     "pm_reset_renewal_rationale",
 )
+# The columns a reader fills in: everything after the record columns, which is
+# what import_disposition_excel reads back. The workbook highlights these so the
+# sheet says which cells are the reader's without a trip to the explainer -- an
+# edit in any other column is discarded on import, silently, and a reader who
+# spent an afternoon correcting completion notes finds that out too late.
+# mapped_record_id is read back as well, but as the key a row is matched by, not
+# a value to change, so it stays with the record columns.
+EXCEL_EDITABLE_COLUMNS = frozenset(EXCEL_WO_DISPOSITION_COLUMNS + EXCEL_PM_DISPOSITION_COLUMNS) - frozenset(EXCEL_BASE_COLUMNS)
 
 # What each exported column holds, so the workbook carries Excel's own types
 # rather than a sheet of text. Excel sorts, filters and formats by cell type, and
@@ -347,6 +355,15 @@ EXCEL_STYLE_DEFAULT = 0
 EXCEL_STYLE_HEADER = 1
 EXCEL_STYLE_DATETIME = 2
 EXCEL_STYLE_DECIMAL = 3
+# A sheet told which of its columns are editable draws their header and cells
+# over a yellow fill, and the header of every other column over grey. The body
+# styles repeat the date and decimal formats because a cell has exactly one
+# style: an editable cell that needs a number format still needs the fill.
+EXCEL_STYLE_READ_ONLY_HEADER = 4
+EXCEL_STYLE_EDITABLE_HEADER = 5
+EXCEL_STYLE_EDITABLE = 6
+EXCEL_STYLE_EDITABLE_DATETIME = 7
+EXCEL_STYLE_EDITABLE_DECIMAL = 8
 
 # Characters XML 1.0 cannot carry. Free-text CMMS boxes pick them up from
 # copy-pasted terminal output and barcode scanners, and one of them in one
@@ -3172,6 +3189,7 @@ class LifeDataService:
             validations=validations,
             lookup_rows=lookup_rows,
             column_types=EXCEL_COLUMN_TYPES,
+            editable_columns=EXCEL_EDITABLE_COLUMNS,
         )
         return len(rows)
 
@@ -3777,7 +3795,7 @@ class LifeDataService:
         ]
         return [*list_validations, *integer_validations], lookup_rows
 
-    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None, column_types: dict[str, str] | None = None) -> None:
+    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None) -> None:
         """Write a simple Excel-compatible .xlsx workbook using only the standard library.
 
         ``column_types`` maps a header name to one of the ``COLUMN_TYPE_*``
@@ -3785,6 +3803,10 @@ class LifeDataService:
         text, and Excel orders and filters text as text. The styles part carries
         the date format those typed cells are drawn in, so a date reaches the
         reader as a date rather than as the five-digit number Excel stores it as.
+
+        ``editable_columns`` names the columns the reader is meant to fill in.
+        Those are drawn highlighted and the rest under a grey header, so the sheet
+        itself shows which cells an upload will read back.
         """
 
         include_lookup_sheet = bool(lookup_rows)
@@ -3799,7 +3821,7 @@ class LifeDataService:
                 # The header row is the filter row, so the sheet opens with
                 # Excel's own sort/filter menu on every column rather than
                 # leaving the reader to select the range and find it themselves.
-                self._xlsx_sheet_xml(rows, validations=validations, column_types=column_types, auto_filter=True),
+                self._xlsx_sheet_xml(rows, validations=validations, column_types=column_types, editable_columns=editable_columns, auto_filter=True),
             )
             if include_lookup_sheet:
                 # The dropdown source lists: plain text, and nothing sorts or
@@ -3879,6 +3901,10 @@ class LifeDataService:
         says it is a date, so without this part every exported date reads as
         46027 -- sortable, and unreadable. numFmtId 164 is the first id reserved
         for custom formats; anything below 163 is one of Excel's own built-ins.
+
+        Fills 0 and 1 are the two Excel reserves whether a workbook uses them or
+        not; the three after them are the editable-column yellow (a paler one for
+        the cells, a stronger one for the header) and the read-only header grey.
         """
 
         return '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -3888,14 +3914,25 @@ class LifeDataService:
 <numFmt numFmtId="165" formatCode="0.00"/>
 </numFmts>
 <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
-<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<fills count="5">
+<fill><patternFill patternType="none"/></fill>
+<fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFFD966"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill>
+</fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="4">
+<cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
 <xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>
+<xf numFmtId="164" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>
+<xf numFmtId="165" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -4087,7 +4124,7 @@ class LifeDataService:
             return None
         return number
 
-    def _xlsx_cell_xml(self, reference: str, value: Any, column_type: str | None, *, style: int = EXCEL_STYLE_DEFAULT) -> str:
+    def _xlsx_cell_xml(self, reference: str, value: Any, column_type: str | None, *, style: int = EXCEL_STYLE_DEFAULT, editable: bool = False) -> str:
         """One cell, written as the type its column holds.
 
         A value that will not convert falls through to text rather than being
@@ -4096,8 +4133,16 @@ class LifeDataService:
         sorts among the text at the end of the column, which is what Excel does
         with a mixed column, and is the visible signal that the cell needs
         looking at.
+
+        ``editable`` draws the cell over the editable-column fill, empty or not --
+        a blank disposition cell is exactly the one the reader has to find.
         """
 
+        if editable:
+            style = EXCEL_STYLE_EDITABLE
+            datetime_style, decimal_style = EXCEL_STYLE_EDITABLE_DATETIME, EXCEL_STYLE_EDITABLE_DECIMAL
+        else:
+            datetime_style, decimal_style = EXCEL_STYLE_DATETIME, EXCEL_STYLE_DECIMAL
         styled = f' s="{style}"' if style else ""
         # Only an absent value leaves an empty cell. A string of spaces is what the
         # record holds, and blanking it here would be one more quiet rewrite of a
@@ -4107,7 +4152,7 @@ class LifeDataService:
         if column_type == COLUMN_TYPE_DATETIME:
             serial = self._excel_serial_datetime(value)
             if serial is not None:
-                return f'<c r="{reference}" s="{EXCEL_STYLE_DATETIME}"><v>{serial}</v></c>'
+                return f'<c r="{reference}" s="{datetime_style}"><v>{serial}</v></c>'
         elif column_type == COLUMN_TYPE_NUMBER:
             number = self._excel_number_value(value)
             if number is not None:
@@ -4116,7 +4161,7 @@ class LifeDataService:
                 # a whole one keeps the general format, so an id reads 1042 rather
                 # than 1042.00. The cell holds the full value either way -- the
                 # format is what it is drawn as, not what it is.
-                cell_style = f' s="{EXCEL_STYLE_DECIMAL}"' if isinstance(number, float) else styled
+                cell_style = f' s="{decimal_style}"' if isinstance(number, float) else styled
                 return f'<c r="{reference}"{cell_style}><v>{number}</v></c>'
         elif column_type == COLUMN_TYPE_BOOLEAN:
             # Written as the words the Lookup Lists dropdown offers rather than as
@@ -4135,7 +4180,7 @@ class LifeDataService:
                 return f'<c r="{reference}"{styled}><v>{value}</v></c>'
         return f'<c r="{reference}"{styled} t="inlineStr"><is>{self._xlsx_inline_text(self._xlsx_safe_text(value))}</is></c>'
 
-    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, auto_filter: bool = False) -> str:
+    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None, auto_filter: bool = False) -> str:
         headers = list(rows[0]) if rows else []
         # Resolved from the header row rather than from the caller's column order:
         # the header names the column, so the types follow a column that moves.
@@ -4143,19 +4188,29 @@ class LifeDataService:
         # the two halves of the round trip agree on what a column is called.
         normalized_types = {self._normalize_excel_header(name): value for name, value in (column_types or {}).items()}
         types_by_index = [normalized_types.get(self._normalize_excel_header(header)) for header in headers]
+        # The same for which columns are the reader's to fill in. A sheet told
+        # nothing about that (the lookup lists) keeps the plain bold header.
+        normalized_editable = {self._normalize_excel_header(name) for name in editable_columns or ()}
+        editable_by_index = [self._normalize_excel_header(header) in normalized_editable for header in headers]
+        if editable_columns is None:
+            header_styles = [EXCEL_STYLE_HEADER] * len(headers)
+        else:
+            header_styles = [EXCEL_STYLE_EDITABLE_HEADER if editable else EXCEL_STYLE_READ_ONLY_HEADER for editable in editable_by_index]
         xml_rows = []
         for row_index, row in enumerate(rows, start=1):
             is_header = row_index == 1
             cells = []
             for column_index, value in enumerate(row, start=1):
                 reference = f"{self._xlsx_column_name(column_index)}{row_index}"
-                column_type = None if is_header else (types_by_index[column_index - 1] if column_index <= len(types_by_index) else None)
+                in_headers = column_index <= len(headers)
+                column_type = None if is_header else (types_by_index[column_index - 1] if in_headers else None)
                 cells.append(
                     self._xlsx_cell_xml(
                         reference,
                         value,
                         column_type,
-                        style=EXCEL_STYLE_HEADER if is_header else EXCEL_STYLE_DEFAULT,
+                        style=header_styles[column_index - 1] if is_header else EXCEL_STYLE_DEFAULT,
+                        editable=not is_header and in_headers and editable_by_index[column_index - 1],
                     )
                 )
             xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')

@@ -32,8 +32,10 @@ from services.life_data_service import (
     COLUMN_TYPE_DATETIME,
     COLUMN_TYPE_NUMBER,
     DISPLAY_COLUMN_SOURCES,
+    EXCEL_BASE_COLUMNS,
     EXCEL_COLUMN_TYPES,
     EXCEL_DATE_EPOCH,
+    EXCEL_EDITABLE_COLUMNS,
     EXCEL_PM_DISPOSITION_COLUMNS,
     EXCEL_STYLE_DATETIME,
     EXCEL_WO_DISPOSITION_COLUMNS,
@@ -686,6 +688,120 @@ class RoundTripIsLosslessTests(DispositionExcelTestCase):
         )
 
 
+class EditableColumnHighlightTests(DispositionExcelTestCase):
+    """The columns a reader fills in are highlighted, and the rest are marked read-only.
+
+    An edit anywhere but the disposition columns is discarded on import without a
+    word, so the sheet itself has to say which cells are the reader's. Yellow for
+    those, from the header down; a grey header over everything else.
+    """
+
+    EDITABLE_HEADER = "FFFFD966"
+    EDITABLE_CELL = "FFFFF2CC"
+    READ_ONLY_HEADER = "FFD9D9D9"
+
+    def setUp(self):
+        super().setUp()
+        self.add_wo("1", completedDate_Final="2026-01-05T00:00:00+00:00", downtime=int(2.5 * 3600))
+        self.add_wo("2")
+
+    @staticmethod
+    def style_xf(sheet: Sheet, style: str | None) -> ET.Element:
+        styles = ET.fromstring(sheet.xml["xl/styles.xml"])
+        return styles.findall("main:cellXfs/main:xf", NS)[int(style or 0)]
+
+    def fill(self, sheet: Sheet, style: str | None) -> str | None:
+        """The colour a cell drawn in ``style`` is filled with, or None for no fill."""
+
+        styles = ET.fromstring(sheet.xml["xl/styles.xml"])
+        fill_id = int(self.style_xf(sheet, style).attrib.get("fillId", 0))
+        pattern = styles.findall("main:fills/main:fill", NS)[fill_id].find("main:patternFill", NS)
+        if pattern.attrib.get("patternType") != "solid":
+            return None
+        return pattern.find("main:fgColor", NS).attrib["rgb"]
+
+    def header_fills(self, sheet: Sheet) -> dict[str, str | None]:
+        return {sheet._text(cell): self.fill(sheet, cell.attrib.get("s")) for cell in sheet.rows[0]}
+
+    def test_the_editable_columns_are_the_disposition_columns(self):
+        """Everything after the record columns, and only that, in both workbooks."""
+
+        for headers in (EXCEL_WO_DISPOSITION_COLUMNS, EXCEL_PM_DISPOSITION_COLUMNS):
+            with self.subTest(first_disposition_column=headers[len(EXCEL_BASE_COLUMNS)]):
+                self.assertEqual(set(headers) & EXCEL_EDITABLE_COLUMNS, set(headers) - set(EXCEL_BASE_COLUMNS))
+        # The key the import matches rows by is read back too, but it is not
+        # the reader's to change.
+        self.assertNotIn("mapped_record_id", EXCEL_EDITABLE_COLUMNS)
+
+    def test_each_header_says_whether_its_column_is_editable(self):
+        for kind in ("wo", "pm"):
+            with self.subTest(kind=kind):
+                fills = self.header_fills(self.export(f"{kind}.xlsx", kind=kind))
+                for header, fill in fills.items():
+                    expected = self.EDITABLE_HEADER if header in EXCEL_EDITABLE_COLUMNS else self.READ_ONLY_HEADER
+                    self.assertEqual(fill, expected, header)
+
+    def test_every_cell_of_an_editable_column_is_highlighted_even_an_empty_one(self):
+        """A blank disposition cell is exactly the one the reader has to find."""
+
+        sheet = self.export()
+        for header in sheet.headers:
+            with self.subTest(header=header):
+                fills = {self.fill(sheet, style) for style in sheet.styles(header)}
+                self.assertEqual(fills, {self.EDITABLE_CELL} if header in EXCEL_EDITABLE_COLUMNS else {None})
+        # Row 1 has not been dispositioned, so its failure mode is still empty.
+        self.assertIn(None, sheet.values("failure_mode"))
+
+    def test_the_read_only_columns_keep_their_number_formats(self):
+        sheet = self.export()
+        for header, number_format in (("completedDate_Final", "164"), ("downtime", "165")):
+            with self.subTest(header=header):
+                formats = {self.style_xf(sheet, style).attrib["numFmtId"] for style in sheet.styles(header)}
+                self.assertIn(number_format, formats)
+
+    def test_a_highlighted_cell_that_needs_a_number_format_keeps_it(self):
+        """A cell has one style, so the fill cannot cost a date or a decimal its format."""
+
+        sheet = self.export()
+        for value, column_type, number_format in (
+            ("2026-01-05T00:00:00+00:00", COLUMN_TYPE_DATETIME, "164"),
+            (2.5, COLUMN_TYPE_NUMBER, "165"),
+        ):
+            with self.subTest(column_type=column_type):
+                cell = ET.fromstring(
+                    f'<row xmlns="{MAIN}">{self.service._xlsx_cell_xml("A2", value, column_type, editable=True)}</row>'
+                )[0]
+                self.assertEqual(self.fill(sheet, cell.attrib.get("s")), self.EDITABLE_CELL)
+                self.assertEqual(self.style_xf(sheet, cell.attrib.get("s")).attrib["numFmtId"], number_format)
+
+    def test_the_highlight_is_what_the_import_reads(self):
+        """Writing over every grey column changes nothing; one yellow cell changes a row."""
+
+        path = self.workspace / "highlighted.xlsx"
+        self.service.export_disposition_excel(self.ASSET, "wo", path)
+        rows = [list(row) for row in self.service._read_xlsx(path)]
+        headers = rows[0]
+        for index, header in enumerate(headers):
+            if header not in EXCEL_EDITABLE_COLUMNS and header != "mapped_record_id":
+                for row in rows[1:]:
+                    row[index] = "edited in Excel"
+        read_only_edits = self.workspace / "read-only-edits.xlsx"
+        self.service._write_xlsx(read_only_edits, rows, "WO Dispositions")
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", read_only_edits), 0)
+
+        rows[1][headers.index("disposition_notes")] = "edited in Excel"
+        editable_edit = self.workspace / "editable-edit.xlsx"
+        self.service._write_xlsx(editable_edit, rows, "WO Dispositions")
+        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", editable_edit), 1)
+
+    def test_the_lookup_lists_keep_their_plain_header(self):
+        """A sheet told nothing about editable columns is not marked read-only."""
+
+        self.export()
+        lookup = Sheet(self.workspace / "wo.xlsx", "xl/worksheets/sheet2.xml")
+        self.assertEqual(set(self.header_fills(lookup).values()), {None})
+
+
 class DownloadScopeTests(DispositionExcelTestCase):
     """"Only new / undispositioned" narrows the workbook, not just the screen."""
 
@@ -865,3 +981,11 @@ class ScreenAndFileAgreeTests(unittest.TestCase):
 
         collapsed = " ".join(self.TEMPLATE.split())
         self.assertIn("real dates and numbers", collapsed)
+
+    def test_the_explainer_names_the_colours_the_workbook_is_drawn_in(self):
+        """The highlight only helps a reader who knows what yellow and grey mean."""
+
+        collapsed = " ".join(self.TEMPLATE.split())
+        self.assertIn("highlighted yellow", collapsed)
+        self.assertIn("grey header is read-only", collapsed)
+        self.assertIn("highlighted yellow; grey-headed columns are read-only", self.SCRIPT)

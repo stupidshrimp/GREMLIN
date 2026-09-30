@@ -100,8 +100,8 @@
           <strong>Lookup Lists</strong>, feeds the dropdowns, so leave it in the file. Dates, task IDs and
           downtime arrive as real dates and numbers, so Sort and Filter on the header row order them the way
           the table does rather than alphabetically.</li>
-        <li><strong>Fill in the disposition columns.</strong> They are the last columns on the sheet, and
-          most of them are dropdowns:
+        <li><strong>Fill in the disposition columns.</strong> They are the last columns on the sheet,
+          <strong>highlighted yellow</strong> from the header down, and most of them are dropdowns:
           <div class="lda-help-columns">
             <div>
               <h3>Both record types</h3>
@@ -135,10 +135,10 @@
             </div>
           </div>
         </li>
-        <li><strong>Leave the rest of the sheet alone.</strong> <code>mapped_record_id</code> is how each
-          row finds its record: never edit it, delete a row, or add one. The task, date, downtime, note and
-          failure-narrative columns are read-only; edits there are ignored on import, so the workbook can
-          never overwrite what the maintenance team recorded in Limble.</li>
+        <li><strong>Leave the rest of the sheet alone.</strong> Every column with a grey header is
+          read-only. <code>mapped_record_id</code> is how each row finds its record: never edit it, delete a
+          row, or add one. The task, date, downtime, note and failure-narrative columns are ignored on
+          import, so the workbook can never overwrite what the maintenance team recorded in Limble.</li>
         <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
           <code>mapped_record_id</code>. Every row whose values differ from the saved disposition is written
           as the current one, with the same result as editing it here and clicking Save Dispositions. Rows
