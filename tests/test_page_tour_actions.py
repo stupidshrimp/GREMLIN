@@ -7,6 +7,9 @@ under node against a stand-in for the few parts of the DOM it touches, and check
 the promises the analysis tour rests on: the count on the first card is the
 whole tour, Next runs the action and shows the same step again with what it
 drew, an action is only offered once, and onEnd hears only the steps reached.
+Also what the Disposition tour's column-by-column cards need of it: a list, a
+source line and a label on the card, and a table column lit as one box after
+being scrolled into the view of the box the table scrolls in.
 """
 
 import json
@@ -33,6 +36,9 @@ class FakeElement {
     this.hidden = false;
     this.disabled = false;
     this.textContent = "";
+    this.className = "";
+    this.children = [];
+    this.parentElement = null;
     this.style = {};
     this.attributes = {};
     this.listeners = {};
@@ -44,6 +50,8 @@ class FakeElement {
     this.box = { top: 100, left: 100, width: 200, height: 50 };
   }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  appendChild(node) { this.children.push(node); return node; }
+  replaceChildren(...nodes) { this.children = nodes; }
   click() { if (!this.disabled) (this.listeners.click || []).forEach((fn) => fn({})); }
   focus() { document.activeElement = this; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
@@ -59,7 +67,8 @@ class FakeElement {
 const byId = {};
 [
   "page-tour", "page-tour-spotlight", "page-tour-card", "page-tour-step", "page-tour-title",
-  "page-tour-body", "page-tour-back", "page-tour-next", "page-tour-skip",
+  "page-tour-content", "page-tour-body", "page-tour-points", "page-tour-cite", "page-tour-back",
+  "page-tour-next", "page-tour-skip",
 ].forEach((id) => { byId[id] = new FakeElement(id); });
 const targets = {};
 
@@ -69,6 +78,10 @@ global.document = {
   body: new FakeElement("body"),
   getElementById: (id) => byId[id] || null,
   querySelector: (selector) => targets[selector] || null,
+  // A target may be several elements, as a table column is.
+  querySelectorAll: (selector) => [].concat(targets[selector] || []),
+  createElement: (tag) => new FakeElement(tag),
+  createTextNode: (text) => ({ textContent: text }),
   addEventListener() {},
   removeEventListener() {},
 };
@@ -78,7 +91,13 @@ global.innerWidth = 1280;
 global.innerHeight = 800;
 global.pageYOffset = 0;
 global.scrollTo = () => {};
-global.getComputedStyle = () => ({ position: "static", top: "0" });
+// Nothing is sticky; an element given `overflow` scrolls, as a table's box does.
+global.getComputedStyle = (node) => ({
+  position: "static",
+  top: "0",
+  overflowX: (node && node.overflow) || "visible",
+  overflowY: (node && node.overflow) || "visible",
+});
 global.matchMedia = () => ({ matches: true });
 global.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 global.localStorage = { getItem: () => null, setItem() {} };
@@ -102,6 +121,15 @@ const card = () => ({
   nextDisabled: byId["page-tour-next"].disabled,
   backDisabled: byId["page-tour-back"].disabled,
   busy: byId["page-tour-card"].attributes["aria-busy"] === "true",
+  points: byId["page-tour-points"].hidden
+    ? null
+    : byId["page-tour-points"].children.map((item) =>
+        item.children.length
+          ? [item.children[0].textContent, item.children[1].textContent]
+          : item.textContent
+      ),
+  cite: byId["page-tour-cite"].hidden ? null : byId["page-tour-cite"].textContent,
+  wide: byId["page-tour-card"].classes.has("has-points"),
 });
 const next = () => byId["page-tour-next"].click();
 const skip = () => byId["page-tour-skip"].click();
@@ -230,6 +258,61 @@ _SCENARIOS = {
       return { first };
     }
     """,
+    # A step with a list, a source line and a label between two without.
+    "points_cite_and_label": r"""
+    async () => {
+      target("#a", true);
+      const steps = [
+        { target: "#a", title: "Plain", body: "Just a paragraph." },
+        {
+          target: "#a", title: "Listed", body: "With a list.", label: () => "Column 1 of 2",
+          points: ["A plain point.", ["TERM", "What it means."]], cite: "DOC-001 §1",
+        },
+        { target: "#a", title: "Plain again", body: "Back to a paragraph." },
+      ];
+      tour.start(steps, {});
+      const seen = { plain: card() };
+      next();
+      await settle();
+      seen.listed = card();
+      next();
+      await settle();
+      seen.after = card();
+      tour.end();
+      return seen;
+    }
+    """,
+    # A table column: its cells, off to the right of the box the table scrolls
+    # in, and running on below that box's bottom edge.
+    "column_in_scrolling_box": r"""
+    async () => {
+      const scroller = new FakeElement("scroller");
+      scroller.overflow = "auto";
+      scroller.box = { top: 80, left: 100, width: 400, height: 120 };
+      Object.assign(scroller, { clientTop: 0, clientLeft: 0, clientWidth: 400, clientHeight: 120, scrollLeft: 0, scrollTop: 0 });
+      targets["[data-col]"] = [100, 150, 200].map((top) => {
+        const cell = new FakeElement("cell");
+        cell.parentElement = scroller;
+        cell.getBoundingClientRect = () => {
+          const left = 900 - scroller.scrollLeft;
+          const y = top - scroller.scrollTop;
+          return { top: y, left, width: 100, height: 50, right: left + 100, bottom: y + 50 };
+        };
+        return cell;
+      });
+      tour.start([{ target: "[data-col]", title: "Column", body: "One column." }], {});
+      await settle();
+      const spotlight = document.getElementById("page-tour-spotlight");
+      const seen = {
+        scrollLeft: scroller.scrollLeft,
+        scrollTop: scroller.scrollTop,
+        spotlight: ["top", "left", "width", "height"].map((side) => parseFloat(spotlight.style[side])),
+        spotlightHidden: spotlight.hidden,
+      };
+      tour.end();
+      return seen;
+    }
+    """,
 }
 
 
@@ -301,3 +384,34 @@ def test_on_end_hears_only_the_steps_reached(tmp_path):
 
 def test_a_tour_without_actions_still_leaves_out_what_is_not_drawn(tmp_path):
     assert _run(tmp_path, "without_actions")["first"]["step"] == "Step 1 of 2"
+
+
+def test_a_step_can_carry_a_list_a_source_and_a_label(tmp_path):
+    seen = _run(tmp_path, "points_cite_and_label")
+    # Steps without them show neither, on the narrower card.
+    assert seen["plain"]["points"] is None and seen["plain"]["cite"] is None
+    assert seen["plain"]["step"] == "Step 1 of 3" and not seen["plain"]["wide"]
+
+    listed = seen["listed"]
+    assert listed["step"] == "Step 2 of 3 · Column 1 of 2"
+    assert listed["body"] == "With a list."
+    assert listed["points"] == ["A plain point.", ["TERM", "What it means."]]
+    assert listed["cite"] == "DOC-001 §1"
+    assert listed["wide"]
+
+    # Nothing is left over from the step before.
+    after = seen["after"]
+    assert after["points"] is None and after["cite"] is None and not after["wide"]
+    assert after["step"] == "Step 3 of 3"
+
+
+def test_a_column_is_scrolled_into_its_box_and_lit_where_the_box_shows_it(tmp_path):
+    seen = _run(tmp_path, "column_in_scrolling_box")
+    # Centred across the box: the column's middle (950) on the box's (300).
+    assert seen["scrollLeft"] == 650
+    # Taller than the box and partly showing already, so left where it is.
+    assert seen["scrollTop"] == 0
+    assert seen["spotlightHidden"] is False
+    # All three cells in one box, from the first cell's top to the box's bottom
+    # edge (200) rather than the last cell's (250), padded by 8 on each side.
+    assert seen["spotlight"] == [92, 242, 116, 116]
