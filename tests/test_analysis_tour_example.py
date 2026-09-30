@@ -149,11 +149,12 @@ def test_the_example_is_readable_without_logging_in(monkeypatch, tmp_path):
     assert response.get_json() == {"asset_number": None}
 
 
-# pickTourExampleAsset lifted out of the page script, the way
-# test_disposition_sorting.py lifts the date parser, and run against stand-ins
-# for what it calls: a request for the example that answers when told to, the
-# asset list, and whether the tour is still open. Each scenario prints what the
-# page ended up with.
+# pickTourExampleAsset and offerAnalysisResultsTour lifted out of the page
+# script, the way test_disposition_sorting.py lifts the date parser, and run
+# against stand-ins for what they call: a request for the example that answers
+# when told to, the asset list, whether the tour is still open, and a
+# chooseAsset that stands for loading the summary, which is where the page
+# offers the results tour. Each scenario prints what the page ended up with.
 _PICK_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
@@ -176,31 +177,60 @@ const state = {
   assetByNumber: new Map([["P-100", { asset_number: "P-100" }], ["P-200", { asset_number: "P-200" }]]),
 };
 const chosen = [];
-const chooseAsset = async (asset) => { chosen.push(asset.asset_number); state.selectedAsset = asset.asset_number; };
+let whileLoading = () => {};
+const chooseAsset = async (asset) => {
+  chosen.push(asset.asset_number);
+  state.selectedAsset = asset.asset_number;
+  whileLoading();
+};
 let tourOpen = true;
-const window = { gremlinTour: { isOpen: () => tourOpen } };
+const window = {
+  gremlinTour: { isOpen: () => tourOpen, seen: () => false, busy: () => tourOpen },
+};
+const analysisTourBlocked = () => window.gremlinTour.busy();
+const requestAnimationFrame = (fn) => fn();
+const ANALYSIS_RESULTS_TOUR_STEPS = [];
+const ANALYSIS_RESULTS_TOUR_SEEN_KEY = "results";
+const offered = [];
+const startAnalysisTour = (steps, key) => { offered.push(key); };
 let tourRun = 1;
 let tourExampleAsset = null;
 let tourNoExample = false;
-eval("async " + grab("pickTourExampleAsset"));
+let tourExampleLoading = false;
+eval("async " + grab("pickTourExampleAsset") + ";" + grab("offerAnalysisResultsTour"));
 
 const scenarios = {
   // Nothing happens while the request is out: the example is picked.
-  waited: async () => {},
+  waited: {},
   // Skip, then the user's own pick from the list.
-  skipped_then_picked: async () => { tourOpen = false; state.selectedAsset = "P-200"; },
+  skipped_then_picked: { out: () => { tourOpen = false; state.selectedAsset = "P-200"; } },
   // Skip and nothing else: the page is theirs again, example or no.
-  skipped: async () => { tourOpen = false; },
+  skipped: { out: () => { tourOpen = false; } },
   // Skip and straight back in: a new tour, which asks for its own example.
-  skipped_and_reopened: async () => { tourRun += 1; },
+  skipped_and_reopened: { out: () => { tourRun += 1; } },
+  // Skip once the example has answered but while its summary is still loading.
+  // The summary lands after the tour has closed, and the page would take it for
+  // numbers arriving on their own and offer the results tour. Later numbers --
+  // somebody picking an asset for themselves -- still may.
+  skipped_while_loading: {
+    answered: () => { whileLoading = () => { tourOpen = false; offerAnalysisResultsTour(); }; },
+    after: () => { offerAnalysisResultsTour(); },
+  },
 };
 
 (async () => {
+  const scenario = scenarios[process.argv[3]];
   const picking = pickTourExampleAsset();
-  await scenarios[process.argv[3]]();
+  if (scenario.out) scenario.out();
+  if (scenario.answered) scenario.answered();
   answer({ asset_number: "P-100" });
   await picking;
-  console.log(JSON.stringify({ chosen, selected: state.selectedAsset, example: tourExampleAsset }));
+  const offeredWhileLoading = offered.length;
+  if (scenario.after) scenario.after();
+  console.log(JSON.stringify({
+    chosen, selected: state.selectedAsset, example: tourExampleAsset,
+    offeredWhileLoading, offeredAfter: offered.length - offeredWhileLoading,
+  }));
 })();
 """
 
@@ -217,7 +247,8 @@ def _pick(tmp_path, scenario):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
 def test_the_example_is_picked_when_the_tour_waits_for_it(tmp_path):
-    assert _pick(tmp_path, "waited") == {"chosen": ["P-100"], "selected": "P-100", "example": "P-100"}
+    seen = _pick(tmp_path, "waited")
+    assert (seen["chosen"], seen["selected"], seen["example"]) == (["P-100"], "P-100", "P-100")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
@@ -231,7 +262,22 @@ def test_an_example_arriving_after_skip_is_not_applied(tmp_path, scenario, selec
     So somebody can close the tour and pick their own asset before the answer
     comes back. Applying it then would swap their choice for the example.
     """
-    assert _pick(tmp_path, scenario) == {"chosen": [], "selected": selected, "example": None}
+    seen = _pick(tmp_path, scenario)
+    assert (seen["chosen"], seen["selected"], seen["example"]) == ([], selected, None)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's example picker")
+def test_skip_while_the_example_loads_does_not_open_the_results_tour(tmp_path):
+    """Skipped means no more tour: the example's own summary landing isn't a reason.
+
+    The results tour offers itself the first time an asset's numbers arrive,
+    for somebody who skipped the page tour before its results. The example's
+    numbers are the tour's doing, so they don't count; numbers after them do.
+    """
+    seen = _pick(tmp_path, "skipped_while_loading")
+    assert seen["chosen"] == ["P-100"]
+    assert seen["offeredWhileLoading"] == 0
+    assert seen["offeredAfter"] == 1
 
 
 if __name__ == "__main__":

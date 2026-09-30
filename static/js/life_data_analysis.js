@@ -5465,6 +5465,10 @@
   // Counts the tours started, so an answer arriving for one that has since
   // closed can tell.
   let tourRun = 0;
+  // Set while the example's summary loads. Those numbers are the tour's doing,
+  // so the results tour mustn't take them as a reason to offer itself -- least
+  // of all when Skip has closed the tour that picked them before they land.
+  let tourExampleLoading = false;
 
   const forType = (type) => () => state.analysisType === type;
 
@@ -5493,7 +5497,12 @@
       return;
     }
     tourExampleAsset = asset.asset_number;
-    await chooseAsset(asset);
+    tourExampleLoading = true;
+    try {
+      await chooseAsset(asset);
+    } finally {
+      tourExampleLoading = false;
+    }
   }
 
   // Whether the chosen analysis is showing a mechanism yet.
@@ -5822,6 +5831,7 @@
   // just means it offers itself again the next time numbers land.
   function offerAnalysisResultsTour() {
     if (!window.gremlinTour || window.gremlinTour.seen(ANALYSIS_RESULTS_TOUR_SEEN_KEY)) return;
+    if (tourExampleLoading) return;
     if (analysisTourBlocked()) return;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
