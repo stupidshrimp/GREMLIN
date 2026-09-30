@@ -2602,7 +2602,8 @@
               ? `only the new / undispositioned ${recordWord} rows`
               : `every eligible ${recordWord} row`
           } for the asset you selected as an .xlsx workbook with the disposition dropdowns built in, ` +
-            "dates and numbers typed so the columns sort, so you can fill them in offline."
+            "dates and numbers typed so the columns sort, so you can fill them in offline. " +
+            "The columns you fill in are highlighted yellow; grey-headed columns are read-only."
         ),
         withTooltip(
           upload,
