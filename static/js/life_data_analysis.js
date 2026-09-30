@@ -469,7 +469,10 @@
   }
   function endLoading() {
     loadingDepth = Math.max(0, loadingDepth - 1);
-    if (loadingDepth === 0) $("lda-loading").hidden = true;
+    if (loadingDepth === 0) {
+      $("lda-loading").hidden = true;
+      startOwedDispositionTour();
+    }
   }
 
   function showBanner(message, kind) {
@@ -540,6 +543,7 @@
         document.removeEventListener("keydown", onKey);
         backdrop.remove();
         resolve(value);
+        startOwedDispositionTour();
       }
       function onKey(event) {
         if (event.key === "Escape") close(null);
@@ -664,6 +668,7 @@
     $("lda-asset").setAttribute("aria-expanded", "false");
     state.assetDropdownOpen = false;
     state.assetActiveIndex = -1;
+    startOwedDispositionTour();
   }
 
   function chooseAsset(asset) {
@@ -2839,6 +2844,7 @@
       input.setAttribute("aria-expanded", "false");
       window.removeEventListener("scroll", reflowList, true);
       window.removeEventListener("resize", reflowList, true);
+      startOwedDispositionTour();
     }
 
     function choose(opt) {
@@ -3015,6 +3021,7 @@
       // Only that closes it, never a click on the content inside.
       if (event.target === dialog) dialog.close();
     });
+    dialog.addEventListener("close", startOwedDispositionTour);
   }
 
   // The Rows selector travels with the download: the workbook is the offline
@@ -5001,6 +5008,7 @@
     if (openColumnMenu) {
       openColumnMenu.remove();
       openColumnMenu = null;
+      startOwedDispositionTour();
     }
   }
   document.addEventListener("mousedown", (event) => {
@@ -5794,11 +5802,17 @@
   const DISPOSITION_EDITOR_TOUR_SEEN_KEY = "gremlin.disposition.editor-tour-seen";
 
   // Anything a tour mustn't open over by itself: the same as on the analysis
-  // page, plus a column's ▾ menu or a failure mode list open in the table, and
-  // somebody typing a search -- each search draws the editor again.
+  // page, plus a column's ▾ menu or a failure mode list open in the table,
+  // somebody typing a search -- each search draws the editor again -- and a
+  // mouse button or finger still down. A click elsewhere closes a list, or
+  // takes the focus from the search box, as it goes down, so a tour opened
+  // then would be under the pointer when it comes up and take the click.
+  let pointerHeld = false;
+
   function dispositionTourBlocked() {
     return (
       analysisTourBlocked() ||
+      pointerHeld ||
       Boolean(document.querySelector(".lda-col-menu, body > .lda-portal-list")) ||
       document.activeElement === $("lda-disp-search")
     );
@@ -5815,6 +5829,7 @@
         if (shown.some((step) => DISPOSITION_EDITOR_TOUR_STEPS.includes(step))) {
           window.gremlinTour.remember(DISPOSITION_EDITOR_TOUR_SEEN_KEY);
         }
+        startOwedDispositionTour();
       },
     });
   }
@@ -5826,32 +5841,54 @@
     );
   }
 
-  // Called once the Asset Numbers are in and each time the editor is drawn. The
-  // whole tour, if this browser hasn't had it; otherwise the editor part, the
-  // first time there is an editor to show. Not while an asset is still being
-  // chosen, since the tour would take the box from under them -- unless one is
-  // picked already, when it waits for that asset's editor instead. Two frames,
-  // so the table has taken its size and the loading veil is down before the
-  // spotlight goes round anything; anything in the way just means it offers
-  // itself again the next time the editor is drawn.
+  // Set when the tour has offered itself and hasn't been able to start yet:
+  // something was in the way, or the editor it waits for isn't drawn. The
+  // places those clear -- the loading veil going down, a list, menu, dialog or
+  // modal closing, the search box losing focus, a click being let go, another
+  // tour ending -- each call startOwedDispositionTour, which runs it once
+  // nothing stands in the way.
+  let dispositionTourOwed = false;
+
+  // Called once the Asset Numbers are in and each time the editor is drawn.
   function offerDispositionTour() {
     if (!window.gremlinTour || state.pageMode !== "disposition") return;
-    const pageSeen = window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY);
-    if (pageSeen && window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY)) return;
+    if (
+      window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY) &&
+      window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY)
+    ) {
+      return;
+    }
+    dispositionTourOwed = true;
+    startOwedDispositionTour();
+  }
+
+  // The whole tour, if this browser hasn't had it; otherwise the editor part,
+  // the first time there is an editor to show. Not while an asset is still being
+  // chosen, since the tour would take the box from under them -- unless one is
+  // picked already, when it waits for that asset's editor instead. Two frames,
+  // so the table has taken its size before the spotlight goes round anything.
+  // Anything in the way leaves it owed.
+  function startOwedDispositionTour() {
+    if (!dispositionTourOwed) return;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        if (dispositionTourBlocked()) return;
+        if (!dispositionTourOwed || dispositionTourBlocked()) return;
         const editorDrawn = Boolean($("lda-disp-meta"));
-        if (!pageSeen) {
+        if (!window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY)) {
           const input = $("lda-asset");
           const choosing = !state.selectedAsset && (input.value.trim() || document.activeElement === input);
           if (choosing || (state.selectedAsset && !editorDrawn)) return;
+          dispositionTourOwed = false;
           stopScrolling();
           startDispositionPageTour();
-        } else if (state.selectedAsset && editorDrawn) {
-          stopScrolling();
-          startDispositionTour(DISPOSITION_EDITOR_TOUR_STEPS, DISPOSITION_EDITOR_TOUR_SEEN_KEY);
+          return;
         }
+        // Without an editor there is nothing more to show; the next one drawn
+        // offers the tour again.
+        dispositionTourOwed = false;
+        if (window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY) || !state.selectedAsset || !editorDrawn) return;
+        stopScrolling();
+        startDispositionTour(DISPOSITION_EDITOR_TOUR_STEPS, DISPOSITION_EDITOR_TOUR_SEEN_KEY);
       })
     );
   }
@@ -5869,6 +5906,14 @@
     const button = $("disposition-tour-btn");
     if (!button || !window.gremlinTour) return;
     button.addEventListener("click", startDispositionPageTour);
+    // Captured, so a control that stops the event can't hide it from here.
+    document.addEventListener("pointerdown", () => { pointerHeld = true; }, true);
+    ["pointerup", "pointercancel"].forEach((type) =>
+      document.addEventListener(type, () => {
+        pointerHeld = false;
+        startOwedDispositionTour();
+      }, true)
+    );
   }
 
   // ---- wiring ---------------------------------------------------------------
@@ -6041,6 +6086,8 @@
         if (searchDebounce) clearTimeout(searchDebounce);
         searchDebounce = setTimeout(applySearch, 300);
       });
+      // Somebody typing a search is one of the things an owed tour waits out.
+      searchInput.addEventListener("blur", startOwedDispositionTour);
     }
 
     wireDispositionTour();

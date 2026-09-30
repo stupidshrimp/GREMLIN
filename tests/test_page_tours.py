@@ -127,11 +127,15 @@ def test_every_disposition_step_points_at_something_on_the_page(disposition_page
     assert _on_page(disposition_page, selector)
 
 
-def _disposition_editor_source():
+def _function_body(name):
     source = ANALYSIS_JS.read_text(encoding="utf-8")
-    body = re.search(r"\n  function renderDispositionEditor\(data\) \{\n(.*?)\n  \}\n", source, re.S)
-    assert body, "renderDispositionEditor was not found in life_data_analysis.js"
+    body = re.search(rf"\n  function {name}\([^)]*\) \{{\n(.*?)\n  \}}\n", source, re.S)
+    assert body, f"{name} was not found in life_data_analysis.js"
     return body.group(1)
+
+
+def _disposition_editor_source():
+    return _function_body("renderDispositionEditor")
 
 
 @pytest.mark.parametrize("selector", _disposition_editor_targets())
@@ -145,6 +149,26 @@ def test_every_disposition_editor_step_points_at_something_the_editor_draws(sele
 
 def test_the_disposition_editor_offers_its_tour_once_drawn():
     assert "offerDispositionTour();" in _disposition_editor_source()
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        "endLoading",  # the loading veil
+        "openModal",  # the unsaved-changes question
+        "closeAssetDropdown",  # the Asset Number list
+        "buildTaxonomyCombobox",  # a failure mode / mechanism list in the table
+        "closeColumnMenu",  # a column's menu
+        "wireExcelHelpDialog",  # the Excel explainer
+        "initDispositionPage",  # the search box
+        "wireDispositionTour",  # a pointer held down
+        "startDispositionTour",  # another tour
+    ],
+)
+def test_an_owed_disposition_tour_is_tried_again_when_its_way_clears(function):
+    """A tour that offers itself while something is in its way is owed, not
+    dropped, and only starts if what cleared the way asks for it again."""
+    assert "startOwedDispositionTour" in _function_body(function)
 
 
 @pytest.mark.parametrize(
