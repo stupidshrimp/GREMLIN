@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
+{% endblock %}
+
 {% block content %}
 <section class="hero glass-card fade-in-up home-hero">
   {#- Decorative backdrop for the card. `muted` and `playsinline` are what buy
@@ -21,6 +25,7 @@
     <p class="hero-copy">
       A modern toolkit for Graphical Reliability Engineering, Maintenance, Life-Data Analysis INterface workflows, metrics intelligence, and standards-aligned documentation.
     </p>
+    <button type="button" class="page-tour-btn is-on-dark" id="home-tour-btn">Show me around</button>
   </div>
   <div class="home-hero-media">
     {#- Plays once and then holds on the frame it had reached, so the page
@@ -37,7 +42,7 @@
   </div>
 </section>
 
-<section class="card-grid">
+<section class="card-grid" id="home-cards">
   {#- Artwork that only exists while a card is pointed at or focused. The three
       GIFs are 650 KB to 2 MB apiece, so the markup deliberately ships without a
       `src`: home.js fills it in the first time the card is actually hovered,
@@ -73,12 +78,13 @@
       the reason given on _nav_links_for, and a card here that stayed would be
       the same advertisement the sidebar just stopped making. -#}
   {% if auth_may_open(url_for('perform_analysis')) -%}
-  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('perform_analysis') }}">
+  <a class="glass-card tile slide-in life-data-card" id="home-card-analysis" href="{{ url_for('perform_analysis') }}">
     {{- analysis_card_body() }}
   </a>
   {%- elif not auth_user -%}
   <button type="button"
           class="glass-card tile slide-in life-data-card life-data-card-locked"
+          id="home-card-analysis"
           data-locked-message="{{ locked_nav_message }}">
     {{- analysis_card_body() }}
   </button>
@@ -105,19 +111,20 @@
       refused with. -#}
   {% if auth_may_open(url_for('disposition')) -%}
     {% if auth_can_edit -%}
-    <a class="glass-card tile slide-in life-data-card" href="{{ url_for('disposition') }}">
+    <a class="glass-card tile slide-in life-data-card" id="home-card-disposition" href="{{ url_for('disposition') }}">
       {{- disposition_card_body() }}
     </a>
     {%- else -%}
     <button type="button"
             class="glass-card tile slide-in life-data-card life-data-card-locked"
+            id="home-card-disposition"
             data-locked-message="{% if auth_user %}Only authorized users can open Disposition. It needs the editor role; ask an administrator to change yours.{% else %}Only authorized users can open Disposition. Log in with the person icon at the bottom of the sidebar.{% endif %}">
       {{- disposition_card_body() }}
     </button>
     {%- endif %}
   {%- endif %}
 
-  <a class="glass-card tile slide-in life-data-card" href="{{ url_for('standards_and_documentation') }}">
+  <a class="glass-card tile slide-in life-data-card" id="home-card-standards" href="{{ url_for('standards_and_documentation') }}">
     {{- card_hover_media('img/standards_doc_gif.gif') }}
     <h2>Standards and Documentation</h2>
     <p>Open key standards references and documentation artifacts.</p>
@@ -126,9 +133,13 @@
     </div>
   </a>
 </section>
+
+{% include "page_tour.html" %}
 {% endblock %}
 
 {% block scripts %}
   <script src="{{ url_for('static', filename='js/held_animation.js') }}"></script>
+  {# Before home.js, which gives it the steps. #}
+  <script src="{{ url_for('static', filename='js/page_tour.js') }}"></script>
   <script src="{{ url_for('static', filename='js/home.js') }}"></script>
 {% endblock %}

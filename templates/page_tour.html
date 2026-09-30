@@ -1,0 +1,26 @@
+{#- The "Show me around" overlay that page_tour.js drives, built the way the PM
+    calendar's and Metrics' are: a spotlight, which is one transparent box with
+    a very large shadow around it (that shadow is what dims the rest of the
+    page), and the card that explains whatever the spotlight is on. Both are
+    positioned by the script; neither is in the flow of the page, so nothing
+    moves when the tour runs. Include it once, with page_tour.css and
+    page_tour.js, on a page that has a tour. -#}
+<div id="page-tour" class="page-tour" hidden>
+  <div id="page-tour-spotlight" class="page-tour-spotlight" aria-hidden="true"></div>
+  <div id="page-tour-card" class="page-tour-card" role="dialog" aria-modal="true"
+       aria-labelledby="page-tour-title" tabindex="-1">
+    {#- Polite, so a screen reader hears each new step as Next moves on; focus
+        stays on the button, which would otherwise announce nothing. -#}
+    <div aria-live="polite">
+      <p class="page-tour-step" id="page-tour-step"></p>
+      <h2 class="page-tour-title" id="page-tour-title"></h2>
+      <p class="page-tour-body" id="page-tour-body"></p>
+    </div>
+    <div class="page-tour-actions">
+      <button id="page-tour-skip" class="page-tour-skip" type="button">Skip</button>
+      <span class="page-tour-spacer"></span>
+      <button id="page-tour-back" class="page-tour-back" type="button">◄ Back</button>
+      <button id="page-tour-next" class="btn-secondary" type="button">Next ►</button>
+    </div>
+  </div>
+</div>

@@ -2,6 +2,7 @@
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -10,6 +11,7 @@
   <h1>Perform an Analysis</h1>
   <p>Select an Asset Number from mapped CMMS data, disposition corrective work orders and PM reset
      events, then run a REL-style Weibull analysis using only valid observations.</p>
+  <button type="button" class="page-tour-btn" id="analysis-tour-btn">Show me around</button>
 </section>
 
 <div id="lda-status" class="lda-banner" role="status" hidden></div>
@@ -18,7 +20,7 @@
   <p class="eyebrow">Step 1</p>
   <h2 id="lda-step-1">Select asset and analysis type</h2>
   <div class="lda-selectors">
-    <div class="lda-field">
+    <div class="lda-field" id="lda-asset-field">
       <label for="lda-asset">Asset Number</label>
       <div class="lda-combobox" id="lda-asset-combobox">
         <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
@@ -27,7 +29,7 @@
         <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
       </div>
     </div>
-    <div class="lda-field">
+    <div class="lda-field" id="lda-type-field">
       <label for="lda-analysis-type">Analysis Type</label>
       <select id="lda-analysis-type" name="analysis_type">
         <option value="Weibull Analysis" selected>Weibull Analysis</option>
@@ -220,6 +222,8 @@
   <div class="lda-spinner" aria-hidden="true"></div>
   <span id="lda-loading-text">Working…</span>
 </div>
+
+{% include "page_tour.html" %}
 {% endblock %}
 
 {% block scripts %}
@@ -227,5 +231,7 @@
      time, and a canvas cannot be themed by the cascade the way the rest of the
      page is. #}
   <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+  {# Before life_data_analysis.js, which gives it the steps. #}
+  <script src="{{ url_for('static', filename='js/page_tour.js') }}"></script>
   <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
 {% endblock %}

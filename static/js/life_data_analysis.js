@@ -789,6 +789,7 @@
         if (state.downtimeSelection) loadDowntime();
         else renderDowntime();
       }
+      offerAnalysisResultsTour();
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
     }
@@ -5037,6 +5038,244 @@
     };
   }
 
+  // ---- tour -----------------------------------------------------------------
+  // The page's "Show me around", driven by page_tour.js: a spotlight on one part
+  // of the page at a time and a card saying what it is for, the same as the
+  // Metrics page and the PM calendar have.
+  //
+  // Most of the page is only drawn once an asset is picked, and which panels
+  // are drawn then depends on the Analysis Type. page_tour.js leaves out any
+  // step whose target isn't on screen, so before an asset is picked the tour is
+  // the two Step 1 controls and the button, and after, it is those and whatever
+  // the chosen analysis shows. That makes a first visit's tour a short one, so
+  // the part about the results offers itself as well, the first time an
+  // asset's numbers arrive on a browser that hasn't seen it.
+  const ANALYSIS_SETUP_TOUR_STEPS = [
+    {
+      target: "#lda-asset-field",
+      title: "Pick an asset",
+      body: () =>
+        "Type part of an Asset Number or an asset's name and choose it from the list. The list is " +
+        "every asset mapped from the CMMS." +
+        (state.selectedAsset ? "" : " The rest of the page appears once an asset is picked."),
+    },
+    {
+      target: "#lda-type-field",
+      title: "Choose the analysis",
+      body:
+        "Weibull Analysis fits a life distribution to one failure mode or mechanism. Failure Mode " +
+        "Trend counts it month by month, Downtime Driver shows where its downtime comes from, and " +
+        "PM Effectiveness how soon it fails after a PM. Switching keeps the mechanism you last picked.",
+    },
+  ];
+
+  // What a Pareto bar does when clicked, by Analysis Type.
+  const PARETO_CLICK_TOUR_TEXT = {
+    [ANALYSIS_TYPES.TREND]: "chart its trend below.",
+    [ANALYSIS_TYPES.PM]: "see how soon it follows a PM.",
+    [ANALYSIS_TYPES.DOWNTIME]: "break its downtime down below.",
+  };
+
+  const ANALYSIS_RESULTS_TOUR_STEPS = [
+    {
+      target: "#lda-weibull-summary",
+      title: "Is there enough to fit?",
+      body:
+        "How many records this asset has, how many work orders and PMs a Weibull fit can use, and " +
+        "how many are still to be dispositioned. A record is only usable once it has been " +
+        "dispositioned as an included failure or an approved PM reset.",
+    },
+    {
+      target: "#lda-trend-summary",
+      title: "Trends at a glance",
+      body:
+        "The mechanisms with the most work orders and the most downtime on this asset, and the ones " +
+        "growing fastest and improving most. Growth compares the last three months with the three " +
+        "before, so it needs at least six months of data.",
+    },
+    {
+      target: "#lda-pm-summary",
+      title: "PM effectiveness at a glance",
+      body:
+        "For the mechanism you pick: how many PMs were done, how many were followed by a failure, " +
+        "the average days from a PM to that failure, and a rating for how well the PM holds it off.",
+    },
+    {
+      target: "#lda-downtime-summary",
+      title: "Downtime at a glance",
+      body:
+        "For the mechanism you pick: its total, average, median and longest downtime, and how many " +
+        "work orders it came from.",
+    },
+    {
+      target: "#lda-beta-panel",
+      title: "Highest-beta mechanisms",
+      body:
+        "The five mechanisms with the highest beta in their last saved Weibull fit. A beta above 1 " +
+        "means failures get likelier with age, which a PM can get ahead of; below 1 points to " +
+        "early-life failures.",
+    },
+    {
+      target: "#lda-pareto-panel",
+      title: "Failure mechanism Pareto",
+      body: () =>
+        "Each bar is a failure mechanism, largest first by downtime hours; tick the box to rank by " +
+        "failure count instead. The line is the running share of the total. Click a bar to " +
+        (PARETO_CLICK_TOUR_TEXT[state.analysisType] ||
+          (CAN_EDIT ? "run a Weibull fit on it." : "open the Weibull fit last saved for it.")),
+    },
+    {
+      target: "#lda-actions",
+      title: "Run it, or tidy the data first",
+      body:
+        "Perform Analysis picks a failure mode or mechanism from a list rather than the chart. " +
+        "Disposition Work Orders and Disposition PMs open this asset's records on the Disposition " +
+        "page, to classify them before analysing.",
+      // The bar stays on screen for a viewer, with its buttons hidden.
+      when: () => CAN_EDIT,
+    },
+    {
+      target: "#lda-workspace",
+      title: "Weibull results",
+      body: () =>
+        "Beta and eta with their confidence bounds, the fitted curves, what they mean, and the data " +
+        "behind them. Hover a plotted point for its work order, and click it to find its row in the " +
+        "table." +
+        (CAN_EDIT
+          ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
+            "generate a Weibull report."
+          : ""),
+    },
+    {
+      target: "#lda-trend-chart-panel",
+      title: "The trend",
+      body:
+        "Work orders a month for the mechanism you picked. From and To narrow the months. The table " +
+        "under it has the same numbers, and clicking a month there lists only that month's work " +
+        "orders in the table after it.",
+    },
+    {
+      target: "#lda-pm-chart-panel",
+      title: "Failures following PM",
+      body:
+        "Failures of the mechanism you picked that came after a completed PM, month by month. From " +
+        "and To narrow the months, and the table under it pairs each PM with the failure that " +
+        "followed it.",
+    },
+    {
+      target: "#lda-downtime-trend-panel",
+      title: "Where the downtime comes from",
+      body:
+        "Downtime a month for the mechanism you picked. Below it: how long its outages run, which " +
+        "assets or locations they hit, and the ten work orders with the most downtime.",
+    },
+    {
+      target: "#lda-calculate-all-card",
+      title: "Fit everything at once",
+      body:
+        "Runs and saves a Weibull fit for every failure mode and mechanism on this asset, which is " +
+        "what Highest-beta mechanisms ranks. It asks for the calculation password first.",
+    },
+  ];
+
+  const ANALYSIS_TOUR_END_STEPS = [
+    {
+      target: "#analysis-tour-btn",
+      title: "Come back any time",
+      body: () =>
+        state.selectedAsset
+          ? "The tour only opens by itself once. Press Show me around to take it again."
+          : "Pick an asset and press Show me around again to be walked through the results too.",
+    },
+  ];
+
+  const ANALYSIS_TOUR_SEEN_KEY = "gremlin.analysis.tour-seen";
+  const ANALYSIS_RESULTS_TOUR_SEEN_KEY = "gremlin.analysis.results-tour-seen";
+  // Set while the tour hands focus back to the Asset Number box, which would
+  // otherwise open its list over the page as if it had been clicked into.
+  let quietAssetFocus = false;
+
+  function onAssetFocus() {
+    if (!quietAssetFocus) openAssetDropdown();
+  }
+
+  function tourReturnFocus(node) {
+    quietAssetFocus = node === $("lda-asset");
+    try {
+      node.focus();
+    } finally {
+      quietAssetFocus = false;
+    }
+  }
+
+  // Anything on screen a tour mustn't open over by itself: another tour or a
+  // dialog, this page's own modals, the loading veil, or the asset list open
+  // under somebody who is still choosing.
+  function analysisTourBlocked() {
+    return (
+      window.gremlinTour.busy() ||
+      Boolean(document.querySelector(".lda-modal-backdrop")) ||
+      !$("lda-loading").hidden ||
+      state.assetDropdownOpen
+    );
+  }
+
+  function startAnalysisTour(steps, seenKey) {
+    closeAssetDropdown();
+    window.gremlinTour.start(steps.concat(ANALYSIS_TOUR_END_STEPS), {
+      seenKey,
+      pinned: [".topbar", "#lda-step1-card"],
+      returnFocus: tourReturnFocus,
+      // A page tour that got as far as the results has covered what the
+      // results tour would, so that one needn't offer itself as well.
+      onEnd: (shown) => {
+        if (shown.some((step) => ANALYSIS_RESULTS_TOUR_STEPS.includes(step))) {
+          window.gremlinTour.remember(ANALYSIS_RESULTS_TOUR_SEEN_KEY);
+        }
+      },
+    });
+  }
+
+  function startAnalysisPageTour() {
+    startAnalysisTour(ANALYSIS_SETUP_TOUR_STEPS.concat(ANALYSIS_RESULTS_TOUR_STEPS), ANALYSIS_TOUR_SEEN_KEY);
+  }
+
+  // First visit on this browser, once the Asset Numbers are in, so the hint
+  // under the box says how many there are rather than that they're loading. Not
+  // if somebody has already started picking one: the tour would take the box
+  // from under them. It stays unseen for next time.
+  function offerAnalysisPageTour() {
+    if (window.gremlinTour.seen(ANALYSIS_TOUR_SEEN_KEY)) return;
+    const input = $("lda-asset");
+    if (input.value.trim() || document.activeElement === input) return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!analysisTourBlocked()) startAnalysisPageTour();
+      })
+    );
+  }
+
+  // The first time an asset's numbers land, on a browser that has seen neither
+  // this nor a page tour with an asset picked. Two frames, so the Pareto has
+  // taken its size before the spotlight goes round it. Anything in the way
+  // just means it offers itself again the next time numbers land.
+  function offerAnalysisResultsTour() {
+    if (!window.gremlinTour || window.gremlinTour.seen(ANALYSIS_RESULTS_TOUR_SEEN_KEY)) return;
+    if (analysisTourBlocked()) return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!state.selectedAsset || analysisTourBlocked()) return;
+        startAnalysisTour(ANALYSIS_RESULTS_TOUR_STEPS, ANALYSIS_RESULTS_TOUR_SEEN_KEY);
+      })
+    );
+  }
+
+  function wireAnalysisTour() {
+    const button = $("analysis-tour-btn");
+    if (!button || !window.gremlinTour) return;
+    button.addEventListener("click", startAnalysisPageTour);
+  }
+
   // ---- wiring ---------------------------------------------------------------
   function init() {
     const assetInput = $("lda-asset");
@@ -5045,7 +5284,7 @@
     // dedicated disposition page.
     assetInput.addEventListener("input", onAssetInput);
     assetInput.addEventListener("keydown", onAssetKeydown);
-    assetInput.addEventListener("focus", openAssetDropdown);
+    assetInput.addEventListener("focus", onAssetFocus);
     // Commit a manually edited value synchronously on blur so actions clicked
     // immediately after typing run against the current asset rather than the
     // previous one still held by the input debounce.
@@ -5120,7 +5359,10 @@
       redrawCharts();
     });
 
-    loadAssets();
+    wireAnalysisTour();
+    loadAssets().then(() => {
+      if (window.gremlinTour) offerAnalysisPageTour();
+    });
   }
 
   // Every chart currently on screen, redrawn. Which ones those are depends on
