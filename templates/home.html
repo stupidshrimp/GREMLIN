@@ -43,19 +43,32 @@
 </section>
 
 <section class="card-grid" id="home-cards">
-  {#- Artwork that only exists while a card is pointed at or focused. The three
-      GIFs are 650 KB to 2 MB apiece, so the markup deliberately ships without a
-      `src`: home.js fills it in the first time the card is actually hovered,
-      and a visitor who never touches one never downloads any of them. With
-      scripting off the element stays empty and the cards read exactly as they
-      did before. Decorative, so it is hidden from assistive tech -- the card
-      already says in words what the animation illustrates. -#}
-  {%- macro card_hover_media(filename) %}
-    <img class="card-hover-media"
-         data-hover-src="{{ url_for('static', filename=filename) }}"
-         alt=""
-         aria-hidden="true">
-  {%- endmacro %}
+  {#- An account inside Operations & Maintenance gets its own department's
+      pages here instead of the usual three: it is kept out of Life Data
+      Analysis, which two of those open, and the dashboards are what it is for.
+      Which account that is, and what each card says, is decided in app.py
+      (_home_cards_for); an empty list means everybody else's Home. -#}
+  {% if home_department_cards -%}
+  {% for card in home_department_cards -%}
+  <a class="glass-card tile slide-in life-data-card" id="{{ card.id }}" href="{{ card.route }}">
+    {%- if card.coming_soon %}
+    {#- The hourglass the sidebar entry and the page itself carry, so the card
+        does not promise a finished tracker the click will not find. A <div>
+        rather than a <p>: the card dims its own paragraphs on hover to hand the
+        eye to the extra copy, and this label is not one of them. -#}
+    <div class="eyebrow placeholder-eyebrow">
+      <span class="placeholder-badge" aria-hidden="true">{{ coming_soon_icon | safe }}</span>
+      {{ coming_soon_label }}
+    </div>
+    {%- endif %}
+    <h2>{{ card.title }}</h2>
+    <p>{{ card.summary }}</p>
+    <div class="card-hover-copy">
+      <p>{{ card.detail }}</p>
+    </div>
+  </a>
+  {%- endfor %}
+  {%- else %}
 
   {#- Perform an Analysis needs an account, the same as its sidebar entry, so the
       card is locked for a signed-out visitor for the same reason that entry is:
@@ -64,7 +77,6 @@
       the click with the reason. Refusing the page itself stays the route's job.
       -#}
   {%- macro analysis_card_body() %}
-    {{- card_hover_media('img/analysis_gif.gif') }}
     <h2>Perform an Analysis</h2>
     <p>Run life distribution fitting and compare model confidence quickly.</p>
     <div class="card-hover-copy">
@@ -97,7 +109,6 @@
       it advertises no URL that would only meet a 403. Refusing the page itself
       stays the route's job -- this is the explanation, not the lock. -#}
   {%- macro disposition_card_body() %}
-    {{- card_hover_media('img/disposition_gif.gif') }}
     <h2>Disposition</h2>
     <p>Disposition work orders and PM reset events on a dedicated, scrollable workspace.</p>
     <div class="card-hover-copy">
@@ -125,13 +136,13 @@
   {%- endif %}
 
   <a class="glass-card tile slide-in life-data-card" id="home-card-standards" href="{{ url_for('standards_and_documentation') }}">
-    {{- card_hover_media('img/standards_doc_gif.gif') }}
     <h2>Standards and Documentation</h2>
     <p>Open key standards references and documentation artifacts.</p>
     <div class="card-hover-copy">
       <p>Jump to approved test standards, internal procedures, and documentation templates used by your team.</p>
     </div>
   </a>
+  {%- endif %}
 </section>
 
 {% include "page_tour.html" %}
