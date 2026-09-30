@@ -1596,6 +1596,7 @@
     }
     const restore = detail && detailOpener(detail.assetGroup);
     if (restore) restore.focus();
+    startOwedAvailabilityTour();
   }
 
   // Which control inside the dialog holds focus, as an id that outlives the
@@ -2974,6 +2975,9 @@
   async function refreshAvailability() {
     await loadAvailability();
     renderAvailability();
+    // Numbers landing after the first load can be what an owed card tour was
+    // waiting for.
+    startOwedAvailabilityTour();
   }
 
   // ---- render orchestration ------------------------------------------------
@@ -3199,6 +3203,7 @@
     dialog.addEventListener("close", () => {
       document.body.classList.remove("metrics-modal-open");
       openButton.focus();
+      startOwedAvailabilityTour();
     });
   }
 
@@ -3373,10 +3378,15 @@
   // The tour on screen: the steps it is showing and the key that remembers it
   // was seen. Null while neither tour is open.
   let tour = null;
-  // Set by init once the first numbers are in. Until then the Availability
-  // card's charts aren't drawn, and its tour, asked for early, waits.
+  // Set by init once the page's first load is done and the loading veil has
+  // gone for good.
   let pageReady = false;
-  let availabilityTourQueued = false;
+  // The Availability card's tour, owed but not yet started: "asked" when the
+  // button was pressed, "offered" when the card was opened for the first time.
+  // Either can arrive before the card has anything drawn to point at, or while
+  // something else is on screen; startOwedAvailabilityTour runs it once
+  // nothing stands in the way. Null when no tour is owed.
+  let availabilityTourOwed = null;
   let tourStep = 0;
   let tourReturnFocus = null;
   let tourLayoutWatch = null;
@@ -3566,49 +3576,82 @@
     tour = null;
     if (tourReturnFocus && document.body.contains(tourReturnFocus)) tourReturnFocus.focus();
     tourReturnFocus = null;
+    startOwedAvailabilityTour();
   }
 
   function startPageTour() {
     startTour(TOUR_STEPS, TOUR_SEEN_KEY);
   }
 
+  // Anything on screen a tour mustn't open over.
+  function availabilityTourBlocked() {
+    return tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
+  }
+
+  // Whether the card has what its tour points at: the page's first load is
+  // done, and the card's numbers have landed -- or failed to, which no amount
+  // of waiting changes. A request that a newer one has overtaken lands
+  // neither, so a Months shown or Exclude PMs change during the first load
+  // keeps the tour waiting for the numbers that change asked for.
+  function availabilityTourReady() {
+    return pageReady && Boolean(state.availability || state.availabilityError);
+  }
+
+  // Starts the owed card tour if nothing is in its way any more. Called
+  // whenever something that could have been in the way clears: the first load
+  // finishing, numbers landing, a dialog or the other tour closing. True when
+  // the tour is on its way.
+  function startOwedAvailabilityTour() {
+    const owed = availabilityTourOwed;
+    if (!owed) return false;
+    // The reader has left the card, so the tour isn't wanted now. An offered
+    // one comes back the next time the card is opened.
+    if (state.expanded !== "availability") {
+      availabilityTourOwed = null;
+      return false;
+    }
+    if (!availabilityTourReady() || availabilityTourBlocked()) return false;
+    // The tour only offers itself with a chart to show; without one most of it
+    // would be left out, and the part left would be the one time it opens by
+    // itself. Asked for, it runs with what there is.
+    const data = state.availability;
+    if (owed === "offered" && !(data && (data.groups || []).length)) {
+      availabilityTourOwed = null;
+      return false;
+    }
+    availabilityTourOwed = null;
+    // Two frames: one for the charts to take their size, and one for the
+    // scroll that opening the card starts, which the first step's own scroll
+    // then takes over from rather than racing. The card can be closed inside
+    // them, and a tour over a closed card has nothing drawn to point at; a
+    // dialog can be opened, and then the tour waits for it to close.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (state.expanded !== "availability") return;
+        if (availabilityTourBlocked()) {
+          availabilityTourOwed = owed;
+          return;
+        }
+        startTour(AVAILABILITY_TOUR_STEPS, AVAILABILITY_TOUR_SEEN_KEY);
+      })
+    );
+    return true;
+  }
+
+  // Walk me through this card. The card opens straight away; the tour follows
+  // as soon as there is something to walk through.
   function startAvailabilityTour() {
     if (tourOpen()) return;
     if (state.expanded !== "availability") setExpanded("availability");
-    // Pressed while the page is still loading: started now, the tour would
-    // leave out the charts and tables it is mostly about, which aren't drawn
-    // yet. The card opens straight away and init starts the tour once they
-    // are.
-    if (!pageReady) {
-      availabilityTourQueued = true;
-      return;
-    }
-    // Two frames: one for the charts to take their size, and one for the
-    // scroll that opening the card starts, which the first step's own scroll
-    // then takes over from rather than racing. The card can be closed again
-    // inside them, and a tour over a closed card has nothing drawn to point at.
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (state.expanded === "availability") {
-          startTour(AVAILABILITY_TOUR_STEPS, AVAILABILITY_TOUR_SEEN_KEY);
-        }
-      })
-    );
+    availabilityTourOwed = "asked";
+    startOwedAvailabilityTour();
   }
 
-  // The first time someone opens the Availability card on this browser. Not
-  // over another tour or a dialog, and not before there is a chart to show:
-  // without one most of the tour would be left out, and the part that is left
-  // would be the one time it opens by itself. The card can be opened before its
-  // first numbers arrive, so init offers it again once they have. True when
-  // the tour is on its way.
+  // The first time someone opens the Availability card on this browser.
   function offerAvailabilityTour() {
-    if (tourSeen(AVAILABILITY_TOUR_SEEN_KEY)) return false;
-    if (tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]")) return false;
-    const data = state.availability;
-    if (!data || !(data.groups || []).length) return false;
-    startAvailabilityTour();
-    return true;
+    if (tourSeen(AVAILABILITY_TOUR_SEEN_KEY) || availabilityTourOwed) return;
+    availabilityTourOwed = "offered";
+    startOwedAvailabilityTour();
   }
 
   function wireTour() {
@@ -3675,24 +3718,14 @@
     // opened with the keyboard, though, and not a second time if they found
     // the button while the page was loading.
     //
-    // Someone who opened the Availability card while its numbers were still
-    // loading was too early for its tour, which waits for a chart to point at.
-    // That one goes first: they've already gone to the card, and the page tour
-    // is still unseen next visit.
-    //
-    // A card tour asked for with the button while the page loaded goes ahead
-    // of both, as long as the card it opened is still open.
+    // A card tour owed from while the page loaded -- the button pressed, or
+    // the card opened for the first time -- goes first: the reader has already
+    // gone to the card, and the page tour is still unseen next visit. It may
+    // have to wait longer yet, for numbers still on their way or a dialog to
+    // close; the page tour doesn't start in the meantime either.
     pageReady = true;
-    const queued = availabilityTourQueued;
-    availabilityTourQueued = false;
-    const busy = tourOpen() || state.availabilityDetail || document.querySelector("dialog[open]");
-    if (busy) return;
-    if (queued && state.expanded === "availability") {
-      startAvailabilityTour();
-      return;
-    }
-    if (state.expanded === "availability" && offerAvailabilityTour()) return;
-    if (!tourSeen(TOUR_SEEN_KEY)) {
+    if (startOwedAvailabilityTour() || availabilityTourOwed) return;
+    if (!tourSeen(TOUR_SEEN_KEY) && !availabilityTourBlocked()) {
       requestAnimationFrame(() => requestAnimationFrame(startPageTour));
     }
   }
