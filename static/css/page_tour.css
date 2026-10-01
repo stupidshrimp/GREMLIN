@@ -64,15 +64,34 @@
   pointer-events: none;
 }
 
+/* A column: the buttons at the foot, and above them the step's text, which
+   scrolls by itself rather than running the card off the bottom of a short
+   screen. */
 .page-tour-card {
   position: fixed;
+  display: flex;
+  flex-direction: column;
   width: min(23rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 1rem);
+  /* The part of the screen a phone actually shows, its toolbars aside. */
+  max-height: calc(100dvh - 1rem);
   padding: 1rem 1.1rem;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 18px 40px rgba(12, 26, 20, 0.35);
   transition: top 220ms ease, left 220ms ease;
+}
+
+/* A step with a list has the most to say, so it gets the most room to say it
+   in, in fewer and longer lines. */
+.page-tour-card.has-points {
+  width: min(28rem, calc(100vw - 2rem));
+}
+
+.page-tour-content {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .page-tour-step {
@@ -97,7 +116,37 @@
   color: var(--text);
 }
 
+/* The body runs straight on into the list when there is one; the card's
+   spacing above the buttons then comes from the list, or the source line. */
+.page-tour-body:has(+ .page-tour-points:not([hidden])) {
+  margin-bottom: 0.5rem;
+}
+
+.page-tour-points {
+  margin: 0 0 0.9rem;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+.page-tour-points li + li {
+  margin-top: 0.4rem;
+}
+
+.page-tour-term {
+  display: block;
+  color: var(--forest-900);
+  overflow-wrap: anywhere;
+}
+
+.page-tour-cite {
+  margin: -0.4rem 0 0.9rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .page-tour-actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 0.5rem;

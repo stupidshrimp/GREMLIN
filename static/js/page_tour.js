@@ -9,9 +9,18 @@
 // Each step is { target, title, body, when, action }. `target` is a selector,
 // looked up as the step is shown rather than now, because pages draw their
 // content after their scripts run; null means a step about the whole page, with
-// the card in the middle and nothing lit. `body` may be a function, for text
-// that depends on what is on screen. `when`, if given, is asked once as the tour
-// starts and leaves the step out when it says no.
+// the card in the middle and nothing lit. A selector matching several elements
+// -- a table column's header and each of its cells -- lights the box round all
+// of them, and a target inside a box that scrolls on its own, such as a wide
+// table, is scrolled into that box's view first. `body` may be a function, for
+// text that depends on what is on screen. `when`, if given, is asked once as the
+// tour starts and leaves the step out when it says no.
+//
+// A step that needs more than a paragraph can also have `points`, a list under
+// the body, each either a string or [term, text] for a term and what it means;
+// `cite`, a line naming where the card's content comes from; and `label`, said
+// after the step count, for a run of steps that are one part of the tour (the
+// columns of a table, say). Each may be a function, as `body` may.
 //
 // A step whose target isn't drawn when the tour starts is left out too, rather
 // than shown with a ring round nothing: a button the account can't use, a
@@ -89,8 +98,85 @@
     return box.width > 0 && box.height > 0 ? node : null;
   }
 
+  // Every element the step's selector matches that is drawn, or null when none
+  // is. Usually one; for a column of a table, its header and each cell showing.
   function targetOf(step) {
-    return step.target ? drawn(document.querySelector(step.target)) : null;
+    if (!step.target) return null;
+    const nodes = Array.from(document.querySelectorAll(step.target)).filter((node) => drawn(node));
+    return nodes.length ? nodes : null;
+  }
+
+  // The boxes between the target and the page that cut off what overflows them,
+  // innermost first: a table in a scrolling box of its own, for one.
+  function clippersOf(nodes) {
+    const found = [];
+    for (let node = nodes[0].parentElement; node && node !== document.body; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      if (/auto|scroll|hidden|clip/.test(`${style.overflowX} ${style.overflowY}`)) found.push(node);
+    }
+    return found;
+  }
+
+  // The part of a box its content shows through: inside its borders, and not
+  // under its scrollbars.
+  function viewOf(node) {
+    const box = node.getBoundingClientRect();
+    const top = box.top + node.clientTop;
+    const left = box.left + node.clientLeft;
+    return { top, left, right: left + node.clientWidth, bottom: top + node.clientHeight };
+  }
+
+  // The box round the whole target, or with `visible`, round only the part of
+  // it the boxes it sits in are showing: a column runs on below the bottom of
+  // its table's scrolling box, and the spotlight stops where the box does.
+  function boxOf(nodes, visible) {
+    let top = Infinity;
+    let left = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    nodes.forEach((node) => {
+      const box = node.getBoundingClientRect();
+      top = Math.min(top, box.top);
+      left = Math.min(left, box.left);
+      right = Math.max(right, box.right);
+      bottom = Math.max(bottom, box.bottom);
+    });
+    if (visible) {
+      clippersOf(nodes).forEach((node) => {
+        const view = viewOf(node);
+        top = Math.max(top, view.top);
+        left = Math.max(left, view.left);
+        right = Math.min(right, view.right);
+        bottom = Math.min(bottom, view.bottom);
+      });
+      right = Math.max(right, left);
+      bottom = Math.max(bottom, top);
+    }
+    return { top, left, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  // How far to scroll along one direction to show start..end within from..to:
+  // nothing when it already shows, or when it is too long to fit and some of it
+  // shows; otherwise enough to centre it, or, too long to fit, to bring in its
+  // start.
+  function shiftToShow(start, end, from, to) {
+    if (start >= from && end <= to) return 0;
+    if (end - start > to - from) return start < to && end > from ? 0 : start - from;
+    return (start + end) / 2 - (from + to) / 2;
+  }
+
+  // Scrolls each box the target sits in that scrolls by itself, innermost
+  // first, until the target is in its view. The page is scrollTo's to move. At
+  // once rather than smoothly: the spotlight is measured straight after, and a
+  // box scrolling by itself tells the window nothing.
+  function reveal(nodes) {
+    clippersOf(nodes).forEach((node) => {
+      const style = window.getComputedStyle(node);
+      const box = boxOf(nodes, false);
+      const view = viewOf(node);
+      if (/auto|scroll/.test(style.overflowX)) node.scrollLeft += shiftToShow(box.left, box.right, view.left, view.right);
+      if (/auto|scroll/.test(style.overflowY)) node.scrollTop += shiftToShow(box.top, box.bottom, view.top, view.bottom);
+    });
   }
 
   // Whether Next is the step's action rather than a move on: it has one, the
@@ -110,7 +196,7 @@
     let ceiling = 0;
     (tour.options.pinned || [".topbar"]).forEach((selector) => {
       const node = drawn(document.querySelector(selector));
-      if (!node || (target && node.contains(target))) return;
+      if (!node || (target && target.some((part) => node.contains(part)))) return;
       const style = window.getComputedStyle(node);
       // Narrow screens let the sidebar and the like scroll away with the page.
       if (style.position !== "sticky" && style.position !== "fixed") return;
@@ -161,6 +247,15 @@
     };
   }
 
+  // The top that keeps the whole card on screen, buttons and all: the one
+  // asked for, unless that would run the card's foot off the bottom of the
+  // screen. A card with a long list can be nearly the screen's height, and its
+  // text scrolls inside it but its buttons don't. Over the top bar rather than
+  // with Next out of reach.
+  function onScreen(top, size) {
+    return Math.max(PAD, Math.min(top, window.innerHeight - size.height - PAD));
+  }
+
   function place() {
     // Run a frame or two after a step is shown, by when Skip or Escape may
     // have closed the tour.
@@ -168,19 +263,24 @@
     const card = $("page-tour-card");
     const spotlight = $("page-tour-spotlight");
     const target = targetOf(tour.steps[tour.index]);
+    // A target its scrolling box has none of on show is as good as not drawn.
+    const box = target && boxOf(target, true);
+    const lit = Boolean(box && box.width > 0 && box.height > 0);
     // With nothing lit there is no spotlight to cast the shadow that dims the
     // page, so the overlay does it instead.
-    $("page-tour").classList.toggle("is-whole-page", !target);
+    $("page-tour").classList.toggle("is-whole-page", !lit);
 
-    if (!target) {
+    if (!lit) {
       // Nothing to point at: centre the card and leave the page evenly dimmed.
+      // Its size is read rather than assumed, as a card with a list is wider
+      // and may be too tall to start a fifth of the way down.
+      const size = card.getBoundingClientRect();
       spotlight.hidden = true;
-      card.style.top = "20vh";
-      card.style.left = "max(1rem, calc(50vw - 11.5rem))";
+      card.style.top = `${onScreen(window.innerHeight * 0.2, size)}px`;
+      card.style.left = `max(1rem, calc(50vw - ${size.width / 2}px))`;
       return;
     }
 
-    const box = target.getBoundingClientRect();
     // Something taller than the screen runs up under the sticky top bar, which
     // would then sit undimmed inside the lit box. Stop the box at the bar's
     // lower edge.
@@ -194,7 +294,7 @@
 
     const size = card.getBoundingClientRect();
     const spot = spotFor(box, size, ceiling) || fallbackSpot(box, size, ceiling);
-    card.style.top = `${spot.top}px`;
+    card.style.top = `${onScreen(spot.top, size)}px`;
     card.style.left = `${spot.left}px`;
   }
 
@@ -205,7 +305,7 @@
   // card, pinned to the bottom of the screen, would cover the rows the step is
   // about.
   function scrollTo(target) {
-    const box = target.getBoundingClientRect();
+    const box = boxOf(target, true);
     const size = $("page-tour-card").getBoundingClientRect();
     const now = ceilingFor(target, false);
     if (box.top >= now - 1 && box.bottom <= window.innerHeight + 1 && spotFor(box, size, now)) return;
@@ -220,13 +320,46 @@
     });
   }
 
+  // A step field that may be given as it is or as a function returning it.
+  function valueOf(field) {
+    return typeof field === "function" ? field() : field;
+  }
+
+  // One entry of a step's `points`: a string, or [term, text], the term in bold
+  // on a line of its own above what it means.
+  function pointItem(point) {
+    const item = document.createElement("li");
+    if (!Array.isArray(point)) {
+      item.textContent = point;
+      return item;
+    }
+    const term = document.createElement("strong");
+    term.className = "page-tour-term";
+    term.textContent = point[0];
+    item.appendChild(term);
+    item.appendChild(document.createTextNode(point[1]));
+    return item;
+  }
+
   function show() {
     const steps = tour.steps;
     const step = steps[tour.index];
+    const label = valueOf(step.label);
+    const points = valueOf(step.points) || [];
+    const cite = valueOf(step.cite) || "";
 
-    $("page-tour-step").textContent = `Step ${tour.index + 1} of ${steps.length}`;
+    $("page-tour-step").textContent = `Step ${tour.index + 1} of ${steps.length}` + (label ? ` · ${label}` : "");
     $("page-tour-title").textContent = step.title;
-    $("page-tour-body").textContent = typeof step.body === "function" ? step.body() : step.body;
+    $("page-tour-body").textContent = valueOf(step.body);
+    $("page-tour-points").replaceChildren(...points.map(pointItem));
+    $("page-tour-points").hidden = !points.length;
+    $("page-tour-cite").textContent = cite;
+    $("page-tour-cite").hidden = !cite;
+    // A card with a list is wider, so the list reads in fewer, longer lines.
+    $("page-tour-card").classList.toggle("has-points", points.length > 0);
+    // A step long enough to scroll on a short screen starts from its top, not
+    // from wherever the one before it had been scrolled to.
+    $("page-tour-content").scrollTop = 0;
     $("page-tour-back").disabled = tour.index === 0;
     $("page-tour-next").disabled = false;
     $("page-tour-next").textContent = actionDue(step)
@@ -236,21 +369,50 @@
       : "Next ►";
     tour.furthest = Math.max(tour.furthest, tour.index);
 
-    // After the text, which is what sets the card's height.
+    // After the text, which is what sets the card's height. Within its own
+    // scrolling box first, so the page is scrolled to where it then is.
     const target = targetOf(step);
-    if (target) scrollTo(target);
+    if (target) {
+      reveal(target);
+      scrollTo(target);
+    }
 
     // After the scroll, so the spotlight lands on where the target actually
     // ends up.
     requestAnimationFrame(() => requestAnimationFrame(place));
   }
 
+  // Where a key that scrolls takes the card's text, when the step has more to
+  // say than the card has room for; null for any other key, or when all of it
+  // shows. Focus is on the card or one of its buttons, neither of them inside
+  // the text, so without this those keys would scroll the page behind the
+  // overlay and leave the end of a long list out of a keyboard's reach.
+  function textScrollFor(event) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return null;
+    const content = $("page-tour-content");
+    const end = content.scrollHeight - content.clientHeight;
+    if (end <= 0) return null;
+    const line = 40;
+    const page = content.clientHeight * 0.9;
+    const to = {
+      ArrowDown: content.scrollTop + line,
+      ArrowUp: content.scrollTop - line,
+      PageDown: content.scrollTop + page,
+      PageUp: content.scrollTop - page,
+      End: end,
+      Home: 0,
+    }[event.key];
+    return to === undefined ? null : Math.min(Math.max(0, to), end);
+  }
+
   // Escape leaves, the same as the site's dialogs. Tab stays on the card's
   // buttons: the overlay stops the page behind it being clicked, and without
   // this a keyboard could still walk into it and drive controls it can't see.
   // The search box's shortcuts are held back for the same reason -- they would
-  // put focus in the box behind the overlay. This listens in the capture phase,
-  // so stopping the key here keeps it from global_search.js.
+  // put focus in the box behind the overlay. The arrows, Page Up and Down, Home
+  // and End scroll the card's text when there is more of it than shows. This
+  // listens in the capture phase, so stopping the key here keeps it from
+  // global_search.js.
   function onKeydown(event) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -262,6 +424,13 @@
     if (searchKey) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    const textTop = textScrollFor(event);
+    if (textTop !== null) {
+      event.preventDefault();
+      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $("page-tour-content").scrollTo({ top: textTop, behavior: still ? "auto" : "smooth" });
       return;
     }
     if (event.key !== "Tab") return;

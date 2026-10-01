@@ -2486,8 +2486,17 @@
     // The narrative reports what the maintenance team recorded, so it belongs with
     // the other read-only source columns rather than among the editable ones.
     const narrativeFields = data.narrative_columns || NARRATIVE_FIELDS;
+    // The editable columns' header and cells carry their key, which is how the
+    // tour lights one column at a time (see DISPOSITION_COLUMN_TOUR_STEPS).
+    const editColumn = (column) => (extraColumns.includes(column) ? column.key : null);
     const thead = el("thead", {}, [
-      el("tr", {}, columns.map((column) => el("th", { class: column.cls || null, text: column.label }))),
+      el(
+        "tr",
+        {},
+        columns.map((column) =>
+          el("th", { class: column.cls || null, "data-disp-col": editColumn(column), text: column.label })
+        )
+      ),
     ]);
     const tbody = el("tbody");
 
@@ -2515,7 +2524,7 @@
       const controls = buildDispositionControls(row, data, taxonomy);
       extraColumns.forEach((column) => {
         const cell = controls.cells[column.key];
-        tr.appendChild(el("td", { class: cell.cls || null }, cell.nodes));
+        tr.appendChild(el("td", { class: cell.cls || null, "data-disp-col": column.key }, cell.nodes));
       });
       controls.rowState.tr = tr;
       rowStates.push(controls.rowState);
@@ -5996,6 +6005,290 @@
     },
   ];
 
+  // "Filling in a row", in depth: a card on how the disposition columns are
+  // decided, then one card per column saying what it means and what to put in
+  // it, with the column lit. The rules are Reliability Engineering's, from the
+  // two documents named below, and follow the order the Failure Definition
+  // Document says a record is reviewed in rather than the order the columns sit
+  // in; the save rules the cards mention are _save_disposition_with_conn's.
+  const FAILURE_DEFINITION = "REL-WBL-DAT-002 Failure Definition";
+  const DATA_REQUIREMENTS = "REL-WBL-PLN-003 Data Requirements";
+
+  // Per record type, each editable column in the order the cards take them.
+  // Each entry is a card for the column `key`, titled with its label in
+  // DISPOSITION_EDIT_COLUMNS, so the card and the header can't disagree.
+  const DISPOSITION_COLUMN_GUIDE = {
+    wo: [
+      {
+        key: "effective_record_class",
+        body:
+          "What kind of job this record really was. The import guessed it from the record's own text, so " +
+          "check the guess against the title, the notes and what was done, and correct it when it's wrong. " +
+          "It describes the job; whether the fit uses the row is up to Disposition Category.",
+        points: [
+          ["CORRECTIVE_WO", "Unplanned work to restore a function that was lost or degraded: a repair, a replacement because the part failed, an emergency or reactive call-out."],
+          ["PM", "Planned preventive work, or a scheduled replacement or overhaul, that ended up among the work orders."],
+          ["INSPECTION", "A check or audit that found no defect and no loss of function."],
+          ["PARTS_ORDER", "Ordering, fetching or stocking parts, with no repair done."],
+          ["ADMINISTRATIVE", "Paperwork, or a record with no technical event behind it."],
+          ["PROJECT_WORK", "Upgrades, installs and scheduled project jobs."],
+          ["UNKNOWN", "Not enough in the record to tell what the job was."],
+        ],
+        cite: `${FAILURE_DEFINITION} §4, Table 1; §7.4.7`,
+      },
+      {
+        key: "disposition_category",
+        body:
+          "The decision itself: the standard's Yes, Review or No. Only INCLUDED_FAILURE puts a work order " +
+          "into the fit. Anything vague, mixed or conflicting is held or excluded, never forced in to " +
+          "raise the count.",
+        points: [
+          ["INCLUDED_FAILURE", "Yes. The item couldn't do its job, or did it unacceptably, and needed unplanned corrective action. It counts with or without logged downtime, including a bypass, workaround or manual recovery. Needs a Failure Mode."],
+          ["HELD_AMBIGUOUS", "Review. Probably a real failure, but the record is too vague (\"machine down\", \"issue resolved\"), contradicts itself, or doesn't show which population it belongs to. Kept out until resolved; the note says what evidence is missing or what review is needed."],
+          ["EXCLUDED_NON_FAILURE", "No. Not a failure: preventive or scheduled work, an inspection with no defect, cosmetic, housekeeping, documentation or administrative jobs, or out of scope for this analysis."],
+          ["EXCLUDED_MIXED_CONTAMINATING", "No. A real event, but it mixes more than one failure story or conflicts with the population's definition, so it would muddy the fit. The note says why."],
+          ["INCLUDED_CENSORED_ASSET_EVENT", "Survival with no recurrence through the cutoff date. Needs a Failure Mode, but is never counted as a failure, and the fit already adds the censored life from the last failure or reset to the cutoff by itself, so it's rarely needed."],
+          ["UNKNOWN", "Not dispositioned yet. Leave it only on rows you haven't reviewed."],
+        ],
+        cite: `${FAILURE_DEFINITION} §4, §5, §7.4 Table 5, §7.4.3, §7.4.4, §9`,
+      },
+      {
+        key: "failure_mode",
+        body:
+          "The failure behavior this record shows: a specific, repeatable symptom or effect. Rows sharing " +
+          "a mode are fitted together, so name a behavior, not a department or a system.",
+        points: [
+          ["Good", "\"Hydraulic clamp not reaching position\", \"Pallet translator positioning / homing fault\": one coherent symptom family."],
+          ["Too broad", "\"Controls faults\", \"Motion faults\", \"Laser head faults\", \"General electrical issues\": each mixes several behaviors, and the fit would describe none of them."],
+          ["Where to look", "The failure or cause code, then the title and request, the alarm or fault code, the component named, the technician's notes, and what was actually done or replaced. When they disagree, take the most defensible technical reading and say why in the notes."],
+          ["Reuse or add", "Pick an existing mode when it is the same behavior, so the population stays together. Type a new name only for a genuinely different one; it's added to this asset's list when you save."],
+          ["Leave it blank", "On excluded and held rows. INCLUDED_FAILURE won't save without one, and a vague description alone isn't grounds for one."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.3, §7 Tables 2–3, §7.4.5, §8, §9.2`,
+      },
+      {
+        key: "failure_mechanism",
+        body:
+          "The specific physical, functional or adjustment-driven cause under the failure mode. It is the " +
+          "preferred grouping, as the narrower population fits more cleanly, but only when this record's " +
+          "own evidence supports it.",
+        points: [
+          ["Fill it in when", "The request, notes, alarm, findings and corrective action all point to one cause, and the fix is specific and repeatable: the same bracket adjusted, the same sensor replaced, the same drift corrected. For example \"SQ87 bracket / switch out of adjustment\"."],
+          ["Not from", "A shared alarm code or symptom alone: bracket drift and jammed hardware can raise the same alarm and still be different mechanisms. Nor from an assumed root cause, a guess at what the technician meant, or hindsight from later records."],
+          ["Leave it blank when", "The record doesn't isolate one mechanism. The row then sits in the failure-mode population, the controlled fallback; say why in the notes."],
+          ["How it counts", "A mechanism belongs to the failure mode beside it. A row with one is fitted in that mechanism's population and its mode's; a row without one, only in the mode's."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.4, §7.1–7.3, §7.4.6`,
+      },
+      {
+        key: "modeled_population_name",
+        body:
+          "The set of records one Weibull fit is run on. You don't type it: saving names it from the " +
+          "asset, the failure mode and the mechanism, and it reads \"Auto-create…\" until then. With a " +
+          "mechanism it is a mechanism-level population; without one, the failure-mode fallback.",
+        points: [
+          ["Read it back", "Would a reviewer know what beta and eta describe from the name alone? If not, the mode or mechanism name needs work."],
+          ["Check the bucket", "Its rows should share one symptom (and, at mechanism level, one cause), with fixes, parts and machine areas that hang together. Short repeat intervals should be the same problem coming back, not unrelated stories."],
+          ["If it doesn't hold together", "Split it, merge it up to the mode, hold the doubtful rows, or leave it out of this analysis. Don't force a fit."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.6, §7, §7.5`,
+      },
+      {
+        key: "include_in_weibull_candidate",
+        body:
+          "Lets the fit use this row. A work order is used only as INCLUDED_FAILURE, with a failure mode, " +
+          "and this ticked.",
+        points: [
+          ["Tick it yourself", "Choosing INCLUDED_FAILURE doesn't tick it. Tick it on every row the fit should use, or use Check all for the page."],
+          ["Cleared on save", "For both EXCLUDED_ categories, whatever the box says."],
+          ["Ignored", "On every other category: only INCLUDED_FAILURE rows reach the fit."],
+        ],
+        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
+      },
+      {
+        key: "disposition_notes",
+        body:
+          "Your reasoning, kept with the record so a later reviewer can see why it was included, excluded, " +
+          "or grouped at the mechanism or the mode level. Required for HELD_AMBIGUOUS and " +
+          "EXCLUDED_MIXED_CONTAMINATING, and worth a line on any call that isn't obvious.",
+        points: [
+          ["Included", "The evidence that puts it in this bucket: \"Tech re-set SQ87 bracket, same fix as the previous events.\" At mode level, why no mechanism could be isolated."],
+          ["Held", "What's missing, or who needs to look: \"Only says 'machine down'; ask second shift what was reset.\""],
+          ["Mixed", "Which failure stories it mixes, or why the bucket itself needs revising."],
+          ["Excluded", "Why it isn't a failure: \"Inspection only, no defect found.\""],
+          ["Reclassified", "When the record's fields disagreed, which one you went with and why."],
+        ],
+        cite: `${FAILURE_DEFINITION} §7.4.7, §8, §10`,
+      },
+    ],
+    pm: [
+      {
+        key: "effective_record_class",
+        body:
+          "What kind of job this record really was. The import guessed it from the record's own text; " +
+          "correct it when it's wrong. CORRECTIVE_WO isn't offered: a PM is never counted as a failure here.",
+        points: [
+          ["PM", "A routine preventive task: an inspection round, lubrication, cleaning, a route PM."],
+          ["PM_RESET_CANDIDATE", "A PM that may restore a specific item, such as a scheduled replacement, an overhaul or a re-set to spec, and so is worth weighing as a reset."],
+          ["INSPECTION", "A check or audit only, with nothing restored."],
+          ["PARTS_ORDER", "Ordering, fetching or stocking parts."],
+          ["ADMINISTRATIVE", "Paperwork, or a record with no technical event behind it."],
+          ["PROJECT_WORK", "Upgrades, installs and scheduled project jobs."],
+          ["UNKNOWN", "Not enough in the record to tell what the job was."],
+        ],
+        cite: `${FAILURE_DEFINITION} §4, Table 1`,
+      },
+      {
+        key: "pm_reset_inclusion_decision",
+        body:
+          "Whether this PM renewed the asset against one specific failure mode or mechanism. An approved " +
+          "reset starts that population's clock again; it is never counted as a failure.",
+        points: [
+          ["APPROVED_RESET", "Its scope credibly restored the item or function behind one named failure mode or mechanism: it replaced the wearing part, re-set the adjustment to spec, rebuilt the assembly. Needs a reset target and a rationale; goes with INCLUDED_PM_RESET_EVENT."],
+          ["REJECTED_RESET", "Weighed as a reset and turned down: its scope doesn't restore the target, as with a general inspection, a broad route PM or housekeeping. Goes with REJECTED_PM_RESET."],
+          ["CONTEXT_ONLY", "A routine PM kept only as history around the failures. Goes with PM_CONTEXT_ONLY."],
+          ["NEEDS_REVIEW", "Not decided yet, or the record can't show what the PM restored. Goes with HELD_AMBIGUOUS and a note, or UNKNOWN until it's reviewed."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.8, §6, §7.3; ${DATA_REQUIREMENTS} §8`,
+      },
+      {
+        key: "disposition_category",
+        body:
+          "The disposition itself, which has to agree with the PM Reset Decision. Only " +
+          "INCLUDED_PM_RESET_EVENT puts a PM into the fit, as the start of a new life rather than a failure.",
+        points: [
+          ["INCLUDED_PM_RESET_EVENT", "A valid reset for the population. Needs APPROVED_RESET, a Reset Target Failure Mode and a renewal rationale."],
+          ["PM_CONTEXT_ONLY", "Kept for traceability only. Goes with CONTEXT_ONLY."],
+          ["REJECTED_PM_RESET", "Reviewed and refused as a reset. Goes with REJECTED_RESET."],
+          ["HELD_AMBIGUOUS", "Can't tell yet whether it restored the target. Kept out until resolved; the note says what's missing."],
+          ["EXCLUDED_NON_FAILURE", "No part in the analysis at all: parts handling, administration, housekeeping."],
+          ["UNKNOWN", "Not dispositioned yet. Leave it only on rows you haven't reviewed."],
+        ],
+        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
+      },
+      {
+        key: "reset_target_failure_mode",
+        body:
+          "The failure mode this PM resets: the population in which it marks the start of a new life.",
+        points: [
+          ["From the list", "Only modes this asset's work orders already use are offered, since a PM can't create one. If the mode you need isn't there, disposition the work orders first."],
+          ["One explicit target", "The mode the PM's scope actually restores. A general PM that can't be tied to one mode shouldn't be approved as a reset."],
+          ["Required", "For INCLUDED_PM_RESET_EVENT. Leave it blank on context-only, rejected and excluded PMs."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.8, §7.3; ${DATA_REQUIREMENTS} §8`,
+      },
+      {
+        key: "reset_target_failure_mechanism",
+        body:
+          "The mechanism under the target mode that the PM restores, when it is that specific: re-setting " +
+          "the SQ87 bracket to spec resets \"SQ87 bracket / switch out of adjustment\".",
+        points: [
+          ["From the list", "It offers the mechanisms already dispositioned under the chosen Reset Target Failure Mode."],
+          ["Leave it blank when", "The PM restores the mode in general rather than one mechanism under it."],
+          ["How it counts", "With a mechanism, the reset counts in that mechanism's population and its mode's; without one, only in the mode's, so mechanism-level fits won't see it."],
+        ],
+        cite: `${FAILURE_DEFINITION} §3.4, §3.8, §7.3`,
+      },
+      {
+        key: "pm_reset_renewal_rationale",
+        body:
+          "Why this PM is technically capable of resetting the target: the part of its scope that restores " +
+          "the item or function, and the evidence that it was done.",
+        points: [
+          ["Required", "For APPROVED_RESET and INCLUDED_PM_RESET_EVENT."],
+          ["Good", "\"Task replaces the clamp cylinder seals and re-sets pressure to spec; completion notes confirm both.\""],
+          ["Not enough", "\"PM completed\", or a general inspection, housekeeping or route PM with no targeted restoration written down."],
+        ],
+        cite: `${FAILURE_DEFINITION} §7.3; ${DATA_REQUIREMENTS} §7, §8`,
+      },
+      {
+        key: "modeled_population_name",
+        body:
+          "The population this reset belongs to, named on save from the asset and the reset target's mode " +
+          "and mechanism; it reads \"Auto-create…\" until then. Check that it is the population whose " +
+          "failures this PM prevents, named just as on those work orders.",
+        cite: `${FAILURE_DEFINITION} §3.6, §7`,
+      },
+      {
+        key: "include_in_weibull_candidate",
+        body:
+          "Lets the fit use this PM as a reset. A PM is used only as INCLUDED_PM_RESET_EVENT with " +
+          "APPROVED_RESET, a reset target, a rationale, and this ticked.",
+        points: [
+          ["Tick it yourself", "Choosing INCLUDED_PM_RESET_EVENT and APPROVED_RESET doesn't tick it. Tick it on every reset the fit should use."],
+          ["Cleared on save", "For REJECTED_RESET, CONTEXT_ONLY and EXCLUDED_NON_FAILURE, whatever the box says."],
+          ["Ignored", "On every other category: only INCLUDED_PM_RESET_EVENT rows reach the fit."],
+        ],
+        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
+      },
+      {
+        key: "disposition_notes",
+        body:
+          "Your reasoning, kept with the record for later review. Required for HELD_AMBIGUOUS. The evidence " +
+          "for an approved reset goes under PM Reset Renewal Rationale instead.",
+        points: [
+          ["Held", "What's missing: \"Task list doesn't say whether the seals were replaced; check with the planner.\""],
+          ["Rejected or context only", "Why the scope restores nothing specific: \"Route inspection, no parts replaced or adjustments made.\""],
+          ["Reclassified", "When the record's fields disagreed, which one you went with and why."],
+        ],
+        cite: `${FAILURE_DEFINITION} §8, §10`,
+      },
+    ],
+  };
+
+  // The in-depth "Filling in a row": its opening card, which lights the header
+  // of every column there is to fill in, then a card per column of the record
+  // type showing. The Record Type can't change while the tour is open, so each
+  // card is kept or dropped for the whole tour as it starts.
+  const DISPOSITION_COLUMN_TOUR_STEPS = [
+    {
+      target: "#lda-disp-table th[data-disp-col]",
+      title: "Filling in a row",
+      body: () =>
+        state.dispositionKind === "pm"
+          ? "The columns after Failure Narrative are the disposition. A PM is never a failure: the one " +
+            "question is whether it renewed the asset against one specific failure mode or mechanism, which " +
+            "restarts that population's clock in the fit. The next cards take each column in this order:"
+          : "The columns after Failure Narrative are the disposition: what this record was, and whether the " +
+            "Weibull fit may use it. The next cards take each column in the order the standard reviews a " +
+            "record in:",
+      points: () =>
+        state.dispositionKind === "pm"
+          ? [
+              ["What was it?", "Confirm it really is a PM, and not an inspection, a parts run or a project."],
+              ["Did it restore something specific?", "Only a PM whose scope credibly restores the item or function behind one failure mode or mechanism can reset it. Route PMs, general inspections and housekeeping don't, unless that restoration is written down."],
+              ["Decision and category", "They come in matching pairs."],
+              ["Name the target", "The failure mode, and the mechanism if there is one, that it resets."],
+              ["Show the evidence", "Why its scope renews that target, in words a reviewer can check."],
+            ]
+          : [
+              ["Is it a failure?", "A real loss or degradation of function that needed unplanned correction, downtime or not. Not PM, inspection, admin or housekeeping."],
+              ["Does it belong?", "It has to fit one repeatable failure behavior, not a catch-all label."],
+              ["How narrow?", "The narrowest level the record itself supports: a failure mechanism first, the failure mode as the fallback."],
+              ["Yes, Review or No?", "Include it, hold it, or exclude it. Weak records are held, never forced in to raise the count."],
+              ["Why?", "Write it down wherever the call isn't obvious, so a later reviewer can follow it."],
+            ],
+      cite: () =>
+        state.dispositionKind === "pm"
+          ? `${FAILURE_DEFINITION} §3.8, §6, §7.3; ${DATA_REQUIREMENTS} §8`
+          : `${FAILURE_DEFINITION} §6, §7.4.7, §7.4.8`,
+    },
+  ].concat(
+    ...["wo", "pm"].map((kind) => {
+      const labels = new Map(DISPOSITION_EDIT_COLUMNS[kind].map((column) => [column.key, column.label]));
+      const guide = DISPOSITION_COLUMN_GUIDE[kind];
+      return guide.map((entry, index) => ({
+        target: `#lda-disp-table [data-disp-col="${entry.key}"]`,
+        title: labels.get(entry.key),
+        label: `Column ${index + 1} of ${guide.length}`,
+        body: entry.body,
+        points: entry.points,
+        cite: entry.cite,
+        when: () => state.dispositionKind === kind,
+      }));
+    })
+  );
+
   const DISPOSITION_EDITOR_TOUR_STEPS = [
     {
       target: "#lda-disp-meta",
@@ -6017,20 +6310,7 @@
         "which fills itself in when you save. The ▾ on any column header sorts the whole selection by " +
         "it, or filters this page to the values you pick.",
     },
-    {
-      target: "#lda-disp-table",
-      title: "Filling in a row",
-      body: () =>
-        state.dispositionKind === "pm"
-          ? "Pick a Disposition Category and a PM Reset Decision. For an approved reset, choose the " +
-            "Reset Target Failure Mode and Mechanism it renewed (only ones work orders already use), give " +
-            "the evidence under PM Reset Renewal Rationale, and tick Include in Weibull Candidate. " +
-            "HELD_AMBIGUOUS needs a note saying why."
-          : "Pick a Disposition Category: INCLUDED_FAILURE for a real failure, EXCLUDED_NON_FAILURE for " +
-            "a job that wasn't one, HELD_AMBIGUOUS (with a note saying why) if you can't tell yet. Choose " +
-            "the Failure Mode and Mechanism, or type a new name to add one, and tick Include in Weibull " +
-            "Candidate on the rows the fit should use.",
-    },
+    ...DISPOSITION_COLUMN_TOUR_STEPS,
     {
       target: "#lda-disp-check-all",
       title: "Include a whole page",

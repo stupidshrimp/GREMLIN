@@ -10,11 +10,16 @@
   <div id="page-tour-card" class="page-tour-card" role="dialog" aria-modal="true"
        aria-labelledby="page-tour-title" tabindex="-1">
     {#- Polite, so a screen reader hears each new step as Next moves on; focus
-        stays on the button, which would otherwise announce nothing. -#}
-    <div aria-live="polite">
+        stays on the button, which would otherwise announce nothing. It scrolls
+        on its own when a step has more to say than the screen has room for, so
+        the buttons under it stay in reach. The list and the source line are
+        for the steps that have them, and hidden for the rest. -#}
+    <div class="page-tour-content" id="page-tour-content" aria-live="polite">
       <p class="page-tour-step" id="page-tour-step"></p>
       <h2 class="page-tour-title" id="page-tour-title"></h2>
       <p class="page-tour-body" id="page-tour-body"></p>
+      <ul class="page-tour-points" id="page-tour-points" hidden></ul>
+      <p class="page-tour-cite" id="page-tour-cite" hidden></p>
     </div>
     <div class="page-tour-actions">
       <button id="page-tour-skip" class="page-tour-skip" type="button">Skip</button>
