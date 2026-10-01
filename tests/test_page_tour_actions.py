@@ -51,6 +51,7 @@ class FakeElement {
   }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   appendChild(node) { this.children.push(node); return node; }
+  scrollTo(options) { this.scrollTop = options.top; }
   replaceChildren(...nodes) { this.children = nodes; }
   click() { if (!this.disabled) (this.listeners.click || []).forEach((fn) => fn({})); }
   focus() { document.activeElement = this; }
@@ -82,8 +83,10 @@ global.document = {
   querySelectorAll: (selector) => [].concat(targets[selector] || []),
   createElement: (tag) => new FakeElement(tag),
   createTextNode: (text) => ({ textContent: text }),
-  addEventListener() {},
-  removeEventListener() {},
+  // Kept, so a scenario can press a key the way the page would see it.
+  listeners: {},
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+  removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter((other) => other !== fn); },
 };
 global.window = global;
 global.addEventListener = () => {};
@@ -135,6 +138,13 @@ const card = () => ({
 const next = () => byId["page-tour-next"].click();
 const skip = () => byId["page-tour-skip"].click();
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+// A key pressed with focus on the card; true when the tour kept it from the page.
+const press = (key, extra) => {
+  let prevented = false;
+  const event = Object.assign({ key, shiftKey: false, preventDefault: () => { prevented = true; }, stopPropagation() {} }, extra);
+  (document.listeners.keydown || []).forEach((fn) => fn(event));
+  return prevented;
+};
 
 const scenarios = {
   __SCENARIOS__
@@ -317,6 +327,32 @@ _SCENARIOS = {
     # A card nearly the screen's height -- the most its stylesheet allows --
     # under a sticky top bar: once with nothing to point at, once beside a
     # target with no room above or below it.
+    # A card whose text runs on past the bottom of the card, then one whose text
+    # all shows.
+    "text_keys": r"""
+    async () => {
+      target("#a", true);
+      const content = document.getElementById("page-tour-content");
+      Object.assign(content, { scrollHeight: 1000, clientHeight: 400 });
+      tour.start([{ target: "#a", title: "Long", body: "A long list." }], {});
+      await settle();
+      const seen = {};
+      seen.startsAt = content.scrollTop;
+      seen.down = [press("ArrowDown"), content.scrollTop];
+      seen.pageDown = [press("PageDown"), content.scrollTop];
+      seen.end = [press("End"), content.scrollTop];
+      seen.pastEnd = [press("ArrowDown"), content.scrollTop];
+      seen.pageUp = [press("PageUp"), content.scrollTop];
+      seen.home = [press("Home"), content.scrollTop];
+      seen.ctrlEnd = [press("End", { ctrlKey: true }), content.scrollTop];
+      seen.letter = press("a");
+      Object.assign(content, { scrollHeight: 400 });
+      seen.fitsDown = [press("ArrowDown"), content.scrollTop];
+      tour.end();
+      seen.closedDown = press("ArrowDown");
+      return seen;
+    }
+    """,
     "tall_cards": r"""
     async () => {
       const topbar = target(".topbar", true);
@@ -452,3 +488,23 @@ def test_a_card_as_tall_as_the_screen_allows_keeps_its_buttons_on_screen(tmp_pat
     for shown in seen["seen"]:
         assert shown["top"] >= 0, shown
         assert shown["top"] + seen["height"] <= seen["screen"], shown
+
+
+def test_the_scrolling_keys_scroll_a_long_card_rather_than_the_page(tmp_path):
+    """Focus is on the card or its buttons, which the text doesn't contain, so
+    without this a keyboard could never reach the end of a long list."""
+    seen = _run(tmp_path, "text_keys")
+    assert seen["startsAt"] == 0
+    # [kept from the page, where the text is scrolled to]; 600 is as far as it goes.
+    assert seen["down"] == [True, 40]
+    assert seen["pageDown"] == [True, 400]
+    assert seen["end"] == [True, 600]
+    assert seen["pastEnd"] == [True, 600]
+    assert seen["pageUp"] == [True, 240]
+    assert seen["home"] == [True, 0]
+    # Anything else, and the same keys once all of it shows or the tour has
+    # closed, are left to the page.
+    assert seen["ctrlEnd"] == [False, 0]
+    assert seen["letter"] is False
+    assert seen["fitsDown"] == [False, 0]
+    assert seen["closedDown"] is False

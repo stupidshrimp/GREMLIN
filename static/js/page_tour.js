@@ -382,12 +382,37 @@
     requestAnimationFrame(() => requestAnimationFrame(place));
   }
 
+  // Where a key that scrolls takes the card's text, when the step has more to
+  // say than the card has room for; null for any other key, or when all of it
+  // shows. Focus is on the card or one of its buttons, neither of them inside
+  // the text, so without this those keys would scroll the page behind the
+  // overlay and leave the end of a long list out of a keyboard's reach.
+  function textScrollFor(event) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return null;
+    const content = $("page-tour-content");
+    const end = content.scrollHeight - content.clientHeight;
+    if (end <= 0) return null;
+    const line = 40;
+    const page = content.clientHeight * 0.9;
+    const to = {
+      ArrowDown: content.scrollTop + line,
+      ArrowUp: content.scrollTop - line,
+      PageDown: content.scrollTop + page,
+      PageUp: content.scrollTop - page,
+      End: end,
+      Home: 0,
+    }[event.key];
+    return to === undefined ? null : Math.min(Math.max(0, to), end);
+  }
+
   // Escape leaves, the same as the site's dialogs. Tab stays on the card's
   // buttons: the overlay stops the page behind it being clicked, and without
   // this a keyboard could still walk into it and drive controls it can't see.
   // The search box's shortcuts are held back for the same reason -- they would
-  // put focus in the box behind the overlay. This listens in the capture phase,
-  // so stopping the key here keeps it from global_search.js.
+  // put focus in the box behind the overlay. The arrows, Page Up and Down, Home
+  // and End scroll the card's text when there is more of it than shows. This
+  // listens in the capture phase, so stopping the key here keeps it from
+  // global_search.js.
   function onKeydown(event) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -399,6 +424,13 @@
     if (searchKey) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    const textTop = textScrollFor(event);
+    if (textTop !== null) {
+      event.preventDefault();
+      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      $("page-tour-content").scrollTo({ top: textTop, behavior: still ? "auto" : "smooth" });
       return;
     }
     if (event.key !== "Tab") return;
