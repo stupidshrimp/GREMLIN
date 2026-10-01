@@ -440,6 +440,22 @@
   display: none;
 }
 
+/* While a step is about the day dialog, the two swap places: the dialog goes
+   above the tour, and the tour stops catching clicks so the list can still be
+   read and scrolled. The card keeps its own clicks. */
+.pm-tour.is-modal-step {
+  z-index: 1300;
+  pointer-events: none;
+}
+
+.pm-tour.is-modal-step .pm-tour-card {
+  pointer-events: auto;
+}
+
+.pm-modal-backdrop.is-tour-lit {
+  z-index: 1205;
+}
+
 /* The lit box. It is transparent; the huge shadow around it is what darkens
    everything else, so one element does both jobs and nothing has to be
    cut out of the page. */
@@ -823,6 +839,45 @@
   color: var(--muted);
 }
 
+/* "Based on the PM completed ..." on an estimate: a button, because it
+   moves the calendar rather than going anywhere, but drawn as quietly as
+   the note above it -- it answers a question a reader may not be asking. */
+.pm-day-item-anchor {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--forest-700);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-day-item-anchor:hover {
+  color: var(--forest-900);
+  text-decoration: underline;
+}
+
+/* The card a jump landed on, marked for a few seconds. The ring is drawn
+   outside the card so it never shifts the list while it fades. */
+.pm-day-item.is-anchor {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pm-day-item.is-anchor {
+    animation: pm-anchor-settle 0.9s ease-out 2;
+  }
+}
+
+@keyframes pm-anchor-settle {
+  0%, 100% { outline-color: var(--forest-700); }
+  50% { outline-color: transparent; }
+}
+
 /* Link colour the rest of GREMLIN uses inside a card: forest, not the
    browser's blue, which no token owns. */
 .pm-day-item-link {
@@ -1067,6 +1122,7 @@
 .pm-asset-search:focus-visible,
 .pm-asset-option:focus-visible,
 .pm-day.has-events:focus-visible,
+.pm-day-item-anchor:focus-visible,
 .pm-day-item-link:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;

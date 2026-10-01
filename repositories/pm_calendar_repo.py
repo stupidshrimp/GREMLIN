@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -52,12 +53,19 @@ CREATE TABLE IF NOT EXISTS pm_task (
     asset_name TEXT,
     task_name TEXT,
     status_raw TEXT,
+    created_date TEXT,
     due_date TEXT,
     completed_date TEXT,
     is_completed INTEGER NOT NULL DEFAULT 0,
     synced_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
+
+# Columns added to pm_task after it first shipped. CREATE TABLE IF NOT EXISTS
+# leaves an existing table exactly as it is, and SQLite has no ADD COLUMN IF
+# NOT EXISTS, so the shape on disk is read and anything missing is ALTERed in.
+# Existing rows get NULL until the next sync rewrites them.
+_ADDED_TASK_COLUMNS: dict[str, str] = {"created_date": "TEXT"}
 
 # The asset hierarchy, as far as the calendar needs it: every asset that has
 # PMs, plus every asset above one of those (a parent like 4002 can have no PMs
@@ -121,6 +129,7 @@ _TASK_COLUMNS = (
     "asset_name",
     "task_name",
     "status_raw",
+    "created_date",
     "due_date",
     "completed_date",
     "is_completed",
@@ -252,21 +261,28 @@ class PmCalendarRepository:
         with self.write_connection() as conn:
             conn.execute(_CREATE_TABLE_SQL)
             conn.execute(_CREATE_ASSET_TABLE_SQL)
+            self._add_missing_columns(conn, "pm_task", _ADDED_TASK_COLUMNS)
             self._add_missing_asset_columns(conn)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
 
     @staticmethod
-    def _add_missing_asset_columns(conn: sqlite3.Connection) -> None:
-        """Add any pm_asset column this version expects that the file lacks.
+    def _add_missing_columns(
+        conn: sqlite3.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        """Add any column this version expects that the file on disk lacks.
 
         A no-op once they are all there, so it costs one PRAGMA per start.
         """
 
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(pm_asset)")}
-        for column, declared_type in _ADDED_ASSET_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column, declared_type in columns.items():
             if column not in existing:
-                conn.execute(f"ALTER TABLE pm_asset ADD COLUMN {column} {declared_type}")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declared_type}")
+
+    @classmethod
+    def _add_missing_asset_columns(cls, conn: sqlite3.Connection) -> None:
+        cls._add_missing_columns(conn, "pm_asset", _ADDED_ASSET_COLUMNS)
 
     # ------------------------------------------------------------------
     # Writes
@@ -374,9 +390,21 @@ class PmCalendarRepository:
     ) -> list[dict[str, Any]]:
         """Return PM tasks, optionally filtered by asset and/or due-date range.
 
-        `due_since`/`due_until` are inclusive "YYYY-MM-DD" (or full ISO
-        datetime) strings. Leave either as None to leave that side open.
-        `asset_ids` of None or [] means "every asset."
+        `due_since`/`due_until` are inclusive whole days, given as
+        "YYYY-MM-DD" (a full ISO datetime is accepted; only its date part is
+        read). Leave either as None to leave that side open. `asset_ids` of
+        None or [] means "every asset."
+
+        Both bounds mean the whole day, which the upper one has to work at:
+        due dates are stored as they arrive from Limble, with a time on them
+        ("2026-07-31T07:00:00+00:00"), and these are string comparisons. So
+        `due_date <= "2026-07-31"` drops every task due that day, because
+        "2026-07-31T07:00:00+00:00" sorts after "2026-07-31" -- which quietly
+        hid every PM falling on the last day of a month from that month's
+        calendar, and every PM due today from the year-to-date figures.
+        Comparing against the start of the following day instead includes the
+        whole day at any time of day, and, unlike wrapping due_date in
+        substr(), still uses the index on it.
         """
 
         clauses: list[str] = []
@@ -387,11 +415,13 @@ class PmCalendarRepository:
             clauses.append(f"asset_id IN ({placeholders})")
             params.extend(asset_ids)
         if due_since:
+            # The lower bound needs no such care: any time on the day sorts
+            # after the bare date, so "2026-07-01T07:00" >= "2026-07-01".
             clauses.append("due_date >= ?")
-            params.append(due_since)
+            params.append(due_since[:10])
         if due_until:
-            clauses.append("due_date <= ?")
-            params.append(due_until)
+            clauses.append("due_date < ?")
+            params.append((date.fromisoformat(due_until[:10]) + timedelta(days=1)).isoformat())
 
         sql = "SELECT * FROM pm_task"
         if clauses:
@@ -452,4 +482,4 @@ class PmCalendarRepository:
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Turn a sqlite3.Row into a plain dict (what jsonify() etc. expect)."""
 
-    return {key: row[key] for key in row.keys()}
+    return {key: row[key] for key in row.keys()}

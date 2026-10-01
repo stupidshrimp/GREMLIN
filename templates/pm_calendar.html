@@ -246,6 +246,11 @@ document.addEventListener('DOMContentLoaded', function () {
     let highlightIso = null;
     let highlightTimer = null;
 
+    // Clears the mark on the one card jumpToAnchor landed on. Unlike
+    // highlightIso above, this one doesn't have to survive a redraw: the
+    // dialog it lives in is rebuilt from scratch on every open.
+    let anchorMarkTimer = null;
+
     // The status line had three writers -- the asset load, the sync poll and
     // the sync button -- and they overwrote each other. On every page load both
     // the load and the poll fire at once, and the poll's "idle" branch blanked
@@ -442,7 +447,9 @@ document.addEventListener('DOMContentLoaded', function () {
             // it rather than leaving a stale error from an earlier selection.
             reportDatabase('events', '');
             renderCalendarBody();
-            return;
+            // Resolves false: nothing was drawn, so a caller waiting to act on
+            // this month's events (jumpToAnchor) knows not to.
+            return Promise.resolve(false);
         }
 
         const start = isoDate(currentYear, currentMonth, 1);
@@ -453,20 +460,23 @@ document.addEventListener('DOMContentLoaded', function () {
             '&exclude=' + encodeURIComponent(excludedIdsCsv()) +
             '&start=' + start + '&end=' + end;
 
-        fetch(url)
+        // Returned so a caller can wait for this month's events before acting
+        // on them; it resolves true only when this response is the one that
+        // actually drew.
+        return fetch(url)
             .then(r => r.json().then(data => ({ ok: r.ok, data })))
             .then(({ ok, data }) => {
                 // Ticking boxes or paging months quickly has several of these
                 // in flight at once. Only the newest may draw: an older one
                 // would add its events on top -- every pill twice -- and bring
                 // back assets that were unticked since it was sent.
-                if (request !== eventsRequest) return;
+                if (request !== eventsRequest) return false;
                 if (!ok) {
                     // Same trap as the summary above: an error payload has no
                     // events, so the month would render empty and look correct.
                     reportDatabase('events', data.error);
                     renderCalendarBody();
-                    return;
+                    return false;
                 }
                 reportDatabase('events', '');
                 const byDate = {};
@@ -478,7 +488,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 eventsByDate = byDate;
                 renderCalendarBody();
-            });
+                return true;
+            })
+            .catch(() => false);
     }
 
     // ------------------------------------------------------------------
@@ -596,9 +608,12 @@ document.addEventListener('DOMContentLoaded', function () {
         list.appendChild(dd);
     }
 
-    function openDay(isoDay, trigger) {
+    // `singleOut` is a Limble task id to call attention to once the list is
+    // drawn -- how jumpToAnchor lands on the one occurrence an estimate was
+    // built from, rather than leaving a reader to find it in a busy day.
+    function openDay(isoDay, trigger, singleOut) {
         const events = eventsByDate[isoDay] || [];
-        if (!events.length) return;
+        if (!events.length) return false;
 
         dayHeading.textContent = longDate(isoDay);
         dayList.innerHTML = '';
@@ -607,6 +622,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const status = eventClass(event);
             const item = document.createElement('article');
             item.className = 'pm-day-item ' + status;
+            if (event.task_id) item.dataset.taskId = event.task_id;
             const color = assetColor(event.asset_id);
             if (color) item.style.setProperty('--pm-asset-color', color);
 
@@ -646,6 +662,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const details = document.createElement('dl');
             details.className = 'pm-day-item-details';
+            // When Limble raised the work order, which is not the same day
+            // it came due and is usually the better answer to "how long has
+            // this been sitting there?". Estimates have no created date --
+            // nothing has been raised for them yet.
+            if (event.created_date) detailRow(details, 'Created', shortDate(event.created_date));
             detailRow(details, 'Due', shortDate(event.due_date));
             if (event.completed_date) detailRow(details, 'Completed', shortDate(event.completed_date));
             if (!event.is_projected) detailRow(details, 'Limble task', '#' + event.task_id);
@@ -687,6 +708,28 @@ document.addEventListener('DOMContentLoaded', function () {
                 note.className = 'pm-day-item-note';
                 note.textContent = "An estimate from this PM's cadence. Limble hasn't generated this work order yet.";
                 item.appendChild(note);
+
+                // Every estimate is one occurrence plus a whole number of
+                // cycles. This goes to that occurrence, so "why is it on
+                // this date?" is one click rather than a hunt back through
+                // the months. Absent on a line whose anchor row didn't come
+                // through -- the button is never drawn with nowhere to go.
+                if (event.anchor_due_date) {
+                    const based = document.createElement('button');
+                    based.type = 'button';
+                    based.className = 'pm-day-item-anchor';
+                    const when = event.anchor_completed_date || event.anchor_due_date;
+                    based.textContent = event.anchor_completed_date
+                        ? 'Based on the PM completed ' + shortDate(when) + ' →'
+                        : 'Based on the work order due ' + shortDate(when) +
+                          ', not yet completed →';
+                    based.title = event.anchor_completed_date
+                        ? 'Go to the last completed occurrence this estimate counts from'
+                        : 'This line has never been completed, so the estimate counts ' +
+                          'from its latest known due date';
+                    based.addEventListener('click', () => jumpToAnchor(event));
+                    item.appendChild(based);
+                }
             }
 
             const link = limbleLink(event);
@@ -705,7 +748,75 @@ document.addEventListener('DOMContentLoaded', function () {
 
         dayTrigger = trigger || null;
         dayModal.classList.add('is-open');
+
+        // Mark the occurrence that was jumped to, scroll the list to it, and
+        // let the mark fade on its own -- the same 6 seconds the calendar's
+        // day highlight uses, so the two read as one gesture.
+        const wanted = singleOut
+            ? dayList.querySelector('[data-task-id="' + CSS.escape(String(singleOut)) + '"]')
+            : null;
+        clearTimeout(anchorMarkTimer);
+        if (wanted) {
+            wanted.classList.add('is-anchor');
+            wanted.scrollIntoView({ block: 'nearest' });
+            anchorMarkTimer = setTimeout(() => wanted.classList.remove('is-anchor'), 6000);
+        }
+
         document.getElementById('pm-close-day').focus();
+        return true;
+    }
+
+    // Go from an estimate to the real occurrence it was calculated from.
+    //
+    // The pill for that occurrence is drawn on its DUE date, which is not
+    // the completion date the estimate counts from -- a PM due on the 14th
+    // and finished on the 17th is cycled from the 17th but drawn on the
+    // 14th. So the jump lands on the due date, and the button's label names
+    // the completion date, which is what the arithmetic used.
+    function jumpToAnchor(event) {
+        const iso = (event.anchor_due_date || '').slice(0, 10);
+        if (!iso) return;
+
+        const [year, month] = iso.split('-').map(Number);
+        const sameMonth = currentYear === year && currentMonth === month - 1;
+        currentYear = year;
+        currentMonth = month - 1;
+
+        // The day cell gets the same 6-second outline "Last done" uses, so
+        // the destination is obvious behind the dialog once it's closed.
+        highlightIso = iso;
+        clearTimeout(highlightTimer);
+        highlightTimer = setTimeout(() => {
+            highlightIso = null;
+            grid.querySelectorAll('.pm-day.is-highlighted')
+                .forEach(cell => cell.classList.remove('is-highlighted'));
+        }, 6000);
+
+        buildCalendar(currentMonth, currentYear);
+
+        const land = () => {
+            const cell = grid.querySelector('.pm-day[data-date="' + iso + '"]');
+            if (!openDay(iso, cell, event.anchor_task_id)) {
+                // The month drew, but that occurrence isn't in it: its asset
+                // has been unticked since, or hidden inside a chip. Say so
+                // rather than leaving the dialog sitting on the old day.
+                closeDay();
+                showNotice('That occurrence is not on the calendar right now — ' +
+                    'check the asset is still ticked.');
+            }
+        };
+
+        // Paging to another month means waiting for its events; staying put
+        // means the day is already in hand and reopening it immediately keeps
+        // the jump feeling like one step.
+        if (sameMonth) {
+            land();
+        } else {
+            refreshEvents().then(drew => {
+                if (drew) land();
+                else closeDay();
+            });
+        }
     }
 
     function closeDay() {
@@ -1411,8 +1522,26 @@ document.addEventListener('DOMContentLoaded', function () {
             // so it has no box of its own to light up.
             target: '.pm-calendar-grid',
             title: 'Open a day for the detail',
-            body: 'Click any day with PMs on it to see everything due that day, with a link that ' +
-                  'opens the work order in Limble.',
+            body: 'Click any day with PMs on it and it opens up into the full list for that day. ' +
+                  'Here is one now.',
+            // Opening it is the demonstration; the next step talks through
+            // what is in it. Nothing to open (no assets picked yet) just
+            // leaves the calendar lit and the words stand on their own.
+            opensDay: true,
+        },
+        {
+            target: '#pm-day-modal .pm-modal',
+            title: 'What a day tells you',
+            body: 'Each PM on that day: its Limble asset ID and name, whether it is upcoming, ' +
+                  'overdue, completed or an estimate, the date the work order was created, the ' +
+                  'date it is due, the date it was done, and its Limble work order number. ' +
+                  '"Open in Limble" takes you straight to it — ' +
+                  "for an estimate, which has no work order yet, to that asset's PM list. An " +
+                  'estimate also says which completed PM it was calculated from, and takes you ' +
+                  'there. A PM that has been renamed in Limble says so, and opens up to show ' +
+                  'every name it has had.',
+            opensDay: true,
+            expandsNames: true,
         },
         {
             target: '#pm-sync-btn',
@@ -1428,6 +1557,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const tourSpotlight = document.getElementById('pm-tour-spotlight');
     let tourStep = 0;
     let tourReturnFocus = null;
+    // What this step is actually pointing at, which is not always the step's
+    // own target: a day step with nothing to open falls back to the grid.
+    let tourTarget = null;
 
     // Storage throws rather than returning null when site data is blocked --
     // the same guard layout.js and topbar_tools.js use for their settings.
@@ -1448,12 +1580,36 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    // The first day of the visible month that has PMs on it, so a tour step
+    // can open a real one rather than describing it.
+    function firstDayWithEvents() {
+        return document.querySelector('#pm-calendar-body .pm-day.has-events');
+    }
+
+    function openTourDay() {
+        const cell = firstDayWithEvents();
+        if (!cell || dayModal.classList.contains('is-open')) return Boolean(cell);
+        openDay(cell.dataset.date, cell);
+        // The dialog is normally the top thing on the page; the tour sits
+        // above it. While a step is about the dialog, the two swap over: the
+        // dialog lifts above the tour's overlay, the tour stops dimming (the
+        // dialog brings its own backdrop) and stops swallowing clicks, so the
+        // list can still be scrolled and read.
+        dayModal.classList.add('is-tour-lit');
+        return true;
+    }
+
+    function closeTourDay() {
+        dayModal.classList.remove('is-tour-lit');
+        if (dayModal.classList.contains('is-open')) closeDay();
+    }
+
     function placeTour() {
-        const step = TOUR_STEPS[tourStep];
-        const target = document.querySelector(step.target);
+        const target = document.querySelector(tourTarget || TOUR_STEPS[tourStep].target);
         const pad = 8;
 
-        if (target) {
+        const modalStep = tour.classList.contains('is-modal-step');
+        if (target && !modalStep) {
             const box = target.getBoundingClientRect();
             tourSpotlight.hidden = false;
             tourSpotlight.style.top = (box.top - pad) + 'px';
@@ -1482,6 +1638,20 @@ document.addEventListener('DOMContentLoaded', function () {
             );
             tourCard.style.top = top + 'px';
             tourCard.style.left = left + 'px';
+        } else if (target && modalStep) {
+            // The dialog is lit by its own backdrop, so no spotlight; the card
+            // tucks in beside it, or under it when the window is narrow.
+            tourSpotlight.hidden = true;
+            const box = target.getBoundingClientRect();
+            const card = tourCard.getBoundingClientRect();
+            const beside = box.right + pad * 2;
+            if (beside + card.width < window.innerWidth) {
+                tourCard.style.left = beside + 'px';
+                tourCard.style.top = Math.max(pad, box.top) + 'px';
+            } else {
+                tourCard.style.left = Math.max(pad, (window.innerWidth - card.width) / 2) + 'px';
+                tourCard.style.top = Math.max(pad, window.innerHeight - card.height - pad * 2) + 'px';
+            }
         } else {
             // Nothing to point at (the week view, say): centre the card and
             // leave the page evenly dimmed.
@@ -1493,11 +1663,32 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showTourStep() {
         const step = TOUR_STEPS[tourStep];
-        const target = document.querySelector(step.target);
-        if (target) {
+
+        // Open or close the day dialog first, so the step has its target.
+        let showingDay = false;
+        if (step.opensDay) {
+            showingDay = openTourDay();
+        } else {
+            closeTourDay();
+        }
+        tour.classList.toggle('is-modal-step', showingDay);
+
+        // Show the expander already open, rather than describing a thing the
+        // reader then has to go and find.
+        if (showingDay && step.expandsNames) {
+            document.querySelectorAll('#pm-day-list .pm-day-item-names')
+                .forEach(names => { names.open = true; });
+        }
+
+        // A day step with no day to open (nothing picked yet) keeps the
+        // calendar lit instead, and its words still make sense.
+        const selector = step.opensDay && !showingDay ? '.pm-calendar-grid' : step.target;
+        const target = document.querySelector(selector);
+        if (target && !showingDay) {
             const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             target.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
         }
+        tourTarget = selector;
 
         document.getElementById('pm-tour-step').textContent =
             'Step ' + (tourStep + 1) + ' of ' + TOUR_STEPS.length;
@@ -1521,6 +1712,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function endTour() {
+        closeTourDay();
+        tour.classList.remove('is-modal-step');
         tour.hidden = true;
         rememberTourSeen();
         if (tourReturnFocus && document.body.contains(tourReturnFocus)) tourReturnFocus.focus();
