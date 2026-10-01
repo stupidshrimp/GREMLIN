@@ -247,6 +247,15 @@
     };
   }
 
+  // The top that keeps the whole card on screen, buttons and all: the one
+  // asked for, unless that would run the card's foot off the bottom of the
+  // screen. A card with a long list can be nearly the screen's height, and its
+  // text scrolls inside it but its buttons don't. Over the top bar rather than
+  // with Next out of reach.
+  function onScreen(top, size) {
+    return Math.max(PAD, Math.min(top, window.innerHeight - size.height - PAD));
+  }
+
   function place() {
     // Run a frame or two after a step is shown, by when Skip or Escape may
     // have closed the tour.
@@ -263,10 +272,12 @@
 
     if (!lit) {
       // Nothing to point at: centre the card and leave the page evenly dimmed.
-      // Its width is read rather than assumed, as a card with a list is wider.
+      // Its size is read rather than assumed, as a card with a list is wider
+      // and may be too tall to start a fifth of the way down.
+      const size = card.getBoundingClientRect();
       spotlight.hidden = true;
-      card.style.top = "20vh";
-      card.style.left = `max(1rem, calc(50vw - ${card.getBoundingClientRect().width / 2}px))`;
+      card.style.top = `${onScreen(window.innerHeight * 0.2, size)}px`;
+      card.style.left = `max(1rem, calc(50vw - ${size.width / 2}px))`;
       return;
     }
 
@@ -283,7 +294,7 @@
 
     const size = card.getBoundingClientRect();
     const spot = spotFor(box, size, ceiling) || fallbackSpot(box, size, ceiling);
-    card.style.top = `${spot.top}px`;
+    card.style.top = `${onScreen(spot.top, size)}px`;
     card.style.left = `${spot.left}px`;
   }
 

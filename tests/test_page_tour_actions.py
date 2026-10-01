@@ -91,9 +91,10 @@ global.innerWidth = 1280;
 global.innerHeight = 800;
 global.pageYOffset = 0;
 global.scrollTo = () => {};
-// Nothing is sticky; an element given `overflow` scrolls, as a table's box does.
+// Nothing is sticky unless given `position`, as a top bar is; an element given
+// `overflow` scrolls, as a table's box does.
 global.getComputedStyle = (node) => ({
-  position: "static",
+  position: (node && node.position) || "static",
   top: "0",
   overflowX: (node && node.overflow) || "visible",
   overflowY: (node && node.overflow) || "visible",
@@ -313,6 +314,32 @@ _SCENARIOS = {
       return seen;
     }
     """,
+    # A card nearly the screen's height -- the most its stylesheet allows --
+    # under a sticky top bar: once with nothing to point at, once beside a
+    # target with no room above or below it.
+    "tall_cards": r"""
+    async () => {
+      const topbar = target(".topbar", true);
+      topbar.position = "sticky";
+      topbar.box = { top: 0, left: 0, width: 1280, height: 74 };
+      const beside = target("#beside", true);
+      beside.box = { top: 100, left: 900, width: 100, height: 50 };
+      document.getElementById("page-tour-card").box = { top: 0, left: 0, width: 448, height: innerHeight - 16 };
+      const steps = [
+        { target: null, title: "Whole page", body: "Nothing lit." },
+        { target: "#beside", title: "Beside", body: "Lit, with the card to one side." },
+      ];
+      tour.start(steps, {});
+      const seen = [];
+      for (const step of steps) {
+        await settle();
+        seen.push({ title: card().title, top: parseFloat(document.getElementById("page-tour-card").style.top) });
+        next();
+      }
+      tour.end();
+      return { seen, height: innerHeight - 16, screen: innerHeight };
+    }
+    """,
 }
 
 
@@ -415,3 +442,13 @@ def test_a_column_is_scrolled_into_its_box_and_lit_where_the_box_shows_it(tmp_pa
     # All three cells in one box, from the first cell's top to the box's bottom
     # edge (200) rather than the last cell's (250), padded by 8 on each side.
     assert seen["spotlight"] == [92, 242, 116, 116]
+
+
+def test_a_card_as_tall_as_the_screen_allows_keeps_its_buttons_on_screen(tmp_path):
+    """Its text scrolls inside it, but the buttons under the text don't, so the
+    whole card has to fit: not 20vh down with nothing lit, and not held under
+    the top bar beside a target when that runs its foot off the bottom."""
+    seen = _run(tmp_path, "tall_cards")
+    for shown in seen["seen"]:
+        assert shown["top"] >= 0, shown
+        assert shown["top"] + seen["height"] <= seen["screen"], shown

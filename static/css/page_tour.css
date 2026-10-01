@@ -73,6 +73,8 @@
   flex-direction: column;
   width: min(23rem, calc(100vw - 2rem));
   max-height: calc(100vh - 1rem);
+  /* The part of the screen a phone actually shows, its toolbars aside. */
+  max-height: calc(100dvh - 1rem);
   padding: 1rem 1.1rem;
   border: 1px solid var(--border);
   border-radius: 14px;
