@@ -191,18 +191,77 @@ def _series_key(task_name: str) -> str:
 # in Limble is what retires the line here too.
 _STALE_AFTER_INTERVALS = 3
 
-# While a line has an open (or overdue) work order, projection only ever
-# looks three cycles past the last completion, then stops -- not per month
-# viewed, a hard ceiling on the line itself. Limble only keeps one real
-# occurrence open at a time, so a run of estimates stacking up past it is
-# guesswork on top of guesswork: the open task is already the calendar's
-# best information about what's next, and it may get rescheduled, split, or
-# turned into something else entirely before it's done. Three cycles is
-# enough to fill in a bit of runway without pretending to know the shape of
-# a series that hasn't been resolved yet. Completing that work order clears
-# it -- has_open goes false, the anchor moves to the new completion, and
-# projection resumes at its normal, window-bounded pace.
+# While a line has an open work order that is still ahead of its due date,
+# projection only ever looks three cycles past the last completion, then
+# stops -- not per month viewed, a hard ceiling on the line itself. Limble
+# only keeps one real occurrence open at a time, so a run of estimates
+# stacking up past it is guesswork on top of guesswork: the open task is
+# already the calendar's best information about what's next, and it may get
+# rescheduled, split, or turned into something else entirely before it's
+# done. Three cycles is enough to fill in a bit of runway without pretending
+# to know the shape of a series that hasn't been resolved yet. Completing
+# that work order clears it -- has_open goes false, the anchor moves to the
+# new completion, and projection resumes at its normal, window-bounded pace.
 _OPEN_LINE_PROJECTION_LIMIT = 3
+
+
+# A PM line needs to have happened at least this many times before the
+# calendar will guess when it happens next.
+#
+# One occurrence is not a cadence, it is an event. On this account most
+# single-occurrence lines are not PMs at all: a tech edits a work order's
+# name to leave a note -- "Scheduled 12/29/25 4001-S10 - M - Nordson Powder
+# Booth", "3103 - Q - Salvagnini Laser- to be closed WO made for bearing
+# replacement", "4001-S09 - M - Turn Table #1q1" -- and that edited name
+# becomes a line of its own, because a line is (asset, name) and the name
+# is now different. It then draws its own estimates on the code in it,
+# alongside the real line it was forked from, which is how one machine ends
+# up with two monthly pills a day apart. 167 such names sit beside an
+# established line across 114 assets here.
+#
+# Requiring two occurrences answers all of them at once, without the
+# calendar having to judge which names are "real" -- a note typed into one
+# work order can never recur, whereas a genuine PM does so by definition.
+# It also closes the matching hole in the overdue pause: a forked name with
+# no open work order of its own would otherwise keep projecting while the
+# real, late line was paused.
+#
+# The cost, accepted deliberately: a genuinely new PM shows no estimates
+# until Limble has generated its second occurrence. Its first, real work
+# order still shows on the calendar throughout -- only the guesses past it
+# wait.
+_MIN_OCCURRENCES_TO_PROJECT = 2
+
+
+# How many occurrences make a line "established" -- settled enough that a
+# one-off name appearing beside it, on the same asset and the same code, is
+# better read as an edit of it than as a PM of its own.
+#
+# Requiring two occurrences (above) stopped those edited names drawing
+# estimates of their own, but it left the other half of the problem
+# untouched: the occurrence under the edited name is a real PM that really
+# happened, and while it sits on a line by itself its completion doesn't
+# count for the line it belongs to. So the real line goes on counting from
+# whatever it last completed under its unedited name. On this account 11
+# lines were anchored that way, several of them more than a year behind --
+# 3102's monthly was estimating from 6 August when the PM had in fact been
+# done on 30 September, under "3102 - M - Salvagnini P4 -PM needs to be
+# fixed S4 added".
+#
+# Absorbing them fixes both halves at once: no line of its own to project
+# from, and the completion counts where it belongs. Four is deliberately
+# well clear of two, so this only ever pulls a stray name into a line with
+# a real history behind it, and it only applies when the asset and code
+# have exactly one such line -- with two established monthlies on one
+# machine there is no telling which of them a stray name belongs to, so it
+# is left alone.
+#
+# The cost, accepted deliberately: a genuinely new PM added to a machine
+# that already runs one on the same code has its first occurrence absorbed,
+# so it doesn't start a series of its own until its second. Its real work
+# order still shows on the calendar throughout, and the name it ran under
+# is listed in the day details' "Known by N names".
+_ESTABLISHED_LINE_OCCURRENCES = 4
 
 
 # How far a walk up the tree will go before giving up. Same guard, and the
@@ -438,6 +497,10 @@ class PmCalendarService:
         due_raw = task.get("dueDate") if task.get("dueDate") not in (None, "", 0) else task.get("due")
         due_date = _unix_to_iso_utc(due_raw)
         completed_date = _unix_to_iso_utc(task.get("dateCompleted"))
+        # When Limble actually raised the work order, as opposed to when it
+        # is due. The two are usually days apart and drift further on lines
+        # that get rescheduled, so the day details show both.
+        created_date = _unix_to_iso_utc(task.get("createdDate"))
 
         return {
             "task_id": str(task_id),
@@ -446,6 +509,7 @@ class PmCalendarService:
             "asset_name": asset_names.get(asset_id_str),
             "task_name": task.get("name"),
             "status_raw": task.get("status") or task.get("statusID"),
+            "created_date": created_date,
             "due_date": due_date,
             "completed_date": completed_date,
             "is_completed": 1 if completed_date else 0,
@@ -612,6 +676,11 @@ class PmCalendarService:
         build on yet, so the latest known due_date stands in until a first
         completion gives this something sturdier to anchor on.
 
+        A line that has happened only once isn't projected at all: one
+        occurrence is an event, not a cadence, and on this account most of
+        them are a note typed into a work order's name rather than a PM.
+        See _MIN_OCCURRENCES_TO_PROJECT.
+
         A line with nothing open in Limble whose newest occurrence is more
         than _STALE_AFTER_INTERVALS of its own cycles old isn't projected at
         all -- it has most likely stopped running.
@@ -623,7 +692,11 @@ class PmCalendarService:
         And while a line has an open work order, projection is capped at the
         next _OPEN_LINE_PROJECTION_LIMIT cycles past the anchor and no
         further, so an unresolved occurrence doesn't grow an indefinite tail
-        of guesses behind it. See _OPEN_LINE_PROJECTION_LIMIT for why.
+        of guesses behind it. See _OPEN_LINE_PROJECTION_LIMIT for why. Once
+        that open work order is past its due date the line stops projecting
+        entirely until it's completed -- a series that has already missed a
+        cycle can't say when the next one lands. The overdue work order
+        itself still shows, in red, on its own due date.
         """
 
         today = _today()
@@ -632,17 +705,50 @@ class PmCalendarService:
 
         # One series per PM line: (asset, line name). See _series_key for why
         # the code alone isn't enough.
-        by_series: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        by_asset_code: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
         for row in history:
             task_name = row.get("task_name")
             code = _cadence_code(task_name)
             asset_id = row.get("asset_id")
             if not code or not asset_id:
                 continue
-            by_series.setdefault((asset_id, _series_key(task_name)), []).append(row)
+            by_asset_code.setdefault((asset_id, code), {}).setdefault(
+                _series_key(task_name), []
+            ).append(row)
+
+        # A name that appears exactly once beside an established line on the
+        # same asset and code is folded into it -- see
+        # _ESTABLISHED_LINE_OCCURRENCES. Each series keeps two lists: every
+        # row the cadence is calculated from, and only those that ran under
+        # the line's own name, which is what the estimate is labelled with
+        # (an absorbed note must not become the name on the pill).
+        by_series: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+        for (asset_id, _code), lines in by_asset_code.items():
+            established = [
+                key for key, rows in lines.items()
+                if len(rows) >= _ESTABLISHED_LINE_OCCURRENCES
+            ]
+            # Exactly one, or there is no telling which line a stray name
+            # belongs to and every line is left as it is.
+            host = established[0] if len(established) == 1 else None
+            for key, rows in lines.items():
+                absorbed = host is not None and key != host and len(rows) == 1
+                target = host if absorbed else key
+                series = by_series.setdefault((asset_id, target), {"rows": [], "named": []})
+                series["rows"].extend(rows)
+                if not absorbed:
+                    series["named"].extend(rows)
 
         projected: list[dict[str, Any]] = []
-        for (asset_id, line), rows in by_series.items():
+        for (asset_id, line), series in by_series.items():
+            rows = series["rows"]
+            named = series["named"] or rows
+            # One occurrence is an event, not a cadence. See
+            # _MIN_OCCURRENCES_TO_PROJECT -- on this account most of these
+            # are a note someone typed into a work order's name.
+            if len(rows) < _MIN_OCCURRENCES_TO_PROJECT:
+                continue
+
             # Every row in a series has the same name up to case and spacing,
             # so they all parse to the same code.
             code = _cadence_code(rows[0]["task_name"])
@@ -661,9 +767,36 @@ class PmCalendarService:
             # A line that has gone quiet is not projected at all. See
             # _STALE_AFTER_INTERVALS for what "quiet" means and why an open
             # work order always counts as alive.
-            has_open = any(not r.get("completed_date") for r in rows)
+            open_rows = [r for r in rows if not r.get("completed_date")]
+            has_open = bool(open_rows)
             last_seen = max(due_dates[-1], max(completed_dates, default=due_dates[-1]))
             if not has_open and (today - last_seen).days > _STALE_AFTER_INTERVALS * interval_days:
+                continue
+
+            # A line whose open work order has gone past its due date stops
+            # producing estimates until that work order is completed.
+            #
+            # The reason is arithmetic, not policy. Every estimate is
+            # anchor + k * interval, so the moment a cycle is missed the
+            # whole sequence is counting from a date reality has already
+            # left behind. A monthly PM last completed on 6 August, with a
+            # work order that came due on 4 September and is still open,
+            # draws its next estimate on 1 October -- a date that can only
+            # be right if the late work order is finished today, which is
+            # exactly what hasn't happened. The longer it sits the further
+            # out every pill behind it is, and each one looks precisely as
+            # confident as an estimate on a line that is running on time.
+            #
+            # Nothing is hidden by this. The real overdue work order stays
+            # on the calendar the whole time, on its own due date, in red:
+            # that pill is the honest statement of what this line needs
+            # next. Estimates resume the moment it's completed, re-anchored
+            # on the day it actually happened -- which is also the moment
+            # the series becomes predictable again.
+            if any(
+                r.get("due_date") and date.fromisoformat(r["due_date"][:10]) < today
+                for r in open_rows
+            ):
                 continue
 
             # The anchor: last completed, or -- only for a line that has
@@ -673,9 +806,36 @@ class PmCalendarService:
             # there is nothing sturdier to build the very first estimate on.
             anchor = max(completed_dates) if completed_dates else due_dates[-1]
 
-            # Names and asset details come from the line's newest row, so an
-            # estimate reads the way the PM currently reads in Limble.
-            sample = max(rows, key=lambda r: r.get("due_date") or "")
+            # The occurrence the anchor date came from, carried on every
+            # estimate so the page can offer "show me what this is based on".
+            # Matched on the date rather than kept from the max() above
+            # because the anchor is a date, and two rows can share it; the
+            # newest by due date wins, which is the one whose pill a reader
+            # would recognise.
+            anchor_field = "completed_date" if completed_dates else "due_date"
+            anchor_iso = anchor.isoformat()
+            anchor_row = max(
+                (r for r in rows if (r.get(anchor_field) or "")[:10] == anchor_iso),
+                key=lambda r: r.get("due_date") or "",
+                default=None,
+            )
+            # A real occurrence is drawn on its DUE date, never its completed
+            # date, so that is where a jump has to land -- see the calendar's
+            # own grouping. The completion date goes along for the label.
+            anchor_details = {
+                "anchor_task_id": anchor_row.get("task_id") if anchor_row else None,
+                "anchor_task_name": anchor_row.get("task_name") if anchor_row else None,
+                "anchor_due_date": (anchor_row.get("due_date") or "")[:10] if anchor_row else None,
+                "anchor_completed_date": (
+                    (anchor_row.get("completed_date") or "")[:10] or None if anchor_row else None
+                ),
+            }
+
+            # Names and asset details come from the newest row that ran under
+            # the line's own name, so an estimate reads the way the PM
+            # currently reads in Limble -- and never takes its name from a
+            # note somebody typed into one work order.
+            sample = max(named, key=lambda r: r.get("due_date") or "")
 
             # When the line has been through more than one name -- someone
             # revised the duration on the end of it -- the estimate says so,
@@ -759,6 +919,7 @@ class PmCalendarService:
                         "is_projected": True,
                         # Only when there is something to expand.
                         "also_known_as": also_known_as if len(also_known_as) > 1 else [],
+                        **anchor_details,
                     }
                 )
 
@@ -1073,4 +1234,4 @@ class PmCalendarService:
             "completed": completed,
             "overdue": overdue,
             "compliance": compliance,
-        }
+        }
