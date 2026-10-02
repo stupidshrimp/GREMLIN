@@ -1,0 +1,1133 @@
+{% import "standards_macros.html" as std %}
+{#- The Analysis tab: what every analysis on Perform an Analysis reads, then one
+    card per analysis type.
+
+    The Weibull worked example was run through LifeDataService's own fitting,
+    interval and Kaplan-Meier code, so its numbers are the ones GREMLIN would
+    show for the same five intervals. -#}
+<article class="tab-panel" id="analysis" role="tabpanel" aria-labelledby="analysis-tab" hidden>
+  <header class="std-panel-head">
+    <div>
+      <h2>Analysis</h2>
+      <p>
+        Perform an Analysis offers four analysis types, each run on one asset at
+        a time. All four start from the same place: the dispositions people save
+        on the Disposition page. The first card covers what every analysis reads;
+        the other four explain each analysis in depth.
+      </p>
+    </div>
+    <button type="button" class="btn-secondary std-expand-all" data-expand-all aria-expanded="false">Expand all</button>
+  </header>
+
+  <div class="std-card-list">
+
+  {# ======================================================================
+     Common inputs
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-common",
+      "What every analysis reads",
+      "Dispositions, the Include in Weibull Candidate flag, work order dates and downtime, the readiness summary and the failure mechanism Pareto.",
+      eyebrow="Before any analysis") %}
+
+    <section class="std-section" id="common-dispositions">
+      <h4>Dispositions decide what counts</h4>
+      <p>
+        No analysis reads a work order's text to decide whether it was a
+        failure. A person decides on the Disposition page and saves a
+        disposition: a category, plus a failure mode and mechanism for a work
+        order, or a reset decision and target for a PM. Saving again replaces
+        the current disposition. Earlier ones are kept as history, but no
+        analysis reads them. The rules for each category follow Reliability
+        Engineering's <span class="std-nowrap">REL-WBL-DAT-002</span> Failure
+        Definition and <span class="std-nowrap">REL-WBL-PLN-003</span> Data
+        Requirements, which the Disposition page's column guide quotes.
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Disposition categories and how the analyses use them</caption>
+          <thead>
+            <tr><th scope="col">Category</th><th scope="col">For</th><th scope="col">What the analyses do with it</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Every analysis counts it while Include in Weibull Candidate is ticked. Needs a failure mode.</td></tr>
+            <tr><td>Included PM reset event</td><td>PMs</td><td>A PM that renewed the asset against one failure mode, and optionally one mechanism. Starts a new life in Weibull analysis and is never counted as a failure. Needs an Approved reset, a reset target and a written rationale.</td></tr>
+            <tr><td>Included censored asset event</td><td>Work orders</td><td>Survival with no recurrence through the cutoff. Kept for traceability; none of the four analyses reads it, because the fit already adds the current life by itself.</td></tr>
+            <tr><td>Held ambiguous</td><td>Both</td><td>Probably relevant but not decidable yet. Left out until resolved; needs a note saying what is missing.</td></tr>
+            <tr><td>Excluded mixed or contaminating</td><td>Work orders</td><td>A real event that mixes failure stories or conflicts with the population. Never counted; needs a note.</td></tr>
+            <tr><td>Excluded non-failure</td><td>Both</td><td>Not a failure: scheduled work, inspections with no defect, housekeeping, administration. Never counted.</td></tr>
+            <tr><td>PM context only</td><td>PMs</td><td>A routine PM kept as history around the failures. Never resets life.</td></tr>
+            <tr><td>Rejected PM reset</td><td>PMs</td><td>Considered as a reset and refused, because its scope does not restore the target.</td></tr>
+            <tr><td>Unknown</td><td>Both</td><td>Not dispositioned yet. Not counted.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="std-section" id="common-include-flag">
+      <h4>The Include in Weibull Candidate flag</h4>
+      <ul>
+        <li>It is ticked by default for an Included failure, and for an Included PM reset event with an Approved reset.</li>
+        <li>It is always cleared for Excluded non-failure and Excluded mixed or contaminating, and for PMs whose decision is Rejected reset or Context only.</li>
+        <li><strong>Clearing it takes the record out of every analysis on this tab</strong>: Weibull, the Pareto, the trend, the downtime drivers, and the failure side of PM effectiveness, even when its category is Included failure.</li>
+      </ul>
+      <div class="std-note">
+        <p class="std-note-title">An included failure, as every card below uses the term</p>
+        <p>
+          A work order on the selected asset whose current disposition is
+          Included failure, with Include in Weibull Candidate ticked. The
+          Pareto, trend, downtime and PM cards also need it to have a failure
+          mechanism.
+        </p>
+      </div>
+    </section>
+
+    <section class="std-section" id="common-dates">
+      <h4>Work order date and downtime</h4>
+      <p>Every analysis places a record in time with the first date it has, in this order:</p>
+      {% call std.equation("C1", "the work order date is the completed date if there is one, else the start date, else the created date") %}
+      <math display="block">
+        <msub><mi>t</mi><mi>w</mi></msub><mo>=</mo>
+        <mrow>
+          <mo>{</mo>
+          <mtable displaystyle="true">
+            <mtr><mtd><mtext>completed date</mtext></mtd><mtd><mtext>if it has one</mtext></mtd></mtr>
+            <mtr><mtd><mtext>start date</mtext></mtd><mtd><mtext>else, if it has one</mtext></mtd></mtr>
+            <mtr><mtd><mtext>created date</mtext></mtd><mtd><mtext>otherwise</mtext></mtd></mtr>
+          </mtable>
+        </mrow>
+      </math>
+      {% endcall %}
+      <p>And measures its downtime in hours, with nothing below zero:</p>
+      {% call std.equation("C2", "downtime hours are the larger of zero and Limble's downtime in seconds over 3600, with a blank counted as zero") %}
+      <math display="block">
+        <msub><mi>d</mi><mi>w</mi></msub><mo>=</mo>
+        <mi>max</mi><mrow><mo>(</mo><mn>0</mn><mo>,</mo><mfrac><msub><mi>s</mi><mi>w</mi></msub><mn>3600</mn></mfrac><mo>)</mo></mrow>
+      </math>
+      {% endcall %}
+      <ul>
+        <li>A blank date (empty or only spaces) is skipped and the next one is used. A record with no usable date still counts in an analysis's totals but cannot be placed in a month or on a timeline.</li>
+        <li>Blank downtime counts as 0 hours, and so does negative downtime.</li>
+        <li><strong>Dates are read in UTC</strong>, the time zone GREMLIN stores them in, so months, days and weekends on this tab are UTC ones. A work order completed in the evening of the last day of a month, plant time, can land in the next month here.</li>
+      </ul>
+      <div class="std-note is-caution">
+        <p class="std-note-title">Why this differs from availability</p>
+        <p>
+          Analyses date a failure by when it was dealt with, so the completed
+          date comes first. The Availability card charges downtime to the month
+          a work order was opened, on the plant's clock. The same work order can
+          therefore sit in different months on the Metrics page and here.
+        </p>
+      </div>
+    </section>
+
+    <section class="std-section" id="common-readiness">
+      <h4>The Weibull readiness summary</h4>
+      <p>Step 2 of Perform an Analysis opens on these counts when Weibull Analysis is selected:</p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Weibull readiness summary counts</caption>
+          <thead><tr><th scope="col">Card</th><th scope="col">Counts</th></tr></thead>
+          <tbody>
+            <tr><td>Total entries for this asset</td><td>Every record mapped from Limble for the asset, of any kind.</td></tr>
+            <tr><td>Usable WOs for Weibull</td><td>Corrective work orders whose current disposition is Included failure, with the flag ticked, a failure mode and a modeled population.</td></tr>
+            <tr><td>Usable PMs for Weibull</td><td>PMs whose current disposition is Included PM reset event with an Approved reset, the flag ticked and a reset target failure mode.</td></tr>
+            <tr><td>WOs dispositioned, WOs not dispositioned</td><td>Corrective work orders with and without a current disposition.</td></tr>
+            <tr><td>PMs dispositioned, PMs not dispositioned</td><td>PMs with and without a current disposition.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        A corrective work order here is one whose effective class is Corrective
+        WO, or that the automatic classifier flagged as a corrective candidate.
+        A PM is one whose effective class is PM or PM reset candidate, or that
+        was flagged as a PM candidate. The effective class is the disposition's
+        class if there is one, then a saved final class, then the automatic one.
+      </p>
+    </section>
+
+    <section class="std-section" id="common-pareto">
+      <h4>The failure mechanism Pareto</h4>
+      <p>
+        Shown for every analysis type, under the summary. Each bar is one
+        failure mode and mechanism pair on the asset, with its included
+        failures counted and their downtime added up:
+      </p>
+      {% call std.equation("C3", "a mechanism's downtime is the sum of its included failures' downtime, and its count is how many there are") %}
+      <math display="block">
+        <msub><mi>D</mi><mi>k</mi></msub><mo>=</mo><munder><mo>&#x2211;</mo><mrow><mi>w</mi><mo>&#x2208;</mo><mi>k</mi></mrow></munder><msub><mi>d</mi><mi>w</mi></msub>
+        <mspace width="2em"></mspace>
+        <msub><mi>n</mi><mi>k</mi></msub><mo>=</mo><mrow><mo stretchy="false">|</mo><mi>k</mi><mo stretchy="false">|</mo></mrow>
+      </math>
+      {% endcall %}
+      <p>
+        Bars are sorted by the measure on show, downtime hours unless "Show
+        failure count instead of downtime hours" is ticked. The line is the
+        running share of the total for that same measure:
+      </p>
+      {% call std.equation("C4", "the cumulative percent at a bar is one hundred times the running total up to that bar over the grand total") %}
+      <math display="block">
+        <msub><mi>C</mi><mi>j</mi></msub><mo>=</mo><mn>100</mn><mo>&#xD7;</mo>
+        <mfrac>
+          <mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>j</mi></munderover><msub><mi>x</mi><mi>i</mi></msub></mrow>
+          <mrow><munder><mo>&#x2211;</mo><mrow><mtext>all</mtext><mspace width="0.2em"></mspace><mi>i</mi></mrow></munder><msub><mi>x</mi><mi>i</mi></msub></mrow>
+        </mfrac>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>k</mi></math></dt><dd>One failure mode and mechanism pair, and the included failures dispositioned to it.</dd>
+        <dt><math><msub><mi>x</mi><mi>i</mi></msub></math></dt><dd>The measure on show for the bar in position <math><mi>i</mi></math>: downtime hours or failure count.</dd>
+      </dl>
+      <ul>
+        <li>At most 15 bars are drawn, but the line counts every mechanism, so it can stop short of 100% at the last bar on screen. The chart then says "Top 15 of" how many there are.</li>
+        <li>Clicking a bar picks that mechanism. With Weibull Analysis selected it runs the fit for that mechanism (a viewer sees its saved result); with the other three it fills their charts for that mechanism.</li>
+      </ul>
+      {% call std.figure("C1", "Four mechanisms with 120, 60, 15 and 5 hours of downtime. The first bar alone is 60% of the 200 hours; the first two together are 90%.") %}
+      <svg viewBox="0 0 640 280" role="img" aria-labelledby="fig-c1-title fig-c1-desc">
+        <title id="fig-c1-title">Reading a failure mechanism Pareto</title>
+        <desc id="fig-c1-desc">Bars for Bearing wear at 120 hours, Seal leak at 60, Sensor fault at 15 and Belt slip at 5, sorted from highest to lowest, with a cumulative line rising through 60, 90, 97.5 and 100 percent.</desc>
+        <path class="fig-grid" d="M70 70 H570 M70 150 H570"/>
+        <path class="fig-axis" d="M70 30 V230 H570"/>
+        <path class="fig-axis" d="M570 30 V230"/>
+        <text class="fig-text-small" x="64" y="234" text-anchor="end">0 h</text>
+        <text class="fig-text-small" x="64" y="154" text-anchor="end">50 h</text>
+        <text class="fig-text-small" x="64" y="74" text-anchor="end">100 h</text>
+        <text class="fig-text-small" x="576" y="234">0%</text>
+        <text class="fig-text-small" x="576" y="134">50%</text>
+        <text class="fig-text-small" x="576" y="34">100%</text>
+        <rect class="fig-series-1" x="96" y="38" width="70" height="192"/>
+        <rect class="fig-series-1" x="218" y="134" width="70" height="96"/>
+        <rect class="fig-series-1" x="341" y="206" width="70" height="24"/>
+        <rect class="fig-series-1" x="463" y="222" width="70" height="8"/>
+        <text class="fig-text-inverse fig-text-small" x="131" y="54" text-anchor="middle">120 h</text>
+        <text class="fig-text-small" x="253" y="128" text-anchor="middle">60 h</text>
+        <text class="fig-text-small" x="376" y="200" text-anchor="middle">15 h</text>
+        <text class="fig-text-small" x="498" y="216" text-anchor="middle">5 h</text>
+        <path class="fig-highlight-line" d="M131 110 L253 50 L376 35 L498 30"/>
+        <circle class="fig-highlight" cx="131" cy="110" r="4"/>
+        <circle class="fig-highlight" cx="253" cy="50" r="4"/>
+        <circle class="fig-highlight" cx="376" cy="35" r="4"/>
+        <circle class="fig-highlight" cx="498" cy="30" r="4"/>
+        <text class="fig-text-small" x="172" y="122">60%</text>
+        <text class="fig-text-small" x="262" y="66">90%</text>
+        <text class="fig-text-small" x="370" y="52" text-anchor="end">97.5%</text>
+        <text class="fig-text-small" x="492" y="46" text-anchor="end">100%</text>
+        <text class="fig-text-small" x="131" y="250" text-anchor="middle">Bearing wear</text>
+        <text class="fig-text-small" x="253" y="250" text-anchor="middle">Seal leak</text>
+        <text class="fig-text-small" x="376" y="250" text-anchor="middle">Sensor fault</text>
+        <text class="fig-text-small" x="498" y="250" text-anchor="middle">Belt slip</text>
+        <rect class="fig-series-1" x="70" y="262" width="12" height="12" rx="2"/><text x="88" y="272">Downtime hours</text>
+        <path class="fig-highlight-line" d="M210 268 H234"/><text x="240" y="272">Cumulative percent</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="common-beta">
+      <h4>Highest-beta mechanisms</h4>
+      <p>
+        Shown with Weibull Analysis: the five failure mechanisms on the asset
+        with the highest β, each taken from the most recent saved Weibull
+        result for that mechanism, with ties going to the one with more
+        failures, each shown with its failure count and η. A high β marks the
+        mechanisms most clearly wearing out (see
+        <a href="#analysis-weibull">Weibull life data analysis</a>). A
+        mechanism that has never been fitted is not on the list.
+      </p>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Weibull
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-weibull",
+      "Weibull life data analysis",
+      "Fits a two-parameter Weibull distribution, by maximum likelihood with right-censored lives, to the time one failure mode or mechanism lets an asset run between failures.",
+      eyebrow="Weibull Analysis") %}
+
+    <nav class="std-toc" aria-label="On this card">
+      <p class="eyebrow">On this card</p>
+      <ol>
+        <li><a href="#weibull-purpose">What it answers</a></li>
+        <li><a href="#weibull-population">Choosing the population</a></li>
+        <li><a href="#weibull-intervals">Events, life intervals and censoring</a></li>
+        <li><a href="#weibull-life-hours">Schedule-adjusted life hours</a></li>
+        <li><a href="#weibull-distribution">The Weibull distribution</a></li>
+        <li><a href="#weibull-fit">Fitting β and η by maximum likelihood</a></li>
+        <li><a href="#weibull-ci">Confidence intervals</a></li>
+        <li><a href="#weibull-metrics">MTTF, B10, B50 and fit statistics</a></li>
+        <li><a href="#weibull-charts">The four charts</a></li>
+        <li><a href="#weibull-interpretation">Reading the result</a></li>
+        <li><a href="#weibull-example">Worked example</a></li>
+        <li><a href="#weibull-saving">Adjusting, saving and reporting</a></li>
+        <li><a href="#weibull-limits">Limitations</a></li>
+      </ol>
+    </nav>
+
+    <section class="std-section" id="weibull-purpose">
+      <h4>What it answers</h4>
+      <p>
+        Weibull analysis describes how long one failure mode or mechanism lets
+        one asset run between failures. Its two parameters answer two questions.
+        <strong>β, the shape,</strong> says whether failures come early in life,
+        at random, or from wear-out. <strong>η, the scale,</strong> says how long
+        a typical life is. Together they give the chance of failing by any age,
+        the mean life, and the ages by which 10% and 50% are expected to fail.
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-population">
+      <h4>Choosing the population</h4>
+      <p>
+        A Weibull fit only means something for one failure behavior, so the
+        analysis is always run on a population: either a <strong>failure
+        mode</strong>, which pools every mechanism under it, or a single
+        <strong>failure mode and mechanism</strong> pair. A population is
+        offered once it has at least one included failure, and the list shows
+        how many failures and PM resets each one has.
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-intervals">
+      <h4>Events, life intervals and censoring</h4>
+      <p>The timeline is built from current dispositions on the asset with the flag ticked:</p>
+      <ul>
+        <li><strong>Failures:</strong> Included failures with the chosen failure mode, and the chosen mechanism when the population is a mechanism.</li>
+        <li><strong>PM resets:</strong> Included PM reset events whose reset target is the chosen mode, and the chosen mechanism when the population is a mechanism.</li>
+      </ul>
+      <p>
+        Each event is placed at its work order date (equation C1), events
+        without a usable date are skipped, and the rest are put in date order.
+        Life is then measured from each event to the next:
+      </p>
+      <ul>
+        <li><strong>An interval that ends in a failure is a complete life</strong>, with failure indicator <math><mi>&#x3B4;</mi><mo>=</mo><mn>1</mn></math>.</li>
+        <li><strong>An interval that ends in a PM reset is right-censored</strong>, <math><mi>&#x3B4;</mi><mo>=</mo><mn>0</mn></math>: the asset was renewed before this failure mode had its chance to fail, so all that is known is that its life was at least that long.</li>
+        <li><strong>The interval from the last event to the analysis cutoff</strong>, the moment the analysis is run, is the current life. It is right-censored too, because the asset has not failed again yet.</li>
+        <li><strong>The first event only starts the clock.</strong> Nothing is known about the life before it, so no interval ends there.</li>
+        <li>An interval with no scheduled hours in it, such as two events on the same weekend, is left out.</li>
+      </ul>
+      {% call std.figure("W1", "Five events and the analysis cutoff give five lives. The first failure only starts the clock; the lives ending in failures are complete (δ = 1), and the life ending in the PM reset and the current life are right-censored (δ = 0). These are the lives used in the worked example.") %}
+      <svg viewBox="0 0 760 236" role="img" aria-labelledby="fig-w1-title fig-w1-desc">
+        <title id="fig-w1-title">Life intervals from dispositioned events</title>
+        <desc id="fig-w1-desc">A timeline with a failure that starts the clock, then a failure after 520 hours, a PM reset after 450 hours, a failure after 310 hours, a failure after 980 hours, and the analysis cutoff 1,050 hours after the last failure.</desc>
+        <path class="fig-axis" d="M40 150 H740"/>
+        <path class="fig-bracket" d="M60 120 V112 H164 V120 M164 120 V112 H254 V120 M254 120 V112 H316 V120 M316 120 V112 H512 V120 M512 120 V112 H722 V120"/>
+        <text class="fig-text-strong" x="112" y="84" text-anchor="middle">520 h</text>
+        <text class="fig-text-small" x="112" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="209" y="84" text-anchor="middle">450 h</text>
+        <text class="fig-text-small" x="209" y="100" text-anchor="middle">δ = 0</text>
+        <text class="fig-text-strong" x="285" y="84" text-anchor="middle">310 h</text>
+        <text class="fig-text-small" x="285" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="414" y="84" text-anchor="middle">980 h</text>
+        <text class="fig-text-small" x="414" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="617" y="84" text-anchor="middle">1,050 h</text>
+        <text class="fig-text-small" x="617" y="100" text-anchor="middle">δ = 0, still running</text>
+        <circle class="fig-solid" cx="60" cy="150" r="8"/>
+        <circle class="fig-solid" cx="164" cy="150" r="8"/>
+        <path class="fig-accent" d="M254 140 L264 150 L254 160 L244 150 Z"/>
+        <circle class="fig-solid" cx="316" cy="150" r="8"/>
+        <circle class="fig-solid" cx="512" cy="150" r="8"/>
+        <path class="fig-danger-line" d="M722 128 V172"/>
+        <text class="fig-text-small" x="60" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="60" y="192" text-anchor="middle">starts the clock</text>
+        <text class="fig-text-small" x="164" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="254" y="178" text-anchor="middle">PM reset</text>
+        <text class="fig-text-small" x="316" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="512" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-danger fig-text-small" x="722" y="188" text-anchor="middle">Analysis cutoff</text>
+        <text class="fig-text-small" x="40" y="24">δ = 1: the life ended in a failure, so it is complete.</text>
+        <text class="fig-text-small" x="40" y="42">δ = 0: the life ended without a failure, so it is right-censored.</text>
+        <circle class="fig-solid" cx="450" cy="214" r="6"/><text class="fig-text-small" x="462" y="218">Failure</text>
+        <path class="fig-accent" d="M532 207 L539 214 L532 221 L525 214 Z"/><text class="fig-text-small" x="546" y="218">PM reset</text>
+        <path class="fig-danger-line" d="M628 206 V222"/><text class="fig-text-small" x="636" y="218">Cutoff</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="weibull-life-hours">
+      <h4>Schedule-adjusted life hours</h4>
+      <p>
+        Life is counted in scheduled hours, not calendar hours, so an asset is
+        not aged while it is not meant to run. Each interval is cut at every
+        midnight. A Saturday or Sunday adds nothing, and a weekday adds its
+        elapsed hours scaled by the asset's scheduled hours per day:
+      </p>
+      {% call std.equation("W1", "a life in hours is the sum over the interval's weekday segments of the segment's elapsed hours times scheduled hours per day over 24") %}
+      <math display="block">
+        <msub><mi>t</mi><mi>i</mi></msub><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>s</mi><mo>&#x2208;</mo><mtext>weekdays of interval</mtext><mspace width="0.25em"></mspace><mi>i</mi></mrow></munder>
+        <msub><mi mathvariant="normal">&#x394;</mi><mi>s</mi></msub><mo>&#xD7;</mo><mfrac><mi>h</mi><mn>24</mn></mfrac>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi mathvariant="normal">&#x394;</mi><mi>s</mi></msub></math></dt><dd>Elapsed hours of the interval that fall in day <math><mi>s</mi></math>, at most 24.</dd>
+        <dt><math><mi>h</mi></math></dt><dd>Scheduled hours per day: 24 for the Salvagnini assets 3101 to 3107 and the Hedrich dispensers 3154, 3142, 3023 and 3253, and 20 for every other asset.</dd>
+      </dl>
+      {% call std.figure("W2", "A life from Monday 08:00 to the next Monday 08:00 is 168 calendar hours. The 48 weekend hours are left out, and the 120 weekday hours count at 20/24, giving 100 life hours for an asset on the 20-hour schedule.") %}
+      <svg viewBox="0 0 760 206" role="img" aria-labelledby="fig-w2-title fig-w2-desc">
+        <title id="fig-w2-title">Counting schedule-adjusted life hours</title>
+        <desc id="fig-w2-desc">Eight day columns from Monday to the following Monday. The interval covers 16 hours of the first Monday, all of Tuesday to Sunday and 8 hours of the second Monday. Weekday hours count at 20 out of 24; Saturday and Sunday count as zero.</desc>
+        <text class="fig-text-small" x="148" y="34" text-anchor="middle">Mon</text>
+        <text class="fig-text-small" x="224" y="34" text-anchor="middle">Tue</text>
+        <text class="fig-text-small" x="300" y="34" text-anchor="middle">Wed</text>
+        <text class="fig-text-small" x="376" y="34" text-anchor="middle">Thu</text>
+        <text class="fig-text-small" x="452" y="34" text-anchor="middle">Fri</text>
+        <text class="fig-text-small" x="528" y="34" text-anchor="middle">Sat</text>
+        <text class="fig-text-small" x="604" y="34" text-anchor="middle">Sun</text>
+        <text class="fig-text-small" x="680" y="34" text-anchor="middle">Mon</text>
+        <rect class="fig-box" x="110" y="44" width="608" height="44"/>
+        <path class="fig-grid" d="M186 44 V88 M262 44 V88 M338 44 V88 M414 44 V88 M490 44 V88 M566 44 V88 M642 44 V88"/>
+        <rect class="fig-weekday" x="135.3" y="48" width="50.7" height="36"/>
+        <rect class="fig-weekday" x="186" y="48" width="76" height="36"/>
+        <rect class="fig-weekday" x="262" y="48" width="76" height="36"/>
+        <rect class="fig-weekday" x="338" y="48" width="76" height="36"/>
+        <rect class="fig-weekday" x="414" y="48" width="76" height="36"/>
+        <rect class="fig-weekend" x="490" y="48" width="76" height="36"/>
+        <rect class="fig-weekend" x="566" y="48" width="76" height="36"/>
+        <rect class="fig-weekday" x="642" y="48" width="25.3" height="36"/>
+        <text class="fig-text-small" x="528" y="70" text-anchor="middle">left out</text>
+        <text class="fig-text-small" x="604" y="70" text-anchor="middle">left out</text>
+        <path class="fig-danger-line" d="M135.3 40 V92 M667.3 40 V92"/>
+        <text class="fig-text-small" x="135.3" y="106" text-anchor="middle">08:00</text>
+        <text class="fig-text-small" x="667.3" y="106" text-anchor="middle">08:00</text>
+        <text class="fig-text-small" x="104" y="130" text-anchor="end">Elapsed</text>
+        <text class="fig-text-small" x="148" y="130" text-anchor="middle">16 h</text>
+        <text class="fig-text-small" x="224" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="300" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="376" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="452" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="528" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="604" y="130" text-anchor="middle">24 h</text>
+        <text class="fig-text-small" x="680" y="130" text-anchor="middle">8 h</text>
+        <text class="fig-text-strong fig-text-small" x="104" y="152" text-anchor="end">Life hours</text>
+        <text class="fig-text-strong fig-text-small" x="148" y="152" text-anchor="middle">13.3</text>
+        <text class="fig-text-strong fig-text-small" x="224" y="152" text-anchor="middle">20</text>
+        <text class="fig-text-strong fig-text-small" x="300" y="152" text-anchor="middle">20</text>
+        <text class="fig-text-strong fig-text-small" x="376" y="152" text-anchor="middle">20</text>
+        <text class="fig-text-strong fig-text-small" x="452" y="152" text-anchor="middle">20</text>
+        <text class="fig-text-strong fig-text-small" x="528" y="152" text-anchor="middle">0</text>
+        <text class="fig-text-strong fig-text-small" x="604" y="152" text-anchor="middle">0</text>
+        <text class="fig-text-strong fig-text-small" x="680" y="152" text-anchor="middle">6.7</text>
+        <text class="fig-text-strong" x="110" y="188">120 weekday hours × 20/24 = 100 life hours. The 48 weekend hours count for nothing.</text>
+      </svg>
+      {% endcall %}
+      <p>
+        Days are split at midnight UTC, the time zone the dates are stored in,
+        so the weekend that is left out runs from Friday evening to Sunday
+        evening on the plant's clock.
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-distribution">
+      <h4>The Weibull distribution</h4>
+      <p>
+        With shape β and scale η, the chance a life lasts beyond age
+        <math><mi>t</mi></math> (its reliability), the chance it has ended by
+        then, the density of failing at <math><mi>t</mi></math>, and the
+        instantaneous failure rate of a survivor are:
+      </p>
+      {% call std.equation("W2", "reliability is e to the minus t over eta to the power beta") %}
+      <math display="block">
+        <mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mi>exp</mi><mrow><mo>[</mo><mrow><mo>&#x2212;</mo><msup><mrow><mo>(</mo><mfrac><mi>t</mi><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mi>&#x3B2;</mi></msup></mrow><mo>]</mo></mrow>
+      </math>
+      {% endcall %}
+      {% call std.equation("W3", "unreliability, the cumulative distribution, is one minus reliability") %}
+      <math display="block">
+        <mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn><mo>&#x2212;</mo><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      {% call std.equation("W4", "the probability density is beta over eta times t over eta to the power beta minus one times reliability") %}
+      <math display="block">
+        <mi>f</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mfrac><mi>&#x3B2;</mi><mi>&#x3B7;</mi></mfrac>
+        <msup><mrow><mo>(</mo><mfrac><mi>t</mi><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mrow><mi>&#x3B2;</mi><mo>&#x2212;</mo><mn>1</mn></mrow></msup>
+        <mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      {% call std.equation("W5", "the hazard rate is the density over reliability, which is beta over eta times t over eta to the power beta minus one") %}
+      <math display="block">
+        <mi>h</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mfrac><mrow><mi>f</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow><mrow><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow></mfrac><mo>=</mo>
+        <mfrac><mi>&#x3B2;</mi><mi>&#x3B7;</mi></mfrac>
+        <msup><mrow><mo>(</mo><mfrac><mi>t</mi><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mrow><mi>&#x3B2;</mi><mo>&#x2212;</mo><mn>1</mn></mrow></msup>
+      </math>
+      {% endcall %}
+      <p>
+        At <math><mi>t</mi><mo>=</mo><mi>&#x3B7;</mi></math>, whatever β is,
+        <math><mi>F</mi><mo stretchy="false">(</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn><mo>&#x2212;</mo><msup><mi>e</mi><mrow><mo>&#x2212;</mo><mn>1</mn></mrow></msup><mo>&#x2248;</mo><mn>0.632</mn></math>:
+        η is the age by which 63.2% of the population is expected to have
+        failed. β decides how the hazard rate moves with age.
+      </p>
+      {% call std.figure("W3", "Hazard rate against age, in multiples of η, for three values of β. Below 1 the risk of failing falls with age, at 1 it stays level, and above 1 it climbs: the three patterns the interpretation rules below are built on.") %}
+      <svg viewBox="0 0 640 262" role="img" aria-labelledby="fig-w3-title fig-w3-desc">
+        <title id="fig-w3-title">How β shapes the hazard rate</title>
+        <desc id="fig-w3-desc">Three hazard curves. For beta 0.5 the hazard starts high and falls. For beta 1 it is a flat line. For beta 3 it starts at zero and rises steeply.</desc>
+        <path class="fig-axis" d="M70 30 V220 H420"/>
+        <path class="fig-axis" d="M179.4 216 V224 M288.75 216 V224 M398.1 216 V224"/>
+        <text class="fig-text-small" x="70" y="238" text-anchor="middle">0</text>
+        <text class="fig-text-small" x="179.4" y="238" text-anchor="middle">0.5η</text>
+        <text class="fig-text-small" x="288.75" y="238" text-anchor="middle">η</text>
+        <text class="fig-text-small" x="398.1" y="238" text-anchor="middle">1.5η</text>
+        <text class="fig-text-small" x="245" y="256" text-anchor="middle">Age</text>
+        <text class="fig-text-small" x="0" y="0" transform="translate(52 125) rotate(-90)" text-anchor="middle">Hazard rate</text>
+        <path class="fig-line-6" d="M76.1 30.0 L85.2 99.8 L96.0 128.1 L106.8 142.8 L117.6 152.1 L128.4 158.7 L139.2 163.7 L150.0 167.6 L160.8 170.8 L171.6 173.5 L182.4 175.8 L193.2 177.8 L204.0 179.5 L214.8 181.1 L225.6 182.5 L236.4 183.7 L247.2 184.8 L258.0 185.8 L268.8 186.8 L279.6 187.6 L290.4 188.5 L301.2 189.2 L312.0 189.9 L322.8 190.5 L333.6 191.2 L344.4 191.7 L355.2 192.3 L366.0 192.8 L376.8 193.3 L387.6 193.7 L398.4 194.2 L409.2 194.6 L420.0 195.0"/>
+        <path class="fig-line-1" d="M74.4 156.7 L420 156.7"/>
+        <path class="fig-line-3" d="M74.4 219.9 L85.2 219.1 L96.0 217.3 L106.8 214.6 L117.6 211.0 L128.4 206.5 L139.2 201.0 L150.0 194.6 L160.8 187.3 L171.6 179.0 L182.4 169.9 L193.2 159.7 L204.0 148.7 L214.8 136.8 L225.6 123.9 L236.4 110.1 L247.2 95.3 L258.0 79.7 L268.8 63.1 L279.6 45.6 L288.8 30.0"/>
+        <path class="fig-line-6" d="M440 44 H468"/>
+        <text class="fig-text-strong" x="476" y="48">β = 0.5: falling</text>
+        <text class="fig-text-small" x="476" y="64">early-life or defect-driven</text>
+        <path class="fig-line-1" d="M440 104 H468"/>
+        <text class="fig-text-strong" x="476" y="108">β = 1: level</text>
+        <text class="fig-text-small" x="476" y="124">random failures</text>
+        <path class="fig-line-3" d="M440 164 H468"/>
+        <text class="fig-text-strong" x="476" y="168">β = 3: rising</text>
+        <text class="fig-text-small" x="476" y="184">wear-out</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="weibull-fit">
+      <h4>Fitting β and η by maximum likelihood</h4>
+      <p>
+        The fit chooses the β and η that make the observed lives most likely.
+        A complete life contributes the density of failing at that age; a
+        censored life contributes the chance of surviving at least that long.
+        In logarithms, with <math><mi>n</mi></math> lives of which
+        <math><mi>r</mi></math> are complete:
+      </p>
+      {% call std.equation("W6", "the log-likelihood is the sum over complete lives of log beta minus beta log eta plus beta minus one times log t, minus the sum over all lives of t over eta to the power beta") %}
+      <math display="block">
+        <mi>&#x2113;</mi><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>,</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>i</mi><mo>:</mo><msub><mi>&#x3B4;</mi><mi>i</mi></msub><mo>=</mo><mn>1</mn></mrow></munder>
+        <mrow><mo>[</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mi>&#x3B2;</mi><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi><mo>+</mo><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mn>1</mn><mo stretchy="false">)</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><msub><mi>t</mi><mi>i</mi></msub><mo>]</mo></mrow>
+        <mo>&#x2212;</mo>
+        <munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+        <msup><mrow><mo>(</mo><mfrac><msub><mi>t</mi><mi>i</mi></msub><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mi>&#x3B2;</mi></msup>
+      </math>
+      {% endcall %}
+      <p>Setting the derivative with respect to η to zero gives η in terms of β:</p>
+      {% call std.equation("W7", "eta is the r-th part of the sum of t to the power beta, all to the power one over beta") %}
+      <math display="block">
+        <mover><mi>&#x3B7;</mi><mo>^</mo></mover><mo>=</mo>
+        <msup><mrow><mo>(</mo><mfrac><mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msubsup><mi>t</mi><mi>i</mi><mover><mi>&#x3B2;</mi><mo>^</mo></mover></msubsup></mrow><mi>r</mi></mfrac><mo>)</mo></mrow><mrow><mn>1</mn><mo lspace="0" rspace="0">/</mo><mover><mi>&#x3B2;</mi><mo>^</mo></mover></mrow></msup>
+      </math>
+      {% endcall %}
+      <p>Substituting it back leaves one equation in β alone, which the fitted β makes zero:</p>
+      {% call std.equation("W8", "one over beta, plus the mean log of the complete lives, minus the t to the beta weighted mean log of all lives, equals zero") %}
+      <math display="block">
+        <mfrac><mn>1</mn><mi>&#x3B2;</mi></mfrac><mo>+</mo>
+        <mfrac><mn>1</mn><mi>r</mi></mfrac><munder><mo>&#x2211;</mo><mrow><mi>i</mi><mo>:</mo><msub><mi>&#x3B4;</mi><mi>i</mi></msub><mo>=</mo><mn>1</mn></mrow></munder><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><msub><mi>t</mi><mi>i</mi></msub>
+        <mo>&#x2212;</mo>
+        <mfrac>
+          <mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msubsup><mi>t</mi><mi>i</mi><mi>&#x3B2;</mi></msubsup><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><msub><mi>t</mi><mi>i</mi></msub></mrow>
+          <mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msubsup><mi>t</mi><mi>i</mi><mi>&#x3B2;</mi></msubsup></mrow>
+        </mfrac>
+        <mo>=</mo><mn>0</mn>
+      </math>
+      {% endcall %}
+      <ul>
+        <li><strong>How it is solved:</strong> GREMLIN checks 400 evenly spaced values of β from 0.1 to 20 for a change of sign in equation W8, then halves the bracketing interval 80 times. η then follows from equation W7.</li>
+        <li><strong>If there is no root between 0.1 and 20,</strong> β falls back to 1.2 divided by the coefficient of variation of the complete lives, kept between 0.1 and 20.</li>
+        <li><strong>The fit needs at least one complete life</strong> and at least one life longer than zero hours; otherwise the analysis stops and says which is missing.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="weibull-ci">
+      <h4>Confidence intervals</h4>
+      <p>
+        The approximate 95% intervals come from how sharply the log-likelihood
+        falls away from its peak. GREMLIN takes its second derivatives
+        numerically with respect to <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi></math>
+        and <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi></math>, inverts that
+        information matrix for the variances, and turns them back, so both ends
+        of each interval are always positive:
+      </p>
+      {% call std.equation("W9", "the interval for beta is beta times e to the minus or plus 1.96 standard errors of log beta, and the same for eta, with the squared standard errors read off the inverse of the observed information") %}
+      <math display="block">
+        <mtable displaystyle="true">
+          <mtr><mtd>
+            <msub><mi>&#x3B2;</mi><mrow><mtext>L</mtext><mo>,</mo><mtext>U</mtext></mrow></msub><mo>=</mo><mover><mi>&#x3B2;</mi><mo>^</mo></mover><mspace width="0.2em"></mspace><mi>exp</mi><mo stretchy="false">(</mo><mrow><mo>&#x2213;</mo><mn>1.96</mn><mspace width="0.15em"></mspace><mtext>SE</mtext><mo stretchy="false">(</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mover><mi>&#x3B2;</mi><mo>^</mo></mover><mo stretchy="false">)</mo></mrow><mo stretchy="false">)</mo>
+            <mspace width="2em"></mspace>
+            <msub><mi>&#x3B7;</mi><mrow><mtext>L</mtext><mo>,</mo><mtext>U</mtext></mrow></msub><mo>=</mo><mover><mi>&#x3B7;</mi><mo>^</mo></mover><mspace width="0.2em"></mspace><mi>exp</mi><mo stretchy="false">(</mo><mrow><mo>&#x2213;</mo><mn>1.96</mn><mspace width="0.15em"></mspace><mtext>SE</mtext><mo stretchy="false">(</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mover><mi>&#x3B7;</mi><mo>^</mo></mover><mo stretchy="false">)</mo></mrow><mo stretchy="false">)</mo>
+          </mtd></mtr>
+          <mtr><mtd>
+            <msup><mtext>SE</mtext><mn>2</mn></msup><mo stretchy="false">(</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mover><mi>&#x3B2;</mi><mo>^</mo></mover><mo stretchy="false">)</mo><mo>=</mo><msub><mrow><mo stretchy="false">[</mo><msup><mi>&#x2110;</mi><mrow><mo>&#x2212;</mo><mn>1</mn></mrow></msup><mo stretchy="false">]</mo></mrow><mn>11</mn></msub>
+            <mspace width="2em"></mspace>
+            <msup><mtext>SE</mtext><mn>2</mn></msup><mo stretchy="false">(</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mover><mi>&#x3B7;</mi><mo>^</mo></mover><mo stretchy="false">)</mo><mo>=</mo><msub><mrow><mo stretchy="false">[</mo><msup><mi>&#x2110;</mi><mrow><mo>&#x2212;</mo><mn>1</mn></mrow></msup><mo stretchy="false">]</mo></mrow><mn>22</mn></msub>
+          </mtd></mtr>
+        </mtable>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>&#x2110;</mi></math></dt><dd>The observed information: the negative of the matrix of second derivatives of equation W6 with respect to <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi></math> and <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi></math>, taken at the fitted values. GREMLIN estimates it by finite differences.</dd>
+        <dt><math><mn>1.96</mn></math></dt><dd>The two-sided 95% point of the standard normal distribution.</dd>
+      </dl>
+      <p>
+        With fewer than three lives, or when the curvature cannot be inverted,
+        the intervals are reported as Not available. They are approximate
+        either way, and with few failures they are wide.
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-metrics">
+      <h4>MTTF, B10, B50 and fit statistics</h4>
+      {% call std.equation("W10", "mean time to failure is eta times the gamma function of one plus one over beta") %}
+      <math display="block">
+        <mtext>MTTF</mtext><mo>=</mo><mi>&#x3B7;</mi><mspace width="0.15em"></mspace><mi mathvariant="normal">&#x393;</mi><mrow><mo>(</mo><mn>1</mn><mo>+</mo><mfrac><mn>1</mn><mi>&#x3B2;</mi></mfrac><mo>)</mo></mrow>
+      </math>
+      {% endcall %}
+      {% call std.equation("W11", "B10 life is eta times minus log 0.9 to the power one over beta, and B50 life is eta times log 2 to the power one over beta") %}
+      <math display="block">
+        <msub><mi>B</mi><mn>10</mn></msub><mo>=</mo><mi>&#x3B7;</mi><msup><mrow><mo stretchy="false">(</mo><mrow><mo>&#x2212;</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mn>0.90</mn></mrow><mo stretchy="false">)</mo></mrow><mrow><mn>1</mn><mo lspace="0" rspace="0">/</mo><mi>&#x3B2;</mi></mrow></msup>
+        <mspace width="2em"></mspace>
+        <msub><mi>B</mi><mn>50</mn></msub><mo>=</mo><mi>&#x3B7;</mi><msup><mrow><mo stretchy="false">(</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mn>2</mn><mo stretchy="false">)</mo></mrow><mrow><mn>1</mn><mo lspace="0" rspace="0">/</mo><mi>&#x3B2;</mi></mrow></msup>
+      </math>
+      {% endcall %}
+      {% call std.equation("W12", "AIC is four minus twice the maximum log-likelihood and BIC is two log n minus twice the maximum log-likelihood") %}
+      <math display="block">
+        <mtext>AIC</mtext><mo>=</mo><mn>4</mn><mo>&#x2212;</mo><mn>2</mn><mover><mi>&#x2113;</mi><mo>^</mo></mover>
+        <mspace width="2em"></mspace>
+        <mtext>BIC</mtext><mo>=</mo><mn>2</mn><mspace width="0.17em"></mspace><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>n</mi><mo>&#x2212;</mo><mn>2</mn><mover><mi>&#x2113;</mi><mo>^</mo></mover>
+      </math>
+      {% endcall %}
+      <ul>
+        <li><strong>MTTF</strong> is the mean life. It is shown with the result and in the report.</li>
+        <li><strong>B10 and B50</strong> are the ages by which 10% and 50% are expected to fail; B50 is the median life.</li>
+        <li><strong>AIC and BIC</strong> score the fit against its two parameters; lower is better when comparing fits of the same lives.</li>
+        <li>B10, B50, AIC and BIC are stored with every saved result but are not shown on the page today.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="weibull-charts">
+      <h4>The four charts</h4>
+      <p>
+        The points on the charts are not the fit: they are what the lives
+        themselves say, estimated without assuming any distribution by the
+        Kaplan-Meier method. At each age where a complete life ends:
+      </p>
+      {% call std.equation("W13", "the Kaplan-Meier reliability at a failure age is the product over failure ages up to it of one minus failures over the number at risk") %}
+      <math display="block">
+        <mover><mi>R</mi><mo>^</mo></mover><mo stretchy="false">(</mo><msub><mi>t</mi><mi>j</mi></msub><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x220F;</mo><mrow><msub><mi>t</mi><mi>i</mi></msub><mo>&#x2264;</mo><msub><mi>t</mi><mi>j</mi></msub></mrow></munder>
+        <mrow><mo>(</mo><mn>1</mn><mo>&#x2212;</mo><mfrac><msub><mi>d</mi><mi>i</mi></msub><msub><mi>n</mi><mi>i</mi></msub></mfrac><mo>)</mo></mrow>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>d</mi><mi>i</mi></msub></math></dt><dd>Complete lives ending at age <math><msub><mi>t</mi><mi>i</mi></msub></math>.</dd>
+        <dt><math><msub><mi>n</mi><mi>i</mi></msub></math></dt><dd>Lives still at risk just before <math><msub><mi>t</mi><mi>i</mi></msub></math>. A censored life counts as at risk up to and including its own age, then leaves.</dd>
+      </dl>
+      <p>
+        The probability plot straightens a Weibull curve. Taking logarithms of
+        equation W2 twice turns it into a line whose slope is β and which
+        crosses zero at <math><mi>t</mi><mo>=</mo><mi>&#x3B7;</mi></math>:
+      </p>
+      {% call std.equation("W14", "the probability plot puts log of minus log reliability against log t, where a Weibull is the line beta log t minus beta log eta") %}
+      <math display="block">
+        <mi>x</mi><mo>=</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>t</mi><mo>,</mo>
+        <mspace width="1em"></mspace>
+        <mi>y</mi><mo>=</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mrow><mo>[</mo><mrow><mo>&#x2212;</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow><mo>]</mo></mrow>
+        <mspace width="1em"></mspace>
+        <mo stretchy="false">&#x21D2;</mo>
+        <mspace width="1em"></mspace>
+        <mi>y</mi><mo>=</mo><mi>&#x3B2;</mi><mspace width="0.1em"></mspace><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>t</mi><mo>&#x2212;</mo><mi>&#x3B2;</mi><mspace width="0.1em"></mspace><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi>
+      </math>
+      {% endcall %}
+      <ul>
+        <li><strong>Weibull Probability Plot:</strong> the Kaplan-Meier points for the complete lives, the fitted line (green) and, where the intervals exist, the lines at the lower and upper ends of both intervals (yellow). Points that lie close to the green line support the Weibull model. A point whose estimate is 0 or 1 cannot be drawn on this scale.</li>
+        <li><strong>CDF:</strong> the fitted <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math> with the Kaplan-Meier points for complete lives (white) and the lives that ended in a PM reset (red), placed on the fitted curve at their age.</li>
+        <li><strong>Probability Density (PDF)</strong> and <strong>Hazard Rate:</strong> equations W4 and W5 at the fitted values only.</li>
+        <li><strong>The red vertical line</strong> in every pane is the current life: the time since the most recent event.</li>
+        <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
+      </ul>
+      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.12 and it crosses the 63.2% line at η = 932 hours. The first two Kaplan-Meier points sit well above it: with three failures and two censored lives the sample is small, which is also why the confidence intervals are wide.") %}
+      <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
+        <title id="fig-w4-title">Weibull probability plot of the worked example</title>
+        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Three points at 310, 520 and 980 hours lie near a straight fitted line with slope 2.12 that crosses 63.2 percent unreliability at 932 hours.</desc>
+        <path class="fig-grid" d="M80 30 H560 M80 85 H560 M80 140 H560 M80 195 H560 M85.7 30 V250 M270.6 30 V250 M455.4 30 V250 M545.1 30 V250"/>
+        <path class="fig-axis" d="M80 30 V250 H560"/>
+        <text class="fig-text-small" x="74" y="34" text-anchor="end">93.4%</text>
+        <text class="fig-text-small" x="74" y="89" text-anchor="end">63.2%</text>
+        <text class="fig-text-small" x="74" y="144" text-anchor="end">30.8%</text>
+        <text class="fig-text-small" x="74" y="199" text-anchor="end">12.7%</text>
+        <text class="fig-text-small" x="74" y="254" text-anchor="end">4.9%</text>
+        <text class="fig-text-small" x="85.7" y="268" text-anchor="middle">250 h</text>
+        <text class="fig-text-small" x="270.6" y="268" text-anchor="middle">500 h</text>
+        <text class="fig-text-small" x="455.4" y="268" text-anchor="middle">1,000 h</text>
+        <text class="fig-text-small" x="545.1" y="268" text-anchor="middle">1,400 h</text>
+        <text class="fig-text-small" x="320" y="290" text-anchor="middle">Life hours (log scale)</text>
+        <text class="fig-text-small" x="0" y="0" transform="translate(22 140) rotate(-90)" text-anchor="middle">Unreliability F(t), Weibull scale</text>
+        <path class="fig-guide" d="M436.6 250 V85 H80"/>
+        <path class="fig-accent-line" d="M80 241.2 L560 31"/>
+        <circle class="fig-point" cx="143.1" cy="167.5" r="5"/>
+        <circle class="fig-point" cx="281" cy="110.5" r="5"/>
+        <circle class="fig-point" cx="450" cy="69.7" r="5"/>
+        <text class="fig-text-small" x="152" y="182">310 h</text>
+        <text class="fig-text-small" x="290" y="125">520 h</text>
+        <text class="fig-text-small" x="458" y="62">980 h</text>
+        <text class="fig-text-accent" x="300" y="166">slope β = 2.12</text>
+        <text class="fig-text-small" x="444" y="236">η = 932 h</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="weibull-interpretation">
+      <h4>Reading the result</h4>
+      <p>
+        The Results Interpretation Summary turns β, η, MTTF and the two
+        intervals into recommendations with these rules:
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Weibull interpretation rules</caption>
+          <thead>
+            <tr><th scope="col">Result</th><th scope="col">Reading</th><th scope="col">Suggested direction</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>β below 0.9</td><td>Early-life or defect-driven failures</td><td>Look at installation, setup, commissioning and repair quality, and latent defects. Age-based replacement is not supported.</td></tr>
+            <tr><td>β from 0.9 to 1.1</td><td>Random failures</td><td>Improve detection with inspections or condition checks, and plan spares. A fixed replacement age is weak justification.</td></tr>
+            <tr><td>β above 1.1</td><td>Wear-out</td><td>Evaluate an age-based PM or planned replacement, set with η, downtime impact and cost.</td></tr>
+            <tr><td>β interval crosses 1.0</td><td>Pattern still uncertain</td><td>Check whether the population mixes mechanisms or needs more failures before choosing a strategy.</td></tr>
+            <tr><td>β interval no wider than 0.3</td><td>Stable</td><td>More confidence in the direction above.</td></tr>
+            <tr><td>η interval width at most 40% of η</td><td>Stable η</td><td>Usable for planning comparisons and timing discussions.</td></tr>
+            <tr><td>η interval wider than that</td><td>Directional only</td><td>Tighten the population or collect more data before treating η as a decision point.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        MTTF is for budgeting, manpower and spares, not for timing a PM on its
+        own: in a population that is not wearing out, replacing at the average
+        life adds work without removing failures.
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-example">
+      <h4>Worked example</h4>
+      <p>The five lives from figure W1:</p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Lives in the Weibull worked example</caption>
+          <thead>
+            <tr><th scope="col">Life</th><th scope="col">Ends in</th><th scope="col" class="is-numeric">Life hours <math><msub><mi>t</mi><mi>i</mi></msub></math></th><th scope="col" class="is-numeric"><math><msub><mi>&#x3B4;</mi><mi>i</mi></msub></math></th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>Failure</td><td class="is-numeric">520</td><td class="is-numeric">1</td></tr>
+            <tr><td>2</td><td>PM reset</td><td class="is-numeric">450</td><td class="is-numeric">0</td></tr>
+            <tr><td>3</td><td>Failure</td><td class="is-numeric">310</td><td class="is-numeric">1</td></tr>
+            <tr><td>4</td><td>Failure</td><td class="is-numeric">980</td><td class="is-numeric">1</td></tr>
+            <tr><td>5</td><td>Analysis cutoff, current life</td><td class="is-numeric">1,050</td><td class="is-numeric">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="std-example">
+        <p class="eyebrow">Kaplan-Meier points, equation W13</p>
+        <ul class="std-calc">
+          <li><span>310 h: 5 at risk, 1 failure</span><span>1 × (1 − 1/5) = <span class="std-result">0.800</span></span></li>
+          <li><span>450 h: PM reset</span><span>no point; 3 remain at risk after it</span></li>
+          <li><span>520 h: 3 at risk, 1 failure</span><span>0.800 × (1 − 1/3) = <span class="std-result">0.533</span></span></li>
+          <li><span>980 h: 2 at risk, 1 failure</span><span>0.533 × (1 − 1/2) = <span class="std-result">0.267</span></span></li>
+        </ul>
+      </div>
+      <div class="std-example">
+        <p class="eyebrow">Fitted values, n = 5 lives, r = 3 failures</p>
+        <ul class="std-calc">
+          <li><span>β, equation W8</span><span class="std-result">2.123</span></li>
+          <li><span>η, equation W7</span><span>(6,052,589 / 3)<sup>1/2.123</sup> = <span class="std-result">932.0 h</span></span></li>
+          <li><span>95% intervals, equation W9</span><span>β 0.843 to 5.347; η 544.6 to 1,595 h</span></li>
+          <li><span>MTTF, equation W10</span><span class="std-result">825.4 h</span></li>
+          <li><span>B10 and B50, equation W11</span><span>322.9 h and 784.2 h</span></li>
+          <li><span>Log-likelihood, AIC, BIC</span><span>−23.09; 50.18; 49.40</span></li>
+        </ul>
+      </div>
+      <p>
+        <strong>Reading it:</strong> β = 2.12 is above 1.1, which points to
+        wear-out. But its interval runs from 0.84 to 5.35 and crosses 1.0, so
+        with three failures the pattern is not settled yet, and η's interval is
+        too wide to set an interval from. The honest conclusion is "probably
+        wearing out; collect more failures before committing to a PM interval".
+      </p>
+    </section>
+
+    <section class="std-section" id="weibull-saving">
+      <h4>Adjusting, saving and reporting</h4>
+      <ul>
+        <li><strong>Every run is saved</strong> with its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis cutoff. Viewers see the most recent saved result; editors can run it again, which picks up every disposition saved since.</li>
+        <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it.</li>
+        <li><strong>Generate Weibull Report</strong> writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values.</li>
+        <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition; saving it runs the analysis again.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="weibull-limits">
+      <h4>Limitations</h4>
+      <ul>
+        <li><strong>Few failures give wide intervals.</strong> Read β and η as directions until the intervals narrow.</li>
+        <li><strong>A failure mode that pools different mechanisms</strong> mixes different behaviors and blurs β. Fit the mechanism when there are enough failures.</li>
+        <li><strong>Life is scheduled time, not run time.</strong> It uses the 24 or 20 hour weekday schedule, not meter hours, and ignores holidays and shutdowns.</li>
+        <li><strong>Only two parameters.</strong> There is no failure-free period (three-parameter Weibull) and no comparison against other distributions.</li>
+      </ul>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Failure mode trend
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-trend",
+      "Failure mode trend",
+      "Counts a failure mode's or mechanism's failures month by month, and compares the last three months with the three before them.",
+      eyebrow="Failure Mode Trend Analysis") %}
+
+    <section class="std-section" id="trend-data">
+      <h4>What it counts</h4>
+      <p>
+        Every included failure on the asset that has a failure mechanism: the
+        same records as the Pareto. Each one is put in the month of its work
+        order date (equation C1, in UTC). The months run without gaps from the
+        earliest to the latest month in which the asset has any included
+        failure, and a month with none counts as 0, so the line never skips a
+        quiet month.
+      </p>
+      <p>
+        Pick a mechanism from the Pareto or the analysis controls to plot that
+        mechanism alone, or pick a failure mode to add up every mechanism under
+        it:
+      </p>
+      {% call std.equation("T1", "the count for a month is the sum over the selected mechanisms of their failures in that month") %}
+      <math display="block">
+        <mi>c</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>k</mi><mo>&#x2208;</mo><mi>K</mi></mrow></munder>
+        <msub><mi>n</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>K</mi></math></dt><dd>The selected mechanism, or every mechanism under the selected failure mode.</dd>
+        <dt><math><msub><mi>n</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo></math></dt><dd>Included failures of mechanism <math><mi>k</mi></math> dated in month <math><mi>m</mi></math>.</dd>
+      </dl>
+      <p>
+        A record without any usable date still counts toward a mechanism's
+        total but cannot be placed in a month, so it is not on the line or in
+        the tables below it.
+      </p>
+    </section>
+
+    <section class="std-section" id="trend-cards">
+      <h4>The four summary cards</h4>
+      <p>The cards look across every mechanism on the asset, not only the one selected:</p>
+      <ul>
+        <li><strong>Most Frequent:</strong> the mechanism with the most included failures; ties go to the one with more downtime.</li>
+        <li><strong>Highest Downtime:</strong> the mechanism with the most downtime hours; ties go to the one with more failures.</li>
+        <li><strong>Fastest Growing</strong> and <strong>Most Improved:</strong> the mechanisms with the largest rise and the largest fall between the previous three months and the last three:</li>
+      </ul>
+      {% call std.equation("T2", "growth is the failures in the last three months minus the failures in the three months before them") %}
+      <math display="block">
+        <msub><mi>G</mi><mi>k</mi></msub><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>m</mi><mo>&#x2208;</mo><mtext>last 3 months</mtext></mrow></munder><msub><mi>n</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo>
+        <mo>&#x2212;</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>m</mi><mo>&#x2208;</mo><mtext>previous 3 months</mtext></mrow></munder><msub><mi>n</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <ul>
+        <li>The last three months are the last three on the month axis, whether or not they had failures.</li>
+        <li>Growth needs at least six months on the axis. With fewer, both cards say Insufficient Data.</li>
+        <li>Fastest Growing only considers mechanisms that rose, and Most Improved only those that fell. When none moved that way the card says so ("No mechanism increased", "No mechanism decreased").</li>
+        <li>The cards show the change as "+N occ. vs. prior 3 mo" or "−N occ. vs. prior 3 mo".</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="trend-views">
+      <h4>Chart, tables and date range</h4>
+      <ul>
+        <li><strong>Failure Mode Trend</strong> plots <math><mi>c</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo></math> for each month.</li>
+        <li><strong>Failure Mode Trend Detail</strong> lists the same monthly counts with a total.</li>
+        <li><strong>Work Orders in Trend</strong> lists the work orders behind the counts. Clicking a month in the detail table, or a point on the chart, shows only that month's work orders.</li>
+        <li><strong>From and To</strong> narrow the chart and both tables to a range of months. They do not change the summary cards, which always use the whole history.</li>
+      </ul>
+      {% call std.figure("T1", "Six months of failures for one mechanism: 1, 0, 2, 3, 1 and 4. The previous three months hold 3 failures and the last three hold 8, a growth of +5.") %}
+      <svg viewBox="0 0 640 262" role="img" aria-labelledby="fig-t1-title fig-t1-desc">
+        <title id="fig-t1-title">Comparing the last three months with the three before</title>
+        <desc id="fig-t1-desc">A monthly line from January to June with counts 1, 0, 2, 3, 1 and 4. January to March is shaded as the previous three months, totaling 3, and April to June as the last three months, totaling 8.</desc>
+        <rect class="fig-window" x="74" y="34" width="238" height="166" rx="6"/>
+        <rect class="fig-window" x="320" y="34" width="238" height="166" rx="6"/>
+        <text class="fig-text-strong fig-text-small" x="193" y="26" text-anchor="middle">Previous 3 months: 1 + 0 + 2 = 3</text>
+        <text class="fig-text-strong fig-text-small" x="439" y="26" text-anchor="middle">Last 3 months: 3 + 1 + 4 = 8</text>
+        <path class="fig-axis" d="M70 34 V200 H562"/>
+        <text class="fig-text-small" x="64" y="204" text-anchor="end">0</text>
+        <text class="fig-text-small" x="64" y="136" text-anchor="end">2</text>
+        <text class="fig-text-small" x="64" y="68" text-anchor="end">4</text>
+        <path class="fig-line-1" d="M110 166 L192 200 L274 132 L356 98 L438 166 L520 64"/>
+        <circle class="fig-point" cx="110" cy="166" r="4.5"/>
+        <circle class="fig-point" cx="192" cy="200" r="4.5"/>
+        <circle class="fig-point" cx="274" cy="132" r="4.5"/>
+        <circle class="fig-point" cx="356" cy="98" r="4.5"/>
+        <circle class="fig-point" cx="438" cy="166" r="4.5"/>
+        <circle class="fig-point" cx="520" cy="64" r="4.5"/>
+        <text class="fig-text-small" x="110" y="156" text-anchor="middle">1</text>
+        <text class="fig-text-small" x="192" y="190" text-anchor="middle">0</text>
+        <text class="fig-text-small" x="274" y="122" text-anchor="middle">2</text>
+        <text class="fig-text-small" x="356" y="88" text-anchor="middle">3</text>
+        <text class="fig-text-small" x="438" y="156" text-anchor="middle">1</text>
+        <text class="fig-text-small" x="520" y="54" text-anchor="middle">4</text>
+        <text class="fig-text-small" x="110" y="218" text-anchor="middle">Jan</text>
+        <text class="fig-text-small" x="192" y="218" text-anchor="middle">Feb</text>
+        <text class="fig-text-small" x="274" y="218" text-anchor="middle">Mar</text>
+        <text class="fig-text-small" x="356" y="218" text-anchor="middle">Apr</text>
+        <text class="fig-text-small" x="438" y="218" text-anchor="middle">May</text>
+        <text class="fig-text-small" x="520" y="218" text-anchor="middle">Jun</text>
+        <text class="fig-text-strong" x="316" y="248" text-anchor="middle">Growth = 8 − 3 = +5, shown as "+5 occ. vs. prior 3 mo"</text>
+      </svg>
+      {% endcall %}
+      <p>
+        <strong>Reading it:</strong> a rising line on a mechanism that already
+        tops the Pareto is the first place to look. Six months is a short
+        window, so a single busy month can swing the growth cards; check the
+        Work Orders in Trend list before acting on one.
+      </p>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Downtime drivers
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-downtime",
+      "Downtime drivers",
+      "Explains where a failure mode's or mechanism's downtime comes from: how much, when, how long each event lasted, and on which asset.",
+      eyebrow="Downtime Driver Analysis") %}
+
+    <section class="std-section" id="downtime-data">
+      <h4>What it reads</h4>
+      <p>
+        The included failures with a mechanism on the asset, for the selected
+        mechanism, or for every mechanism under the selected failure mode.
+        Downtime is equation C2, so blank and negative values count as 0 hours,
+        and every included failure counts toward the summary cards and the
+        distribution whether or not it has a date.
+      </p>
+    </section>
+
+    <section class="std-section" id="downtime-cards">
+      <h4>The five summary cards</h4>
+      {% call std.equation("D1", "total downtime is the sum of each failure's downtime, and the average is the total over the number of work orders") %}
+      <math display="block">
+        <mi>D</mi><mo>=</mo><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msub><mi>d</mi><mi>i</mi></msub>
+        <mspace width="2em"></mspace>
+        <mover><mi>d</mi><mo>&#x203E;</mo></mover><mo>=</mo><mfrac><mi>D</mi><mi>n</mi></mfrac>
+      </math>
+      {% endcall %}
+      <ul>
+        <li><strong>Total Downtime</strong> is <math><mi>D</mi></math> and <strong>Work Order Count</strong> is <math><mi>n</mi></math>.</li>
+        <li><strong>Average Downtime</strong> is <math><mover><mi>d</mi><mo>&#x203E;</mo></mover></math>, or 0 when there are none.</li>
+        <li><strong>Median Downtime</strong> is the middle value once sorted, or the mean of the two middle values when there is an even number.</li>
+        <li><strong>Max Downtime Event</strong> is the longest single downtime.</li>
+      </ul>
+      <p>
+        An average far above the median means a few long events carry the
+        total; an average close to the median means many similar events do.
+      </p>
+    </section>
+
+    <section class="std-section" id="downtime-views">
+      <h4>The four views</h4>
+      <ul>
+        <li><strong>Monthly Downtime Trend:</strong> downtime added up by the month of the work order date (UTC), with every month from the first to the last shown, quiet months at 0. Undated failures are left out of this chart only.</li>
+        <li><strong>Downtime Distribution:</strong> how many work orders fall in each range: 0 to 1 hour, 1 to 4, 4 to 8, 8 to 24, and 24 hours or more. A value on a boundary goes in the higher range, so exactly 4 hours counts in 4 to 8.</li>
+        <li><strong>Downtime by Asset / Location:</strong> downtime added up by asset name (or number), highest first. Work orders do not record a location, so where no asset is recorded the root or parent asset in the hierarchy stands in for one.</li>
+        <li><strong>Top Downtime Events:</strong> the ten failures with the most downtime; ties go to the most recent.</li>
+      </ul>
+      {% call std.equation("D2", "monthly downtime is the sum of downtime of failures dated in that month") %}
+      <math display="block">
+        <mi>D</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>i</mi><mo>:</mo><mspace width="0.2em"></mspace><mtext>month</mtext><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mo>=</mo><mi>m</mi></mrow></munder>
+        <msub><mi>d</mi><mi>i</mi></msub>
+      </math>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="downtime-example">
+      <h4>Worked example</h4>
+      <div class="std-example">
+        <p class="eyebrow">Five failures with 0.5, 2, 2, 6 and 30 hours of downtime</p>
+        <ul class="std-calc">
+          <li><span>Total Downtime</span><span>0.5 + 2 + 2 + 6 + 30 = <span class="std-result">40.5 h</span></span></li>
+          <li><span>Average Downtime</span><span>40.5 / 5 = <span class="std-result">8.1 h</span></span></li>
+          <li><span>Median Downtime</span><span>middle of 0.5, 2, 2, 6, 30 = <span class="std-result">2 h</span></span></li>
+          <li><span>Max Downtime Event</span><span class="std-result">30 h</span></li>
+        </ul>
+      </div>
+      {% call std.figure("D1", "The same five failures in the distribution ranges. One long event holds 30 of the 40.5 hours, which is why the average is four times the median.") %}
+      <svg viewBox="0 0 560 246" role="img" aria-labelledby="fig-d1-title fig-d1-desc">
+        <title id="fig-d1-title">Downtime distribution of the worked example</title>
+        <desc id="fig-d1-desc">Counts by downtime range: one work order from 0 to 1 hour, two from 1 to 4 hours, one from 4 to 8 hours, none from 8 to 24 hours and one at 24 hours or more.</desc>
+        <path class="fig-grid" d="M60 70 H540 M60 130 H540"/>
+        <path class="fig-axis" d="M60 40 V190 H540"/>
+        <text class="fig-text-small" x="54" y="194" text-anchor="end">0</text>
+        <text class="fig-text-small" x="54" y="134" text-anchor="end">1</text>
+        <text class="fig-text-small" x="54" y="74" text-anchor="end">2</text>
+        <rect class="fig-series-2" x="75" y="130" width="66" height="60"/>
+        <rect class="fig-series-2" x="171" y="70" width="66" height="120"/>
+        <rect class="fig-series-2" x="267" y="130" width="66" height="60"/>
+        <rect class="fig-danger" x="459" y="130" width="66" height="60"/>
+        <text class="fig-text-small" x="108" y="122" text-anchor="middle">0.5 h</text>
+        <text class="fig-text-small" x="204" y="62" text-anchor="middle">2 h, 2 h</text>
+        <text class="fig-text-small" x="300" y="122" text-anchor="middle">6 h</text>
+        <text class="fig-text-small" x="396" y="182" text-anchor="middle">none</text>
+        <text class="fig-text-strong fig-text-small" x="492" y="122" text-anchor="middle">30 h</text>
+        <text class="fig-text-small" x="108" y="208" text-anchor="middle">0 to 1 h</text>
+        <text class="fig-text-small" x="204" y="208" text-anchor="middle">1 to 4 h</text>
+        <text class="fig-text-small" x="300" y="208" text-anchor="middle">4 to 8 h</text>
+        <text class="fig-text-small" x="396" y="208" text-anchor="middle">8 to 24 h</text>
+        <text class="fig-text-small" x="492" y="208" text-anchor="middle">24 h or more</text>
+        <text class="fig-text-small" x="300" y="234" text-anchor="middle">Work orders per downtime range</text>
+      </svg>
+      {% endcall %}
+      <p>
+        <strong>Reading it:</strong> many short events point at detection,
+        quick fixes and nuisance trips; a few long ones point at spares, repair
+        planning and access. The asset view and the top events say where to
+        start.
+      </p>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     PM effectiveness
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-pm",
+      "PM effectiveness",
+      "Pairs each completed PM with the next failure of the selected mechanism, and rates how long the PMs hold that failure off.",
+      eyebrow="PM Effectiveness Analysis") %}
+
+    <section class="std-section" id="pm-data">
+      <h4>What it reads</h4>
+      <ul>
+        <li><strong>PMs:</strong> every completed PM on the asset, whatever it targets. A record is a PM when its saved class is PM or PM reset candidate, or, while no class has been saved, when the automatic classifier flagged it as a PM. It is completed when it has a completion date, or is marked complete and its status does not read "incomplete" or "not complete". Its date is equation C1.</li>
+        <li><strong>Failures:</strong> the included failures of the selected mechanism, matched within the selected failure mode when one is given.</li>
+      </ul>
+      <div class="std-note is-caution">
+        <p class="std-note-title">Check the PMs you rely on</p>
+        <p>
+          Until a record has a saved class, the automatic flag decides whether
+          it is a PM, and that flag can mistake a return-to-service note such
+          as "RTS at 4:30 PM" for one. Dispositioning the record settles it.
+        </p>
+      </div>
+    </section>
+
+    <section class="std-section" id="pm-pairing">
+      <h4>Pairing PMs with failures</h4>
+      <p>
+        Each PM is paired with the first failure strictly after it. A PM with
+        no later failure is not paired. Several PMs before the same failure
+        each pair with it.
+      </p>
+      {% call std.equation("PM1", "the days to failure for a PM are the time from the PM to the first failure after it, in days") %}
+      <math display="block">
+        <msub><mi mathvariant="normal">&#x394;</mi><mi>p</mi></msub><mo>=</mo>
+        <mfrac>
+          <mrow><mi>min</mi><mo stretchy="false">{</mo><msub><mi>t</mi><mi>f</mi></msub><mo>:</mo><msub><mi>t</mi><mi>f</mi></msub><mo>&gt;</mo><msub><mi>t</mi><mi>p</mi></msub><mo stretchy="false">}</mo><mo>&#x2212;</mo><msub><mi>t</mi><mi>p</mi></msub></mrow>
+          <mtext>1 day</mtext>
+        </mfrac>
+      </math>
+      {% endcall %}
+      {% call std.equation("PM2", "average days to failure is the mean of the days to failure over the paired PMs") %}
+      <math display="block">
+        <mover><mi mathvariant="normal">&#x394;</mi><mo>&#x203E;</mo></mover><mo>=</mo>
+        <mfrac><mn>1</mn><mrow><mo stretchy="false">|</mo><msup><mi>P</mi><mo>&#x2217;</mo></msup><mo stretchy="false">|</mo></mrow></mfrac>
+        <munder><mo>&#x2211;</mo><mrow><mi>p</mi><mo>&#x2208;</mo><msup><mi>P</mi><mo>&#x2217;</mo></msup></mrow></munder>
+        <msub><mi mathvariant="normal">&#x394;</mi><mi>p</mi></msub>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>t</mi><mi>p</mi></msub><mo>,</mo><msub><mi>t</mi><mi>f</mi></msub></math></dt><dd>The dates of PM <math><mi>p</mi></math> and failure <math><mi>f</mi></math>, to the second, so days to failure can be fractional.</dd>
+        <dt><math><msup><mi>P</mi><mo>&#x2217;</mo></msup></math></dt><dd>The PMs that were paired with a failure.</dd>
+      </dl>
+      {% call std.figure("PM1", "Four PMs and two failures. The PMs on January 5 and January 19 both pair with the February 18 failure, the March 2 PM pairs with the June 10 failure, and the July 1 PM has no later failure, so it is not paired.") %}
+      <svg viewBox="0 0 760 236" role="img" aria-labelledby="fig-pm1-title fig-pm1-desc">
+        <title id="fig-pm1-title">Pairing PMs with the next failure</title>
+        <desc id="fig-pm1-desc">A January to August timeline. PMs on January 5, January 19, March 2 and July 1 sit above the line and failures on February 18 and June 10 sit on it. Arcs join January 5 to February 18 (44 days), January 19 to February 18 (30 days) and March 2 to June 10 (100 days).</desc>
+        <path class="fig-axis" d="M50 150 H720"/>
+        <path class="fig-axis" d="M60 145 V155 M153 145 V155 M237 145 V155 M330 145 V155 M420 145 V155 M513 145 V155 M603 145 V155 M696 145 V155"/>
+        <text class="fig-text-small" x="106.5" y="172" text-anchor="middle">Jan</text>
+        <text class="fig-text-small" x="195" y="172" text-anchor="middle">Feb</text>
+        <text class="fig-text-small" x="283.5" y="172" text-anchor="middle">Mar</text>
+        <text class="fig-text-small" x="375" y="172" text-anchor="middle">Apr</text>
+        <text class="fig-text-small" x="466.5" y="172" text-anchor="middle">May</text>
+        <text class="fig-text-small" x="558" y="172" text-anchor="middle">Jun</text>
+        <text class="fig-text-small" x="649.5" y="172" text-anchor="middle">Jul</text>
+        <path class="fig-accent-line" d="M72 132 Q138 34 204 140"/>
+        <path class="fig-accent-line" d="M114 132 Q159 82 204 140"/>
+        <path class="fig-accent-line" d="M240 132 Q390 20 540 140"/>
+        <text class="fig-text-strong fig-text-small" x="128" y="72" text-anchor="middle">44 days</text>
+        <text class="fig-text-strong fig-text-small" x="160" y="128" text-anchor="middle">30 days</text>
+        <text class="fig-text-strong fig-text-small" x="390" y="70" text-anchor="middle">100 days</text>
+        <rect class="fig-accent" x="66" y="120" width="12" height="12" rx="2"/>
+        <rect class="fig-accent" x="108" y="120" width="12" height="12" rx="2"/>
+        <rect class="fig-accent" x="234" y="120" width="12" height="12" rx="2"/>
+        <rect class="fig-accent" x="597" y="120" width="12" height="12" rx="2"/>
+        <circle class="fig-danger" cx="204" cy="150" r="7"/>
+        <circle class="fig-danger" cx="540" cy="150" r="7"/>
+        <text class="fig-text-small" x="603" y="96" text-anchor="middle">PM, Jul 1:</text>
+        <text class="fig-text-small" x="603" y="110" text-anchor="middle">no later failure</text>
+        <text class="fig-text-small" x="204" y="192" text-anchor="middle">Failure, Feb 18</text>
+        <text class="fig-text-small" x="540" y="192" text-anchor="middle">Failure, Jun 10</text>
+        <rect class="fig-accent" x="50" y="208" width="12" height="12" rx="2"/><text class="fig-text-small" x="68" y="218">Completed PM</text>
+        <circle class="fig-danger" cx="176" cy="214" r="6"/><text class="fig-text-small" x="188" y="218">Included failure of the selected mechanism</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="pm-cards">
+      <h4>The four summary cards and the rating</h4>
+      <ul>
+        <li><strong>PMs Performed:</strong> every completed, dated PM on the asset.</li>
+        <li><strong>Failures After PM:</strong> the number of different failures paired with at least one PM. A failure that several PMs pair with counts once.</li>
+        <li><strong>Average Days to Failure:</strong> equation PM2, one value per paired PM, so a failure with three PMs before it contributes three times.</li>
+        <li><strong>PM Effectiveness:</strong> the average placed in one of these bands:</li>
+      </ul>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">PM effectiveness rating bands</caption>
+          <thead><tr><th scope="col">Average days to failure</th><th scope="col">Rating</th></tr></thead>
+          <tbody>
+            <tr><td>180 or more</td><td>Excellent</td></tr>
+            <tr><td>90 up to 180</td><td>Good</td></tr>
+            <tr><td>30 up to 90</td><td>Fair</td></tr>
+            <tr><td>Below 30</td><td>Poor</td></tr>
+            <tr><td>No PM paired with a failure</td><td>Insufficient Data</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="std-example">
+        <p class="eyebrow">Worked example, figure PM1</p>
+        <ul class="std-calc">
+          <li><span>Days to failure</span><span>Jan 5 to Feb 18 = 44; Jan 19 to Feb 18 = 30; Mar 2 to Jun 10 = 100</span></li>
+          <li><span>Average Days to Failure</span><span>(44 + 30 + 100) / 3 = <span class="std-result">58.0 days</span></span></li>
+          <li><span>PM Effectiveness</span><span>58 is from 30 up to 90: <span class="std-result">Fair</span></span></li>
+          <li><span>Failures After PM</span><span class="std-result">2</span></li>
+          <li><span>PMs Performed</span><span><span class="std-result">4</span>, including the unpaired July 1 PM</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="pm-views">
+      <h4>Chart, table and date range</h4>
+      <ul>
+        <li><strong>Failures Following PM</strong> counts, by the month of the failure (UTC), the different failures that followed a PM, with every month from the first to the last shown.</li>
+        <li><strong>PM-to-Failure Detail</strong> has one row per paired PM, newest PM first: its completion date, the asset, the next failure's date, the days between, the mechanism, the failure's downtime and its corrective work order number. Editors can click that number to review its disposition.</li>
+        <li><strong>From and To</strong> narrow the chart and the table by the failure's month. The summary cards always use the whole history.</li>
+      </ul>
+      <p>
+        <strong>Reading it:</strong> the rating only measures how long the
+        failure stays away after a PM. A long average can also mean the
+        mechanism is simply rare, and every PM on the asset counts, not only
+        those aimed at this mechanism, so compare it with the trend and the
+        Weibull fit before changing a PM.
+      </p>
+    </section>
+  {% endcall %}
+
+  </div>
+</article>

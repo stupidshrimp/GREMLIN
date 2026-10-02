@@ -306,6 +306,10 @@ ICONS = {
     "trend": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.7 18.9a1 1 0 0 1 0-1.4l5.6-5.6c.4-.4 1-.4 1.4 0l2.7 2.7 4.9-4.9h-2.4a1 1 0 1 1 0-2h4.8c.5 0 .9.4.9.9v4.8a1 1 0 1 1-2 0V11l-5.6 5.6c-.4.4-1 .4-1.4 0l-2.7-2.7-4.9 4.9a1 1 0 0 1-1.4 0Z"/><path d="M3 5.1c0-.5.4-.9.9-.9h16.2c.5 0 .9.4.9.9s-.4.9-.9.9H3.9A.9.9 0 0 1 3 5.1Z"/></svg>',
     "chart": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.8a1 1 0 0 1-1-1V4.2a1 1 0 1 1 2 0v14.6h14.6a1 1 0 1 1 0 2H4.5Z"/><path d="M8.1 16.1a1 1 0 0 1-1-1v-3.4a1 1 0 1 1 2 0v3.4a1 1 0 0 1-1 1Zm4 0a1 1 0 0 1-1-1V8.6a1 1 0 1 1 2 0v6.5a1 1 0 0 1-1 1Zm4 0a1 1 0 0 1-1-1v-5a1 1 0 1 1 2 0v5a1 1 0 0 1-1 1Z"/></svg>',
     "docs": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.8h7.8c.2 0 .5.1.6.3l3.8 3.8c.2.2.3.4.3.6v13.7c0 .5-.4.9-.9.9H6c-.5 0-.9-.4-.9-.9V3.7c0-.5.4-.9.9-.9Zm7.2 1.9v2.6c0 .5.4.9.9.9h2.6L13.2 4.7ZM8.2 11.2c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Zm0 3.8c0-.5.4-.9.9-.9h5.8a1 1 0 1 1 0 2H9.1a.9.9 0 0 1-.9-.9Z"/></svg>',
+    # An open book, for Standards and Documentation. Its own shape rather than
+    # "docs" again, because the two reference pages sit next to each other under
+    # Other and two identical icons in a row read as one entry drawn twice.
+    "book": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 5.7c0-.6.4-1 1-1.1 2.5-.4 4.8 0 6.8 1.3v13.3c-2-1.1-4.3-1.5-6.7-1.2-.6.1-1.1-.4-1.1-1V5.7Zm9.4.2c2-1.3 4.3-1.7 6.8-1.3.6.1 1 .5 1 1.1v11.3c0 .6-.5 1.1-1.1 1-2.4-.3-4.7.1-6.7 1.2V5.9Z"/></svg>',
     "settings": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 2.9a1 1 0 0 1 2 0v1.3a7.8 7.8 0 0 1 2.1.9l.9-.9a1 1 0 1 1 1.4 1.4l-.9.9c.4.6.7 1.4.9 2.1h1.3a1 1 0 1 1 0 2h-1.3a7.8 7.8 0 0 1-.9 2.1l.9.9a1 1 0 1 1-1.4 1.4l-.9-.9c-.6.4-1.4.7-2.1.9v1.3a1 1 0 1 1-2 0v-1.3a7.8 7.8 0 0 1-2.1-.9l-.9.9a1 1 0 1 1-1.4-1.4l.9-.9a7.8 7.8 0 0 1-.9-2.1H3.6a1 1 0 1 1 0-2h1.3c.2-.8.5-1.5.9-2.1l-.9-.9A1 1 0 0 1 6.3 4l.9.9c.6-.4 1.4-.7 2.1-.9V2.9Zm1 5.1a3.8 3.8 0 1 0 0 7.7 3.8 3.8 0 0 0 0-7.7Z"/></svg>',
     "code": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.4 17.6a1 1 0 0 1-1.4 0l-4.9-4.9a1 1 0 0 1 0-1.4l4.9-4.9a1 1 0 1 1 1.4 1.4L5.2 12l4.2 4.2a1 1 0 0 1 0 1.4Zm5.2 0a1 1 0 0 1 0-1.4l4.2-4.2-4.2-4.2a1 1 0 1 1 1.4-1.4l4.9 4.9a1 1 0 0 1 0 1.4l-4.9 4.9a1 1 0 0 1-1.4 0Z"/></svg>',
     "shield": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2 4.9 5a1 1 0 0 0-.6.9v5.3c0 4.2 2.7 8.1 7.3 10.5.3.1.5.1.8 0 4.6-2.4 7.3-6.3 7.3-10.5V5.9a1 1 0 0 0-.6-.9L12 2.2Zm3.5 6.6a1 1 0 0 1 0 1.4l-4 4a1 1 0 0 1-1.4 0l-2-2a1 1 0 1 1 1.4-1.4l1.3 1.3 3.3-3.3a1 1 0 0 1 1.4 0Z"/></svg>',
@@ -418,12 +422,6 @@ PAGES = [
         "section": ("/metrics",),
     },
     {
-        "route": "/standards-and-documentation",
-        "template": "standards_and_documentation.html",
-        "title": "Standards and Documentation",
-        "icon": ICONS["docs"],
-    },
-    {
         "route": "/developer",
         "template": "developer_home.html",
         "title": "Developer",
@@ -504,6 +502,20 @@ PAGES = [
         "title": "Reliability Links",
         "icon": ICONS["docs"],
         "group": NAV_GROUP_OTHER,
+    },
+    # Reference material, open to everybody signed in or not (it is on the open
+    # floor below), so it sits beside the other reference page rather than in
+    # one of the groups a department can lose. The route is a landing page with
+    # two cards; the Standards and Documentation pages it opens live underneath
+    # it, and "covers" hands them this entry's rule, so a typed sub-page address
+    # is opened or refused exactly as the landing page is.
+    {
+        "route": "/standards-and-documentation",
+        "template": "standards_and_documentation.html",
+        "title": "Standards and Documentation",
+        "icon": ICONS["book"],
+        "group": NAV_GROUP_OTHER,
+        "covers": ("/standards-and-documentation",),
     },
     {
         # Named "Configuration" rather than "Settings": most of what is on it is
@@ -683,23 +695,26 @@ def _disposition_kind() -> str:
 
 
 # Pages that exist and are routable but are deliberately kept out of the sidebar
-# navigation. Standards and Documentation is reached from the Life Data Analysis
-# landing page instead; the developer area is reached from the account dialog
-# behind the person icon, and only when the signed-in account is an
-# administrator. Typing the URL still works, but only for that same account --
-# every developer route checks the role for itself.
-UNLISTED_ROUTES = {"/standards-and-documentation", "/developer"}
+# navigation. The developer area is reached from the account dialog behind the
+# person icon, and only when the signed-in account is an administrator. Typing
+# the URL still works, but only for that same account: every developer route
+# checks the role for itself.
+UNLISTED_ROUTES = {"/developer"}
 
-# The three pages GREMLIN is willing to show anybody at all. Everything else in
+# The four pages GREMLIN is willing to show anybody at all. Everything else in
 # the sidebar needs an account: signed out, those entries are still drawn, but
 # struck through and inert, because an entry that simply vanished would read as
 # a feature GREMLIN does not have rather than as one more reason to log in --
 # the same argument the locked Disposition card on Home is built on.
 #
 # They are also the floor for the department rules below: whatever an account's
-# department narrows away, these three survive it, so no account can end up
-# looking at an empty sidebar.
-OPEN_ROUTES = {"/", "/reliability-links", "/configuration"}
+# department narrows away, these survive it (Configuration aside, which one
+# department is kept out of), so no account can end up looking at an empty
+# sidebar. Standards and Documentation is here because it is reference material:
+# it says how the numbers are calculated, and it was readable without an account
+# for as long as it existed, so moving it into the sidebar is not a reason to
+# start asking for one.
+OPEN_ROUTES = {"/", "/reliability-links", "/standards-and-documentation", "/configuration"}
 
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
@@ -833,7 +848,7 @@ def _page_route_for(path: str) -> str:
 
 
 def _page_is_open(route: str) -> bool:
-    """Whether this route is one of the three that never need an account."""
+    """Whether this route is one of the four that never need an account."""
 
     return route in OPEN_ROUTES
 
@@ -843,10 +858,9 @@ def _may_open_page(route: str, user: dict | None) -> bool:
 
     This is the lock the struck-through sidebar entries stand in front of, so a
     typed URL or an old bookmark meets the same answer the click does. It covers
-    the sidebar's own pages only: the ones deliberately kept out of it keep
-    whatever access they already had, because each already has a rule of its own
-    -- the developer area checks the administrator role itself, and Standards
-    and Documentation is reference material reached from pages that stay open.
+    the sidebar's own pages only: the one deliberately kept out of it keeps the
+    access it already had, because it has a rule of its own. The developer area
+    checks the administrator role itself.
     """
 
     page = PAGES_BY_ROUTE.get(route)
@@ -1048,9 +1062,9 @@ def _refuse_a_page_this_account_may_not_open():
             eyebrow="Log in required",
             heading=f"{page['title']} needs an account.",
             message=(
-                "GREMLIN keeps Home, Reliability Links and Configuration open to "
-                "everybody. The rest needs a login: use the person icon at the "
-                "bottom of the sidebar."
+                "GREMLIN keeps Home, Reliability Links, Standards and "
+                "Documentation, and Configuration open to everybody. The rest "
+                "needs a login: use the person icon at the bottom of the sidebar."
             ),
         )
     return _refuse_page(
@@ -1451,33 +1465,88 @@ SEARCH_ENTRIES = [
         "role": "editor",
         "keywords": ["limble", "asset mapping", "remap", "reimport"],
     },
+    # The Standards page and the tabs and cards on it. A fragment naming a tab
+    # opens that tab; one naming a card opens the card's tab and expands the
+    # card. standards.js does both on load, so every entry here survives the
+    # cold page load a click in the dropdown makes.
     {
-        "label": "Metrics Dashboard formulas",
-        "url": "/standards-and-documentation#metrics-panel",
-        "kind": "function",
+        "label": "Standards",
+        "url": "/standards-and-documentation/standards",
+        "kind": "page",
         "context": "Standards and Documentation",
-        "keywords": ["mtbf formula", "mttr formula", "risk score", "percent change"],
+        "keywords": ["formula", "equation", "calculation", "method", "definition", "how it is calculated"],
     },
     {
-        "label": "Weibull Analysis formulas",
-        "url": "/standards-and-documentation#weibull-panel",
-        "kind": "function",
+        "label": "Documentation",
+        "url": "/standards-and-documentation/documentation",
+        "kind": "page",
         "context": "Standards and Documentation",
-        "keywords": ["beta", "eta", "observation life", "failure indicator", "b10", "b50"],
+        "keywords": ["procedures", "templates", "reference documents", "docs"],
     },
     {
-        "label": "Pareto and Trends formulas",
-        "url": "/standards-and-documentation#trends-panel",
+        "label": "Metrics standards",
+        "url": "/standards-and-documentation/standards#metrics",
         "kind": "function",
         "context": "Standards and Documentation",
-        "keywords": ["pareto", "cumulative percent", "monthly trend", "downtime driver"],
+        "keywords": ["mtbf formula", "mttr formula", "risk score", "percent change", "kpi definitions"],
     },
     {
-        "label": "Data Sources",
-        "url": "/standards-and-documentation#data-panel",
+        "label": "Availability calculation",
+        "url": "/standards-and-documentation/standards#metrics-availability",
         "kind": "function",
         "context": "Standards and Documentation",
-        "keywords": ["where the numbers come from", "asset filter", "work order date", "limble"],
+        "keywords": [
+            "availability formula", "scheduled hours", "net hours", "linked downtime",
+            "impact factor", "goal", "overtime", "exclude pms", "stacked",
+        ],
+    },
+    {
+        "label": "Analysis standards",
+        "url": "/standards-and-documentation/standards#analysis",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["included failure", "work order date", "pareto", "cumulative percent", "readiness"],
+    },
+    {
+        "label": "Weibull Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-weibull",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": [
+            "beta", "eta", "mle", "likelihood", "censored", "life hours", "kaplan meier",
+            "b10", "b50", "mttf", "confidence interval",
+        ],
+    },
+    {
+        "label": "Failure Mode Trend Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-trend",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["monthly trend", "fastest growing", "most improved", "occurrences"],
+    },
+    {
+        "label": "Downtime Driver Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-downtime",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["downtime distribution", "median downtime", "top events", "by location"],
+    },
+    {
+        "label": "PM Effectiveness Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-pm",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["days to failure", "failures after pm", "pm rating", "preventive maintenance"],
+    },
+    {
+        "label": "How GREMLIN works",
+        "url": "/standards-and-documentation/standards#how-gremlin-works",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": [
+            "where the numbers come from", "data sources", "limble sync", "dispositions",
+            "accounts", "roles", "pages",
+        ],
     },
 ]
 
@@ -2001,10 +2070,30 @@ def api_availability_save_linked_rules():
 
 @app.route("/standards-and-documentation")
 def standards_and_documentation():
+    """The landing page: one card for Standards and one for Documentation."""
     return render_template(
         "standards_and_documentation.html",
         page_title="Standards and Documentation",
     )
+
+
+@app.route("/standards-and-documentation/standards")
+def standards():
+    """How every metric and analysis is calculated, in three tabs.
+
+    Everything on it is static reference text, so it reads nothing from the
+    database: the page answers the same whether or not GREMLIN.db can be reached,
+    which is exactly when somebody wants to know how a number was meant to come
+    out. The tab and the card a fragment names are opened by the page's own
+    script, which is what lets the search catalog deep link into it.
+    """
+    return render_template("standards.html", page_title="Standards")
+
+
+@app.route("/standards-and-documentation/documentation")
+def documentation():
+    """Reserved for the team's documents; it says plainly that none are here yet."""
+    return render_template("documentation.html", page_title="Documentation")
 
 
 @app.route("/configuration")

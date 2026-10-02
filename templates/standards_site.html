@@ -1,0 +1,216 @@
+{% import "standards_macros.html" as std %}
+{#- The How GREMLIN Works tab: the site itself rather than any one calculation.
+    Lighter than the other two tabs on purpose; where a calculation matters, it
+    links to the card that covers it. -#}
+<article class="tab-panel" id="how-gremlin-works" role="tabpanel" aria-labelledby="how-gremlin-works-tab" hidden>
+  <header class="std-panel-head">
+    <div>
+      <h2>How GREMLIN Works</h2>
+      <p>
+        GREMLIN reads maintenance records from Limble, lets people classify
+        them, and turns them into metrics and analyses. This tab explains how
+        the pieces fit together, from the data underneath to the pages,
+        accounts and tools on top.
+      </p>
+    </div>
+    <button type="button" class="btn-secondary std-expand-all" data-expand-all aria-expanded="false">Expand all</button>
+  </header>
+
+  {% call std.figure("S1", "How records move through GREMLIN. Limble is the system of record; GREMLIN keeps a copy, adds the decisions people make about each record, and calculates everything else from those two every time a page asks.") %}
+  <svg viewBox="0 0 760 300" role="img" aria-labelledby="fig-s1-title fig-s1-desc">
+    <title id="fig-s1-title">How records move through GREMLIN</title>
+    <desc id="fig-s1-desc">Limble CMMS feeds the Limble sync, which writes raw records into GREMLIN.db and maps them into mapped records. Editors add dispositions from the Disposition page and availability settings from the Configuration page. The Metrics page and Perform an Analysis read from GREMLIN.db.</desc>
+    <defs>
+      <marker id="fig-s1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path class="fig-arrow-head" d="M0 0 L10 5 L0 10 Z"/>
+      </marker>
+    </defs>
+    <rect class="fig-box-strong" x="8" y="96" width="116" height="66" rx="10"/>
+    <text class="fig-text-strong" x="66" y="122" text-anchor="middle">Limble CMMS</text>
+    <text class="fig-text-small" x="66" y="140" text-anchor="middle">work orders, PMs,</text>
+    <text class="fig-text-small" x="66" y="154" text-anchor="middle">assets</text>
+    <path class="fig-arrow" d="M124 129 H146" marker-end="url(#fig-s1-arrow)"/>
+
+    <rect class="fig-box-strong" x="150" y="96" width="116" height="66" rx="10"/>
+    <text class="fig-text-strong" x="208" y="122" text-anchor="middle">Limble sync</text>
+    <text class="fig-text-small" x="208" y="140" text-anchor="middle">every night, or</text>
+    <text class="fig-text-small" x="208" y="154" text-anchor="middle">on demand</text>
+    <path class="fig-arrow" d="M266 129 H288" marker-end="url(#fig-s1-arrow)"/>
+
+    <rect class="fig-box-strong" x="292" y="12" width="236" height="222" rx="12"/>
+    <text class="fig-text-strong" x="410" y="36" text-anchor="middle">GREMLIN.db</text>
+    <rect class="fig-box" x="306" y="50" width="208" height="40" rx="8"/>
+    <text x="410" y="75" text-anchor="middle">Raw records, as received</text>
+    <path class="fig-arrow" d="M410 90 V106" marker-end="url(#fig-s1-arrow)"/>
+    <rect class="fig-box" x="306" y="110" width="208" height="40" rx="8"/>
+    <text x="410" y="135" text-anchor="middle">Mapped records</text>
+    <rect class="fig-box-accent" x="306" y="166" width="102" height="54" rx="8"/>
+    <text class="fig-text-strong fig-text-small" x="357" y="189" text-anchor="middle">Dispositions</text>
+    <text class="fig-text-small" x="357" y="206" text-anchor="middle">history kept</text>
+    <rect class="fig-box-accent" x="412" y="166" width="102" height="54" rx="8"/>
+    <text class="fig-text-strong fig-text-small" x="463" y="189" text-anchor="middle">Configuration</text>
+    <text class="fig-text-small" x="463" y="206" text-anchor="middle">availability</text>
+
+    <rect class="fig-box" x="306" y="256" width="102" height="34" rx="8"/>
+    <text class="fig-text-small" x="357" y="277" text-anchor="middle">Disposition page</text>
+    <rect class="fig-box" x="412" y="256" width="102" height="34" rx="8"/>
+    <text class="fig-text-small" x="463" y="277" text-anchor="middle">Configuration page</text>
+    <path class="fig-arrow" d="M357 256 V224" marker-end="url(#fig-s1-arrow)"/>
+    <path class="fig-arrow" d="M463 256 V224" marker-end="url(#fig-s1-arrow)"/>
+    <text class="fig-text-small" x="296" y="277" text-anchor="end">editors</text>
+
+    <path class="fig-arrow" d="M528 80 H574" marker-end="url(#fig-s1-arrow)"/>
+    <path class="fig-arrow" d="M528 168 H574" marker-end="url(#fig-s1-arrow)"/>
+    <rect class="fig-box-strong" x="578" y="50" width="172" height="62" rx="10"/>
+    <text class="fig-text-strong" x="664" y="76" text-anchor="middle">Metrics</text>
+    <text class="fig-text-small" x="664" y="94" text-anchor="middle">availability, KPIs, risk</text>
+    <rect class="fig-box-strong" x="578" y="138" width="172" height="62" rx="10"/>
+    <text class="fig-text-strong" x="664" y="164" text-anchor="middle">Perform an Analysis</text>
+    <text class="fig-text-small" x="664" y="182" text-anchor="middle">Weibull, trend, downtime, PM</text>
+  </svg>
+  {% endcall %}
+
+  <div class="std-card-list">
+
+  {% call std.doc_card(
+      "site-data",
+      "From Limble to GREMLIN",
+      "Where the records come from, how often they are refreshed, and what happens to them on the way in.",
+      eyebrow="Data") %}
+    <ul>
+      <li><strong>Limble is the system of record.</strong> GREMLIN reads from Limble and never writes back to it, so a record is corrected in Limble and the correction flows in.</li>
+      <li><strong>The Limble sync runs every night</strong> as a scheduled job. An administrator can also start it from the Developer area when a correction has to show up sooner. Each run pulls tasks (work orders and PMs), the assets they belong to, and the instruction text of work orders, up to 500 per run, working back through the history.</li>
+      <li><strong>Raw records are kept exactly as Limble sent them</strong>, so nothing is lost on the way in and the mapping can always be redone.</li>
+      <li><strong>Mapped records</strong> copy the fields GREMLIN works with into columns of their own: the asset number (Limble's asset ID), the asset's name and place in the asset hierarchy, the created, start and completed dates (stored in UTC), status, Limble's task type, downtime converted from seconds to hours, the description and completion notes, and the Area Affected, Condition, Cause and Action boxes.</li>
+      <li><strong>The mapping also guesses a record class</strong> for every record; the next card explains how, and why a person's call replaces it.</li>
+      <li><strong>The mapping is rebuilt by itself</strong> whenever its rules change, and editors can rebuild it from Configuration with Refresh CMMS mapping.</li>
+      <li><strong>Everything lives in GREMLIN.db</strong>, one SQLite database on the shared drive, so one backup covers it. Accounts are kept in a separate database, and the PM Task Tracker keeps its own copy of PM tasks, pulled from Limble in the background.</li>
+    </ul>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-records",
+      "Classifying records",
+      "The automatic record class, the Disposition page, and why a person's call always wins.",
+      eyebrow="Records") %}
+    <section class="std-section">
+      <h4>The automatic record class</h4>
+      <p>
+        As each record is mapped, GREMLIN reads its Limble type, its name, its
+        request title and description, its completion notes and its tags, and
+        takes the first of these rules that matches:
+      </p>
+      <ol>
+        <li><strong>Parts order:</strong> the text talks about ordering, delivering or stocking parts.</li>
+        <li><strong>Project work:</strong> the text mentions a project, an upgrade or an install.</li>
+        <li><strong>PM:</strong> Limble type 1, a PM code such as "- M -" or "- Q -" in the name, or the word "pm" in the text.</li>
+        <li><strong>Corrective work order:</strong> Limble type 6 (a work request), or repair words such as leaking, broken, fault, failed or replace.</li>
+        <li><strong>Inspection:</strong> inspection words with no repair words.</li>
+        <li><strong>Unknown:</strong> none of the above.</li>
+      </ol>
+      <div class="std-note is-caution">
+        <p class="std-note-title">It is only a starting guess</p>
+        <p>
+          The word "pm" also matches the clock in return-to-service notes such
+          as "RTS at 4:30 PM", so real breakdowns can be guessed as PMs. That
+          is why availability ignores the guess entirely, and why a class a
+          person saves on the Disposition page replaces it everywhere else.
+        </p>
+      </div>
+    </section>
+    <section class="std-section">
+      <h4>Dispositioning</h4>
+      <p>
+        Editors open Disposition, pick an asset, choose Work Orders or PMs, and
+        can narrow the list to the records that still need a decision. Each
+        row takes a category, a failure mode and mechanism for a work order or
+        a reset decision and target for a PM, the Include in Weibull Candidate
+        flag, and notes. Saving keeps the previous decision as history. The
+        same rows can be exported to Excel, filled in there and imported back.
+      </p>
+      <p>
+        Failure modes and mechanisms belong to each asset: typing a new name
+        adds it to that asset's list when the row is saved, so later rows can
+        reuse it and stay in the same population. What each category means for
+        the analyses is on the Analysis tab, in
+        <a href="#analysis-common">What every analysis reads</a>.
+      </p>
+    </section>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-pages",
+      "The pages",
+      "What each page is for, and who can open it.",
+      eyebrow="Pages") %}
+    <div class="std-table-scroll">
+      <table class="std-table">
+        <caption class="visually-hidden">GREMLIN's pages and who can open them</caption>
+        <thead>
+          <tr><th scope="col">Page</th><th scope="col">What it is for</th><th scope="col">Who can open it</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Home</td><td>The start page, with shortcuts into the main workflows. An Operations &amp; Maintenance account sees its own dashboards there instead.</td><td>Everyone</td></tr>
+          <tr><td>Life Data Analysis</td><td>Perform an Analysis: Weibull, failure mode trend, downtime drivers and PM effectiveness for one asset at a time.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
+          <tr><td>Disposition</td><td>Classifying the work orders and PMs the analyses read.</td><td>Editors; not Operations &amp; Maintenance</td></tr>
+          <tr><td>Metrics</td><td>The Availability, Reliability performance and Reliability risk cards.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
+          <tr><td>PM Task Tracker</td><td>The PM calendar: what is due, what is done and what is late for the assets you pick.</td><td>Signed in, every department</td></tr>
+          <tr><td>Safety Report, Overdue WO Tracker</td><td>Coming soon.</td><td>Signed in, Operations &amp; Maintenance</td></tr>
+          <tr><td>Reliability Links</td><td>Bookmarks to the dashboards, portals, documents and systems the team uses.</td><td>Everyone</td></tr>
+          <tr><td>Standards and Documentation</td><td>These standards, and the documents library to come.</td><td>Everyone</td></tr>
+          <tr><td>Configuration</td><td>Asset group schedules, linked downtime rules and the CMMS mapping refresh.</td><td>Everyone except Operations &amp; Maintenance accounts; editing needs the editor role</td></tr>
+          <tr><td>About, Patch Notes, Report a Bug</td><td>In the footer: what GREMLIN is, what changed in each release, and a form for reporting a problem.</td><td>Everyone</td></tr>
+          <tr><td>Developer</td><td>Database inspection, the Limble sync, accounts, user activity and bug reports.</td><td>Administrators, from the account dialog</td></tr>
+        </tbody>
+      </table>
+    </div>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-access",
+      "Accounts, roles and departments",
+      "Signing in, what each role may do, and how departments shape the sidebar.",
+      eyebrow="Access") %}
+    <ul>
+      <li><strong>Signing in:</strong> use the person icon at the bottom of the sidebar, with a username and PIN. The login lasts for the browser session; closing the browser signs you out. Accounts are handed out by the people listed under Help.</li>
+      <li><strong>Signed out,</strong> Home, Reliability Links, Standards and Documentation, and Configuration are open. Every other sidebar entry is still shown, struck through, and asks you to log in.</li>
+      <li><strong>Viewer:</strong> reads every page their department is offered.</li>
+      <li><strong>Editor:</strong> can also change stored data: dispositions, goals, overtime and configuration, running and adjusting Weibull analyses, and generating reports.</li>
+      <li><strong>Administrator:</strong> can also open the Developer area.</li>
+      <li><strong>Department and level</strong> decide which pages the sidebar offers. Life Data Analysis, Metrics and Configuration are kept out of Operations &amp; Maintenance accounts, the Safety Report and Overdue WO Tracker are for Operations &amp; Maintenance, and the PM Task Tracker is for every department. A page your department is not offered is left out of your sidebar and refused at its address.</li>
+      <li><strong>Every change</strong> a signed-in account saves is recorded with who made it and when.</li>
+    </ul>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-navigation",
+      "Finding your way around",
+      "The sidebar, the search box, quick links, the theme, tours and help.",
+      eyebrow="Navigation") %}
+    <ul>
+      <li><strong>Sidebar:</strong> pages grouped under Analysis, Dashboards and Other. The arrow button at its top collapses it to icons, and it stays that way on this computer.</li>
+      <li><strong>Search (Ctrl K):</strong> finds pages and single functions, such as one card on this page or a preset analysis, by their names or by the words people use for them. The arrow keys move through the results and Enter opens one.</li>
+      <li><strong>Quick links:</strong> the grid button in the top bar opens S&amp;C SourceOne, People Search and M.O.M, each in a new tab.</li>
+      <li><strong>Theme:</strong> the theme button switches between light and dark, and the choice is remembered on this computer.</li>
+      <li><strong>Notifications:</strong> the bell is a placeholder; notifications are still being built.</li>
+      <li><strong>Show me around:</strong> guided tours on Home, Perform an Analysis, Disposition, Metrics and the PM Task Tracker, plus a walk-through of the Availability card.</li>
+      <li><strong>Footer:</strong> About, Patch Notes, Report a Bug, and Help, which lists the people to contact.</li>
+    </ul>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-changes",
+      "When the numbers change",
+      "What updates a number, and when.",
+      eyebrow="Freshness") %}
+    <ul>
+      <li><strong>New and corrected Limble records</strong> arrive with the nightly sync, or sooner if an administrator runs one.</li>
+      <li><strong>Availability is recalculated every time the Metrics page loads</strong>, from the configuration as it is at that moment. See <a href="#metrics-availability">Asset availability by month</a>.</li>
+      <li><strong>The trend, downtime driver and PM effectiveness analyses</strong> read the current dispositions every time they load.</li>
+      <li><strong>Weibull results are saved snapshots.</strong> Run the analysis again to include dispositions saved since; changing a disposition from the Weibull data table re-runs it straight away.</li>
+      <li><strong>Configuration changes</strong> to schedules, group membership and linked downtime recalculate every month of availability. Goals and overtime change one month at a time.</li>
+    </ul>
+  {% endcall %}
+
+  </div>
+</article>

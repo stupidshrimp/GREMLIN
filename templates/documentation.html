@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{#- Reserved for the reliability team's documents, none of which have been
+    published yet. It says so plainly, with the same hourglass a page that is not
+    built yet carries everywhere else, rather than looking finished and empty. -#}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/standards.css') }}">
+{% endblock %}
+
+{% block content %}
+<nav class="std-breadcrumb" aria-label="Breadcrumb">
+  <ol>
+    <li><a href="{{ url_for('standards_and_documentation') }}">Standards and Documentation</a></li>
+    <li><span aria-current="page">Documentation</span></li>
+  </ol>
+</nav>
+
+<section class="glass-card fade-in-up std-hero">
+  <p class="eyebrow placeholder-eyebrow">
+    <span class="placeholder-badge" aria-hidden="true">{{ coming_soon_icon | safe }}</span>
+    {{ coming_soon_label }}
+  </p>
+  <h1>Documentation</h1>
+  <p class="hero-copy">
+    This is where the reliability team's procedures, templates and reference
+    documents will be published.
+  </p>
+  <p class="placeholder-note">
+    No documents have been published yet, so there is nothing to open here for
+    now. In the meantime, the Standards page explains how every metric and
+    analysis in GREMLIN is calculated.
+  </p>
+  <div class="std-hero-actions">
+    <a class="btn-primary" href="{{ url_for('standards') }}">Read the Standards</a>
+    <a class="btn-secondary" href="{{ url_for('standards_and_documentation') }}">Back to Standards and Documentation</a>
+  </div>
+</section>
+{% endblock %}

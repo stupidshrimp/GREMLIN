@@ -1,0 +1,763 @@
+/* Standards and Documentation.
+   ---------------------------------------------------------------------------
+   Three pages share this sheet: the landing page with its two cards, the
+   Standards page (three tabs of expandable cards holding equations, figures and
+   worked examples), and the Documentation page, which is still a placeholder.
+
+   Every colour comes from a token in theme.css, figures included: an inline SVG
+   is part of the document, so its fills and strokes can name the same chart
+   tokens the canvases on the Metrics page read, and switching themes recolours
+   a figure exactly as it recolours the card around it. */
+
+/* Landing page ------------------------------------------------------------ */
+
+.std-landing-grid .std-landing-card {
+  min-height: 260px;
+}
+
+/* The mark at the head of each landing card. Decorative: the heading beside it
+   says the same thing in words. */
+.std-landing-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 12px;
+  background: var(--brand-tint);
+  color: var(--brand-accent);
+  flex: none;
+}
+
+.std-landing-icon svg {
+  width: 1.5rem;
+  height: 1.5rem;
+  fill: currentColor;
+}
+
+.std-landing-card h2 {
+  margin: 0;
+}
+
+/* What the Standards card holds, named the way its tabs are named. */
+.std-landing-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.std-landing-chips li {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil-strong);
+  color: var(--forest-800);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.65rem;
+}
+
+/* Breadcrumb ---------------------------------------------------------------
+   The two sub-pages sit one level under the landing page, and say so above
+   their own heading, so the way back is where the eye starts. */
+
+.std-breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.std-breadcrumb li + li::before {
+  content: "/";
+  margin-right: 0.35rem;
+  color: var(--forest-500);
+}
+
+.std-breadcrumb a {
+  color: var(--forest-800);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.std-breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.std-breadcrumb a:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.std-breadcrumb [aria-current="page"] {
+  color: var(--forest-900);
+  font-weight: 700;
+}
+
+.std-hero .hero-copy {
+  max-width: 82ch;
+}
+
+.std-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+}
+
+/* Tabs and the panels under them --------------------------------------------
+   .tab-list and .tab-panel come from theme.css; this only adds the header each
+   panel opens with and the list of cards below it. */
+
+.std-tabs {
+  scroll-margin-top: 6.5rem;
+}
+
+.std-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.std-panel-head > div {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  flex: 1 1 32rem;
+}
+
+.std-panel-head h2 {
+  margin: 0;
+}
+
+.std-panel-head p {
+  max-width: 85ch;
+}
+
+.std-expand-all {
+  /* Sized for the longer of its two labels, so it does not resize under the
+     pointer when "Expand all" becomes "Collapse all". */
+  min-width: 8.5rem;
+  flex: none;
+}
+
+.std-card-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.std-group-label {
+  margin: 0.4rem 0 -0.2rem;
+}
+
+/* The expandable card ------------------------------------------------------
+   A <details>, so it opens from the keyboard and without a script, and the
+   browser's own find-in-page can open a closed one to show a match. Built the
+   way Configuration's panels are: a <summary> may hold phrasing content and one
+   heading, so its parts are laid out by grid areas rather than wrapped. */
+
+.std-card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-veil);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+  scroll-margin-top: 6.5rem;
+}
+
+.std-card[open] {
+  border-color: var(--forest-500);
+  box-shadow: var(--shadow-md);
+}
+
+.std-card-summary {
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "eyebrow marker"
+    "title   marker"
+    "lede    marker";
+  align-items: center;
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+  padding: 1rem 1.2rem;
+  border-radius: 16px;
+  list-style: none;
+}
+
+.std-card-summary::-webkit-details-marker { display: none; }
+
+.std-card-summary:hover { background: var(--brand-tint-soft); }
+
+.std-card-summary:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: -2px;
+}
+
+.std-card-summary .eyebrow {
+  grid-area: eyebrow;
+}
+
+.std-card-title {
+  grid-area: title;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--forest-900);
+}
+
+.std-card-lede {
+  grid-area: lede;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* The same two-border chevron Configuration's panels use. Down when shut, up
+   once open. */
+.std-card-marker {
+  grid-area: marker;
+  width: 0.65rem;
+  height: 0.65rem;
+  margin-right: 0.25rem;
+  border-right: 2px solid var(--forest-700);
+  border-bottom: 2px solid var(--forest-700);
+  transform: translateY(-0.15rem) rotate(45deg);
+  transition: transform 200ms ease;
+}
+
+.std-card[open] > .std-card-summary .std-card-marker {
+  transform: translateY(0.1rem) rotate(-135deg);
+}
+
+.std-card-body {
+  display: grid;
+  gap: 1.1rem;
+  padding: 1.1rem 1.2rem 1.3rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  animation: fadeInUp 240ms ease-out both;
+  min-width: 0;
+}
+
+.std-card-body strong,
+.std-card-body em {
+  color: var(--text);
+}
+
+.std-card-body ul,
+.std-card-body ol {
+  margin: 0;
+  padding-left: 1.3rem;
+  display: grid;
+  gap: 0.35rem;
+  line-height: 1.6;
+}
+
+.std-card-body code {
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-size: 0.88em;
+  color: var(--forest-900);
+  background: var(--forest-100);
+  border-radius: 6px;
+  padding: 0.05rem 0.35rem;
+  /* Long table names carry <wbr> after each underscore, so they wrap at a
+     word boundary rather than mid-word. */
+  overflow-wrap: break-word;
+}
+
+.std-card-body a {
+  color: var(--forest-800);
+  font-weight: 600;
+}
+
+/* A document number such as REL-WBL-DAT-002 is one name, not three words to
+   wrap between. */
+.std-nowrap {
+  white-space: nowrap;
+}
+
+.std-card-body a:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Sections inside a long card, and the contents list that leads to them. */
+.std-section {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  scroll-margin-top: 6.5rem;
+}
+
+.std-section + .std-section {
+  border-top: 1px dashed var(--border);
+  padding-top: 1.1rem;
+}
+
+.std-section > h4 {
+  margin: 0;
+  font-size: 1.02rem;
+  color: var(--forest-900);
+}
+
+.std-section h5 {
+  margin: 0.2rem 0 0;
+  font-size: 0.92rem;
+  color: var(--forest-800);
+}
+
+.std-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6rem;
+  height: 1.6rem;
+  margin-right: 0.45rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-solid);
+  color: var(--accent-solid-ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  vertical-align: 0.1em;
+}
+
+.std-toc {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil-soft);
+  padding: 0.8rem 1rem;
+}
+
+.std-toc .eyebrow {
+  margin-bottom: 0.4rem;
+}
+
+.std-toc ol {
+  columns: 2 16rem;
+  column-gap: 2rem;
+  display: block;
+}
+
+.std-toc li {
+  break-inside: avoid;
+  margin-bottom: 0.2rem;
+}
+
+/* Equations ------------------------------------------------------------------
+   MathML, which the browser typesets itself: no script, no web font to fetch,
+   and a screen reader reads it as mathematics rather than as a picture. The
+   font list leads with Cambria Math, which Windows ships; the others are what
+   the same engine finds on other systems. */
+
+.std-card-body math {
+  font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", "STIX Math", math;
+  color: var(--text);
+}
+
+.std-equation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 12px;
+  background: var(--surface-veil-strong);
+  padding: 0.85rem 1rem;
+}
+
+/* Wide equations scroll inside their own box rather than pushing the whole page
+   sideways on a phone. */
+.std-equation-math {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15rem 0;
+}
+
+.std-equation-math math {
+  font-size: 1.18rem;
+}
+
+.std-equation-number {
+  color: var(--forest-700);
+  font-weight: 700;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.std-equation-caption {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+/* "Where" lists: each symbol beside what it stands for. */
+.std-where {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 1rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background: var(--surface-veil-soft);
+  border: 1px solid var(--border);
+}
+
+.std-where dt {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.std-where dd {
+  margin: 0;
+}
+
+/* Callouts --------------------------------------------------------------------- */
+
+.std-note {
+  border: 1px solid var(--brand-tint-strong);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 12px;
+  background: var(--brand-tint-soft);
+  padding: 0.8rem 1rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.std-note-title {
+  color: var(--brand-ink);
+  font-weight: 700;
+}
+
+.std-note.is-caution {
+  border-color: var(--warning-tint);
+  border-left-color: var(--chart-goal);
+  background: var(--warning-tint);
+}
+
+.std-note.is-caution .std-note-title {
+  color: var(--warning-ink);
+}
+
+/* An under-construction card's body opens on this. */
+.std-construction {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+  border: 1px dashed var(--chart-goal);
+  border-radius: 14px;
+  background: var(--warning-tint);
+  padding: 1rem 1.1rem;
+}
+
+.std-construction .construction-icon {
+  width: 2rem;
+  height: 2rem;
+}
+
+.std-construction h4 {
+  margin: 0 0 0.3rem;
+  color: var(--warning-ink);
+}
+
+/* Worked examples ------------------------------------------------------------ */
+
+.std-example {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-veil-strong);
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.std-example > .eyebrow {
+  color: var(--brand-accent);
+}
+
+.std-card-body .std-calc {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.std-calc li {
+  display: grid;
+  grid-template-columns: minmax(0, 19rem) minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.std-calc li:last-child {
+  border-bottom: 0;
+}
+
+.std-calc li > span:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.std-calc .std-result {
+  color: var(--forest-900);
+  font-weight: 700;
+}
+
+/* Tables ------------------------------------------------------------------------ */
+
+.std-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.std-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.std-table th,
+.std-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.std-table thead th {
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.std-table tbody tr:nth-child(even) td {
+  background: var(--row-zebra);
+}
+
+.std-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.std-table td.is-numeric,
+.std-table th.is-numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Figures -------------------------------------------------------------------------
+   Inline SVG drawn in the chart palette. A figure keeps a readable minimum
+   width and scrolls inside its frame below it, because a diagram scaled down to
+   a phone's width shrinks its labels past reading. */
+
+.std-figure {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-veil-strong);
+  padding: 0.85rem 1rem 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.std-figure-frame {
+  overflow-x: auto;
+}
+
+/* Capped as well as floored: on a wide card a drawing would otherwise scale its
+   12px labels up to headline size. */
+.std-figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 34rem;
+  max-width: 50rem;
+  margin: 0 auto;
+  font-family: inherit;
+}
+
+/* Narrow drawings would grow to fill a wide card and blow their labels up to
+   headline size, so they stop at a width suited to their own proportions and
+   sit in the middle of the frame. */
+.std-figure svg.is-compact {
+  min-width: 18rem;
+  max-width: 26rem;
+  margin: 0 auto;
+}
+
+.std-figure svg.is-medium {
+  min-width: 22rem;
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+/* A piecewise definition reads down its left edge, and the browser would
+   otherwise centre every cell of a MathML table. */
+.std-equation mtd {
+  text-align: left;
+  padding: 0.15em 0.6em 0.15em 0;
+}
+
+.std-figure figcaption {
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.std-figure-label {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.std-figure-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+/* The figure palette. Classes rather than presentation attributes, because an
+   attribute cannot name a custom property and would leave the drawing in the
+   light theme's colours after the toggle. */
+.std-figure text {
+  fill: var(--chart-label);
+  font-size: 12px;
+}
+
+.std-figure .fig-text-strong { fill: var(--chart-ink); font-weight: 700; }
+.std-figure .fig-text-small { font-size: 10.5px; }
+.std-figure .fig-text-large { font-size: 14px; }
+.std-figure .fig-text-on-solid { fill: var(--accent-solid-ink); font-weight: 700; }
+.std-figure .fig-text-danger { fill: var(--chart-danger); font-weight: 700; }
+.std-figure .fig-text-accent { fill: var(--chart-accent); font-weight: 700; }
+.std-figure .fig-text-goal { fill: var(--chart-goal); font-weight: 700; }
+/* Text drawn inside a series-coloured bar: the point fill is the card colour,
+   which contrasts with every series hue in both themes. */
+.std-figure .fig-text-inverse { fill: var(--chart-point-fill); font-weight: 700; }
+.std-figure .fig-outline-1 { fill: none; stroke: var(--chart-series-1); stroke-width: 1.5; }
+
+.std-figure .fig-axis { stroke: var(--chart-axis); stroke-width: 1.2; fill: none; }
+.std-figure .fig-grid { stroke: var(--chart-grid); stroke-width: 1; fill: none; }
+.std-figure .fig-bracket { stroke: var(--forest-500); stroke-width: 1.4; fill: none; }
+.std-figure .fig-guide { stroke: var(--chart-axis); stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+.std-figure .fig-arrow { stroke: var(--chart-label); stroke-width: 1.6; fill: none; }
+.std-figure .fig-arrow-head { fill: var(--chart-label); }
+.std-figure .fig-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.2; }
+.std-figure .fig-box-strong { fill: var(--surface); stroke: var(--forest-500); stroke-width: 1.6; }
+.std-figure .fig-box-accent { fill: var(--brand-tint); stroke: var(--brand-accent); stroke-width: 1.6; }
+.std-figure .fig-solid { fill: var(--accent-solid); }
+.std-figure .fig-soft { fill: var(--forest-100); }
+.std-figure .fig-band { fill: var(--chart-band); }
+.std-figure .fig-weekend { fill: var(--row-zebra); stroke: var(--border); }
+.std-figure .fig-weekday { fill: var(--brand-tint); stroke: var(--brand-tint-strong); }
+.std-figure .fig-danger { fill: var(--chart-danger); }
+.std-figure .fig-danger-line { stroke: var(--chart-danger); stroke-width: 2; fill: none; }
+.std-figure .fig-accent { fill: var(--chart-accent); }
+.std-figure .fig-accent-line { stroke: var(--chart-accent); stroke-width: 2.4; fill: none; }
+.std-figure .fig-average-line { stroke: var(--chart-average); stroke-width: 2.4; fill: none; }
+.std-figure .fig-average { fill: var(--chart-average); }
+.std-figure .fig-goal-line { stroke: var(--chart-goal); stroke-width: 2.4; stroke-dasharray: 6 5; fill: none; }
+.std-figure .fig-highlight { fill: var(--chart-highlight); }
+.std-figure .fig-highlight-line { stroke: var(--chart-highlight); stroke-width: 2.4; fill: none; }
+.std-figure .fig-point { fill: var(--chart-point-fill); stroke: var(--chart-ink); stroke-width: 1.6; }
+.std-figure .fig-point-censored { fill: var(--chart-point-fill); stroke: var(--chart-danger); stroke-width: 1.8; }
+.std-figure .fig-window { fill: var(--brand-tint-soft); stroke: var(--brand-tint-strong); stroke-dasharray: 5 4; }
+
+.std-figure .fig-series-1 { fill: var(--chart-series-1); }
+.std-figure .fig-series-2 { fill: var(--chart-series-2); }
+.std-figure .fig-series-3 { fill: var(--chart-series-3); }
+.std-figure .fig-series-4 { fill: var(--chart-series-4); }
+.std-figure .fig-series-5 { fill: var(--chart-series-5); }
+.std-figure .fig-series-6 { fill: var(--chart-series-6); }
+.std-figure .fig-line-1 { stroke: var(--chart-series-1); stroke-width: 2.4; fill: none; }
+.std-figure .fig-line-3 { stroke: var(--chart-series-3); stroke-width: 2.4; fill: none; }
+.std-figure .fig-line-6 { stroke: var(--chart-series-6); stroke-width: 2.4; fill: none; }
+.std-figure .fig-type-1 { fill: var(--chart-type-1); }
+.std-figure .fig-type-2 { fill: var(--chart-type-2); }
+.std-figure .fig-type-3 { fill: var(--chart-type-3); }
+.std-figure .fig-type-4 { fill: var(--chart-type-4); }
+
+/* Two-up figures and the panel header fall back to one column on narrow
+   screens, and a long equation keeps its own scroll. */
+@media (max-width: 900px) {
+  .std-figure-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .std-tabs,
+  .std-card,
+  .std-section {
+    scroll-margin-top: 9.5rem;
+  }
+
+  .std-expand-all {
+    width: 100%;
+  }
+
+  .std-card-summary {
+    padding: 0.9rem 1rem;
+  }
+
+  .std-card-body {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .std-calc li {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .std-toc ol {
+    columns: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .std-card-body { animation: none; }
+  .std-card-marker { transition: none; }
+}
+
+/* Printing a card prints what is open. The tab row and the buttons are for a
+   screen; on paper they are noise. */
+@media print {
+  .tab-list,
+  .std-expand-all,
+  .std-hero-actions {
+    display: none;
+  }
+
+  .std-card {
+    box-shadow: none;
+    break-inside: auto;
+  }
+
+  .std-figure,
+  .std-equation,
+  .std-example {
+    break-inside: avoid;
+  }
+}
