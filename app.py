@@ -442,13 +442,27 @@ PAGES = [
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
     },
+    # The one of the three that has been built: it is the PM calendar. It kept
+    # its name and its place in the sidebar rather than arriving as a fourth
+    # entry beside them, because the calendar is what following PM tasks "from
+    # scheduled through complete" turned out to look like -- see this route's
+    # view and OPERATIONS_MAINTENANCE_HOME_CARDS, whose summary described the
+    # calendar before the calendar existed. Still marked coming soon: the page
+    # says so itself, and the two marks are meant to agree.
+    #
+    # Every department, deliberately, and the one page in this group that says
+    # so. Its two neighbours are Operations & Maintenance work; PMs are not --
+    # Facilities run their own, on the buildings and their plant, and at its
+    # old address (/pm-calendar, reached from Reliability Links) this calendar
+    # was open to all of them. Narrowing it to one department on the way here
+    # would have taken it away from people already using it.
     {
         "route": "/pm-task-tracker",
-        "template": "placeholder_page.html",
+        "template": "pm_calendar.html",
         "title": "PM Task Tracker",
         "icon": ICONS["checklist"],
         "group": NAV_GROUP_DASHBOARDS,
-        "department": DEPARTMENT_OPERATIONS_MAINTENANCE,
+        "department": DEPARTMENT_ALL,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
     },
@@ -1169,9 +1183,13 @@ SEARCH_ENTRIES = [
         "context": "Life Data Analysis",
         "keywords": ["mode", "subsystem", "severity", "corrective action", "taxonomy"],
     },
+    # The calendar is the PM Task Tracker page (below) and is found under
+    # either name: people who have used it since it lived at /pm-calendar
+    # search for "PM Calendar", and the sidebar says "PM Task Tracker". Two
+    # entries, one destination, rather than one name quietly winning.
     {
         "label": "PM Calendar",
-        "url": "/pm-calendar",
+        "url": "/pm-task-tracker",
         "kind": "page",
         "context": "Maintenance",
         "keywords": ["preventive maintenance", "schedule", "upcoming", "due date", "frequency"],
@@ -1192,7 +1210,12 @@ SEARCH_ENTRIES = [
         "url": "/pm-task-tracker",
         "kind": "page",
         "context": "Operations & Maintenance",
-        "keywords": ["preventive maintenance", "tasks", "completion", "backlog", "pm"],
+        "keywords": [
+            "preventive maintenance", "tasks", "completion", "backlog", "pm",
+            # The page is the calendar now, so the words people use for it
+            # find it here too.
+            "calendar", "schedule", "due date", "estimates",
+        ],
     },
     {
         "label": "Overdue WO Tracker",
@@ -2640,14 +2663,15 @@ DEFAULT_LIMBLE_APP_URL = "https://app.limblecmms.com"
 
 @app.route("/pm-calendar")
 def pm_calendar():
-    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
-    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
-    limble_app_url = (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
-    return render_template(
-        "pm_calendar.html",
-        page_title="PM Calendar",
-        limble_app_url=limble_app_url,
-    )
+    """The address the calendar used to live at, kept as a redirect.
+
+    It was linked from Reliability Links and bookmarked from there for
+    months, and a dead link is a worse answer than a hop. Temporary rather
+    than permanent on purpose: a 301 is cached by the browser indefinitely,
+    which would be awkward to undo if the calendar ever moves again.
+    """
+
+    return redirect(url_for("pm_task_tracker"))
 
 
 # The three Operations & Maintenance pages. Each is a placeholder: routed,
@@ -2668,10 +2692,24 @@ def safety_report():
 
 @app.route("/pm-task-tracker")
 def pm_task_tracker():
+    """The PM calendar. Reached at /pm-calendar until 2026-10-02.
+
+    Unlike its two neighbours this is no longer a placeholder, so it does
+    the one thing the old /pm-calendar view did: read LIMBLE_APP_URL for
+    the template's "Open in Limble" links. Moving here also puts the
+    calendar behind this page's PAGES entry, so an account is needed --
+    /pm-calendar, named by no entry, was open to anyone who had the link.
+    The entry names every department, so who that account belongs to does
+    not narrow it.
+    """
+
+    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
+    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
+    limble_app_url = (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
     return render_template(
-        "placeholder_page.html",
+        "pm_calendar.html",
         page_title="PM Task Tracker",
-        page_summary="Preventive maintenance tasks and their completion, for Operations & Maintenance.",
+        limble_app_url=limble_app_url,
     )
 
 
