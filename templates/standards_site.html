@@ -207,7 +207,7 @@
       <li><strong>New and corrected Limble records</strong> arrive with the nightly sync, or sooner if an administrator runs one.</li>
       <li><strong>Availability is recalculated every time the Metrics page loads</strong>, from the configuration as it is at that moment. See <a href="#metrics-availability">Asset availability by month</a>.</li>
       <li><strong>The trend, downtime driver and PM effectiveness analyses</strong> read the current dispositions every time they load.</li>
-      <li><strong>Weibull results are saved snapshots.</strong> Run the analysis again to include dispositions saved since; changing a disposition from the Weibull data table re-runs it straight away.</li>
+      <li><strong>Weibull results are saved snapshots, one per failure group.</strong> Run the analysis again to include dispositions saved since; the new run replaces the group's previous one and any adjusted parameters saved with it. Changing a disposition from the Weibull data table re-runs it straight away.</li>
       <li><strong>Configuration changes</strong> to schedules, group membership and linked downtime recalculate every month of availability. Goals and overtime change one month at a time.</li>
     </ul>
   {% endcall %}

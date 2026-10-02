@@ -752,10 +752,10 @@
     <section class="std-section" id="weibull-saving">
       <h4>Adjusting, saving and reporting</h4>
       <ul>
-        <li><strong>Every run is saved</strong> with its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis cutoff. Viewers see the most recent saved result; editors can run it again, which picks up every disposition saved since.</li>
-        <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it.</li>
-        <li><strong>Generate Weibull Report</strong> writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values.</li>
-        <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition; saving it runs the analysis again.</li>
+        <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis cutoff, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
+        <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it. A saved pair lasts until the group is run again, and the page does not show it again: the inputs always open on the fitted values.</li>
+        <li><strong>Generate Weibull Report</strong> writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values. The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
+        <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition; saving it runs the analysis again, which replaces the saved run as above.</li>
       </ul>
     </section>
 
