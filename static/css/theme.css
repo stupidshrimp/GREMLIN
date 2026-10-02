@@ -992,17 +992,6 @@ button.life-data-card {
   outline-offset: 3px;
 }
 
-/* A card pointing at an unfinished page carries the same pill the page does.
-   The row is what wraps, so a badge with no room beside the title drops under
-   it -- which is what happens at the grid's own 280px track -- rather than
-   pushing the card wider than the track and the page sideways with it. */
-.link-title-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.6rem;
-}
-
 .link-title {
   font-size: 1.05rem;
   font-weight: 600;

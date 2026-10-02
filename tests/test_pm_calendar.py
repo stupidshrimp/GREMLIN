@@ -50,7 +50,7 @@ def _app(monkeypatch, tmp_path, *, pm_db=None):
 def _signed_in(module, department="operations_maintenance"):
     """A browser signed in to an account that may open the calendar.
 
-    The calendar is the PM Task Tracker page as of 2026-10-01, and that page
+    The calendar is the PM Task Tracker page as of 2026-10-02, and that page
     has a PAGES entry: an account is needed, and the department on that entry
     decides who is offered it. At its old address, /pm-calendar, it was named
     by no entry and so was open to anyone with the link.
@@ -152,7 +152,7 @@ def test_the_app_starts_even_when_the_database_cannot_be_opened(monkeypatch, tmp
     module = _app(monkeypatch, tmp_path, pm_db=blocked / "sub" / "pm.db")
 
     # Importing worked at all, and the page itself still renders. The
-    # calendar is the PM Task Tracker page as of 2026-10-01; /pm-calendar
+    # calendar is the PM Task Tracker page as of 2026-10-02; /pm-calendar
     # redirects there.
     assert _signed_in(module).get("/pm-task-tracker").status_code == 200
 
@@ -161,7 +161,7 @@ def test_an_unreachable_database_reports_503_rather_than_500(monkeypatch, tmp_pa
     blocked = tmp_path / "blocked"
     blocked.write_text("not a folder")
     module = _app(monkeypatch, tmp_path, pm_db=blocked / "sub" / "pm.db")
-    client = module.app.test_client()
+    client = _signed_in(module)
 
     for url in (
         "/pm-calendar/api/assets",
@@ -203,7 +203,7 @@ def test_a_corrupt_database_is_reported_rather_than_raised(monkeypatch, tmp_path
     corrupt = tmp_path / "PM_Calendar_local.db"
     corrupt.write_bytes(b"this is not a sqlite database")
     module = _app(monkeypatch, tmp_path, pm_db=corrupt)
-    client = module.app.test_client()
+    client = _signed_in(module)
 
     for url in (
         "/pm-calendar/api/assets",
@@ -299,6 +299,47 @@ def test_a_path_that_becomes_reachable_later_is_retried(tmp_path):
     blocked.mkdir()
 
     assert service.asset_options() == []
+
+
+# ----------------------------------------------------------------------
+# Who may read the calendar
+# ----------------------------------------------------------------------
+
+
+CALENDAR_DATA = (
+    "/pm-calendar/api/assets",
+    "/pm-calendar/api/summary?assets=7",
+    "/pm-calendar/api/events?assets=7&start=2026-01-01&end=2026-01-31",
+    "/pm-calendar/api/last-completed?assets=7",
+    "/pm-calendar/api/sync",
+)
+
+
+def test_the_calendar_data_needs_an_account_as_the_page_does(monkeypatch, tmp_path):
+    """Locking the page alone would only hide the calendar.
+
+    Everything on it comes from /pm-calendar/api/..., so a signed-out visitor
+    refused the page could otherwise still read the whole schedule from there.
+    The refusal is JSON, because the thing asking is a fetch().
+    """
+
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    for url in CALENDAR_DATA:
+        response = client.get(url)
+        assert response.status_code == 403, url
+        assert "needs a login" in response.get_json()["error"], url
+    assert client.post("/pm-calendar/api/sync", json={}).status_code == 403
+
+
+@pytest.mark.parametrize("department", ["operations_maintenance", "facilities"])
+def test_every_department_signed_in_reads_the_calendar_data(monkeypatch, tmp_path, department):
+    """The data follows the page's rule, and the page is for every department."""
+
+    client = _signed_in(_app(monkeypatch, tmp_path), department=department)
+
+    for url in CALENDAR_DATA:
+        assert client.get(url).status_code == 200, url
 
 
 # ----------------------------------------------------------------------
@@ -1689,7 +1730,7 @@ def test_the_last_done_endpoint(monkeypatch, tmp_path):
     module.pm_calendar_service.repo.upsert_tasks([
         _pm("1", "7", "Pump", "2026-08-01", completed="2026-08-02"),
     ])
-    client = module.app.test_client()
+    client = _signed_in(module)
 
     found = client.get("/pm-calendar/api/last-completed?assets=7")
     assert found.status_code == 200
@@ -1771,7 +1812,7 @@ def test_the_endpoints_pass_exclude_through(monkeypatch, tmp_path):
         {"asset_id": "P", "asset_name": "Parent", "parent_asset_id": None},
         {"asset_id": "C", "asset_name": "Child", "parent_asset_id": "P"},
     ])
-    client = module.app.test_client()
+    client = _signed_in(module)
 
     shown = client.get("/pm-calendar/api/events?assets=P&start=2026-10-01&end=2026-10-31&exclude=C").get_json()
     assert {e["asset_id"] for e in shown["events"] if not e.get("is_projected")} == {"P"}

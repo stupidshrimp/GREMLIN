@@ -110,11 +110,10 @@ DEPARTMENT_PAGES = {
 OPERATIONS_MAINTENANCE_PAGES = {
     label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
 }
-# Of those three, the two that are still placeholders. PM Task Tracker is the
-# PM calendar as of 2026-10-01, so it renders a real page -- it keeps its
-# coming-soon mark, which the calendar carries in its own words, but it has no
-# "not built yet" text and no placeholder badge. Every other test here is about
-# who may open these routes and still covers all three.
+# Of those three, the two that are still placeholders: the same two as above
+# today, but for a different reason, so kept under a name of its own. PM Task
+# Tracker is the PM calendar as of 2026-10-02, so it renders a real page with
+# no "not built yet" text and no placeholder badge.
 PLACEHOLDER_PAGES = {
     label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
 }
@@ -490,9 +489,9 @@ def test_each_new_page_carries_the_coming_soon_mark(monkeypatch, tmp_path):
 def test_the_pm_task_tracker_is_the_pm_calendar(monkeypatch, tmp_path):
     """The one of the three that has been built, under its sidebar name.
 
-    It is a real page, so none of the placeholder furniture is on it, but it
-    keeps the coming-soon mark its sidebar entry carries -- the calendar says
-    as much about itself, and the two are meant to agree.
+    It is a real page, so none of the placeholder furniture is on it. It is not
+    finished either, and says so with its own "Under construction" badge --
+    the page's counterpart to the hourglass its sidebar entry carries.
     """
 
     module = _app(monkeypatch, tmp_path)
@@ -504,19 +503,34 @@ def test_the_pm_task_tracker_is_the_pm_calendar(monkeypatch, tmp_path):
     assert "pm-calendar-grid" in body
     assert "not built yet" not in body
     assert "placeholder-badge" not in body
-    assert module.COMING_SOON_LABEL in body
+    # The page's own mark, not the sidebar's "Coming soon": the sidebar prints
+    # that on every page, so finding it here would say nothing about this one.
+    assert 'class="construction-badge"' in body
+    assert "Under construction" in body
 
 
-def test_the_old_pm_calendar_address_still_leads_there(monkeypatch, tmp_path):
+@pytest.mark.parametrize("department", ["operations_maintenance", "facilities"])
+def test_the_old_pm_calendar_address_still_leads_there(monkeypatch, tmp_path, department):
     """It was linked from Reliability Links for months and is bookmarked."""
 
     module = _app(monkeypatch, tmp_path)
-    client = _client(module, department="operations_maintenance")
+    client = _client(module, department=department)
 
     response = client.get("/pm-calendar")
 
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/pm-task-tracker")
+
+
+def test_a_signed_out_visitor_is_refused_at_the_old_address(monkeypatch, tmp_path):
+    """Not redirected onto a 403: refused where they are, as /settings is."""
+
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    response = client.get("/pm-calendar")
+
+    assert response.status_code == 403
+    assert b"PM Task Tracker needs an account." in response.data
 
 
 def test_the_sidebar_marks_the_pages_that_are_not_built_yet(monkeypatch, tmp_path):

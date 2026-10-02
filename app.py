@@ -367,6 +367,15 @@ app.jinja_env.globals.update(
 # listed there are refused as one, so a route added under a withheld section
 # later is covered without anybody remembering to cover it.
 #
+# "covers" does the same for the other rule. It names the addresses outside a
+# page's own route that answer to it -- the endpoints the page reads, an old
+# address that redirects to it -- and every path under them is opened or
+# refused exactly as the page is: signed out, or in a department the page is
+# not for, they get the page's own 403. It is a key of its own rather than
+# "section" doing both jobs because Metrics and Life Data Analysis do not
+# narrow their /api/ shelves by login, and widening "section" would change
+# that for them too.
+#
 # "coming_soon" is presentation, not access: it marks a page that is routed and
 # offered but has no content yet, and puts the hourglass on its sidebar entry.
 #
@@ -420,17 +429,19 @@ PAGES = [
         "title": "Developer",
         "icon": ICONS["code"],
     },
-    # The three department pages, and the sidebar's "Dashboards" group. They
-    # have no content yet -- each is a placeholder standing in for the tracker
-    # that will be built on it -- but they are routed, navigated to and
+    # The three department pages, and the sidebar's "Dashboards" group. Two have
+    # no content yet -- each is a placeholder standing in for the tracker that
+    # will be built on it -- but they are routed, navigated to and
     # access-controlled exactly as a finished page is, so building one out later
-    # is an edit to its template alone.
+    # is an edit to its template alone. The third, PM Task Tracker, is the PM
+    # calendar.
     #
-    # All three belong to Operations & Maintenance at every level, which is what
-    # the two department keys below say: an account in Operations, in
+    # The two placeholders belong to Operations & Maintenance at every level,
+    # which is what their two department keys say: an account in Operations, in
     # Maintenance, in both, or in none of them in particular ("all departments")
-    # is offered them, and a Facilities account is not. The heading follows the
-    # entries rather than standing on its own, so that account is not shown a
+    # is offered them, and a Facilities account is not. PM Task Tracker is for
+    # every department. The heading follows the entries rather than standing on
+    # its own, so an account offered none of them would not be shown a
     # "Dashboards" heading with nothing underneath it.
     {
         "route": "/safety-report",
@@ -447,8 +458,9 @@ PAGES = [
     # entry beside them, because the calendar is what following PM tasks "from
     # scheduled through complete" turned out to look like -- see this route's
     # view and OPERATIONS_MAINTENANCE_HOME_CARDS, whose summary described the
-    # calendar before the calendar existed. Still marked coming soon: the page
-    # says so itself, and the two marks are meant to agree.
+    # calendar before the calendar existed. Still marked coming soon in the
+    # sidebar, because it is not finished: the page says the same thing with
+    # its own "Under construction" badge.
     #
     # Every department, deliberately, and the one page in this group that says
     # so. Its two neighbours are Operations & Maintenance work; PMs are not --
@@ -456,6 +468,12 @@ PAGES = [
     # old address (/pm-calendar, reached from Reliability Links) this calendar
     # was open to all of them. Narrowing it to one department on the way here
     # would have taken it away from people already using it.
+    #
+    # It does need an account, like every page off the open floor, and
+    # "covers" is what makes that true of the calendar and not only of its
+    # page: the data comes from /pm-calendar/api/..., and the old /pm-calendar
+    # address is refused directly rather than bouncing a signed-out visitor
+    # onto a 403, the same way /settings is.
     {
         "route": "/pm-task-tracker",
         "template": "pm_calendar.html",
@@ -465,6 +483,7 @@ PAGES = [
         "department": DEPARTMENT_ALL,
         "staff_level": STAFF_LEVEL_ALL,
         "coming_soon": True,
+        "covers": ("/pm-calendar",),
     },
     {
         "route": "/overdue-wo-tracker",
@@ -701,6 +720,12 @@ WITHHELD_SECTIONS = tuple(
     if page.get("withheld_from_department")
 )
 
+# The addresses each page's "covers" key hands to it, built once for the same
+# reason: the guard below reads it on every request.
+COVERED_SECTIONS = tuple(
+    (page, tuple(page["covers"])) for page in PAGES if page.get("covers")
+)
+
 
 def _scopes_overlap(page_scope: tuple[str, ...], account_scope: tuple[str, ...]) -> bool:
     """Whether a page's side of one column and an account's side of it meet.
@@ -773,19 +798,38 @@ def _account_is_within(user: dict | None, department: str) -> bool:
     return bool(account) and account <= set(department_scope(department))
 
 
-def _withheld_section_for(path: str) -> dict | None:
-    """The withheld page that owns ``path``, if one does.
+def _section_owner(path: str, sections: tuple) -> dict | None:
+    """The page in ``sections`` whose prefixes take in ``path``, if one does.
 
-    Matches the section's own address and anything under it, and nothing else:
+    Matches the prefix's own address and anything under it, and nothing else:
     "/metrics" covers "/metrics/api/reliability" and does not covet
     "/metrics-export" that somebody adds next year.
     """
 
-    for page, prefixes in WITHHELD_SECTIONS:
+    for page, prefixes in sections:
         for prefix in prefixes:
             if path == prefix or path.startswith(prefix + "/"):
                 return page
     return None
+
+
+def _withheld_section_for(path: str) -> dict | None:
+    """The withheld page that owns ``path``, if one does."""
+
+    return _section_owner(path, WITHHELD_SECTIONS)
+
+
+def _page_route_for(path: str) -> str:
+    """The PAGES route whose rule decides ``path``.
+
+    The path itself when PAGES names it, otherwise the page whose "covers" takes
+    it in, otherwise the path unchanged -- which no page rule narrows.
+    """
+
+    if path in PAGES_BY_ROUTE:
+        return path
+    page = _section_owner(path, COVERED_SECTIONS)
+    return page["route"] if page is not None else path
 
 
 def _page_is_open(route: str) -> bool:
@@ -831,7 +875,7 @@ def _path_is_offered(path: str, user: dict | None) -> bool:
     withheld = _withheld_section_for(path)
     if withheld is not None and _page_is_withheld_from(withheld, user):
         return False
-    return _may_open_page(path, user)
+    return _may_open_page(_page_route_for(path), user)
 
 
 # What a locked sidebar entry says when it is clicked, and what it says when it
@@ -935,9 +979,9 @@ def _nav_sections_for(user: dict | None) -> list[dict]:
     run stays at the top and named groups follow it, and a section is created
     only by an entry that lands in it. That second part is the whole reason this
     groups the answer rather than the list: _nav_links_for has already dropped
-    the pages this account is not offered, so a Facilities account -- which is
-    offered none of the three dashboards -- is not shown a heading standing over
-    nothing, and no separate rule has to remember to hide it.
+    the pages this account is not offered, so an Operations & Maintenance
+    account -- which is offered neither Analysis page -- is not shown a heading
+    standing over nothing, and no separate rule has to remember to hide it.
     """
 
     sections: list[dict] = []
@@ -965,16 +1009,18 @@ def _refuse_a_page_this_account_may_not_open():
     nothing to show it.
 
     Costs one account lookup on the handful of routes it covers and none at all
-    anywhere else, including every static file: a path PAGES does not name and
-    no withheld section owns is returned on before the session is touched.
+    anywhere else, including every static file: a path PAGES does not name, no
+    page "covers" and no withheld section owns is returned on before the
+    session is touched.
     """
 
     withheld = _withheld_section_for(request.path)
-    page = PAGES_BY_ROUTE.get(request.path)
+    route = _page_route_for(request.path)
+    page = PAGES_BY_ROUTE.get(route)
     gated = (
         page is not None
-        and request.path not in UNLISTED_ROUTES
-        and not _page_is_open(request.path)
+        and route not in UNLISTED_ROUTES
+        and not _page_is_open(route)
     )
     if withheld is None and not gated:
         return None
@@ -994,7 +1040,7 @@ def _refuse_a_page_this_account_may_not_open():
                 "Ask an administrator if that is wrong."
             ),
         )
-    if not gated or _may_open_page(request.path, user):
+    if not gated or _may_open_page(route, user):
         return None
     if user is None:
         return _refuse_page(
@@ -1194,7 +1240,7 @@ SEARCH_ENTRIES = [
         "context": "Maintenance",
         "keywords": ["preventive maintenance", "schedule", "upcoming", "due date", "frequency"],
     },
-    # The three Operations & Maintenance pages. No "role" key: they are narrowed
+    # The three Dashboards pages. No "role" key: they are narrowed
     # by department rather than by what an account may write, and _search_index
     # applies that from PAGES -- the same entry it takes the sidebar's answer
     # from -- so the two cannot come apart.
@@ -2669,18 +2715,23 @@ def pm_calendar():
     months, and a dead link is a worse answer than a hop. Temporary rather
     than permanent on purpose: a 301 is cached by the browser indefinitely,
     which would be awkward to undo if the calendar ever moves again.
+
+    Only somebody who may open the calendar gets here: PM Task Tracker's
+    "covers" key puts this address behind that page's rule, so a signed-out
+    visitor is refused here rather than redirected onto a 403.
     """
 
     return redirect(url_for("pm_task_tracker"))
 
 
-# The three Operations & Maintenance pages. Each is a placeholder: routed,
-# navigated to, searchable and access-controlled like any other page, with
-# nothing on it yet but a note saying so. Who may open one is declared on its
-# PAGES entry and enforced by _refuse_a_page_this_account_may_not_open above, so
-# these views have nothing to check -- reaching one already means the answer was
-# yes. They share placeholder_page.html until each grows content of its own,
-# at which point the template name on the PAGES entry is what changes.
+# The three Dashboards pages. Who may open one is declared on its PAGES entry
+# and enforced by _refuse_a_page_this_account_may_not_open above, so these views
+# have nothing to check -- reaching one already means the answer was yes.
+# Safety Report and Overdue WO Tracker are placeholders: routed, navigated to,
+# searchable and access-controlled like any other page, with nothing on them yet
+# but a note saying so. They share placeholder_page.html until each grows
+# content of its own, at which point the template name on the PAGES entry is
+# what changes. PM Task Tracker already has: it is the PM calendar.
 @app.route("/safety-report")
 def safety_report():
     return render_template(
@@ -2699,8 +2750,9 @@ def pm_task_tracker():
     the template's "Open in Limble" links. Moving here also puts the
     calendar behind this page's PAGES entry, so an account is needed --
     /pm-calendar, named by no entry, was open to anyone who had the link.
-    The entry names every department, so who that account belongs to does
-    not narrow it.
+    The entry's "covers" key holds the calendar's data endpoints to the same
+    rule, so the data needs the account too, not only the page. The entry
+    names every department, so who that account belongs to does not narrow it.
     """
 
     # The same restricted, cached .env read the sync uses -- LIMBLE_* only.

@@ -52,8 +52,8 @@
   {% for card in home_department_cards -%}
   <a class="glass-card tile slide-in life-data-card" id="{{ card.id }}" href="{{ card.route }}">
     {%- if card.coming_soon %}
-    {#- The hourglass the sidebar entry and the page itself carry, so the card
-        does not promise a finished tracker the click will not find. A <div>
+    {#- The hourglass the sidebar entry carries, so the card does not promise a
+        finished tracker the click will not find. A <div>
         rather than a <p>: the card dims its own paragraphs on hover to hand the
         eye to the extra copy, and this label is not one of them. -#}
     <div class="eyebrow placeholder-eyebrow">
