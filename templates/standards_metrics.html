@@ -489,7 +489,7 @@
         <li>It is shown as a percentage with two decimals.</li>
         <li><strong>It never goes below 0%.</strong> An asset charged more downtime than it was scheduled reads 0%, and the month is flagged so the 0% is not mistaken for missing data.</li>
         <li><strong>It is undefined when nothing was scheduled</strong>, which only happens if a group is configured down to zero net hours. The card then shows no number at all: 0% would read as a total outage and 100% as a perfect month.</li>
-        <li><strong>A month with no work orders reads 100%</strong>, because nothing was subtracted. The card notes "No WO entries this month" so it is not mistaken for a month without breakdowns.</li>
+        <li><strong>A month with no work orders against the asset reads 100%</strong>, because nothing was subtracted, unless a linked rule charged it a share of another asset's downtime (step 3). The card notes "No WO entries this month" so a 100% is not mistaken for a month without breakdowns. The note counts only the asset's own work orders, so a parent can carry it on a bar below 100% that holds only linked downtime.</li>
       </ul>
       <div class="std-example">
         <p class="eyebrow">Worked example: January 2026, 396 scheduled hours each</p>
@@ -498,6 +498,7 @@
           <li><span>Asset A with 8 h overtime</span><span>(404 − 10) / 404 = <span class="std-result">97.52%</span></span></li>
           <li><span>Parent P from figure A5</span><span>(396 − 36) / 396 = <span class="std-result">90.91%</span></span></li>
           <li><span>Asset C, no work orders</span><span>(396 − 0) / 396 = <span class="std-result">100.00%</span>, noted "No WO entries this month"</span></li>
+          <li><span>Parent P, no work orders of its own</span><span>(396 − 24) / 396 = <span class="std-result">93.94%</span>, still noted "No WO entries this month"</span></li>
         </ul>
       </div>
     </section>
@@ -703,7 +704,7 @@
           </thead>
           <tbody>
             <tr><td>Red mark at the foot of a bar, "Downtime exceeded scheduled; clamped to 0%"</td><td>Adjusted downtime is larger than adjusted scheduled hours</td><td>More downtime was charged than hours were scheduled, usually through linked downtime or a long repair charged to one month. The 0% is real, not missing.</td></tr>
-            <tr><td>"No WO entries this month"</td><td>No work order was created for the asset in the month</td><td>The 100% means nothing was recorded, which is not the same as nothing breaking.</td></tr>
+            <tr><td>"No WO entries this month"</td><td>No work order was created for the asset itself in the month; linked assets' work orders do not count</td><td>Nothing was recorded against the asset, which is not the same as nothing breaking. The bar reads 100% unless a linked rule charged it downtime.</td></tr>
             <tr><td>"N WO(s) with 0 downtime"</td><td>Some of the month's work orders carried no downtime</td><td>The asset was worked on without stopping, or the stop was not recorded.</td></tr>
             <tr><td>"N WO(s) cross a month boundary"</td><td>A work order with downtime was completed in a later month than it was created, or its created time plus its downtime runs into the next month</td><td>All of its downtime sits in the created month; how much belonged to the next month is not known.</td></tr>
             <tr><td>"Includes N h linked from another asset"</td><td>Linked downtime is above 0</td><td>Part of this bar comes from coupled assets (step 3).</td></tr>
@@ -820,7 +821,7 @@
         <li><strong>Weekends are never scheduled.</strong> A group that really runs seven days a week has its availability overstated.</li>
         <li><strong>There is no holiday or shutdown calendar.</strong> A planned shutdown week still counts as scheduled hours.</li>
         <li><strong>Downtime is not split across months.</strong> A long repair that starts at the end of a month is charged to that month in full.</li>
-        <li><strong>An asset nobody logs work against reads 100%.</strong> Check for the No WO entries note before reading a perfect month as a good one.</li>
+        <li><strong>An asset nobody logs work against reads 100%</strong>, less any linked downtime charged to it. Check for the No WO entries note before reading a perfect month as a good one. The note looks only at the asset's own work orders, so on a parent with linked rules it can also sit on a bar below 100%.</li>
         <li><strong>Linked downtime can count one stoppage more than once</strong> when coupled assets are down together.</li>
       </ul>
     </section>

@@ -106,7 +106,8 @@
       </math>
       {% endcall %}
       <ul>
-        <li>A blank date (empty or only spaces) is skipped and the next one is used. A record with no usable date still counts in an analysis's totals but cannot be placed in a month or on a timeline.</li>
+        <li>A blank date (empty or only spaces) is skipped and the next one is used.</li>
+        <li><strong>A record with no usable date</strong> still counts wherever a date is not needed: the readiness summary, the Pareto, the trend's Most Frequent and Highest Downtime cards, and the downtime driver's summary cards, distribution, asset totals and top events. It cannot be placed in a month, so it is left off every monthly chart and out of the trend's Fastest Growing and Most Improved cards. The Weibull fit and PM effectiveness leave it out altogether, because both have to place each record in time.</li>
         <li>Blank downtime counts as 0 hours, and so does negative downtime.</li>
         <li><strong>Dates are read in UTC</strong>, the time zone GREMLIN stores them in, so months, days and weekends on this tab are UTC ones. A work order completed in the evening of the last day of a month, plant time, can land in the next month here.</li>
       </ul>
@@ -1005,6 +1006,7 @@
       <ul>
         <li><strong>PMs:</strong> every completed PM on the asset, whatever it targets. A record is a PM when its saved class is PM or PM reset candidate, or, while no class has been saved, when the automatic classifier flagged it as a PM. It is completed when it has a completion date, or is marked complete and its status does not read "incomplete" or "not complete". Its date is equation C1.</li>
         <li><strong>Failures:</strong> the included failures of the selected mechanism, matched within the selected failure mode when one is given.</li>
+        <li><strong>Undated records:</strong> a PM or failure without a usable date is left out, because it cannot be paired.</li>
       </ul>
       <div class="std-note is-caution">
         <p class="std-note-title">Check the PMs you rely on</p>

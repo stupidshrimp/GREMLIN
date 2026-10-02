@@ -256,6 +256,16 @@ def test_the_availability_examples_are_what_the_calculator_returns(standards):
 
     for shown in (percent(rows["A"].availability), percent(rows["P"].availability), percent(rows["C"].availability)):
         assert shown in standards, shown
+
+    # The note counts only the asset's own orders, so a parent whose month holds
+    # nothing but linked downtime is below 100% and still says nobody logged anything.
+    linked_only = {
+        row.asset_number: row
+        for row in compute_rows([group], [january], [o for o in orders if o.asset_number != "P"], linked_rules=rules)
+    }["P"]
+    assert linked_only.note == "No WO entries this month"
+    assert linked_only.availability < 1
+    assert percent(linked_only.availability) in standards
     average = build_series(list(rows.values()), [group], [january])[0].average[0]
     assert percent(average) in standards
 
