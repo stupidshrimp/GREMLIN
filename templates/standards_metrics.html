@@ -818,7 +818,7 @@
     <section class="std-section" id="availability-limits">
       <h4>Known limitations</h4>
       <ul>
-        <li><strong>Weekends are never scheduled.</strong> A group that really runs seven days a week has its availability overstated.</li>
+        <li><strong>Weekends are never scheduled.</strong> A group that really runs seven days a week has its availability understated whenever it has downtime: all of the month's downtime, weekends included, is measured against weekday hours only.</li>
         <li><strong>There is no holiday or shutdown calendar.</strong> A planned shutdown week still counts as scheduled hours.</li>
         <li><strong>Downtime is not split across months.</strong> A long repair that starts at the end of a month is charged to that month in full.</li>
         <li><strong>An asset nobody logs work against reads 100%</strong>, less any linked downtime charged to it. Check for the No WO entries note before reading a perfect month as a good one. The note looks only at the asset's own work orders, so on a parent with linked rules it can also sit on a bar below 100%.</li>
