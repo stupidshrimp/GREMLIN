@@ -98,11 +98,25 @@ OPEN = ["Home", "Reliability Links", "Configuration"]
 # signed-in Operations & Maintenance account, which is the one page where those
 # two rules disagree.
 FLOOR = ["Home", "Reliability Links"]
-# The three that belong to Operations & Maintenance.
+# The three in the Dashboards group.
 DEPARTMENT_PAGES = {
     "Safety Report": "/safety-report",
     "PM Task Tracker": "/pm-task-tracker",
     "Overdue WO Tracker": "/overdue-wo-tracker",
+}
+# Of those, the two marked for Operations & Maintenance alone. PM Task Tracker
+# is not one of them: it is the PM calendar, and Facilities run PMs of their
+# own, so it is marked for every department -- see its PAGES entry.
+OPERATIONS_MAINTENANCE_PAGES = {
+    label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
+}
+# Of those three, the two that are still placeholders. PM Task Tracker is the
+# PM calendar as of 2026-10-01, so it renders a real page -- it keeps its
+# coming-soon mark, which the calendar carries in its own words, but it has no
+# "not built yet" text and no placeholder badge. Every other test here is about
+# who may open these routes and still covers all three.
+PLACEHOLDER_PAGES = {
+    label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
 }
 # The three kept out of Operations & Maintenance, and the address space each one
 # owns -- the page itself, and what would otherwise still answer underneath it.
@@ -196,11 +210,25 @@ def test_operations_and_maintenance_are_offered_the_department_pages(
 def test_another_department_is_neither_shown_nor_served_them(monkeypatch, tmp_path):
     client = _client(_app(monkeypatch, tmp_path), department="facilities")
     labels = _labels(client)
-    for label, route in DEPARTMENT_PAGES.items():
+    for label, route in OPERATIONS_MAINTENANCE_PAGES.items():
         assert label not in labels, f"{label} was offered to Facilities"
         response = client.get(route)
         assert response.status_code == 403, route
         assert b"is for another department" in response.data, route
+
+
+def test_the_pm_calendar_is_offered_to_every_department(monkeypatch, tmp_path):
+    """The one page in that group Facilities keeps.
+
+    Facilities run PMs on the buildings and their plant, and the calendar was
+    open to them at its old address. Sitting beside two Operations &
+    Maintenance pages is not a reason to take it away.
+    """
+
+    client = _client(_app(monkeypatch, tmp_path), department="facilities")
+
+    assert "PM Task Tracker" in _labels(client)
+    assert client.get("/pm-task-tracker").status_code == 200
 
 
 def test_the_refusal_names_both_sides_of_the_mismatch(monkeypatch, tmp_path):
@@ -349,12 +377,21 @@ def test_home_stops_advertising_a_section_it_just_closed(monkeypatch, tmp_path):
 
 
 def test_every_department_page_declares_both_of_its_keys(monkeypatch, tmp_path):
-    """The rule reads two keys; a page that sets one is narrowed by half."""
+    """The rule reads two keys; a page that sets one is narrowed by half.
+
+    Which department each names is the page's own business -- two of these
+    three are Operations & Maintenance work and one is everybody's -- but
+    every one of them has to say, rather than leave it to the default.
+    """
+
     module = _app(monkeypatch, tmp_path)
     for route in DEPARTMENT_PAGES.values():
         page = module.PAGES_BY_ROUTE[route]
-        assert page["department"] == "operations_maintenance", route
+        assert "department" in page, route
         assert page["staff_level"] == "all", route
+    for route in OPERATIONS_MAINTENANCE_PAGES.values():
+        assert module.PAGES_BY_ROUTE[route]["department"] == "operations_maintenance", route
+    assert module.PAGES_BY_ROUTE["/pm-task-tracker"]["department"] == "all"
 
 
 # --- Home's cards ---------------------------------------------------------------
@@ -433,7 +470,7 @@ def test_no_card_on_home_plays_an_animation_on_hover(monkeypatch, tmp_path, depa
 
 def test_each_new_page_renders_and_says_it_is_not_built_yet(monkeypatch, tmp_path):
     client = _client(_app(monkeypatch, tmp_path), department="operations_maintenance")
-    for label, route in DEPARTMENT_PAGES.items():
+    for label, route in PLACEHOLDER_PAGES.items():
         body = client.get(route).get_data(as_text=True)
         assert f"<title>{label}</title>" in body, route
         assert "not built yet" in body, route
@@ -443,11 +480,43 @@ def test_each_new_page_carries_the_coming_soon_mark(monkeypatch, tmp_path):
     """The same mark its sidebar entry carries, on the page it leads to."""
     module = _app(monkeypatch, tmp_path)
     client = _client(module, department="operations_maintenance")
-    for route in DEPARTMENT_PAGES.values():
+    for route in PLACEHOLDER_PAGES.values():
         body = client.get(route).get_data(as_text=True)
         assert module.COMING_SOON_LABEL in body, route
         assert "placeholder-badge" in body, route
         assert module.COMING_SOON_ICON in body, route
+
+
+def test_the_pm_task_tracker_is_the_pm_calendar(monkeypatch, tmp_path):
+    """The one of the three that has been built, under its sidebar name.
+
+    It is a real page, so none of the placeholder furniture is on it, but it
+    keeps the coming-soon mark its sidebar entry carries -- the calendar says
+    as much about itself, and the two are meant to agree.
+    """
+
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="operations_maintenance")
+
+    body = client.get("/pm-task-tracker").get_data(as_text=True)
+
+    assert "<title>PM Task Tracker</title>" in body
+    assert "pm-calendar-grid" in body
+    assert "not built yet" not in body
+    assert "placeholder-badge" not in body
+    assert module.COMING_SOON_LABEL in body
+
+
+def test_the_old_pm_calendar_address_still_leads_there(monkeypatch, tmp_path):
+    """It was linked from Reliability Links for months and is bookmarked."""
+
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="operations_maintenance")
+
+    response = client.get("/pm-calendar")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/pm-task-tracker")
 
 
 def test_the_sidebar_marks_the_pages_that_are_not_built_yet(monkeypatch, tmp_path):
@@ -545,13 +614,36 @@ def test_a_visitor_gets_the_heading_over_the_struck_through_three(
 def test_no_heading_is_drawn_over_a_group_this_account_has_none_of(
     monkeypatch, tmp_path
 ):
-    """Facilities is offered none of the three. A heading left behind would
-    advertise a section that is not there -- which is the one thing the entries
-    being gone rather than struck through is trying not to do."""
+    """An Operations & Maintenance account is offered neither Analysis page.
+    A heading left behind would advertise a section that is not there -- which
+    is the one thing the entries being gone rather than struck through is
+    trying not to do.
+
+    Dashboards is no longer an example of this: the PM calendar sits in that
+    group and is offered to every department, so no account has none of it.
+    Checked in the other direction below.
+    """
+
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="operations_maintenance")
+    labels = _labels(client)
+
+    assert "Life Data Analysis" not in labels
+    assert "Metrics" not in labels
+    assert module.NAV_GROUP_ANALYSIS not in _headings(client)
+
+
+def test_a_heading_is_drawn_over_the_one_entry_an_account_does_have(
+    monkeypatch, tmp_path
+):
+    """Facilities keeps the PM calendar, so Dashboards stands over just it."""
+
     module = _app(monkeypatch, tmp_path)
     client = _client(module, department="facilities")
-    assert set(DEPARTMENT_PAGES).isdisjoint(_labels(client))
-    assert module.NAV_GROUP_DASHBOARDS not in _headings(client)
+
+    sections = {heading: labels for heading, labels, _ in _sections(client)}
+    assert module.NAV_GROUP_DASHBOARDS in _headings(client)
+    assert sections[module.NAV_GROUP_DASHBOARDS] == ["PM Task Tracker"]
 
 
 def test_the_heading_names_the_list_it_stands_over(monkeypatch, tmp_path):

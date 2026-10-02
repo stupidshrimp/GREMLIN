@@ -34,24 +34,12 @@
       <span class="link-title">Overdue Work Orders - 912/917</span>
       <span class="link-description">Open the 912 overdue work order dashboard</span>
     </a>
-
-    <a class="link-card" href="{{ url_for('pm_calendar') }}">
-      <span class="link-title-row">
-        <span class="link-title">PM Calendar</span>
-        {# Same pill the page it opens carries, so the state is known before the
-           click rather than after it. #}
-        <span class="construction-badge" aria-label="Under construction">
-          <svg class="construction-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 14a8 8 0 0 1 16 0"></path>
-            <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
-          </svg>
-          <span>Under construction</span>
-        </span>
-      </span>
-      <span class="link-description">
-        View upcoming Preventative Maintenance (PM) activities by asset
-      </span>
-    </a>
+    {# The PM Calendar card used to sit here. The calendar is a GREMLIN page
+       with a sidebar entry of its own now -- PM Task Tracker -- and this page
+       is for resources that live somewhere else: Power BI files, SharePoint,
+       vendor logins. Listing an internal page here as well would be the one
+       place in the sidebar that is reached two ways. /pm-calendar still
+       redirects, so anything bookmarked from this card keeps working. #}
   </div>
 </section>
 

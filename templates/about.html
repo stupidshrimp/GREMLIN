@@ -126,8 +126,11 @@
       </span>
     </a>
 
-    <a class="link-card" href="{{ url_for('pm_calendar') }}">
-      <span class="link-title">PM Calendar</span>
+    {# The calendar's own page, under the name the sidebar gives it. Pointed
+       straight at the page rather than through the /pm-calendar redirect, so
+       this list has no hop in it. #}
+    <a class="link-card" href="{{ url_for('pm_task_tracker') }}">
+      <span class="link-title">PM Task Tracker</span>
       <span class="link-description">
         Upcoming preventive maintenance by asset, with the frequencies each one
         is running on

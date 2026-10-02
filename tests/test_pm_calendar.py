@@ -47,6 +47,23 @@ def _app(monkeypatch, tmp_path, *, pm_db=None):
     return importlib.reload(app)
 
 
+def _signed_in(module, department="operations_maintenance"):
+    """A browser signed in to an account that may open the calendar.
+
+    The calendar is the PM Task Tracker page as of 2026-10-01, and that page
+    has a PAGES entry: an account is needed, and the department on that entry
+    decides who is offered it. At its old address, /pm-calendar, it was named
+    by no entry and so was open to anyone with the link.
+    """
+
+    module.access_control.save_user(None, "tester", "2468", "viewer", department, "all")
+    client = module.app.test_client()
+    assert client.post(
+        "/auth/login", json={"username": "tester", "pin": "2468"}
+    ).status_code == 200
+    return client
+
+
 # ----------------------------------------------------------------------
 # Where the database lives
 # ----------------------------------------------------------------------
@@ -134,8 +151,10 @@ def test_the_app_starts_even_when_the_database_cannot_be_opened(monkeypatch, tmp
 
     module = _app(monkeypatch, tmp_path, pm_db=blocked / "sub" / "pm.db")
 
-    # Importing worked at all, and the page itself still renders.
-    assert module.app.test_client().get("/pm-calendar").status_code == 200
+    # Importing worked at all, and the page itself still renders. The
+    # calendar is the PM Task Tracker page as of 2026-10-01; /pm-calendar
+    # redirects there.
+    assert _signed_in(module).get("/pm-task-tracker").status_code == 200
 
 
 def test_an_unreachable_database_reports_503_rather_than_500(monkeypatch, tmp_path):
@@ -1794,11 +1813,14 @@ def test_a_caller_changing_a_row_does_not_change_the_cached_tree(tmp_path):
 def test_limble_links_use_the_configured_app_host(monkeypatch, tmp_path):
     monkeypatch.delenv("LIMBLE_APP_URL", raising=False)
     module = _app(monkeypatch, tmp_path)
-    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    # One browser for both halves: the host is read per request, so the same
+    # signed-in session sees the change.
+    client = _signed_in(module)
+    page = client.get("/pm-task-tracker").get_data(as_text=True)
     assert 'const LIMBLE_APP_URL = "https://app.limblecmms.com";' in page
 
     monkeypatch.setenv("LIMBLE_APP_URL", "https://eu.example-limble.test/")
-    page = module.app.test_client().get("/pm-calendar").get_data(as_text=True)
+    page = client.get("/pm-task-tracker").get_data(as_text=True)
     assert 'const LIMBLE_APP_URL = "https://eu.example-limble.test";' in page
 
 
