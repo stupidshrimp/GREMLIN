@@ -16,7 +16,7 @@
     <button type="button" class="btn-secondary std-expand-all" data-expand-all aria-expanded="false">Expand all</button>
   </header>
 
-  {% call std.figure("S1", "How records move through GREMLIN. Limble is the system of record; GREMLIN keeps a copy, adds the decisions people make about each record, and calculates everything else from those two every time a page asks.") %}
+  {% call std.figure("S1", "How records move through GREMLIN. Limble is the system of record; GREMLIN keeps a copy, adds the decisions people make about each record, and calculates the metrics and analyses from those every time a page asks, apart from Weibull fits, which are saved when an editor runs one.") %}
   <svg viewBox="0 0 760 300" role="img" aria-labelledby="fig-s1-title fig-s1-desc">
     <title id="fig-s1-title">How records move through GREMLIN</title>
     <desc id="fig-s1-desc">Limble CMMS feeds the Limble sync, which writes raw records into GREMLIN.db and maps them into mapped records. Editors add dispositions from the Disposition page and availability settings from the Configuration page. The Metrics page and Perform an Analysis read from GREMLIN.db.</desc>
@@ -84,7 +84,15 @@
       <li><strong>Mapped records</strong> copy the fields GREMLIN works with into columns of their own: the asset number (Limble's asset ID), the asset's name and place in the asset hierarchy, the created, start and completed dates (stored in UTC), status, Limble's task type, downtime converted from seconds to hours, the description and completion notes, and the Area Affected, Condition, Cause and Action boxes.</li>
       <li><strong>The mapping also guesses a record class</strong> for every record; the next card explains how, and why a person's call replaces it.</li>
       <li><strong>The mapping is rebuilt by itself</strong> whenever its rules change, and editors can rebuild it from Configuration with Refresh CMMS mapping.</li>
-      <li><strong>Everything lives in GREMLIN.db</strong>, one SQLite database on the shared drive, so one backup covers it. Accounts are kept in a separate database, and the PM Task Tracker keeps its own copy of PM tasks, pulled from Limble in the background.</li>
+      <li><strong>GREMLIN keeps its data in four SQLite files</strong>, so a backup of GREMLIN.db alone is not enough:
+        <ul>
+          <li><strong>GREMLIN.db:</strong> the Limble records, dispositions, failure modes and mechanisms, Weibull results, and the availability configuration, goals and overtime.</li>
+          <li><strong>accesscontrol.db</strong>, beside GREMLIN.db: the accounts and their login and change history.</li>
+          <li><strong>auxillary.db</strong>, in the GREMLIN Global DB folder on the shared drive: the bug reports, one list for every installation.</li>
+          <li><strong>PM_Calendar_local.db</strong>, beside GREMLIN.db: the PM Task Tracker's copy of PM tasks. It holds only what it pulls from Limble, and every pull fetches all of it again.</li>
+        </ul>
+        Back up the first three. Those are their default places; an installation can move any of the four, and the Developer area shows where the first three are.
+      </li>
     </ul>
   {% endcall %}
 
