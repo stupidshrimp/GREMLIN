@@ -1,0 +1,62 @@
+{#- Building blocks for the Standards page, imported by each of its tabs.
+
+    Kept in one file so every card, equation and figure on the page is drawn
+    the same way: a reader learns once what a numbered box with a green edge
+    means, and a later card cannot quietly invent a second look for it. -#}
+
+{#- The hard hat the Metrics page's own cards wear while they are being built.
+    The same markup as metrics.html, so the badge means the same thing in both
+    places: the metric exists, and its definition may still change. -#}
+{% macro construction_badge() -%}
+<span class="construction-badge" aria-label="Under construction">
+  <svg class="construction-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M4 14a8 8 0 0 1 16 0"></path>
+    <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
+  </svg>
+  <span>Under construction</span>
+</span>
+{%- endmacro %}
+
+{#- One expandable card. A <details>, so it opens from the keyboard and with no
+    script at all, and find-in-page can open a closed one to show a match.
+
+    The heading is the <summary>'s one permitted heading, and the badge sits
+    inside it so a screen reader moving by headings hears that a card is under
+    construction as well as its name. `id` is what a link or the search box
+    names to open the card; standards.js finds the tab it is in. -#}
+{% macro doc_card(id, title, lede, eyebrow=None, under_construction=False) -%}
+<details class="std-card" id="{{ id }}">
+  <summary class="std-card-summary">
+    {%- if eyebrow %}
+    <span class="eyebrow">{{ eyebrow }}</span>
+    {%- endif %}
+    <h3 class="std-card-title">{{ title }}{% if under_construction %} {{ construction_badge() }}{% endif %}</h3>
+    <span class="std-card-lede">{{ lede }}</span>
+    <span class="std-card-marker" aria-hidden="true"></span>
+  </summary>
+  <div class="std-card-body">
+    {{ caller() }}
+  </div>
+</details>
+{%- endmacro %}
+
+{#- A displayed equation and its number. The number is how the prose around it
+    refers back ("from equation A4"), so it is printed beside the equation and
+    repeated in the label a screen reader announces for the group. -#}
+{% macro equation(number, label) -%}
+<div class="std-equation" role="group" aria-label="Equation {{ number }}: {{ label }}">
+  <div class="std-equation-math">{{ caller() }}</div>
+  <span class="std-equation-number" aria-hidden="true">({{ number }})</span>
+</div>
+{%- endmacro %}
+
+{#- A figure with its caption. The drawing inside is the caller's own inline
+    SVG, which carries its own title and description for assistive tech. -#}
+{% macro figure(number, caption, id=None) -%}
+<figure class="std-figure"{% if id %} id="{{ id }}"{% endif %}>
+  <div class="std-figure-frame">
+    {{ caller() }}
+  </div>
+  <figcaption><span class="std-figure-label">Figure {{ number }}.</span> {{ caption }}</figcaption>
+</figure>
+{%- endmacro %}

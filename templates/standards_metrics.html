@@ -1,0 +1,916 @@
+{% import "standards_macros.html" as std %}
+{#- The Metrics tab: one card for each card on the Metrics page.
+
+    Availability is written out in full. The other two are still under
+    construction on the Metrics page itself, so their cards say so and carry
+    only the working definitions as they stand, without the full treatment that
+    would have to be rewritten the moment their calculations change.
+
+    Every number in the worked examples was produced by the calculator in
+    services/availability_service.py, so a reader can reproduce them exactly. -#}
+<article class="tab-panel" id="metrics" role="tabpanel" aria-labelledby="metrics-tab">
+  <header class="std-panel-head">
+    <div>
+      <h2>Metrics</h2>
+      <p>
+        The Metrics page has three cards, and each one has a card here. Open a
+        card to see what it counts, the equations behind every number it draws,
+        and where each input comes from. Asset availability is finished and is
+        documented in depth. The other two cards are still under construction
+        on the Metrics page, so their write-ups are under construction as well.
+      </p>
+    </div>
+    <button type="button" class="btn-secondary std-expand-all" data-expand-all aria-expanded="false">Expand all</button>
+  </header>
+
+  <div class="std-card-list">
+
+  {# ======================================================================
+     Availability
+     ====================================================================== #}
+  {% call std.doc_card(
+      "metrics-availability",
+      "Asset availability by month",
+      "The share of each asset's scheduled production hours it was able to run, for each completed month in the card's window (the last five by default), grouped by asset group.",
+      eyebrow="Availability") %}
+
+    <nav class="std-toc" aria-label="On this card">
+      <p class="eyebrow">On this card</p>
+      <ol>
+        <li><a href="#availability-overview">What availability measures</a></li>
+        <li><a href="#availability-sources">Where the data comes from</a></li>
+        <li><a href="#availability-scheduled">Step 1: Scheduled hours</a></li>
+        <li><a href="#availability-downtime">Step 2: Downtime charged to the asset</a></li>
+        <li><a href="#availability-linked">Step 3: Linked downtime</a></li>
+        <li><a href="#availability-result">Step 4: Availability for one asset and month</a></li>
+        <li><a href="#availability-average">Step 5: Group average, goal and asset average</a></li>
+        <li><a href="#availability-window">Which months are shown</a></li>
+        <li><a href="#availability-exclude-pms">The Exclude PMs switch</a></li>
+        <li><a href="#availability-stacked">Stack by work order type</a></li>
+        <li><a href="#availability-flags">Flags and notes</a></li>
+        <li><a href="#availability-reading">Reading the card and its data views</a></li>
+        <li><a href="#availability-changes">When the numbers change</a></li>
+        <li><a href="#availability-limits">Known limitations</a></li>
+      </ol>
+    </nav>
+
+    <section class="std-section" id="availability-overview">
+      <h4>What availability measures</h4>
+      <p>
+        Availability answers one question for one asset in one calendar month:
+        of the hours the asset was scheduled to produce, what share was it able
+        to run? The downtime recorded on its work orders is taken away from its
+        scheduled hours, and what is left is divided by the scheduled hours.
+      </p>
+      {% call std.equation("A1", "availability is adjusted scheduled hours minus adjusted downtime, divided by adjusted scheduled hours") %}
+      <math display="block">
+        <mi>A</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+        <mo>=</mo>
+        <mfrac>
+          <mrow><msub><mi>S</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>&#x2212;</mo><msub><mi>D</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></mrow>
+          <mrow><msub><mi>S</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></mrow>
+        </mfrac>
+        <mo>&#xD7;</mo><mn>100</mn><mo>%</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>a</mi><mo>,</mo><mi>m</mi></math></dt><dd>One asset, and one completed calendar month.</dd>
+        <dt><math><msub><mi>S</mi><mtext>adj</mtext></msub></math></dt><dd>Adjusted scheduled hours: the asset's scheduled hours plus any overtime entered for that month (step 1).</dd>
+        <dt><math><msub><mi>D</mi><mtext>adj</mtext></msub></math></dt><dd>Adjusted downtime hours: the asset's own downtime plus any share charged to it from linked assets (steps 2 and 3).</dd>
+      </dl>
+      <p>
+        The five steps below build each part of equation A1, and step 4 gives it
+        in full, with the two edge cases it has to handle. Four facts are worth
+        knowing before the detail:
+      </p>
+      <ul>
+        <li><strong>Every work order with downtime counts</strong>, whatever its type or classification, unless the reader switches on Exclude PMs. Only one with no asset number or no readable created date is left out.</li>
+        <li><strong>Downtime belongs to the month the work order was created</strong>, read on the plant's clock.</li>
+        <li><strong>Only weekdays are scheduled.</strong> Saturdays and Sundays never add scheduled hours.</li>
+        <li><strong>The card ignores the Metrics page's asset and date filters.</strong> It always shows every included asset group that has assets, over whole months.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="availability-sources">
+      <h4>Where the data comes from</h4>
+      <p>
+        Two kinds of input feed every availability number: work orders, which
+        come from Limble, and the availability configuration, which is kept in
+        GREMLIN.db and edited by people with the editor role.
+      </p>
+      {% call std.figure("A1", "Work orders travel from Limble through the Limble sync into GREMLIN.db, where Limble's payload is stored with the fields GREMLIN adds and mapped into analysis fields. The calculator combines the mapped work orders with the availability configuration every time the card loads.") %}
+      <svg viewBox="0 0 840 232" role="img" aria-labelledby="fig-a1-title fig-a1-desc">
+        <title id="fig-a1-title">Where availability data comes from</title>
+        <desc id="fig-a1-desc">Limble CMMS feeds the Limble sync, which writes raw records into GREMLIN.db and maps them into mapped records. The availability calculator reads the mapped records and the availability configuration, and produces the Availability card.</desc>
+        <defs>
+          <marker id="fig-a1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="fig-arrow-head" d="M0 0 L10 5 L0 10 Z"/>
+          </marker>
+        </defs>
+        <rect class="fig-box-strong" x="8" y="74" width="120" height="76" rx="10"/>
+        <text class="fig-text-strong" x="68" y="104" text-anchor="middle">Limble CMMS</text>
+        <text class="fig-text-small" x="68" y="122" text-anchor="middle">work orders,</text>
+        <text class="fig-text-small" x="68" y="137" text-anchor="middle">downtime in seconds</text>
+
+        <path class="fig-arrow" d="M128 112 H152" marker-end="url(#fig-a1-arrow)"/>
+
+        <rect class="fig-box-strong" x="156" y="74" width="120" height="76" rx="10"/>
+        <text class="fig-text-strong" x="216" y="104" text-anchor="middle">Limble sync</text>
+        <text class="fig-text-small" x="216" y="122" text-anchor="middle">every night, or</text>
+        <text class="fig-text-small" x="216" y="137" text-anchor="middle">on demand</text>
+
+        <path class="fig-arrow" d="M276 112 H300" marker-end="url(#fig-a1-arrow)"/>
+
+        <rect class="fig-box-strong" x="304" y="12" width="196" height="206" rx="12"/>
+        <text class="fig-text-strong" x="402" y="36" text-anchor="middle">GREMLIN.db</text>
+        <rect class="fig-box" x="320" y="50" width="164" height="56" rx="8"/>
+        <text class="fig-text-strong" x="402" y="74" text-anchor="middle">Raw records</text>
+        <text class="fig-text-small" x="402" y="92" text-anchor="middle">payload + GREMLIN fields</text>
+        <path class="fig-arrow" d="M402 106 V128" marker-end="url(#fig-a1-arrow)"/>
+        <rect class="fig-box" x="320" y="132" width="164" height="72" rx="8"/>
+        <text class="fig-text-strong" x="402" y="154" text-anchor="middle">Mapped records</text>
+        <text class="fig-text-small" x="402" y="172" text-anchor="middle">asset number, dates (UTC),</text>
+        <text class="fig-text-small" x="402" y="187" text-anchor="middle">downtime in hours, type</text>
+
+        <path class="fig-arrow" d="M484 168 H508 V96 H526" marker-end="url(#fig-a1-arrow)"/>
+
+        <rect class="fig-box-accent" x="530" y="62" width="150" height="64" rx="10"/>
+        <text class="fig-text-strong" x="605" y="90" text-anchor="middle">Availability</text>
+        <text class="fig-text-strong" x="605" y="108" text-anchor="middle">calculator</text>
+
+        <rect class="fig-box" x="530" y="152" width="150" height="70" rx="10"/>
+        <text class="fig-text-strong" x="605" y="174" text-anchor="middle">Configuration</text>
+        <text class="fig-text-small" x="605" y="192" text-anchor="middle">groups, schedules, links,</text>
+        <text class="fig-text-small" x="605" y="207" text-anchor="middle">goals, overtime, timezone</text>
+        <path class="fig-arrow" d="M605 152 V130" marker-end="url(#fig-a1-arrow)"/>
+
+        <path class="fig-arrow" d="M680 94 H704" marker-end="url(#fig-a1-arrow)"/>
+
+        <rect class="fig-box-strong" x="708" y="62" width="124" height="64" rx="10"/>
+        <text class="fig-text-strong" x="770" y="90" text-anchor="middle">Availability</text>
+        <text class="fig-text-strong" x="770" y="108" text-anchor="middle">card</text>
+      </svg>
+      {% endcall %}
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Inputs to the availability calculation</caption>
+          <thead>
+            <tr><th scope="col">Input</th><th scope="col">What it holds</th><th scope="col">Stored in</th><th scope="col">Changed on</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Work orders</td><td>Asset number, created and completed dates, downtime, Limble task type</td><td><code>mapped_<wbr>cmms_<wbr>record</code>, refreshed by the Limble sync</td><td>In Limble. The next sync brings in changes to dates, downtime and type; a work order already imported keeps its asset number even if it is moved to another asset in Limble.</td></tr>
+            <tr><td>Disposition class</td><td>A person's record class for a work order. Read only by Exclude PMs and the stacked bars.</td><td><code>record_<wbr>class_<wbr>final</code></td><td>Disposition page (editors)</td></tr>
+            <tr><td>Asset groups</td><td>Group names, the asset numbers in each, whether the group is charted, its order</td><td><code>availability_<wbr>asset_<wbr>groups</code>, <code>availability_<wbr>asset_<wbr>group_<wbr>assets</code></td><td>Configuration, Asset group schedules (editors): the assets in each group and whether it is charted. Group names and their order are set when the database is first filled.</td></tr>
+            <tr><td>Shift schedule</td><td>Schedule, break, lunch and setup hours per day for each group</td><td><code>availability_<wbr>asset_<wbr>groups</code></td><td>Configuration, Asset group schedules</td></tr>
+            <tr><td>Display names</td><td>The short label each asset's bars are drawn with</td><td><code>availability_<wbr>asset_<wbr>display_<wbr>names</code></td><td>Configuration, Asset group schedules</td></tr>
+            <tr><td>Linked downtime rules</td><td>Parent asset, linked asset and impact factor</td><td><code>availability_<wbr>linked_<wbr>downtime_<wbr>rules</code></td><td>Configuration, Linked downtime rules</td></tr>
+            <tr><td>Goal %</td><td>The target for each group and month (95% unless changed)</td><td><code>availability_<wbr>goal_<wbr>percent</code></td><td>The Goal % row under each chart (editors)</td></tr>
+            <tr><td>Overtime</td><td>Extra scheduled hours for one asset in one month</td><td><code>availability_<wbr>manual_<wbr>ot</code></td><td>Edit OT hours at the top right of each chart, then the table under it (editors)</td></tr>
+            <tr><td>Plant timezone</td><td>The clock months are judged on: America/Chicago</td><td><code>availability_<wbr>settings</code></td><td>Set in the database</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The starting values for groups, schedules, display names and linked
+        rules were transcribed from the Configurator sheet of the Availability
+        Dashboard workbook this card replaced. They fill a new database once,
+        and each group's Reset to defaults button puts that group's starting
+        schedule and assets back. Otherwise the database is the source of
+        truth, and the Configuration page is where it is changed.
+      </p>
+    </section>
+
+    <section class="std-section" id="availability-scheduled">
+      <h4><span class="std-step">1</span>Scheduled hours</h4>
+      <p>
+        Each asset group has a shift schedule: the hours per day the group is
+        staffed, and the breaks, lunch and setup time inside those hours. What
+        is left after taking those out is the net scheduled hours per day. It is
+        always worked out from its parts and never typed in, so it cannot
+        disagree with them.
+      </p>
+      {% call std.equation("A2", "net scheduled hours per day is the larger of zero and schedule hours minus break, lunch and setup hours") %}
+      <math display="block">
+        <msub><mi>N</mi><mi>g</mi></msub><mo>=</mo>
+        <mi>max</mi><mo stretchy="false">(</mo><mn>0</mn><mo>,</mo>
+          <msub><mi>H</mi><mtext>schedule</mtext></msub><mo>&#x2212;</mo>
+          <mo stretchy="false">(</mo><msub><mi>H</mi><mtext>break</mtext></msub><mo>+</mo><msub><mi>H</mi><mtext>lunch</mtext></msub><mo>+</mo><msub><mi>H</mi><mtext>setup</mtext></msub><mo stretchy="false">)</mo>
+        <mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      {% call std.figure("A2", "One weekday for a group scheduled 24 hours with 1 hour of breaks, 2 hours of lunch and 3 hours of setup: 18 net scheduled hours (equation A2). Only the totals matter; the order of the segments is for illustration.") %}
+      <svg viewBox="0 0 760 150" role="img" aria-labelledby="fig-a2-title fig-a2-desc">
+        <title id="fig-a2-title">Net scheduled hours in one day</title>
+        <desc id="fig-a2-desc">A 24 hour bar split into 18 net scheduled hours, 3 hours of setup, 2 hours of lunch and 1 hour of breaks.</desc>
+        <text class="fig-text-strong" x="60" y="26">One weekday on a 24-hour schedule</text>
+        <rect class="fig-series-3" x="60" y="40" width="450" height="40" rx="4"/>
+        <rect class="fig-series-5" x="510" y="40" width="75" height="40"/>
+        <rect class="fig-series-2" x="585" y="40" width="50" height="40"/>
+        <rect class="fig-series-6" x="635" y="40" width="25" height="40"/>
+        <text class="fig-text-on-solid" x="285" y="65" text-anchor="middle">Net scheduled: 18 h</text>
+        <path class="fig-axis" d="M60 88 H660"/>
+        <path class="fig-axis" d="M60 84 V92 M210 84 V92 M360 84 V92 M510 84 V92 M660 84 V92"/>
+        <text class="fig-text-small" x="60" y="106" text-anchor="middle">0 h</text>
+        <text class="fig-text-small" x="210" y="106" text-anchor="middle">6 h</text>
+        <text class="fig-text-small" x="360" y="106" text-anchor="middle">12 h</text>
+        <text class="fig-text-small" x="510" y="106" text-anchor="middle">18 h</text>
+        <text class="fig-text-small" x="660" y="106" text-anchor="middle">24 h</text>
+        <rect class="fig-series-3" x="60" y="124" width="12" height="12" rx="2"/>
+        <text x="78" y="134">Net scheduled 18 h</text>
+        <rect class="fig-series-5" x="230" y="124" width="12" height="12" rx="2"/>
+        <text x="248" y="134">Setup 3 h</text>
+        <rect class="fig-series-2" x="340" y="124" width="12" height="12" rx="2"/>
+        <text x="358" y="134">Lunch 2 h</text>
+        <rect class="fig-series-6" x="450" y="124" width="12" height="12" rx="2"/>
+        <text x="468" y="134">Breaks 1 h</text>
+      </svg>
+      {% endcall %}
+      <p>
+        A month's scheduled hours are the net hours per day multiplied by the
+        number of weekdays, Monday to Friday, in that month. Weekends are never
+        scheduled, whatever the group's hours per day, and holidays are not
+        taken out.
+      </p>
+      {% call std.equation("A3", "scheduled hours are weekdays in the month times net scheduled hours per day") %}
+      <math display="block">
+        <mi>S</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mi>W</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo>&#xD7;</mo><msub><mi>N</mi><mi>g</mi></msub>
+      </math>
+      {% endcall %}
+      {% call std.figure("A3", "January 2026 has 22 weekdays, so an asset in a group with 18 net hours per day is scheduled 22 × 18 = 396 hours (equation A3). Saturdays and Sundays, shaded grey, add nothing.") %}
+      <svg class="is-compact" viewBox="0 0 392 284" role="img" aria-labelledby="fig-a3-title fig-a3-desc">
+        <title id="fig-a3-title">Weekdays counted in January 2026</title>
+        <desc id="fig-a3-desc">A calendar of January 2026 with its 22 weekdays highlighted and its weekends greyed out.</desc>
+        <text class="fig-text-strong" x="196" y="24" text-anchor="middle">January 2026</text>
+        <text x="40" y="52" text-anchor="middle" class="fig-text-small">Mo</text>
+        <text x="92" y="52" text-anchor="middle" class="fig-text-small">Tu</text>
+        <text x="144" y="52" text-anchor="middle" class="fig-text-small">We</text>
+        <text x="196" y="52" text-anchor="middle" class="fig-text-small">Th</text>
+        <text x="248" y="52" text-anchor="middle" class="fig-text-small">Fr</text>
+        <text x="300" y="52" text-anchor="middle" class="fig-text-small">Sa</text>
+        <text x="352" y="52" text-anchor="middle" class="fig-text-small">Su</text>
+        <rect class="fig-weekday" x="172" y="62" width="48" height="32" rx="6"/><text x="196" y="83" text-anchor="middle" class="fig-text-strong">1</text>
+        <rect class="fig-weekday" x="224" y="62" width="48" height="32" rx="6"/><text x="248" y="83" text-anchor="middle" class="fig-text-strong">2</text>
+        <rect class="fig-weekend" x="276" y="62" width="48" height="32" rx="6"/><text x="300" y="83" text-anchor="middle">3</text>
+        <rect class="fig-weekend" x="328" y="62" width="48" height="32" rx="6"/><text x="352" y="83" text-anchor="middle">4</text>
+        <rect class="fig-weekday" x="16" y="100" width="48" height="32" rx="6"/><text x="40" y="121" text-anchor="middle" class="fig-text-strong">5</text>
+        <rect class="fig-weekday" x="68" y="100" width="48" height="32" rx="6"/><text x="92" y="121" text-anchor="middle" class="fig-text-strong">6</text>
+        <rect class="fig-weekday" x="120" y="100" width="48" height="32" rx="6"/><text x="144" y="121" text-anchor="middle" class="fig-text-strong">7</text>
+        <rect class="fig-weekday" x="172" y="100" width="48" height="32" rx="6"/><text x="196" y="121" text-anchor="middle" class="fig-text-strong">8</text>
+        <rect class="fig-weekday" x="224" y="100" width="48" height="32" rx="6"/><text x="248" y="121" text-anchor="middle" class="fig-text-strong">9</text>
+        <rect class="fig-weekend" x="276" y="100" width="48" height="32" rx="6"/><text x="300" y="121" text-anchor="middle">10</text>
+        <rect class="fig-weekend" x="328" y="100" width="48" height="32" rx="6"/><text x="352" y="121" text-anchor="middle">11</text>
+        <rect class="fig-weekday" x="16" y="138" width="48" height="32" rx="6"/><text x="40" y="159" text-anchor="middle" class="fig-text-strong">12</text>
+        <rect class="fig-weekday" x="68" y="138" width="48" height="32" rx="6"/><text x="92" y="159" text-anchor="middle" class="fig-text-strong">13</text>
+        <rect class="fig-weekday" x="120" y="138" width="48" height="32" rx="6"/><text x="144" y="159" text-anchor="middle" class="fig-text-strong">14</text>
+        <rect class="fig-weekday" x="172" y="138" width="48" height="32" rx="6"/><text x="196" y="159" text-anchor="middle" class="fig-text-strong">15</text>
+        <rect class="fig-weekday" x="224" y="138" width="48" height="32" rx="6"/><text x="248" y="159" text-anchor="middle" class="fig-text-strong">16</text>
+        <rect class="fig-weekend" x="276" y="138" width="48" height="32" rx="6"/><text x="300" y="159" text-anchor="middle">17</text>
+        <rect class="fig-weekend" x="328" y="138" width="48" height="32" rx="6"/><text x="352" y="159" text-anchor="middle">18</text>
+        <rect class="fig-weekday" x="16" y="176" width="48" height="32" rx="6"/><text x="40" y="197" text-anchor="middle" class="fig-text-strong">19</text>
+        <rect class="fig-weekday" x="68" y="176" width="48" height="32" rx="6"/><text x="92" y="197" text-anchor="middle" class="fig-text-strong">20</text>
+        <rect class="fig-weekday" x="120" y="176" width="48" height="32" rx="6"/><text x="144" y="197" text-anchor="middle" class="fig-text-strong">21</text>
+        <rect class="fig-weekday" x="172" y="176" width="48" height="32" rx="6"/><text x="196" y="197" text-anchor="middle" class="fig-text-strong">22</text>
+        <rect class="fig-weekday" x="224" y="176" width="48" height="32" rx="6"/><text x="248" y="197" text-anchor="middle" class="fig-text-strong">23</text>
+        <rect class="fig-weekend" x="276" y="176" width="48" height="32" rx="6"/><text x="300" y="197" text-anchor="middle">24</text>
+        <rect class="fig-weekend" x="328" y="176" width="48" height="32" rx="6"/><text x="352" y="197" text-anchor="middle">25</text>
+        <rect class="fig-weekday" x="16" y="214" width="48" height="32" rx="6"/><text x="40" y="235" text-anchor="middle" class="fig-text-strong">26</text>
+        <rect class="fig-weekday" x="68" y="214" width="48" height="32" rx="6"/><text x="92" y="235" text-anchor="middle" class="fig-text-strong">27</text>
+        <rect class="fig-weekday" x="120" y="214" width="48" height="32" rx="6"/><text x="144" y="235" text-anchor="middle" class="fig-text-strong">28</text>
+        <rect class="fig-weekday" x="172" y="214" width="48" height="32" rx="6"/><text x="196" y="235" text-anchor="middle" class="fig-text-strong">29</text>
+        <rect class="fig-weekday" x="224" y="214" width="48" height="32" rx="6"/><text x="248" y="235" text-anchor="middle" class="fig-text-strong">30</text>
+        <rect class="fig-weekend" x="276" y="214" width="48" height="32" rx="6"/><text x="300" y="235" text-anchor="middle">31</text>
+        <text class="fig-text-strong" x="196" y="274" text-anchor="middle">22 weekdays × 18 h = 396 scheduled hours</text>
+      </svg>
+      {% endcall %}
+      <p>Overtime an editor enters for that asset and month is added on top. It can never be negative.</p>
+      {% call std.equation("A4", "adjusted scheduled hours are scheduled hours plus overtime hours") %}
+      <math display="block">
+        <msub><mi>S</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mi>S</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>+</mo>
+        <mtext>OT</mtext><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>N</mi><mi>g</mi></msub></math></dt><dd>Net scheduled hours per day for the asset's group <math><mi>g</mi></math>.</dd>
+        <dt><math><msub><mi>H</mi><mtext>schedule</mtext></msub></math></dt><dd>Hours per day the group is staffed (0 to 24). The break, lunch and setup hours are the time inside it that is not production.</dd>
+        <dt><math><mi>W</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo></math></dt><dd>The number of weekdays, Monday to Friday, in month <math><mi>m</mi></math>.</dd>
+        <dt><math><mtext>OT</mtext></math></dt><dd>Overtime hours entered for that asset and month with Edit OT hours (0 when nothing was entered).</dd>
+      </dl>
+      <div class="std-example">
+        <p class="eyebrow">Worked example</p>
+        <ul class="std-calc">
+          <li><span>Net hours per day</span><span>24 − (1 + 2 + 3) = <span class="std-result">18 h</span></span></li>
+          <li><span>Scheduled, January 2026</span><span>22 weekdays × 18 h = <span class="std-result">396 h</span></span></li>
+          <li><span>With 8 h of overtime entered</span><span>396 + 8 = <span class="std-result">404 h</span></span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-downtime">
+      <h4><span class="std-step">2</span>Downtime charged to the asset</h4>
+      <p>
+        Limble records the downtime on each work order in seconds. The mapping
+        step converts it to hours as it copies the work order into GREMLIN.
+      </p>
+      {% call std.equation("A5", "downtime hours are Limble's downtime in seconds divided by 3600") %}
+      <math display="block">
+        <msub><mi>d</mi><mi>w</mi></msub><mo>=</mo><mfrac><msub><mi>s</mi><mi>w</mi></msub><mn>3600</mn></mfrac>
+      </math>
+      {% endcall %}
+      <p>
+        An asset's direct downtime for a month is the sum of that downtime over
+        every work order on the asset that was created in the month.
+      </p>
+      {% call std.equation("A6", "direct downtime is the sum over the month's work orders of the larger of zero and the work order's downtime") %}
+      <math display="block">
+        <msub><mi>D</mi><mtext>direct</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>w</mi><mo>&#x2208;</mo><mtext>WO</mtext><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></mrow></munder>
+        <mi>max</mi><mo stretchy="false">(</mo><mn>0</mn><mo>,</mo><msub><mi>d</mi><mi>w</mi></msub><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>s</mi><mi>w</mi></msub></math></dt><dd>The downtime Limble recorded on work order <math><mi>w</mi></math>, in seconds. A blank value counts as 0.</dd>
+        <dt><math><mtext>WO</mtext><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></math></dt><dd>Every work order on asset <math><mi>a</mi></math> whose created date, on the plant's clock, falls in month <math><mi>m</mi></math>.</dd>
+      </dl>
+      <ul>
+        <li><strong>Every work order counts</strong>, whatever Limble calls it (preventive maintenance, work request, project, parts order) and however it was classified. A work order with no asset number or no readable created date cannot be placed and is left out; the only other exception is the reader's own Exclude PMs switch.</li>
+        <li><strong>Negative downtime counts as zero</strong>, one work order at a time.</li>
+        <li><strong>Work orders with no downtime still count</strong> toward the work order totals and the notes, though they add no hours.</li>
+        <li><strong>The month comes from the created date, on the plant's clock.</strong> Dates are stored in UTC and converted to America/Chicago time first, so a work order opened at 11 PM on the last day of a month stays in that month.</li>
+        <li><strong>All of a work order's downtime goes to its created month</strong>, even when the repair runs into the next month. Those work orders are counted as crossing a month boundary (see Flags and notes).</li>
+      </ul>
+      {% call std.figure("A4", "A work order created at 10 PM on January 30 with 60 hours of downtime runs until 10 AM on February 2. All 60 hours are charged to January, the month it was created, and the work order is counted as crossing a month boundary.") %}
+      <svg viewBox="0 0 760 196" role="img" aria-labelledby="fig-a4-title fig-a4-desc">
+        <title id="fig-a4-title">Downtime is charged to the created month</title>
+        <desc id="fig-a4-desc">A timeline from January 26 to February 5 with a dashed month boundary at February 1. A downtime bar starts on January 30 at 10 PM and ends on February 2 at 10 AM, and is charged entirely to January.</desc>
+        <rect class="fig-band" x="60" y="40" width="360" height="100" rx="6"/>
+        <text class="fig-text-strong" x="240" y="60" text-anchor="middle">All 60 h are charged to January</text>
+        <path class="fig-guide" d="M420 30 V150"/>
+        <text class="fig-text-small" x="426" y="40">month boundary,</text>
+        <text class="fig-text-small" x="426" y="54">plant time</text>
+        <rect class="fig-danger" x="355" y="86" width="150" height="22" rx="4"/>
+        <text class="fig-text-on-solid" x="430" y="101" text-anchor="middle">60 h downtime</text>
+        <text class="fig-text-small" x="352" y="80" text-anchor="end">created Jan 30, 10 PM</text>
+        <text class="fig-text-small" x="510" y="101">ends Feb 2, 10 AM</text>
+        <path class="fig-axis" d="M60 128 H700"/>
+        <path class="fig-axis" d="M60 124 V132 M120 124 V132 M180 124 V132 M240 124 V132 M300 124 V132 M360 124 V132 M420 124 V132 M480 124 V132 M540 124 V132 M600 124 V132 M660 124 V132"/>
+        <text class="fig-text-small" x="60" y="146" text-anchor="middle">26</text>
+        <text class="fig-text-small" x="120" y="146" text-anchor="middle">27</text>
+        <text class="fig-text-small" x="180" y="146" text-anchor="middle">28</text>
+        <text class="fig-text-small" x="240" y="146" text-anchor="middle">29</text>
+        <text class="fig-text-small" x="300" y="146" text-anchor="middle">30</text>
+        <text class="fig-text-small" x="360" y="146" text-anchor="middle">31</text>
+        <text class="fig-text-small" x="420" y="146" text-anchor="middle">1</text>
+        <text class="fig-text-small" x="480" y="146" text-anchor="middle">2</text>
+        <text class="fig-text-small" x="540" y="146" text-anchor="middle">3</text>
+        <text class="fig-text-small" x="600" y="146" text-anchor="middle">4</text>
+        <text class="fig-text-small" x="660" y="146" text-anchor="middle">5</text>
+        <text class="fig-text-strong" x="240" y="172" text-anchor="middle">January</text>
+        <text class="fig-text-strong" x="560" y="172" text-anchor="middle">February</text>
+      </svg>
+      {% endcall %}
+      <div class="std-note">
+        <p class="std-note-title">Why nothing is filtered out by type</p>
+        <p>
+          Two earlier versions of this calculation left out work orders that
+          looked like preventive maintenance, and both were wrong. One trusted
+          a workbook comment that Limble type 4 meant PM; type 4 is projects and
+          miscellaneous repairs. The other trusted the automatic classifier,
+          which looks for the word "pm" in a work order's text and so matches
+          return-to-service notes such as "RTS at 4:30 PM". Measured against the
+          2026 records when this card was designed, that rule would have dropped
+          623.7 hours, 16.3% of the downtime, mostly from the best documented
+          breakdowns. Counting every work order keeps availability independent
+          of how anything was classified.
+        </p>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-linked">
+      <h4><span class="std-step">3</span>Linked downtime</h4>
+      <p>
+        Some assets are mechanically coupled: when one stops, the assets it
+        feeds lose production too. A linked downtime rule charges a parent
+        asset a share of a linked asset's downtime. The share is the rule's
+        impact factor, from 0 to 1.
+      </p>
+      {% call std.equation("A7", "linked downtime of a parent is the sum over its rules of the impact factor times the linked asset's direct downtime") %}
+      <math display="block">
+        <msub><mi>D</mi><mtext>linked</mtext></msub><mo stretchy="false">(</mo><mi>p</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <munder><mo>&#x2211;</mo><mrow><mi>r</mi><mo>&#x2208;</mo><mi>R</mi><mo stretchy="false">(</mo><mi>p</mi><mo stretchy="false">)</mo></mrow></munder>
+        <msub><mi>f</mi><mi>r</mi></msub><mo>&#xD7;</mo>
+        <msub><mi>D</mi><mtext>direct</mtext></msub><mo stretchy="false">(</mo><msub><mi>&#x2113;</mi><mi>r</mi></msub><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      {% call std.equation("A8", "adjusted downtime is direct downtime plus linked downtime") %}
+      <math display="block">
+        <msub><mi>D</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <msub><mi>D</mi><mtext>direct</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>+</mo>
+        <msub><mi>D</mi><mtext>linked</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>R</mi><mo stretchy="false">(</mo><mi>p</mi><mo stretchy="false">)</mo></math></dt><dd>Every rule that names asset <math><mi>p</mi></math> as its parent and has an impact factor above 0.</dd>
+        <dt><math><msub><mi>&#x2113;</mi><mi>r</mi></msub></math></dt><dd>The linked asset rule <math><mi>r</mi></math> charges from.</dd>
+        <dt><math><msub><mi>f</mi><mi>r</mi></msub></math></dt><dd>The rule's impact factor, between 0 and 1. The rules GREMLIN started with couple the Salvagnini line's assets at 0.5; every other group uses direct downtime only until rules are added.</dd>
+      </dl>
+      {% call std.figure("A5", "A parent asset with 12 hours of its own downtime and four linked assets at an impact factor of 0.5. Half of each linked asset's direct downtime is added to the parent, for 24 linked hours and 36 hours in all.") %}
+      <svg viewBox="0 0 760 262" role="img" aria-labelledby="fig-a5-title fig-a5-desc">
+        <title id="fig-a5-title">How linked downtime is charged</title>
+        <desc id="fig-a5-desc">Four linked assets with 6, 10, 30 and 2 hours of direct downtime each pass half of it to a parent asset, adding 3, 5, 15 and 1 hours. The parent's 12 hours of direct downtime plus 24 linked hours make 36 hours, for an availability of 90.91 percent against 396 scheduled hours.</desc>
+        <defs>
+          <marker id="fig-a5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="fig-arrow-head" d="M0 0 L10 5 L0 10 Z"/>
+          </marker>
+        </defs>
+        <rect class="fig-box" x="16" y="18" width="176" height="40" rx="8"/>
+        <text x="104" y="43" text-anchor="middle">Linked asset 1: <tspan class="fig-text-strong">6 h</tspan></text>
+        <rect class="fig-box" x="16" y="80" width="176" height="40" rx="8"/>
+        <text x="104" y="105" text-anchor="middle">Linked asset 2: <tspan class="fig-text-strong">10 h</tspan></text>
+        <rect class="fig-box" x="16" y="142" width="176" height="40" rx="8"/>
+        <text x="104" y="167" text-anchor="middle">Linked asset 3: <tspan class="fig-text-strong">30 h</tspan></text>
+        <rect class="fig-box" x="16" y="204" width="176" height="40" rx="8"/>
+        <text x="104" y="229" text-anchor="middle">Linked asset 4: <tspan class="fig-text-strong">2 h</tspan></text>
+
+        <path class="fig-arrow" d="M192 38 L346 112" marker-end="url(#fig-a5-arrow)"/>
+        <path class="fig-arrow" d="M192 100 L346 124" marker-end="url(#fig-a5-arrow)"/>
+        <path class="fig-arrow" d="M192 162 L346 138" marker-end="url(#fig-a5-arrow)"/>
+        <path class="fig-arrow" d="M192 224 L346 150" marker-end="url(#fig-a5-arrow)"/>
+        <text class="fig-text-small" x="202" y="30">× 0.5 = 3 h</text>
+        <text class="fig-text-small" x="202" y="93">× 0.5 = 5 h</text>
+        <text class="fig-text-small" x="202" y="180">× 0.5 = 15 h</text>
+        <text class="fig-text-small" x="202" y="242">× 0.5 = 1 h</text>
+
+        <rect class="fig-box-accent" x="350" y="76" width="210" height="110" rx="10"/>
+        <text class="fig-text-strong" x="455" y="102" text-anchor="middle">Parent asset P</text>
+        <text x="455" y="124" text-anchor="middle">Direct: 12 h</text>
+        <text x="455" y="144" text-anchor="middle">Linked: 3 + 5 + 15 + 1 = 24 h</text>
+        <text class="fig-text-strong" x="455" y="168" text-anchor="middle">Adjusted: 36 h</text>
+
+        <path class="fig-arrow" d="M560 131 H588" marker-end="url(#fig-a5-arrow)"/>
+
+        <rect class="fig-box-strong" x="592" y="92" width="158" height="78" rx="10"/>
+        <text class="fig-text-small" x="671" y="114" text-anchor="middle">Availability</text>
+        <text x="671" y="136" text-anchor="middle">(396 &#x2212; 36) / 396</text>
+        <text class="fig-text-strong fig-text-large" x="671" y="158" text-anchor="middle">= 90.91%</text>
+      </svg>
+      {% endcall %}
+      <ul>
+        <li><strong>One level only.</strong> The share is taken from the linked asset's direct downtime, never from its adjusted downtime, so a charge never passes along a chain of rules.</li>
+        <li><strong>Rules only charge the parent.</strong> A linked asset's own availability uses its own work orders unless another rule names it as a parent.</li>
+        <li><strong>No overlap merging.</strong> Two linked assets that were down at the same time are each charged their full share, with nothing taken off for the overlap.</li>
+        <li><strong>No cap.</strong> Adjusted downtime can be larger than the adjusted scheduled hours. The month is then flagged and shown as 0%, or as a dash when it had no scheduled hours at all (step 4).</li>
+        <li><strong>Rules outlive group membership.</strong> If a linked asset is removed from every group, its work orders are still loaded so the parent keeps being charged correctly.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="availability-result">
+      <h4><span class="std-step">4</span>Availability for one asset and month</h4>
+      <p>Equation A1 in full, with its two edge cases:</p>
+      {% call std.equation("A9", "availability is the larger of zero and adjusted scheduled hours minus adjusted downtime over adjusted scheduled hours when hours were scheduled, and undefined when none were") %}
+      <math display="block">
+        <mi>A</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mrow>
+          <mo>{</mo>
+          <mtable displaystyle="true">
+            <mtr>
+              <mtd><mi>max</mi><mrow><mo>(</mo><mn>0</mn><mo>,</mo><mfrac><mrow><msub><mi>S</mi><mtext>adj</mtext></msub><mo>&#x2212;</mo><msub><mi>D</mi><mtext>adj</mtext></msub></mrow><msub><mi>S</mi><mtext>adj</mtext></msub></mfrac><mo>)</mo></mrow></mtd>
+              <mtd><mtext>when&#xA0;</mtext><msub><mi>S</mi><mtext>adj</mtext></msub><mo>&gt;</mo><mn>0</mn></mtd>
+            </mtr>
+            <mtr>
+              <mtd><mtext>undefined</mtext></mtd>
+              <mtd><mtext>when&#xA0;</mtext><msub><mi>S</mi><mtext>adj</mtext></msub><mo>=</mo><mn>0</mn></mtd>
+            </mtr>
+          </mtable>
+        </mrow>
+      </math>
+      {% endcall %}
+      <ul>
+        <li>It is shown as a percentage with two decimals.</li>
+        <li><strong>It never goes below 0%.</strong> An asset charged more downtime than it was scheduled reads 0%, and the month is flagged so the 0% is not mistaken for missing data. A month with no scheduled hours at all is also flagged when it has downtime, but it shows a dash rather than 0%.</li>
+        <li><strong>It is undefined when nothing was scheduled</strong>, which only happens if a group is configured down to zero net hours. The card then shows no number at all: 0% would read as a total outage and 100% as a perfect month.</li>
+        <li><strong>A month with no work orders against the asset reads 100%</strong>, because nothing was subtracted, unless a linked rule charged it a share of another asset's downtime (step 3). The card notes "No WO entries this month" so a 100% is not mistaken for a month without breakdowns. The note counts only the asset's own work orders, so a parent can carry it on a bar below 100% that holds only linked downtime.</li>
+      </ul>
+      <div class="std-example">
+        <p class="eyebrow">Worked example: January 2026, 396 scheduled hours each</p>
+        <ul class="std-calc">
+          <li><span>Asset A, 10 h downtime</span><span>(396 − 10) / 396 = <span class="std-result">97.47%</span></span></li>
+          <li><span>Asset A with 8 h overtime</span><span>(404 − 10) / 404 = <span class="std-result">97.52%</span></span></li>
+          <li><span>Parent P from figure A5</span><span>(396 − 36) / 396 = <span class="std-result">90.91%</span></span></li>
+          <li><span>Asset C, no work orders</span><span>(396 − 0) / 396 = <span class="std-result">100.00%</span>, noted "No WO entries this month"</span></li>
+          <li><span>Parent P, no work orders of its own</span><span>(396 − 24) / 396 = <span class="std-result">93.94%</span>, still noted "No WO entries this month"</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-average">
+      <h4><span class="std-step">5</span>Group average, goal and asset average</h4>
+      <p>
+        Each chart draws an Average line: the plain mean of the group's assets
+        for that month. Every asset counts once, however many hours it was
+        scheduled or lost, which matches the workbook's AVERAGE formula.
+      </p>
+      {% call std.equation("A10", "the group average for a month is the mean of the defined availabilities of the group's assets in that month") %}
+      <math display="block">
+        <msub><mover><mi>A</mi><mo>&#x203E;</mo></mover><mi>g</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mfrac><mn>1</mn><mrow><mo stretchy="false">|</mo><mi>G</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo stretchy="false">|</mo></mrow></mfrac>
+        <munder><mo>&#x2211;</mo><mrow><mi>a</mi><mo>&#x2208;</mo><mi>G</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo></mrow></munder>
+        <mi>A</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <p>
+        The Goal line is the target stored for the group and month: 95% unless
+        an editor typed a different value into the Goal % row.
+      </p>
+      <p>
+        The table under each chart ends in an Asset average column, which turns
+        the same rule the other way: each asset's months averaged with every
+        month counting once.
+      </p>
+      {% call std.equation("A11", "an asset's average is the mean of its defined monthly availabilities across the months shown") %}
+      <math display="block">
+        <mover><mi>A</mi><mo>&#x203E;</mo></mover><mo stretchy="false">(</mo><mi>a</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mfrac><mn>1</mn><mrow><mo stretchy="false">|</mo><mi>M</mi><mo stretchy="false">(</mo><mi>a</mi><mo stretchy="false">)</mo><mo stretchy="false">|</mo></mrow></mfrac>
+        <munder><mo>&#x2211;</mo><mrow><mi>m</mi><mo>&#x2208;</mo><mi>M</mi><mo stretchy="false">(</mo><mi>a</mi><mo stretchy="false">)</mo></mrow></munder>
+        <mi>A</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>G</mi><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo></math></dt><dd>The assets in group <math><mi>g</mi></math> with a defined availability in month <math><mi>m</mi></math>. A month where none has one leaves a gap in the line instead of dropping it to zero.</dd>
+        <dt><math><mi>M</mi><mo stretchy="false">(</mo><mi>a</mi><mo stretchy="false">)</mo></math></dt><dd>The months shown in which asset <math><mi>a</mi></math> has a defined availability.</dd>
+      </dl>
+      <p>
+        The Average and Goal % rows have an Asset average cell too, averaging
+        those lines across the months shown in the same way.
+      </p>
+      <div class="std-example">
+        <p class="eyebrow">Worked example</p>
+        <ul class="std-calc">
+          <li><span>Group average, assets A, P and C</span><span>(97.47 + 90.91 + 100.00) / 3 = <span class="std-result">96.13%</span></span></li>
+          <li><span>Why it is not weighted</span><span>An asset scheduled 400 h at 90% and one scheduled 100 h at 100% average 95%, not 92%.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-window">
+      <h4>Which months are shown</h4>
+      <ul>
+        <li><strong>Only complete calendar months.</strong> The current month is left out until it ends: it would be measured against its full scheduled hours with only part of its downtime in, so it would read high until the rest of its downtime arrived.</li>
+        <li><strong>"Complete" is judged on the plant's clock.</strong> A server running on UTC would otherwise treat July as finished during the first hours of August while the plant is still working July 31.</li>
+        <li><strong>The last five complete months by default.</strong> Months shown offers 3, 5, 6, 12 or 24.</li>
+        <li><strong>The window is trimmed to the months that hold data</strong> for the charted assets, so a database with three months of history shows three columns rather than empty ones.</li>
+      </ul>
+      {% call std.equation("A12", "the window ends at the earlier of the last complete month and the last month with data, and starts k minus one months before that or at the first month with data, whichever is later") %}
+      <math display="block">
+        <mtable displaystyle="true">
+          <mtr><mtd>
+            <msub><mi>m</mi><mtext>end</mtext></msub><mo>=</mo><mi>min</mi><mo stretchy="false">(</mo><msub><mi>m</mi><mtext>complete</mtext></msub><mo>,</mo><msub><mi>m</mi><mtext>last</mtext></msub><mo stretchy="false">)</mo>
+          </mtd></mtr>
+          <mtr><mtd>
+            <msub><mi>m</mi><mtext>start</mtext></msub><mo>=</mo><mi>max</mi><mo stretchy="false">(</mo><msub><mi>m</mi><mtext>end</mtext></msub><mo>&#x2212;</mo><mo stretchy="false">(</mo><mi>k</mi><mo>&#x2212;</mo><mn>1</mn><mo stretchy="false">)</mo><mo>,</mo><msub><mi>m</mi><mtext>first</mtext></msub><mo stretchy="false">)</mo>
+          </mtd></mtr>
+        </mtable>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>k</mi></math></dt><dd>The number of months chosen in Months shown.</dd>
+        <dt><math><msub><mi>m</mi><mtext>complete</mtext></msub></math></dt><dd>The most recent month that has ended on the plant's clock.</dd>
+        <dt><math><msub><mi>m</mi><mtext>first</mtext></msub><mo>,</mo><msub><mi>m</mi><mtext>last</mtext></msub></math></dt><dd>The earliest and latest created month among work orders on charted assets. Assets that are only named by a linked downtime rule do not stretch the window.</dd>
+      </dl>
+      <div class="std-example">
+        <p class="eyebrow">Worked example</p>
+        <ul class="std-calc">
+          <li><span>On 2 October 2026, five months</span><span>May to September 2026</span></li>
+          <li><span>Same day, data only from July 2026</span><span>July to September 2026</span></li>
+        </ul>
+      </div>
+      <p>
+        Month labels gain a two-digit year on every column whenever the window
+        crosses into another year, such as Dec 25 and Jan 26, so each editable
+        Goal % and overtime cell says which year it belongs to. In a window
+        longer than 12 months, the same month name would otherwise head two
+        columns.
+      </p>
+      <p>
+        The card does not follow the Metrics page's asset search or date range.
+        Availability only exists for whole months, and the Average line and
+        linked downtime both depend on assets that a filter could hide: an
+        asset filtered on its own could show a number driven by machines that
+        are not on screen.
+      </p>
+    </section>
+
+    <section class="std-section" id="availability-exclude-pms">
+      <h4>The Exclude PMs switch</h4>
+      <p>
+        Off by default, so every work order counts. Switched on, preventive
+        maintenance work orders are taken out before anything is calculated,
+        so the bars, both lines, the counts, the notes, the stacked segments
+        and the data views all describe the same remaining work orders. The
+        months shown do not change, because the window is chosen from every
+        work order.
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">How a work order is judged to be a PM</caption>
+          <thead>
+            <tr><th scope="col">A person's class on the Disposition page</th><th scope="col">Limble task type</th><th scope="col">Treated as a PM?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>PM, or PM reset candidate</td><td>Any</td><td><strong>Yes</strong></td></tr>
+            <tr><td>Any other class, such as Corrective WO</td><td>Any, even type 1</td><td>No</td></tr>
+            <tr><td>None saved</td><td>1 (Preventive Maintenance)</td><td><strong>Yes</strong></td></tr>
+            <tr><td>None saved</td><td>Any other type</td><td>No</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        A person's call always wins, and Limble's own task type decides
+        otherwise. The automatic classifier's guess is never used here, for the
+        reason given in step 2. A month whose only work orders were PMs is
+        noted "No WO entries this month other than excluded PMs", and the
+        tooltip and the data views say how many PMs each bar lost, counting PMs
+        on linked assets too.
+      </p>
+    </section>
+
+    <section class="std-section" id="availability-stacked">
+      <h4>Stack by work order type</h4>
+      <p>
+        Turns every bar into a full-height column that explains the downtime
+        already counted. Nothing is recalculated: the bottom of the column is
+        the asset's availability, and each work order type above it takes the
+        share of the scheduled hours its downtime used. The asset's color moves
+        to the column's outline.
+      </p>
+      {% call std.equation("A13", "the segment for a work order type is that type's charged hours divided by adjusted scheduled hours") %}
+      <math display="block">
+        <msub><mi>s</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mfrac>
+          <mrow><msub><mi>H</mi><mi>k</mi></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></mrow>
+          <mrow><msub><mi>S</mi><mtext>adj</mtext></msub><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></mrow>
+        </mfrac>
+        <mspace width="2em"></mspace>
+        <mi>A</mi><mo>+</mo><munder><mo>&#x2211;</mo><mi>k</mi></munder><msub><mi>s</mi><mi>k</mi></msub><mo>=</mo><mn>1</mn>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>H</mi><mi>k</mi></msub></math></dt><dd>The hours work orders of type <math><mi>k</mi></math> charged to this bar, direct and linked together. Linked hours are already multiplied by the rule's impact factor.</dd>
+      </dl>
+      <p>
+        Because the hours by type add up to the adjusted downtime, availability
+        and the segments always make 100%. When downtime is larger than the
+        scheduled hours, the segments are cut off at the top of the column.
+      </p>
+      <p>Each work order is given one type, in this order:</p>
+      <ol>
+        <li><strong>PM</strong>, by the same test as Exclude PMs.</li>
+        <li>Otherwise its record class, a person's if one was saved and the automatic one if not: Corrective WO is shown as <strong>Work Request</strong>, Project work as <strong>Project/Misc Repair</strong>, then <strong>Inspection</strong>, <strong>Parts Order</strong> and <strong>Administrative</strong>, and Unknown as <strong>Other/Unknown</strong>.</li>
+        <li>A work order only the automatic classifier calls a PM is labeled by its Limble type instead: type 6 as Work Request, type 4 as Project/Misc Repair, type 7 as Parts Order, and anything else as Other/Unknown.</li>
+      </ol>
+      {% call std.figure("A6", "One stacked column. With 396 scheduled hours and 90 hours of downtime (60 h from work requests, 20 h from PMs and 10 h from a project), availability is 77.27% and the three segments make up the remaining 22.73%.") %}
+      <svg class="is-medium" viewBox="0 0 560 300" role="img" aria-labelledby="fig-a6-title fig-a6-desc">
+        <title id="fig-a6-title">Anatomy of a stacked column</title>
+        <desc id="fig-a6-desc">A column from 0 to 100 percent. The bottom 77.27 percent is available time. Above it are work requests at 15.15 percent, PMs at 5.05 percent and project work at 2.53 percent.</desc>
+        <path class="fig-grid" d="M100 30 H210 M100 90 H210 M100 150 H210 M100 210 H210"/>
+        <path class="fig-axis" d="M100 30 V270 H210"/>
+        <text class="fig-text-small" x="94" y="34" text-anchor="end">100%</text>
+        <text class="fig-text-small" x="94" y="94" text-anchor="end">75%</text>
+        <text class="fig-text-small" x="94" y="154" text-anchor="end">50%</text>
+        <text class="fig-text-small" x="94" y="214" text-anchor="end">25%</text>
+        <text class="fig-text-small" x="94" y="274" text-anchor="end">0%</text>
+        <rect class="fig-band" x="120" y="84.5" width="80" height="185.5"/>
+        <rect class="fig-type-1" x="120" y="48.1" width="80" height="36.4"/>
+        <rect class="fig-type-2" x="120" y="36" width="80" height="12.1"/>
+        <rect class="fig-type-3" x="120" y="30" width="80" height="6"/>
+        <rect class="fig-outline-1" x="120.75" y="30.75" width="78.5" height="238.5"/>
+        <path class="fig-guide" d="M200 33 L236 18 M200 42 L236 44 M200 66 L236 70 M200 177 L236 177"/>
+        <text x="242" y="22"><tspan class="fig-text-strong">Project/Misc Repair</tspan> 10 h, 2.53%</text>
+        <text x="242" y="48"><tspan class="fig-text-strong">PM</tspan> 20 h, 5.05%</text>
+        <text x="242" y="74"><tspan class="fig-text-strong">Work Request</tspan> 60 h, 15.15%</text>
+        <text x="242" y="181"><tspan class="fig-text-strong">Available</tspan> 77.27%</text>
+        <text class="fig-text-small" x="242" y="199">(396 &#x2212; 90) / 396</text>
+        <text class="fig-text-small" x="100" y="292">Scheduled 396 h, downtime 90 h</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="availability-flags">
+      <h4>Flags and notes</h4>
+      <p>A bar is one number. These marks say when that number needs a second look.</p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Flags and notes on the Availability card</caption>
+          <thead>
+            <tr><th scope="col">Mark or note</th><th scope="col">When it appears</th><th scope="col">What it means</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Red mark at the foot of a bar, "Downtime N h exceeded scheduled N h; clamped to 0%"</td><td>Adjusted downtime is larger than adjusted scheduled hours</td><td>More downtime was charged than hours were scheduled, usually through linked downtime or a long repair charged to one month. The 0% is real, not missing.</td></tr>
+            <tr><td>"No WO entries this month"</td><td>No work order was created for the asset itself in the month; linked assets' work orders do not count</td><td>Nothing was recorded against the asset, which is not the same as nothing breaking. The bar reads 100% unless a linked rule charged it downtime.</td></tr>
+            <tr><td>"(N with no downtime)" beside the tooltip's work order count, and the WOs w/o downtime column of the Monthly summary</td><td>Some of the month's own work orders carried zero downtime</td><td>The asset was worked on without stopping, or the stop was not recorded.</td></tr>
+            <tr><td>"N WO(s) cross a month boundary"</td><td>One of the asset's own work orders with downtime was completed in a different month from the one it was created in, or its created time plus its downtime runs into the next month. Linked work orders are marked in the Work orders view but not counted here.</td><td>All of its downtime sits in the created month; how much belonged to the next month is not known.</td></tr>
+            <tr><td>"Includes N h linked from another asset"</td><td>Linked downtime is above 0</td><td>Part of this bar comes from coupled assets (step 3).</td></tr>
+            <tr><td>"N PM(s) excluded"</td><td>Exclude PMs is on and the bar lost PMs</td><td>How many PM work orders, the asset's own and its linked assets', were left out.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-reading">
+      <h4>Reading the card and its data views</h4>
+      {% call std.figure("A7", "Three assets over three months. Numbered marks match the list on the right; the figure is illustrative and not drawn from real data.") %}
+      <svg viewBox="0 0 760 330" role="img" aria-labelledby="fig-a7-title fig-a7-desc">
+        <title id="fig-a7-title">How to read an availability chart</title>
+        <desc id="fig-a7-desc">Grouped bars for three assets across July, August and September on a 0 to 100 percent scale, with a solid Average line and a dashed Goal line at 95 percent. In August one asset is flagged at 0 percent, which pulls the Average line down to about 66 percent. In September one asset reads 100 percent because it had no work orders.</desc>
+        <path class="fig-grid" d="M70 40 H520 M70 97.5 H520 M70 155 H520 M70 212.5 H520"/>
+        <path class="fig-axis" d="M70 40 V270 H520"/>
+        <text class="fig-text-small" x="64" y="44" text-anchor="end">100%</text>
+        <text class="fig-text-small" x="64" y="101" text-anchor="end">75%</text>
+        <text class="fig-text-small" x="64" y="159" text-anchor="end">50%</text>
+        <text class="fig-text-small" x="64" y="216" text-anchor="end">25%</text>
+        <text class="fig-text-small" x="64" y="274" text-anchor="end">0%</text>
+
+        <rect class="fig-series-1" x="94" y="45.8" width="30" height="224.2"/>
+        <rect class="fig-series-2" x="130" y="60.9" width="30" height="209.1"/>
+        <rect class="fig-series-3" x="166" y="40" width="30" height="230"/>
+        <rect class="fig-series-1" x="244" y="42.3" width="30" height="227.7"/>
+        <rect class="fig-danger" x="280" y="266" width="30" height="4"/>
+        <rect class="fig-series-3" x="316" y="44.6" width="30" height="225.4"/>
+        <rect class="fig-series-1" x="394" y="49.2" width="30" height="220.8"/>
+        <rect class="fig-series-2" x="430" y="56.1" width="30" height="213.9"/>
+        <rect class="fig-series-3" x="466" y="40" width="30" height="230"/>
+
+        <path class="fig-goal-line" d="M145 51.5 H445"/>
+        <path class="fig-average-line" d="M145 48.9 L295 119 L445 48.4"/>
+        <circle class="fig-average" cx="145" cy="48.9" r="4"/>
+        <circle class="fig-average" cx="295" cy="119" r="4"/>
+        <circle class="fig-average" cx="445" cy="48.4" r="4"/>
+
+        <text class="fig-text-small" x="145" y="288" text-anchor="middle">Jul</text>
+        <text class="fig-text-small" x="295" y="288" text-anchor="middle">Aug</text>
+        <text class="fig-text-small" x="445" y="288" text-anchor="middle">Sep</text>
+
+        <rect class="fig-series-1" x="70" y="306" width="12" height="12" rx="2"/><text x="88" y="316">Asset A</text>
+        <rect class="fig-series-2" x="150" y="306" width="12" height="12" rx="2"/><text x="168" y="316">Asset B</text>
+        <rect class="fig-series-3" x="230" y="306" width="12" height="12" rx="2"/><text x="248" y="316">Asset C</text>
+        <path class="fig-average-line" d="M312 312 H336"/><text x="342" y="316">Average</text>
+        <path class="fig-goal-line" d="M412 312 H436"/><text x="442" y="316">Goal %</text>
+
+        <circle class="fig-solid" cx="145" cy="24" r="10"/><text class="fig-text-on-solid fig-text-small" x="145" y="28" text-anchor="middle">1</text>
+        <circle class="fig-solid" cx="320" cy="132" r="10"/><text class="fig-text-on-solid fig-text-small" x="320" y="136" text-anchor="middle">2</text>
+        <circle class="fig-solid" cx="232" cy="72" r="10"/><text class="fig-text-on-solid fig-text-small" x="232" y="76" text-anchor="middle">3</text>
+        <circle class="fig-solid" cx="295" cy="250" r="10"/><text class="fig-text-on-solid fig-text-small" x="295" y="254" text-anchor="middle">4</text>
+        <circle class="fig-solid" cx="481" cy="24" r="10"/><text class="fig-text-on-solid fig-text-small" x="481" y="28" text-anchor="middle">5</text>
+
+        <circle class="fig-solid" cx="552" cy="44" r="10"/><text class="fig-text-on-solid fig-text-small" x="552" y="48" text-anchor="middle">1</text>
+        <text x="570" y="44">One bar per asset per</text>
+        <text x="570" y="60">month, colored by asset.</text>
+        <circle class="fig-solid" cx="552" cy="94" r="10"/><text class="fig-text-on-solid fig-text-small" x="552" y="98" text-anchor="middle">2</text>
+        <text x="570" y="94">Average: each asset counts</text>
+        <text x="570" y="110">once, so one 0% pulls it down.</text>
+        <circle class="fig-solid" cx="552" cy="144" r="10"/><text class="fig-text-on-solid fig-text-small" x="552" y="148" text-anchor="middle">3</text>
+        <text x="570" y="144">Goal %: 95% unless an</text>
+        <text x="570" y="160">editor changes it.</text>
+        <circle class="fig-solid" cx="552" cy="194" r="10"/><text class="fig-text-on-solid fig-text-small" x="552" y="198" text-anchor="middle">4</text>
+        <text x="570" y="194">Red mark: downtime exceeded</text>
+        <text x="570" y="210">scheduled hours, shown as 0%.</text>
+        <circle class="fig-solid" cx="552" cy="244" r="10"/><text class="fig-text-on-solid fig-text-small" x="552" y="248" text-anchor="middle">5</text>
+        <text x="570" y="244">100% with no work orders:</text>
+        <text x="570" y="260">check the note.</text>
+      </svg>
+      {% endcall %}
+      <ul>
+        <li><strong>Collapsed,</strong> the card previews each group's Average for the most recent month shown, highest first.</li>
+        <li><strong>Expanded,</strong> there is one chart per charted asset group, titled "<em>group</em> Availability % by Month", with the group's net scheduled hours per day on the line below the title. The vertical axis is fixed from 0% to 100%, as in the workbook.</li>
+        <li><strong>The basis line</strong> under the controls reads "Computed" with the date and time on the server's clock, the plant timezone used to place work orders in months, whether PMs are excluded, and every group's net hours per day, so a screenshot carries the assumptions it was made with.</li>
+        <li><strong>Hovering over a bar</strong> shows its availability, scheduled hours (with overtime), downtime (with linked hours), work order counts, the group average, the goal and any notes.</li>
+        <li><strong>The table under each chart</strong> has a row per asset and a column per month, then the Asset average column and the Average and Goal % rows. Editors can type a goal for a month in the Goal % row, and switch the table to Edit OT hours to enter overtime.</li>
+        <li><strong>Clicking a bar, or View data,</strong> opens the group's data. The Monthly summary lists every asset and month with its scheduled, overtime, direct, linked and total hours, work order counts and notes, and can be cut down to the rows that need attention (flagged, no work orders, or crossing a month). Its "vs group avg" column is in percentage points:</li>
+      </ul>
+      {% call std.equation("A14", "points from the group average are one hundred times the asset's availability minus the group average") %}
+      <math display="block">
+        <mi mathvariant="normal">&#x394;</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>=</mo>
+        <mn>100</mn><mo>&#xD7;</mo>
+        <mo stretchy="false">(</mo><mi>A</mi><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo><mo>&#x2212;</mo><msub><mover><mi>A</mi><mo>&#x203E;</mo></mover><mi>g</mi></msub><mo stretchy="false">(</mo><mi>m</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
+        <mspace width="0.4em"></mspace><mtext>points</mtext>
+      </math>
+      {% endcall %}
+      <ul>
+        <li><strong>The Work orders view</strong> lists every work order behind one bar, the asset's own and its linked assets', with the hours each was charged to that bar: its downtime, times the impact factor for a linked one, and nothing for negative downtime. Work orders with no downtime are listed too, because they show the asset was being worked on.</li>
+        <li><strong>The rows add up to the totals in the header.</strong> Downtime is recorded in minutes, so the table shows up to six decimals when two would not add up, and says so if a value sits exactly on a rounding boundary that no number of decimals can reconcile.</li>
+      </ul>
+      <div class="std-example">
+        <p class="eyebrow">Worked example</p>
+        <ul class="std-calc">
+          <li><span>Parent P against the group average</span><span>100 × (0.9091 − 0.9613) = <span class="std-result">−5.22 points</span></span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="availability-changes">
+      <h4>When the numbers change</h4>
+      <ul>
+        <li><strong>Nothing is stored.</strong> Every time the card loads, it recalculates from the configuration and the work orders as they are at that moment. There is no recalculate button and nothing can go stale.</li>
+        <li><strong>A change to schedules, group membership or linked rules applies to every month</strong>, including months already reported. That keeps every month calculated on the same basis, so months stay comparable with each other.</li>
+        <li><strong>Goal % and overtime are stored per month</strong>, so editing one month changes only that month.</li>
+        <li><strong>New or corrected work orders appear after the next Limble sync.</strong> A class saved on the Disposition page only moves the Exclude PMs view and the stacked segments, never the default bars.</li>
+      </ul>
+    </section>
+
+    <section class="std-section" id="availability-limits">
+      <h4>Known limitations</h4>
+      <ul>
+        <li><strong>Weekends are never scheduled.</strong> A group that really runs seven days a week has its availability understated whenever it has downtime: all of the month's downtime, weekends included, is measured against weekday hours only.</li>
+        <li><strong>There is no holiday or shutdown calendar.</strong> A planned shutdown week still counts as scheduled hours.</li>
+        <li><strong>Downtime is not split across months.</strong> A long repair that starts at the end of a month is charged to that month in full.</li>
+        <li><strong>An asset nobody logs work against reads 100%</strong>, less any linked downtime charged to it. Check for the No WO entries note before reading a perfect month as a good one. The note looks only at the asset's own work orders, so on a parent with linked rules it can also sit on a bar below 100%.</li>
+        <li><strong>Linked downtime can count one stoppage more than once</strong> when coupled assets are down together.</li>
+      </ul>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Reliability performance (Operational KPIs): under construction
+     ====================================================================== #}
+  {% call std.doc_card(
+      "metrics-kpis",
+      "Reliability performance by asset",
+      "Compare MTBF, MTTR, corrective work order volume and total downtime across the selected assets.",
+      eyebrow="Operational KPIs",
+      under_construction=True) %}
+    <div class="std-construction">
+      <svg class="construction-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 14a8 8 0 0 1 16 0"></path>
+        <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
+      </svg>
+      <div>
+        <h4>This write-up is under construction</h4>
+        <p>
+          The Reliability performance card is still being built on the Metrics
+          page, so how it calculates may change. Its full write-up, with
+          equations, figures and worked examples, will be added here once the
+          calculations are final.
+        </p>
+      </div>
+    </div>
+    <section class="std-section">
+      <h4>What the card shows today</h4>
+      <p>Working definitions as currently built, and subject to change:</p>
+      <ul>
+        <li><strong>MTBF by Asset:</strong> the calendar hours between the first and last dated corrective work order, divided by the number of gaps between them. With fewer than two dated work orders, or when they all carry the same date and time, there is no MTBF: the asset is left off the chart and the KPI summary shows Data Required. This is calendar time, not run hours.</li>
+        <li><strong>MTTR by Asset:</strong> total downtime divided by the number of corrective work orders.</li>
+        <li><strong>Work Order Count by Asset:</strong> the number of corrective work orders in the selected window.</li>
+        <li><strong>Total Downtime by Asset:</strong> the sum of downtime hours, with blank and negative values counted as 0.</li>
+        <li><strong>KPI summary:</strong> the four values per asset, plus a Trend arrow comparing downtime in the later half of the window with the earlier half: up when it rose more than 5%, down when it fell more than 5%, and flat otherwise, including when the earlier half had no downtime at all.</li>
+      </ul>
+      <p>
+        The card reads corrective work orders only (a person's Corrective WO
+        class or, when no class has been saved, a record the automatic
+        classifier calls Corrective WO or flags as a corrective candidate, such
+        as Limble type 6 or repair words in its text), follows the
+        page's asset search and date range, and dates each work order by its
+        completed date, else its start date, else its created date.
+      </p>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Reliability risk (Alerting Readiness): under construction
+     ====================================================================== #}
+  {% call std.doc_card(
+      "metrics-risk",
+      "Reliability risk by asset",
+      "Surface assets that may need attention based on a first-pass reliability risk score.",
+      eyebrow="Alerting Readiness",
+      under_construction=True) %}
+    <div class="std-construction">
+      <svg class="construction-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 14a8 8 0 0 1 16 0"></path>
+        <path d="M9 14V8.5M15 14V8.5M3 14h18v3H3z"></path>
+      </svg>
+      <div>
+        <h4>This write-up is under construction</h4>
+        <p>
+          The Reliability risk card is still being built on the Metrics page,
+          and its score is a first pass whose weights and thresholds may
+          change. Its full write-up will be added here once they are settled.
+        </p>
+      </div>
+    </div>
+    <section class="std-section">
+      <h4>What the card shows today</h4>
+      <p>Working definitions as currently built, and subject to change:</p>
+      <ul>
+        <li><strong>Baseline and current periods:</strong> the selected date window is split at its midpoint. The earlier half is the baseline and the later half is current.</li>
+        <li><strong>Reliability Risk Score, with a baseline:</strong> 40% downtime increase, 25% work order count increase, 25% MTTR increase and 10% repeat failure share. Each increase scores 0 when nothing rose and reaches 100 at a doubling, or when activity appears where the baseline had none.</li>
+        <li><strong>Without a baseline for any selected asset:</strong> 45% downtime, 27.5% work order count and 27.5% MTTR, each scaled straight across the selected assets from 0 for the lowest value to 100 for the highest, or 50 for every asset above zero when all values are equal.</li>
+        <li><strong>Status:</strong> High at 70 or above, which is the dashed alert threshold on the chart; Medium from 40 to 69.9; Low below 40.</li>
+        <li><strong>Downtime Spike Detection:</strong> each asset's current downtime set against its baseline downtime.</li>
+        <li><strong>Alert count:</strong> one for a High score, plus one for each of downtime, work order count and MTTR that rose 50% or more against a baseline above zero. A metric that appears where the baseline had none, shown as New, adds no alert.</li>
+      </ul>
+    </section>
+  {% endcall %}
+
+  </div>
+</article>

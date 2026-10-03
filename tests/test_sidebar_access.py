@@ -91,13 +91,21 @@ def _headings(client, path="/"):
     return [heading for heading, _, _ in _sections(client, path) if heading]
 
 
-# The three GREMLIN shows a visitor with no account at all.
-OPEN = ["Home", "Reliability Links", "Configuration"]
-# The two of those three that no department can narrow away either. Configuration
-# is not among them: it is open to anybody who has not signed in, and kept from a
-# signed-in Operations & Maintenance account, which is the one page where those
-# two rules disagree.
-FLOOR = ["Home", "Reliability Links"]
+# The four GREMLIN shows a visitor with no account at all.
+OPEN = ["Home", "Reliability Links", "Standards and Documentation", "Configuration"]
+# The three of those four that no department can narrow away either.
+# Configuration is not among them: it is open to anybody who has not signed in,
+# and kept from a signed-in Operations & Maintenance account, which is the one
+# page where those two rules disagree.
+FLOOR = ["Home", "Reliability Links", "Standards and Documentation"]
+# Where the floor lives, for the checks that it is served as well as listed.
+FLOOR_ROUTES = ["/", "/reliability-links", "/standards-and-documentation"]
+# The two pages under Standards and Documentation's landing page. Not sidebar
+# entries of their own; they answer to the landing page's rule.
+STANDARDS_SUBPAGES = [
+    "/standards-and-documentation/standards",
+    "/standards-and-documentation/documentation",
+]
 # The three in the Dashboards group.
 DEPARTMENT_PAGES = {
     "Safety Report": "/safety-report",
@@ -135,7 +143,7 @@ KEEPS_THEM = ["facilities", "all"]
 
 # --- signed out: everything else is struck through --------------------------
 
-def test_a_visitor_gets_the_three_open_pages_as_links(monkeypatch, tmp_path):
+def test_a_visitor_gets_the_open_pages_as_links(monkeypatch, tmp_path):
     entries = dict(_entries(_app(monkeypatch, tmp_path).app.test_client()))
     for label in OPEN:
         assert label in entries, label
@@ -144,7 +152,7 @@ def test_a_visitor_gets_the_three_open_pages_as_links(monkeypatch, tmp_path):
 
 def test_a_visitor_gets_every_other_entry_struck_through(monkeypatch, tmp_path):
     """The whole point of the signed-out sidebar: still the full list, all of it
-    crossed out except the three that need no account."""
+    crossed out except the four that need no account."""
     entries = _entries(_app(monkeypatch, tmp_path).app.test_client())
     locked = [label for label, is_locked in entries if is_locked]
     assert locked, "nothing at all was locked for a signed-out visitor"
@@ -175,9 +183,9 @@ def test_signing_in_unlocks_the_sidebar(monkeypatch, tmp_path):
     assert not any(locked for _, locked in _entries(_client(module)))
 
 
-def test_the_three_open_pages_are_served_to_a_visitor(monkeypatch, tmp_path):
+def test_the_open_pages_are_served_to_a_visitor(monkeypatch, tmp_path):
     client = _app(monkeypatch, tmp_path).app.test_client()
-    for route in ["/", "/reliability-links", "/configuration"]:
+    for route in FLOOR_ROUTES + ["/configuration"] + STANDARDS_SUBPAGES:
         assert client.get(route).status_code == 200, route
 
 
@@ -254,7 +262,7 @@ def test_every_level_is_offered_a_page_marked_for_all_levels(
     "department", ["facilities", "operations", "maintenance", "operations_maintenance", "all"]
 )
 def test_no_department_ends_up_below_the_floor(monkeypatch, tmp_path, department):
-    """Whatever a department narrows or withholds, these two survive it.
+    """Whatever a department narrows or withholds, these three survive it.
 
     The point is that nobody can be left staring at an empty sidebar, which is
     why the floor is checked for every department rather than for the ones the
@@ -263,7 +271,7 @@ def test_no_department_ends_up_below_the_floor(monkeypatch, tmp_path, department
     client = _client(_app(monkeypatch, tmp_path), department=department)
     labels = _labels(client)
     assert set(FLOOR) <= set(labels), department
-    for route in ["/", "/reliability-links"]:
+    for route in FLOOR_ROUTES + STANDARDS_SUBPAGES:
         assert client.get(route).status_code == 200, (department, route)
 
 
@@ -554,7 +562,7 @@ def test_the_mark_says_coming_soon_in_words_as_well_as_in_a_shape(
     module = _app(monkeypatch, tmp_path)
     sidebar = _sidebar(_client(module, department="operations"))
     assert f'<span class="nav-coming-soon-text">{module.COMING_SOON_LABEL}</span>' in sidebar
-    assert f'title="Safety Report — {module.COMING_SOON_LABEL}"' in sidebar
+    assert f'title="Safety Report ({module.COMING_SOON_LABEL})"' in sidebar
 
 
 def test_a_visitor_sees_the_mark_on_the_locked_entries_too(monkeypatch, tmp_path):
@@ -585,8 +593,28 @@ def test_analysis_and_other_entries_are_drawn_under_their_headings(
     ]
     assert sections[-1][0:2] == (
         module.NAV_GROUP_OTHER,
-        ["Reliability Links", "Configuration"],
+        ["Reliability Links", "Standards and Documentation", "Configuration"],
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/standards-and-documentation", *STANDARDS_SUBPAGES],
+)
+def test_standards_and_documentation_stays_lit_on_its_own_pages(monkeypatch, tmp_path, path):
+    """The landing page and both pages under it are one sidebar entry, so the
+    entry is the active one wherever in it somebody is reading."""
+    sidebar = _sidebar(_app(monkeypatch, tmp_path).app.test_client(), path)
+    active = re.findall(r'<a href="([^"]+)"[^>]*class="active"', sidebar)
+    assert active == ["/standards-and-documentation"], path
+
+
+def test_no_other_entry_is_lit_by_a_prefix_it_merely_shares(monkeypatch, tmp_path):
+    """Home's address is "/", which every path starts with; being lit by the
+    pages under it must not make Home lit everywhere."""
+    sidebar = _sidebar(_app(monkeypatch, tmp_path).app.test_client(), "/reliability-links")
+    active = re.findall(r'<a href="([^"]+)"[^>]*class="active"', sidebar)
+    assert active == ["/reliability-links"]
 
 
 def test_the_three_dashboards_are_drawn_under_the_dashboards_heading(

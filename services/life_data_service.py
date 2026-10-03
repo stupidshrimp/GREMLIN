@@ -5341,17 +5341,31 @@ class LifeDataService:
                     OR (d.disposition_category = 'INCLUDED_PM_RESET_EVENT' AND d.reset_target_failure_mode_id = :failure_mode_id)
                 )
             """
+        # Completed, else start, else created: the same date the trend, downtime
+        # driver and PM effectiveness analyses give a record. NULLIF(TRIM(...), '')
+        # lets a blank (empty or spaces-only) date fall through to the next one;
+        # picked as it stands, it would fail to parse and drop the event from the
+        # fit even when the next date is usable. Events are ordered by that same
+        # date, read as a date rather than as text (gremlin_sort_datetime), so the
+        # sequence numbers below follow the calendar even for a date an older
+        # import wrote as "1/15/2026 15:00".
+        event_date = """COALESCE(
+                NULLIF(TRIM(m.completed_date_final), ''),
+                NULLIF(TRIM(m.start_date_final), ''),
+                NULLIF(TRIM(m.created_date_final), '')
+            )"""
         rows = conn.execute(
             f"""
             SELECT m.*, d.event_disposition_id, d.disposition_category, d.failure_mode_id, d.failure_mechanism_id,
-                   d.reset_target_failure_mode_id, d.reset_target_failure_mechanism_id
+                   d.reset_target_failure_mode_id, d.reset_target_failure_mechanism_id,
+                   {event_date} AS life_event_date
             FROM mapped_cmms_record m
             JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
             WHERE m.asset_number = :asset_number
               AND d.include_in_event_processing = 1
               AND d.include_in_weibull_candidate = 1
               {group_filter}
-            ORDER BY COALESCE(m.completed_date_final, m.start_date_final, m.created_date_final), m.mapped_record_id
+            ORDER BY gremlin_sort_datetime({event_date}), m.mapped_record_id
             """,
             {"asset_number": asset_number, "failure_mode_id": failure_mode_id, "failure_mechanism_id": failure_mechanism_id},
         ).fetchall()
@@ -5359,7 +5373,7 @@ class LifeDataService:
         previous_date = None
         sequence = 0
         for row in rows:
-            parsed = self._parse_datetime(row["completed_date_final"] or row["start_date_final"] or row["created_date_final"])
+            parsed = self._parse_datetime(row["life_event_date"])
             if not parsed:
                 continue
             sequence += 1
