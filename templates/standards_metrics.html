@@ -31,7 +31,7 @@
   {% call std.doc_card(
       "metrics-availability",
       "Asset availability by month",
-      "The share of each asset's scheduled production hours it was able to run, for every completed month, grouped by asset group.",
+      "The share of each asset's scheduled production hours it was able to run, for each completed month in the card's window (the last five by default), grouped by asset group.",
       eyebrow="Availability") %}
 
     <nav class="std-toc" aria-label="On this card">
@@ -84,10 +84,10 @@
         knowing before the detail:
       </p>
       <ul>
-        <li><strong>Every work order with downtime counts</strong>, whatever its type or classification, unless the reader switches on Exclude PMs.</li>
+        <li><strong>Every work order with downtime counts</strong>, whatever its type or classification, unless the reader switches on Exclude PMs. Only one with no asset number or no readable created date is left out.</li>
         <li><strong>Downtime belongs to the month the work order was created</strong>, read on the plant's clock.</li>
         <li><strong>Only weekdays are scheduled.</strong> Saturdays and Sundays never add scheduled hours.</li>
-        <li><strong>The card ignores the Metrics page's asset and date filters.</strong> It always shows every configured asset group over whole months.</li>
+        <li><strong>The card ignores the Metrics page's asset and date filters.</strong> It always shows every included asset group that has assets, over whole months.</li>
       </ul>
     </section>
 
@@ -98,7 +98,7 @@
         come from Limble, and the availability configuration, which is kept in
         GREMLIN.db and edited by people with the editor role.
       </p>
-      {% call std.figure("A1", "Work orders travel from Limble through the Limble sync into GREMLIN.db, where the raw record is kept as received and mapped into analysis fields. The calculator combines the mapped work orders with the availability configuration every time the card loads.") %}
+      {% call std.figure("A1", "Work orders travel from Limble through the Limble sync into GREMLIN.db, where Limble's payload is stored with the fields GREMLIN adds and mapped into analysis fields. The calculator combines the mapped work orders with the availability configuration every time the card loads.") %}
       <svg viewBox="0 0 840 232" role="img" aria-labelledby="fig-a1-title fig-a1-desc">
         <title id="fig-a1-title">Where availability data comes from</title>
         <desc id="fig-a1-desc">Limble CMMS feeds the Limble sync, which writes raw records into GREMLIN.db and maps them into mapped records. The availability calculator reads the mapped records and the availability configuration, and produces the Availability card.</desc>
@@ -125,7 +125,7 @@
         <text class="fig-text-strong" x="402" y="36" text-anchor="middle">GREMLIN.db</text>
         <rect class="fig-box" x="320" y="50" width="164" height="56" rx="8"/>
         <text class="fig-text-strong" x="402" y="74" text-anchor="middle">Raw records</text>
-        <text class="fig-text-small" x="402" y="92" text-anchor="middle">kept exactly as received</text>
+        <text class="fig-text-small" x="402" y="92" text-anchor="middle">payload + GREMLIN fields</text>
         <path class="fig-arrow" d="M402 106 V128" marker-end="url(#fig-a1-arrow)"/>
         <rect class="fig-box" x="320" y="132" width="164" height="72" rx="8"/>
         <text class="fig-text-strong" x="402" y="154" text-anchor="middle">Mapped records</text>
@@ -158,14 +158,14 @@
             <tr><th scope="col">Input</th><th scope="col">What it holds</th><th scope="col">Stored in</th><th scope="col">Changed on</th></tr>
           </thead>
           <tbody>
-            <tr><td>Work orders</td><td>Asset number, created and completed dates, downtime, Limble task type</td><td><code>mapped_<wbr>cmms_<wbr>record</code>, refreshed by the Limble sync</td><td>In Limble. The next sync brings the change in.</td></tr>
+            <tr><td>Work orders</td><td>Asset number, created and completed dates, downtime, Limble task type</td><td><code>mapped_<wbr>cmms_<wbr>record</code>, refreshed by the Limble sync</td><td>In Limble. The next sync brings in changes to dates, downtime and type; a work order already imported keeps its asset number even if it is moved to another asset in Limble.</td></tr>
             <tr><td>Disposition class</td><td>A person's record class for a work order. Read only by Exclude PMs and the stacked bars.</td><td><code>record_<wbr>class_<wbr>final</code></td><td>Disposition page (editors)</td></tr>
-            <tr><td>Asset groups</td><td>Group names, the asset numbers in each, whether the group is charted, its order</td><td><code>availability_<wbr>asset_<wbr>groups</code>, <code>availability_<wbr>asset_<wbr>group_<wbr>assets</code></td><td>Configuration, Asset group schedules (editors)</td></tr>
+            <tr><td>Asset groups</td><td>Group names, the asset numbers in each, whether the group is charted, its order</td><td><code>availability_<wbr>asset_<wbr>groups</code>, <code>availability_<wbr>asset_<wbr>group_<wbr>assets</code></td><td>Configuration, Asset group schedules (editors): the assets in each group and whether it is charted. Group names and their order are set when the database is first filled.</td></tr>
             <tr><td>Shift schedule</td><td>Schedule, break, lunch and setup hours per day for each group</td><td><code>availability_<wbr>asset_<wbr>groups</code></td><td>Configuration, Asset group schedules</td></tr>
             <tr><td>Display names</td><td>The short label each asset's bars are drawn with</td><td><code>availability_<wbr>asset_<wbr>display_<wbr>names</code></td><td>Configuration, Asset group schedules</td></tr>
             <tr><td>Linked downtime rules</td><td>Parent asset, linked asset and impact factor</td><td><code>availability_<wbr>linked_<wbr>downtime_<wbr>rules</code></td><td>Configuration, Linked downtime rules</td></tr>
             <tr><td>Goal %</td><td>The target for each group and month (95% unless changed)</td><td><code>availability_<wbr>goal_<wbr>percent</code></td><td>The Goal % row under each chart (editors)</td></tr>
-            <tr><td>Overtime</td><td>Extra scheduled hours for one asset in one month</td><td><code>availability_<wbr>manual_<wbr>ot</code></td><td>Edit OT hours under each chart (editors)</td></tr>
+            <tr><td>Overtime</td><td>Extra scheduled hours for one asset in one month</td><td><code>availability_<wbr>manual_<wbr>ot</code></td><td>Edit OT hours at the top right of each chart, then the table under it (editors)</td></tr>
             <tr><td>Plant timezone</td><td>The clock months are judged on: America/Chicago</td><td><code>availability_<wbr>settings</code></td><td>Set in the database</td></tr>
           </tbody>
         </table>
@@ -173,9 +173,10 @@
       <p>
         The starting values for groups, schedules, display names and linked
         rules were transcribed from the Configurator sheet of the Availability
-        Dashboard workbook this card replaced. They fill a new database once;
-        from then on the database is the source of truth, and the Configuration
-        page is where it is changed.
+        Dashboard workbook this card replaced. They fill a new database once,
+        and each group's Reset to defaults button puts that group's starting
+        schedule and assets back. Otherwise the database is the source of
+        truth, and the Configuration page is where it is changed.
       </p>
     </section>
 
@@ -333,7 +334,7 @@
         <dt><math><mtext>WO</mtext><mo stretchy="false">(</mo><mi>a</mi><mo>,</mo><mi>m</mi><mo stretchy="false">)</mo></math></dt><dd>Every work order on asset <math><mi>a</mi></math> whose created date, on the plant's clock, falls in month <math><mi>m</mi></math>.</dd>
       </dl>
       <ul>
-        <li><strong>Every work order counts</strong>, whatever Limble calls it (preventive maintenance, work request, project, parts order) and however it was classified. The only exception is the reader's own Exclude PMs switch.</li>
+        <li><strong>Every work order counts</strong>, whatever Limble calls it (preventive maintenance, work request, project, parts order) and however it was classified. A work order with no asset number or no readable created date cannot be placed and is left out; the only other exception is the reader's own Exclude PMs switch.</li>
         <li><strong>Negative downtime counts as zero</strong>, one work order at a time.</li>
         <li><strong>Work orders with no downtime still count</strong> toward the work order totals and the notes, though they add no hours.</li>
         <li><strong>The month comes from the created date, on the plant's clock.</strong> Dates are stored in UTC and converted to America/Chicago time first, so a work order opened at 11 PM on the last day of a month stays in that month.</li>
@@ -458,8 +459,8 @@
       <ul>
         <li><strong>One level only.</strong> The share is taken from the linked asset's direct downtime, never from its adjusted downtime, so a charge never passes along a chain of rules.</li>
         <li><strong>Rules only charge the parent.</strong> A linked asset's own availability uses its own work orders unless another rule names it as a parent.</li>
-        <li><strong>No overlap merging.</strong> Two linked assets that were down at the same time are both charged in full.</li>
-        <li><strong>No cap.</strong> Adjusted downtime can be larger than the scheduled hours. The month is then flagged and shown as 0% (step 4).</li>
+        <li><strong>No overlap merging.</strong> Two linked assets that were down at the same time are each charged their full share, with nothing taken off for the overlap.</li>
+        <li><strong>No cap.</strong> Adjusted downtime can be larger than the adjusted scheduled hours. The month is then flagged and shown as 0%, or as a dash when it had no scheduled hours at all (step 4).</li>
         <li><strong>Rules outlive group membership.</strong> If a linked asset is removed from every group, its work orders are still loaded so the parent keeps being charged correctly.</li>
       </ul>
     </section>
@@ -487,7 +488,7 @@
       {% endcall %}
       <ul>
         <li>It is shown as a percentage with two decimals.</li>
-        <li><strong>It never goes below 0%.</strong> An asset charged more downtime than it was scheduled reads 0%, and the month is flagged so the 0% is not mistaken for missing data.</li>
+        <li><strong>It never goes below 0%.</strong> An asset charged more downtime than it was scheduled reads 0%, and the month is flagged so the 0% is not mistaken for missing data. A month with no scheduled hours at all is also flagged when it has downtime, but it shows a dash rather than 0%.</li>
         <li><strong>It is undefined when nothing was scheduled</strong>, which only happens if a group is configured down to zero net hours. The card then shows no number at all: 0% would read as a total outage and 100% as a perfect month.</li>
         <li><strong>A month with no work orders against the asset reads 100%</strong>, because nothing was subtracted, unless a linked rule charged it a share of another asset's downtime (step 3). The card notes "No WO entries this month" so a 100% is not mistaken for a month without breakdowns. The note counts only the asset's own work orders, so a parent can carry it on a bar below 100% that holds only linked downtime.</li>
       </ul>
@@ -555,7 +556,7 @@
     <section class="std-section" id="availability-window">
       <h4>Which months are shown</h4>
       <ul>
-        <li><strong>Only complete calendar months.</strong> The current month is left out until it ends: it would be measured against its full scheduled hours with only part of its downtime in, so it would always read high or low for the wrong reason.</li>
+        <li><strong>Only complete calendar months.</strong> The current month is left out until it ends: it would be measured against its full scheduled hours with only part of its downtime in, so it would read high until the rest of its downtime arrived.</li>
         <li><strong>"Complete" is judged on the plant's clock.</strong> A server running on UTC would otherwise treat July as finished during the first hours of August while the plant is still working July 31.</li>
         <li><strong>The last five complete months by default.</strong> Months shown offers 3, 5, 6, 12 or 24.</li>
         <li><strong>The window is trimmed to the months that hold data</strong> for the charted assets, so a database with three months of history shows three columns rather than empty ones.</li>
@@ -585,9 +586,11 @@
         </ul>
       </div>
       <p>
-        Month labels gain a two-digit year when the window spans two calendar
-        years, such as Dec 25 and Jan 26, because the same month name would
-        otherwise head two columns of the editable Goal % and overtime rows.
+        Month labels gain a two-digit year on every column whenever the window
+        crosses into another year, such as Dec 25 and Jan 26, so each editable
+        Goal % and overtime cell says which year it belongs to. In a window
+        longer than 12 months, the same month name would otherwise head two
+        columns.
       </p>
       <p>
         The card does not follow the Metrics page's asset search or date range.
@@ -703,10 +706,10 @@
             <tr><th scope="col">Mark or note</th><th scope="col">When it appears</th><th scope="col">What it means</th></tr>
           </thead>
           <tbody>
-            <tr><td>Red mark at the foot of a bar, "Downtime exceeded scheduled; clamped to 0%"</td><td>Adjusted downtime is larger than adjusted scheduled hours</td><td>More downtime was charged than hours were scheduled, usually through linked downtime or a long repair charged to one month. The 0% is real, not missing.</td></tr>
+            <tr><td>Red mark at the foot of a bar, "Downtime N h exceeded scheduled N h; clamped to 0%"</td><td>Adjusted downtime is larger than adjusted scheduled hours</td><td>More downtime was charged than hours were scheduled, usually through linked downtime or a long repair charged to one month. The 0% is real, not missing.</td></tr>
             <tr><td>"No WO entries this month"</td><td>No work order was created for the asset itself in the month; linked assets' work orders do not count</td><td>Nothing was recorded against the asset, which is not the same as nothing breaking. The bar reads 100% unless a linked rule charged it downtime.</td></tr>
-            <tr><td>"N WO(s) with 0 downtime"</td><td>Some of the month's work orders carried no downtime</td><td>The asset was worked on without stopping, or the stop was not recorded.</td></tr>
-            <tr><td>"N WO(s) cross a month boundary"</td><td>A work order with downtime was completed in a later month than it was created, or its created time plus its downtime runs into the next month</td><td>All of its downtime sits in the created month; how much belonged to the next month is not known.</td></tr>
+            <tr><td>"(N with no downtime)" beside the tooltip's work order count, and the WOs w/o downtime column of the Monthly summary</td><td>Some of the month's own work orders carried zero downtime</td><td>The asset was worked on without stopping, or the stop was not recorded.</td></tr>
+            <tr><td>"N WO(s) cross a month boundary"</td><td>One of the asset's own work orders with downtime was completed in a different month from the one it was created in, or its created time plus its downtime runs into the next month. Linked work orders are marked in the Work orders view but not counted here.</td><td>All of its downtime sits in the created month; how much belonged to the next month is not known.</td></tr>
             <tr><td>"Includes N h linked from another asset"</td><td>Linked downtime is above 0</td><td>Part of this bar comes from coupled assets (step 3).</td></tr>
             <tr><td>"N PM(s) excluded"</td><td>Exclude PMs is on and the bar lost PMs</td><td>How many PM work orders, the asset's own and its linked assets', were left out.</td></tr>
           </tbody>
@@ -779,8 +782,8 @@
       {% endcall %}
       <ul>
         <li><strong>Collapsed,</strong> the card previews each group's Average for the most recent month shown, highest first.</li>
-        <li><strong>Expanded,</strong> there is one chart per charted asset group, titled with the group's name and its net scheduled hours per day. The vertical axis is fixed from 0% to 100%, as in the workbook.</li>
-        <li><strong>The basis line</strong> under the controls reads "Computed" with the date and time, the timezone, whether PMs are excluded, and every group's net hours per day, so a screenshot carries the assumptions it was made with.</li>
+        <li><strong>Expanded,</strong> there is one chart per charted asset group, titled "<em>group</em> Availability % by Month", with the group's net scheduled hours per day on the line below the title. The vertical axis is fixed from 0% to 100%, as in the workbook.</li>
+        <li><strong>The basis line</strong> under the controls reads "Computed" with the date and time on the server's clock, the plant timezone used to place work orders in months, whether PMs are excluded, and every group's net hours per day, so a screenshot carries the assumptions it was made with.</li>
         <li><strong>Hovering over a bar</strong> shows its availability, scheduled hours (with overtime), downtime (with linked hours), work order counts, the group average, the goal and any notes.</li>
         <li><strong>The table under each chart</strong> has a row per asset and a column per month, then the Asset average column and the Average and Goal % rows. Editors can type a goal for a month in the Goal % row, and switch the table to Edit OT hours to enter overtime.</li>
         <li><strong>Clicking a bar, or View data,</strong> opens the group's data. The Monthly summary lists every asset and month with its scheduled, overtime, direct, linked and total hours, work order counts and notes, and can be cut down to the rows that need attention (flagged, no work orders, or crossing a month). Its "vs group avg" column is in percentage points:</li>
@@ -855,15 +858,17 @@
       <h4>What the card shows today</h4>
       <p>Working definitions as currently built, and subject to change:</p>
       <ul>
-        <li><strong>MTBF by Asset:</strong> the calendar hours between the first and last dated corrective work order, divided by the number of gaps between them. With fewer than two dated work orders it shows Data Required. This is calendar time, not run hours.</li>
+        <li><strong>MTBF by Asset:</strong> the calendar hours between the first and last dated corrective work order, divided by the number of gaps between them. With fewer than two dated work orders, or when they all carry the same date and time, there is no MTBF: the asset is left off the chart and the KPI summary shows Data Required. This is calendar time, not run hours.</li>
         <li><strong>MTTR by Asset:</strong> total downtime divided by the number of corrective work orders.</li>
         <li><strong>Work Order Count by Asset:</strong> the number of corrective work orders in the selected window.</li>
         <li><strong>Total Downtime by Asset:</strong> the sum of downtime hours, with blank and negative values counted as 0.</li>
-        <li><strong>KPI summary:</strong> the four values per asset, plus a Trend arrow comparing downtime in the later half of the window with the earlier half: up when it rose more than 5%, down when it fell more than 5%.</li>
+        <li><strong>KPI summary:</strong> the four values per asset, plus a Trend arrow comparing downtime in the later half of the window with the earlier half: up when it rose more than 5%, down when it fell more than 5%, and flat otherwise, including when the earlier half had no downtime at all.</li>
       </ul>
       <p>
         The card reads corrective work orders only (a person's Corrective WO
-        class, or the automatic one when no class has been saved), follows the
+        class or, when no class has been saved, a record the automatic
+        classifier calls Corrective WO or flags as a corrective candidate, such
+        as Limble type 6 or repair words in its text), follows the
         page's asset search and date range, and dates each work order by its
         completed date, else its start date, else its created date.
       </p>
@@ -899,10 +904,10 @@
       <ul>
         <li><strong>Baseline and current periods:</strong> the selected date window is split at its midpoint. The earlier half is the baseline and the later half is current.</li>
         <li><strong>Reliability Risk Score, with a baseline:</strong> 40% downtime increase, 25% work order count increase, 25% MTTR increase and 10% repeat failure share. Each increase scores 0 when nothing rose and reaches 100 at a doubling, or when activity appears where the baseline had none.</li>
-        <li><strong>Without a baseline for any selected asset:</strong> 45% downtime, 27.5% work order count and 27.5% MTTR, each ranked from 0 to 100 across the selected assets.</li>
+        <li><strong>Without a baseline for any selected asset:</strong> 45% downtime, 27.5% work order count and 27.5% MTTR, each scaled straight across the selected assets from 0 for the lowest value to 100 for the highest, or 50 for every asset above zero when all values are equal.</li>
         <li><strong>Status:</strong> High at 70 or above, which is the dashed alert threshold on the chart; Medium from 40 to 69.9; Low below 40.</li>
         <li><strong>Downtime Spike Detection:</strong> each asset's current downtime set against its baseline downtime.</li>
-        <li><strong>Alert count:</strong> one for a High score, plus one for each of downtime, work order count and MTTR that rose 50% or more against the baseline.</li>
+        <li><strong>Alert count:</strong> one for a High score, plus one for each of downtime, work order count and MTTR that rose 50% or more against a baseline above zero. A metric that appears where the baseline had none, shown as New, adds no alert.</li>
       </ul>
     </section>
   {% endcall %}

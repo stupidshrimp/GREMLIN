@@ -11,9 +11,11 @@
       <h2>Analysis</h2>
       <p>
         Perform an Analysis offers four analysis types, each run on one asset at
-        a time. All four start from the same place: the dispositions people save
-        on the Disposition page. The first card covers what every analysis reads;
-        the other four explain each analysis in depth.
+        a time. All four start from the dispositions people save, on the
+        Disposition page or from a record's link in an analysis table, except
+        that PM effectiveness picks its PMs by their record class. The first
+        card covers what every analysis reads; the other four explain each
+        analysis in depth.
       </p>
     </div>
     <button type="button" class="btn-secondary std-expand-all" data-expand-all aria-expanded="false">Expand all</button>
@@ -34,8 +36,9 @@
       <h4>Dispositions decide what counts</h4>
       <p>
         No analysis reads a work order's text to decide whether it was a
-        failure. A person decides on the Disposition page and saves a
-        disposition: a category, plus a failure mode and mechanism for a work
+        failure. A person decides and saves a disposition, on the Disposition
+        page or from a record's link in an analysis table: a category, plus a
+        failure mode and mechanism for a work
         order, or a reset decision and target for a PM. Saving again replaces
         the current disposition. Earlier ones are kept as history, but no
         analysis reads them. The rules for each category follow Reliability
@@ -50,9 +53,9 @@
             <tr><th scope="col">Category</th><th scope="col">For</th><th scope="col">What the analyses do with it</th></tr>
           </thead>
           <tbody>
-            <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Every analysis counts it while Include in Weibull Candidate is ticked. Needs a failure mode.</td></tr>
+            <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Counted while Include in Weibull Candidate is ticked; the Pareto, trend, downtime driver and PM effectiveness analyses also need a failure mechanism. Needs a failure mode.</td></tr>
             <tr><td>Included PM reset event</td><td>PMs</td><td>A PM that renewed the asset against one failure mode, and optionally one mechanism. Starts a new life in Weibull analysis and is never counted as a failure. Needs an Approved reset, a reset target and a written rationale.</td></tr>
-            <tr><td>Included censored asset event</td><td>Work orders</td><td>Survival with no recurrence through the cutoff. Kept for traceability; none of the four analyses reads it, because the fit already adds the current life by itself.</td></tr>
+            <tr><td>Included censored asset event</td><td>Work orders</td><td>Survival with no recurrence through the cutoff. Kept for traceability; none of the four analyses reads it, because the fit already adds the current life by itself. Needs a failure mode.</td></tr>
             <tr><td>Held ambiguous</td><td>Both</td><td>Probably relevant but not decidable yet. Left out until resolved; needs a note saying what is missing.</td></tr>
             <tr><td>Excluded mixed or contaminating</td><td>Work orders</td><td>A real event that mixes failure stories or conflicts with the population. Never counted; needs a note.</td></tr>
             <tr><td>Excluded non-failure</td><td>Both</td><td>Not a failure: scheduled work, inspections with no defect, housekeeping, administration. Never counted.</td></tr>
@@ -62,12 +65,19 @@
           </tbody>
         </table>
       </div>
+      <p>
+        <strong>One exception for PMs:</strong> PM effectiveness counts every
+        completed PM whose record class is PM or PM reset candidate, whatever
+        its category. A PM that is Held ambiguous, Excluded non-failure, PM
+        context only, Rejected PM reset or Unknown still counts there. On that
+        card the categories only decide which failures count.
+      </p>
     </section>
 
     <section class="std-section" id="common-include-flag">
       <h4>The Include in Weibull Candidate flag</h4>
       <ul>
-        <li>It is ticked by default for an Included failure, and for an Included PM reset event with an Approved reset.</li>
+        <li><strong>It is not ticked for you.</strong> Choosing Included failure, or Included PM reset event with an Approved reset, leaves the box as it was, so tick it on every record the analyses should use; Check all Include in Weibull Candidate ticks a whole page. Only a blank cell in an Excel upload falls back to ticked for those two.</li>
         <li>It is always cleared for Excluded non-failure and Excluded mixed or contaminating, and for PMs whose decision is Rejected reset or Context only.</li>
         <li><strong>Clearing it takes the record out of every analysis on this tab</strong>: Weibull, the Pareto, the trend, the downtime drivers, and the failure side of PM effectiveness, even when its category is Included failure.</li>
       </ul>
@@ -106,8 +116,8 @@
       </math>
       {% endcall %}
       <ul>
-        <li>A blank date (empty or only spaces) is skipped and the next one is used.</li>
-        <li><strong>A record with no usable date</strong> still counts wherever a date is not needed: the readiness summary, the Pareto, the trend's Most Frequent and Highest Downtime cards, and the downtime driver's summary cards, distribution, asset totals and top events. It cannot be placed in a month, so it is left off every monthly chart and out of the trend's Fastest Growing and Most Improved cards. The Weibull fit and PM effectiveness leave it out altogether, because both have to place each record in time.</li>
+        <li>A blank date (empty or only spaces) is skipped and the next one is used. A date that is there but cannot be read is not skipped, so the record has no usable date.</li>
+        <li><strong>A record with no usable date</strong> still counts wherever a date is not needed: the readiness summary, the Pareto, the counts beside each choice in the analysis pickers, the trend's Most Frequent and Highest Downtime cards, and the downtime driver's summary cards, distribution, asset totals and top events. It cannot be placed in a month, so it is left off every monthly chart and out of the trend's Fastest Growing and Most Improved cards. The Weibull fit and PM effectiveness leave it out altogether, because both have to place each record in time.</li>
         <li>Blank downtime counts as 0 hours, and so does negative downtime.</li>
         <li><strong>Dates are read in UTC</strong>, the time zone GREMLIN stores them in, so months, days and weekends on this tab are UTC ones. A work order completed in the evening of the last day of a month, plant time, can land in the next month here.</li>
       </ul>
@@ -133,8 +143,8 @@
             <tr><td>Total entries for this asset</td><td>Every record mapped from Limble for the asset, of any kind.</td></tr>
             <tr><td>Usable WOs for Weibull</td><td>Corrective work orders whose current disposition is Included failure, with the flag ticked, a failure mode and a modeled population.</td></tr>
             <tr><td>Usable PMs for Weibull</td><td>PMs whose current disposition is Included PM reset event with an Approved reset, the flag ticked and a reset target failure mode.</td></tr>
-            <tr><td>WOs dispositioned, WOs not dispositioned</td><td>Corrective work orders with and without a current disposition.</td></tr>
-            <tr><td>PMs dispositioned, PMs not dispositioned</td><td>PMs with and without a current disposition.</td></tr>
+            <tr><td>WOs dispositioned, WOs not dispositioned</td><td>Corrective work orders with and without a saved current disposition. One saved as Unknown counts as dispositioned.</td></tr>
+            <tr><td>PMs dispositioned, PMs not dispositioned</td><td>PMs with and without a saved current disposition, counted the same way.</td></tr>
           </tbody>
         </table>
       </div>
@@ -181,6 +191,7 @@
       </dl>
       <ul>
         <li>At most 15 bars are drawn, but the line counts every mechanism, so it can stop short of 100% at the last bar on screen. The chart then says "Top 15 of" how many there are.</li>
+        <li>When the total is 0, as in the downtime view when no downtime was logged against the included failures, every bar is empty and the line stays at 0%.</li>
         <li>Clicking a bar picks that mechanism. With Weibull Analysis selected it runs the fit for that mechanism (a viewer sees its saved result); with the other three it fills their charts for that mechanism.</li>
       </ul>
       {% call std.figure("C1", "Four mechanisms with 120, 60, 15 and 5 hours of downtime. The first bar alone is 60% of the 200 hours; the first two together are 90%.") %}
@@ -228,8 +239,11 @@
       <p>
         Shown with Weibull Analysis: the five failure mechanisms on the asset
         with the highest β, each taken from the most recent saved Weibull
-        result for that mechanism, with ties going to the one with more
-        failures, each shown with its failure count and η. A high β marks the
+        result for that mechanism, with ties going to the one whose saved fit
+        has more failures, each shown with that fit's failure count and η. A
+        fit counts the lives that ended in a failure, which can be fewer than
+        the mechanism's included failures, because the first event only starts
+        the clock. A high β marks the
         mechanisms most clearly wearing out (see
         <a href="#analysis-weibull">Weibull life data analysis</a>). A
         mechanism that has never been fitted is not on the list.
@@ -530,7 +544,7 @@
       {% endcall %}
       <ul>
         <li><strong>How it is solved:</strong> GREMLIN checks 400 evenly spaced values of β from 0.1 to 20 for a change of sign in equation W8, then halves the bracketing interval 80 times. η then follows from equation W7.</li>
-        <li><strong>If there is no root between 0.1 and 20,</strong> β falls back to 1.2 divided by the coefficient of variation of the complete lives, kept between 0.1 and 20.</li>
+        <li><strong>If there is no root between 0.1 and 20,</strong> β falls back to 1.2 divided by the coefficient of variation of the complete lives, kept between 0.1 and 20, or to 1.2 itself when that coefficient is zero or cannot be worked out, as with a single complete life.</li>
         <li><strong>The fit needs at least one complete life</strong> and at least one life longer than zero hours; otherwise the analysis stops and says which is missing.</li>
       </ul>
     </section>
@@ -604,9 +618,11 @@
     <section class="std-section" id="weibull-charts">
       <h4>The four charts</h4>
       <p>
-        The points on the charts are not the fit: they are what the lives
-        themselves say, estimated without assuming any distribution by the
-        Kaplan-Meier method. At each age where a complete life ends:
+        The points for complete lives are not the fit: they are what the
+        lives themselves say, estimated without assuming any distribution by
+        the Kaplan-Meier method. (The red points for lives ended by a PM reset
+        only mark their ages, on the fitted curve.) At each age where a
+        complete life ends:
       </p>
       {% call std.equation("W13", "the Kaplan-Meier reliability at a failure age is the product over failure ages up to it of one minus failures over the number at risk") %}
       <math display="block">
@@ -637,15 +653,15 @@
       {% endcall %}
       <ul>
         <li><strong>Weibull Probability Plot:</strong> the Kaplan-Meier points for the complete lives, the fitted line (green) and, where the intervals exist, the lines at the lower and upper ends of both intervals (yellow). Points that lie close to the green line support the Weibull model. A point whose estimate is 0 or 1 cannot be drawn on this scale.</li>
-        <li><strong>CDF:</strong> the fitted <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math> with the Kaplan-Meier points for complete lives (white) and the lives that ended in a PM reset (red), placed on the fitted curve at their age.</li>
-        <li><strong>Probability Density (PDF)</strong> and <strong>Hazard Rate:</strong> equations W4 and W5 at the fitted values only.</li>
-        <li><strong>The red vertical line</strong> in every pane is the current life: the time since the most recent event.</li>
+        <li><strong>CDF:</strong> the fitted <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math> with the Kaplan-Meier points for complete lives (white, or dark in the dark theme) and the lives that ended in a PM reset (red), placed on the fitted curve at their age.</li>
+        <li><strong>Probability Density (PDF)</strong> and <strong>Hazard Rate:</strong> equations W4 and W5 as curves alone, with no points or interval curves, drawn at the fitted values or at the values an editor is trying.</li>
+        <li><strong>The red vertical line</strong> in every pane is the current life: the scheduled hours from the most recent event to the run's analysis cutoff.</li>
         <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
       </ul>
       {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.12 and it crosses the 63.2% line at η = 932 hours. The first two Kaplan-Meier points sit well above it: with three failures and two censored lives the sample is small, which is also why the confidence intervals are wide.") %}
       <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
         <title id="fig-w4-title">Weibull probability plot of the worked example</title>
-        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Three points at 310, 520 and 980 hours lie near a straight fitted line with slope 2.12 that crosses 63.2 percent unreliability at 932 hours.</desc>
+        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Three points at 310, 520 and 980 hours, the first two well above and the third just above a straight fitted line with slope 2.12 that crosses 63.2 percent unreliability at 932 hours.</desc>
         <path class="fig-grid" d="M80 30 H560 M80 85 H560 M80 140 H560 M80 195 H560 M85.7 30 V250 M270.6 30 V250 M455.4 30 V250 M545.1 30 V250"/>
         <path class="fig-axis" d="M80 30 V250 H560"/>
         <text class="fig-text-small" x="74" y="34" text-anchor="end">93.4%</text>
@@ -690,7 +706,8 @@
             <tr><td>β from 0.9 to 1.1</td><td>Random failures</td><td>Improve detection with inspections or condition checks, and plan spares. A fixed replacement age is weak justification.</td></tr>
             <tr><td>β above 1.1</td><td>Wear-out</td><td>Evaluate an age-based PM or planned replacement, set with η, downtime impact and cost.</td></tr>
             <tr><td>β interval crosses 1.0</td><td>Pattern still uncertain</td><td>Check whether the population mixes mechanisms or needs more failures before choosing a strategy.</td></tr>
-            <tr><td>β interval no wider than 0.3</td><td>Stable</td><td>More confidence in the direction above.</td></tr>
+            <tr><td>β interval no wider than 0.3, not crossing 1.0</td><td>Stable</td><td>More confidence in the direction above.</td></tr>
+            <tr><td>β interval wider than 0.3, not crossing 1.0</td><td>Treat with caution</td><td>Check whether the population mixes mechanisms, the data is weak, or there are still too few failures before choosing a strategy.</td></tr>
             <tr><td>η interval width at most 40% of η</td><td>Stable η</td><td>Usable for planning comparisons and timing discussions.</td></tr>
             <tr><td>η interval wider than that</td><td>Directional only</td><td>Tighten the population or collect more data before treating η as a decision point.</td></tr>
           </tbody>
@@ -755,8 +772,8 @@
       <ul>
         <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis cutoff, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
         <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it. A saved pair lasts until the group is run again, and the page does not show it again: the inputs always open on the fitted values.</li>
-        <li><strong>Generate Weibull Report</strong> writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values. The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
-        <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition; saving it runs the analysis again, which replaces the saved run as above.</li>
+        <li><strong>Generate Weibull Report</strong>, for editors, writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values. The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
+        <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition for an editor; saving it runs the analysis again, which replaces the saved run as above. Viewers see the Task ID as plain text.</li>
       </ul>
     </section>
 
@@ -777,7 +794,7 @@
   {% call std.doc_card(
       "analysis-trend",
       "Failure mode trend",
-      "Counts a failure mode's or mechanism's failures month by month, and compares the last three months with the three before them.",
+      "Counts a failure mode's or mechanism's failures month by month, and compares every mechanism's last three months with the three before them.",
       eyebrow="Failure Mode Trend Analysis") %}
 
     <section class="std-section" id="trend-data">
@@ -919,9 +936,10 @@
       {% endcall %}
       <ul>
         <li><strong>Total Downtime</strong> is <math><mi>D</mi></math> and <strong>Work Order Count</strong> is <math><mi>n</mi></math>.</li>
-        <li><strong>Average Downtime</strong> is <math><mover><mi>d</mi><mo>&#x203E;</mo></mover></math>, or 0 when there are none.</li>
+        <li><strong>Average Downtime</strong> is <math><mover><mi>d</mi><mo>&#x203E;</mo></mover></math>.</li>
         <li><strong>Median Downtime</strong> is the middle value once sorted, or the mean of the two middle values when there is an even number.</li>
         <li><strong>Max Downtime Event</strong> is the longest single downtime.</li>
+        <li>When the selection has no work orders, a "No downtime records found" message takes the place of the cards.</li>
       </ul>
       <p>
         An average far above the median means a few long events carry the
@@ -934,7 +952,7 @@
       <ul>
         <li><strong>Monthly Downtime Trend:</strong> downtime added up by the month of the work order date (UTC), with every month from the first to the last shown, quiet months at 0. Undated failures are left out of this chart only.</li>
         <li><strong>Downtime Distribution:</strong> how many work orders fall in each range: 0 to 1 hour, 1 to 4, 4 to 8, 8 to 24, and 24 hours or more. A value on a boundary goes in the higher range, so exactly 4 hours counts in 4 to 8.</li>
-        <li><strong>Downtime by Asset / Location:</strong> downtime added up by asset name (or number), highest first. Work orders do not record a location, so where no asset is recorded the root or parent asset in the hierarchy stands in for one.</li>
+        <li><strong>Downtime by Asset / Location:</strong> downtime added up by asset name, or by asset number where no name is recorded, highest first. Work orders do not record a location, so the Top Downtime Events table shows the root or parent asset in the hierarchy in its Location column instead.</li>
         <li><strong>Top Downtime Events:</strong> the ten failures with the most downtime; ties go to the most recent.</li>
       </ul>
       {% call std.equation("D2", "monthly downtime is the sum of downtime of failures dated in that month") %}
@@ -1013,7 +1031,9 @@
         <p>
           Until a record has a saved class, the automatic flag decides whether
           it is a PM, and that flag can mistake a return-to-service note such
-          as "RTS at 4:30 PM" for one. Dispositioning the record settles it.
+          as "RTS at 4:30 PM" for one. Saving a disposition settles it only with
+          the right Record Class: that column starts at the automatic class, PM
+          for a record like this, so change it to Corrective WO before saving.
         </p>
       </div>
     </section>
@@ -1022,8 +1042,8 @@
       <h4>Pairing PMs with failures</h4>
       <p>
         Each PM is paired with the first failure strictly after it. A PM with
-        no later failure is not paired. Several PMs before the same failure
-        each pair with it.
+        no later failure is not paired. Several PMs with no failure between
+        them all pair with the same next failure.
       </p>
       {% call std.equation("PM1", "the days to failure for a PM are the time from the PM to the first failure after it, in days") %}
       <math display="block">
@@ -1086,7 +1106,7 @@
       <ul>
         <li><strong>PMs Performed:</strong> every completed, dated PM on the asset.</li>
         <li><strong>Failures After PM:</strong> the number of different failures paired with at least one PM. A failure that several PMs pair with counts once.</li>
-        <li><strong>Average Days to Failure:</strong> equation PM2, one value per paired PM, so a failure with three PMs before it contributes three times.</li>
+        <li><strong>Average Days to Failure:</strong> equation PM2, one value per paired PM, so a failure that three PMs pair with contributes three times.</li>
         <li><strong>PM Effectiveness:</strong> the average placed in one of these bands:</li>
       </ul>
       <div class="std-table-scroll">
@@ -1102,6 +1122,11 @@
           </tbody>
         </table>
       </div>
+      <p>
+        The rating uses the unrounded average, so an average shown as 30, 90
+        or 180 days can still fall in the band below when it is just under
+        that value.
+      </p>
       <div class="std-example">
         <p class="eyebrow">Worked example, figure PM1</p>
         <ul class="std-calc">
@@ -1117,7 +1142,7 @@
     <section class="std-section" id="pm-views">
       <h4>Chart, table and date range</h4>
       <ul>
-        <li><strong>Failures Following PM</strong> counts, by the month of the failure (UTC), the different failures that followed a PM, with every month from the first to the last shown.</li>
+        <li><strong>Failures Following PM</strong> counts, by the month of the failure (UTC), the failures paired with at least one PM (the ones Failures After PM counts), with every month from the first to the last shown.</li>
         <li><strong>PM-to-Failure Detail</strong> has one row per paired PM, newest PM first: its completion date, the asset, the next failure's date, the days between, the mechanism, the failure's downtime and its corrective work order number. Editors can click that number to review its disposition.</li>
         <li><strong>From and To</strong> narrow the chart and the table by the failure's month. The summary cards always use the whole history.</li>
       </ul>

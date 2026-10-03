@@ -40,7 +40,7 @@
     <rect class="fig-box-strong" x="292" y="12" width="236" height="222" rx="12"/>
     <text class="fig-text-strong" x="410" y="36" text-anchor="middle">GREMLIN.db</text>
     <rect class="fig-box" x="306" y="50" width="208" height="40" rx="8"/>
-    <text x="410" y="75" text-anchor="middle">Raw records, as received</text>
+    <text x="410" y="75" text-anchor="middle">Raw records + GREMLIN fields</text>
     <path class="fig-arrow" d="M410 90 V106" marker-end="url(#fig-s1-arrow)"/>
     <rect class="fig-box" x="306" y="110" width="208" height="40" rx="8"/>
     <text x="410" y="135" text-anchor="middle">Mapped records</text>
@@ -78,12 +78,12 @@
       "Where the records come from, how often they are refreshed, and what happens to them on the way in.",
       eyebrow="Data") %}
     <ul>
-      <li><strong>Limble is the system of record.</strong> GREMLIN reads from Limble and never writes back to it, so a record is corrected in Limble and the correction flows in.</li>
-      <li><strong>The Limble sync runs every night</strong> as a scheduled job. An administrator can also start it from the Developer area when a correction has to show up sooner. Each run pulls tasks (work orders and PMs), the assets they belong to, and the instruction text of work orders, up to 500 per run, working back through the history.</li>
-      <li><strong>Raw records are kept exactly as Limble sent them</strong>, so nothing is lost on the way in and the mapping can always be redone.</li>
-      <li><strong>Mapped records</strong> copy the fields GREMLIN works with into columns of their own: the asset number (Limble's asset ID), the asset's name and place in the asset hierarchy, the created, start and completed dates (stored in UTC), status, Limble's task type, downtime converted from seconds to hours, the description and completion notes, and the Area Affected, Condition, Cause and Action boxes.</li>
+      <li><strong>Limble is the system of record.</strong> GREMLIN reads from Limble and never writes back to it, so most corrections are made in Limble and flow in with the next sync. Three kinds do not: a work order moved to another asset stays under the asset it was first stored under, a field cleared in Limble keeps its old value here (dates and the four instruction boxes excepted), and a task deleted in Limble stays in GREMLIN.</li>
+      <li><strong>The Limble sync runs every night</strong> as a scheduled job. An administrator can also start it from the Developer area when a correction has to show up sooner. Each run pulls every task (work orders and PMs) and every asset. It also reads the Area Affected, Condition, Cause and Action boxes from the instructions of completed tasks it has not read yet or that changed since, up to 500 tasks per run by default, newest first, working back through the history.</li>
+      <li><strong>Raw records keep every field Limble sent for each task</strong>, with GREMLIN's own additions stored alongside (the asset number, its place in the hierarchy, readable UTC dates and the four instruction boxes), so the mapping can always be redone. Template tasks, which are PM and work order definitions rather than events, are left out.</li>
+      <li><strong>Mapped records</strong> copy the fields GREMLIN works with into columns of their own: the asset number (Limble's asset ID, or the number older records used for the same asset), the asset's name and place in the asset hierarchy, the created, start and completed dates (stored in UTC), status, Limble's task type, downtime converted from seconds to hours, the description and completion notes, and the Area Affected, Condition, Cause and Action boxes.</li>
       <li><strong>The mapping also guesses a record class</strong> for every record; the next card explains how, and why a person's call replaces it.</li>
-      <li><strong>The mapping is rebuilt by itself</strong> whenever its rules change, and editors can rebuild it from Configuration with Refresh CMMS mapping.</li>
+      <li><strong>The mapping is rebuilt by itself</strong> whenever its rules change, and editors can catch it up from Configuration with Refresh CMMS mapping, which maps any records imported or changed since the last mapping.</li>
       <li><strong>GREMLIN keeps its data in four SQLite files</strong>, so a backup of GREMLIN.db alone is not enough:
         <ul>
           <li><strong>GREMLIN.db:</strong> the Limble records, dispositions, failure modes and mechanisms, Weibull results, and the availability configuration, goals and overtime.</li>
@@ -121,8 +121,12 @@
         <p>
           The word "pm" also matches the clock in return-to-service notes such
           as "RTS at 4:30 PM", so real breakdowns can be guessed as PMs. That
-          is why availability ignores the guess entirely, and why a class a
-          person saves on the Disposition page replaces it everywhere else.
+          is why availability's hours and its Exclude PMs switch ignore the
+          guess, which only names the non-PM segments of its stacked bars, and
+          why a class a person saves on the Disposition page replaces it in
+          every metric and analysis. The Disposition lists and the readiness
+          counts still include any record the classifier flagged as a work
+          order or PM.
         </p>
       </div>
     </section>
@@ -151,6 +155,11 @@
       "The pages",
       "What each page is for, and who can open it.",
       eyebrow="Pages") %}
+    <p>
+      Here, an Operations &amp; Maintenance account means one recorded as
+      Operations, Maintenance, or both. An account recorded as All departments
+      is not one.
+    </p>
     <div class="std-table-scroll">
       <table class="std-table">
         <caption class="visually-hidden">GREMLIN's pages and who can open them</caption>
@@ -163,10 +172,10 @@
           <tr><td>Disposition</td><td>Classifying the work orders and PMs the analyses read.</td><td>Editors; not Operations &amp; Maintenance</td></tr>
           <tr><td>Metrics</td><td>The Availability, Reliability performance and Reliability risk cards.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
           <tr><td>PM Task Tracker</td><td>The PM calendar: what is due, what is done and what is late for the assets you pick.</td><td>Signed in, every department</td></tr>
-          <tr><td>Safety Report, Overdue WO Tracker</td><td>Coming soon.</td><td>Signed in, Operations &amp; Maintenance</td></tr>
+          <tr><td>Safety Report, Overdue WO Tracker</td><td>Coming soon.</td><td>Signed in, every department except Facilities</td></tr>
           <tr><td>Reliability Links</td><td>Bookmarks to the dashboards, portals, documents and systems the team uses.</td><td>Everyone</td></tr>
           <tr><td>Standards and Documentation</td><td>These standards, and the documents library to come.</td><td>Everyone</td></tr>
-          <tr><td>Configuration</td><td>Asset group schedules, linked downtime rules and the CMMS mapping refresh.</td><td>Everyone except Operations &amp; Maintenance accounts; editing needs the editor role</td></tr>
+          <tr><td>Configuration</td><td>Asset group schedules, linked downtime rules and the CMMS mapping refresh.</td><td>Everyone except Operations &amp; Maintenance accounts; only editors see and change its settings</td></tr>
           <tr><td>About, Patch Notes, Report a Bug</td><td>In the footer: what GREMLIN is, what changed in each release, and a form for reporting a problem.</td><td>Everyone</td></tr>
           <tr><td>Developer</td><td>Database inspection, the Limble sync, accounts, user activity and bug reports.</td><td>Administrators, from the account dialog</td></tr>
         </tbody>
@@ -182,10 +191,10 @@
     <ul>
       <li><strong>Signing in:</strong> use the person icon at the bottom of the sidebar, with a username and PIN. The login lasts for the browser session; closing the browser signs you out. Accounts are handed out by the people listed under Help.</li>
       <li><strong>Signed out,</strong> Home, Reliability Links, Standards and Documentation, and Configuration are open. Every other sidebar entry is still shown, struck through, and asks you to log in.</li>
-      <li><strong>Viewer:</strong> reads every page their department is offered.</li>
+      <li><strong>Viewer:</strong> opens every page their department is offered except Disposition, which is for editors. Configuration shows a viewer no settings, and Perform an Analysis shows a viewer the Weibull fit an editor last saved.</li>
       <li><strong>Editor:</strong> can also change stored data: dispositions, goals, overtime and configuration, running and adjusting Weibull analyses, and generating reports.</li>
       <li><strong>Administrator:</strong> can also open the Developer area.</li>
-      <li><strong>Department and level</strong> decide which pages the sidebar offers. Life Data Analysis, Metrics and Configuration are kept out of Operations &amp; Maintenance accounts, the Safety Report and Overdue WO Tracker are for Operations &amp; Maintenance, and the PM Task Tracker is for every department. A page your department is not offered is left out of your sidebar and refused at its address.</li>
+      <li><strong>Your department</strong> decides which pages the sidebar offers; each account also records a staff level, but no page is narrowed by it yet. Life Data Analysis, Metrics and Configuration are kept out of Operations &amp; Maintenance accounts (Operations, Maintenance, or both), the Safety Report and Overdue WO Tracker are for every department except Facilities, and the PM Task Tracker is for every department. A page your department is not offered is left out of your sidebar and refused at its address.</li>
       <li><strong>Every change</strong> a signed-in account saves is recorded with who made it and when.</li>
     </ul>
   {% endcall %}
@@ -212,7 +221,7 @@
       "What updates a number, and when.",
       eyebrow="Freshness") %}
     <ul>
-      <li><strong>New and corrected Limble records</strong> arrive with the nightly sync, or sooner if an administrator runs one.</li>
+      <li><strong>New Limble records, and most corrections,</strong> reach GREMLIN.db with the nightly sync, or sooner if an administrator runs one; <a href="#site-data">From Limble to GREMLIN</a> lists the corrections that do not carry over. The PM Task Tracker keeps its own copy, refreshed when an editor presses Sync from Limble on that page.</li>
       <li><strong>Availability is recalculated every time the Metrics page loads</strong>, from the configuration as it is at that moment. See <a href="#metrics-availability">Asset availability by month</a>.</li>
       <li><strong>The trend, downtime driver and PM effectiveness analyses</strong> read the current dispositions every time they load.</li>
       <li><strong>Weibull results are saved snapshots, one per failure group.</strong> Run the analysis again to include dispositions saved since; the new run replaces the group's previous one and any adjusted parameters saved with it. Changing a disposition from the Weibull data table re-runs it straight away.</li>
