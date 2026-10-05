@@ -15,12 +15,16 @@ from services.life_data_service import LifeDataService
 
 
 # (task id, completed date, recorded downtime hours) for the corrective work orders
-# every test seeds. Two dated failures are the minimum that produces a positive life
-# interval, and the negative value covers the clamp.
+# every test seeds. Six dated failures give the five lives ending in a failure that a
+# Weibull fit needs (the first only starts the clock), and the negative value covers
+# the clamp.
 SEEDED_WORK_ORDERS = [
     ("WO-1", "2024-01-15", 2.5),
     ("WO-2", "2024-02-15", -3.0),
     ("WO-3", "2024-03-15", 7.25),
+    ("WO-4", "2024-04-15", 1.0),
+    ("WO-5", "2024-05-15", 1.0),
+    ("WO-6", "2024-06-17", 1.0),
 ]
 
 
@@ -131,7 +135,12 @@ class WeibullSavedAnalysisTests(unittest.TestCase):
             [obs["source_downtime_hours"] for obs in saved.observations],
             [obs["source_downtime_hours"] for obs in performed.observations],
         )
-        self.assertEqual([obs["ordered_index"] for obs in saved.observations], [1, 2, 3])
+        self.assertEqual([obs["ordered_index"] for obs in saved.observations], list(range(1, len(SEEDED_WORK_ORDERS) + 1)))
+        # The audit trail reads back with it: the window, the life basis and the events.
+        self.assertEqual(saved.analysis_cutoff, performed.analysis_cutoff)
+        self.assertEqual(saved.life_basis, performed.life_basis)
+        self.assertEqual(saved.events, performed.events)
+        self.assertEqual(saved, performed)
 
     def test_saved_analysis_is_none_before_any_analysis_runs(self):
         self.assertIsNone(self._load_saved())

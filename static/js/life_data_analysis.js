@@ -122,12 +122,11 @@
     // from its data table can run the same group again. Only read alongside a
     // non-null latestResult, which every path that drops the result clears.
     latestResultGroup: null,
+    // The analysis start and cutoff dates an editor entered for that run, if any
+    // ({ start, cutoff } as YYYY-MM-DD, either blank), so the re-run after a
+    // disposition change keeps the same window rather than quietly widening it.
+    latestResultWindow: null,
     analysisToken: 0,
-    // Operating schedule (hours per day the asset actually runs) used to convert the
-    // Weibull MTTF from operating hours into approximate calendar months/days. 24 =
-    // continuous running; users with a fixed shift (e.g. 20 h/day) can adjust it
-    // inline next to the MTTF value, and the conversion recomputes live.
-    operatingHoursPerDay: 24,
     // The most recently selected failure mode/mechanism, regardless of which
     // analysis type made the selection. Carried forward when the user switches
     // analysis types so the new analysis auto-computes for the same failure focus.
@@ -369,29 +368,29 @@
     return Number(num.toPrecision(digits || 4)).toString();
   }
 
-  // Convert an MTTF expressed in operating hours into approximate calendar time,
-  // given how many hours per day the asset actually runs. Returns null for invalid
-  // inputs (non-positive hours or schedule). 30.4375 = mean calendar-month length
-  // (365.25 / 12), so the months/days split lines up with the calendar rather than a
-  // flat 30-day month.
-  const DAYS_PER_CALENDAR_MONTH = 30.4375;
-  function mttfCalendarDuration(operatingHours, hoursPerDay) {
-    const hours = Number(operatingHours);
-    const hpd = Number(hoursPerDay);
-    if (!isFinite(hours) || hours <= 0 || !isFinite(hpd) || hpd <= 0) return null;
-    const calendarDays = hours / hpd;
-    const months = Math.floor(calendarDays / DAYS_PER_CALENDAR_MONTH);
-    const days = Math.round(calendarDays - months * DAYS_PER_CALENDAR_MONTH);
-    return { calendarDays, months, days };
+  // How many calendar weeks it takes to build up `hours` of life on a Weibull result's
+  // schedule. Life hours are scheduled hours and a weekend adds none, so a week holds
+  // five scheduled days of hours_per_day: 100 life hours on the 20-hour schedule, 120
+  // on the 24-hour one. Mirrors LifeDataService.calendar_weeks_for_life_hours, which
+  // the Word report uses. Null when the result does not say what its schedule is.
+  function calendarWeeksForLifeHours(hours, lifeBasis) {
+    const value = Number(hours);
+    const perDay = lifeBasis ? Number(lifeBasis.hours_per_day) : NaN;
+    if (!isFinite(value) || value <= 0 || !isFinite(perDay) || perDay <= 0) return null;
+    const daysPerWeek = lifeBasis.exclude_weekends === false ? 7 : 5;
+    return value / (perDay * daysPerWeek);
   }
 
-  // "≈ 14 months, 13 days" style label for the MTTF calendar conversion.
-  function mttfDurationText(operatingHours, hoursPerDay) {
-    const d = mttfCalendarDuration(operatingHours, hoursPerDay);
-    if (!d) return "";
-    const monthLabel = d.months === 1 ? "month" : "months";
-    const dayLabel = d.days === 1 ? "day" : "days";
-    return `≈ ${d.months} ${monthLabel}, ${d.days} ${dayLabel} of calendar time`;
+  // "about 7.5 calendar weeks" for a life-hours figure, or "" when it can't be worked out.
+  function calendarWeeksText(hours, lifeBasis) {
+    const weeks = calendarWeeksForLifeHours(hours, lifeBasis);
+    return weeks == null ? "" : `about ${weeks.toFixed(1)} calendar weeks`;
+  }
+
+  // "20 hours Monday-Friday, weekends excluded": the schedule a result's hours count.
+  function scheduleLabel(lifeBasis) {
+    if (!lifeBasis || !lifeBasis.schedule_name) return "the weekday schedule";
+    return lifeBasis.schedule_name + (lifeBasis.exclude_weekends ? ", weekends excluded" : "");
   }
 
   // Plain machine-readable number string (no thousands separators) for use as the
@@ -861,15 +860,18 @@
     const list = $("lda-beta-rankings");
     list.innerHTML = "";
     if (!rankings.length) {
-      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results yet." }));
+      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
       return;
     }
+    // Only fits with enough failure lives are ranked at all; one saved under an earlier
+    // method still is, marked, because its beta is close but not what a run today gives.
     rankings.forEach((row) => {
       list.appendChild(
         el("li", {
           text:
             `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
-            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h)`,
+            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h)` +
+            (row.method_current === false ? " — saved under an earlier method; run it again" : ""),
         })
       );
     });
@@ -3453,6 +3455,7 @@
     if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.latestResult && state.latestResultGroup) {
       runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis with the updated disposition…", {
         changedRecord: saved,
+        window: state.latestResultWindow,
       });
       return;
     }
@@ -4019,33 +4022,94 @@
       );
       return;
     }
+    // A group with fewer included failures than the minimum can never reach it --
+    // every life that ends in a failure ends at one of them -- so it is shown, with
+    // why, but can't be chosen.
     const options = el("div", { class: "lda-modal-options" });
+    let anyFittable = false;
     groups.forEach((group, index) => {
+      const fittable = group.fittable !== false;
       const labelText =
         `${group.grouping_level === "FAILURE_MECHANISM" ? "Failure mechanism" : "Failure mode"}: ` +
-        `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)`;
+        `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)` +
+        (fittable ? "" : ` — too few to fit: a Weibull fit needs ${group.min_failure_lives || 5} lives ending in a failure`);
       const radio = el("input", { type: "radio", name: "lda-group", value: String(index) });
-      if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: labelText })]));
+      if (!fittable) radio.disabled = true;
+      else if (!anyFittable) radio.checked = true;
+      anyFittable = anyFittable || fittable;
+      options.appendChild(
+        el("label", { class: "lda-modal-option" + (fittable ? "" : " is-disabled") }, [radio, el("span", { text: labelText })])
+      );
     });
+    // The window the lives are built in. Both are optional plant-calendar dates: the
+    // start counts from that day's first minute and the cutoff to its last.
+    const startInput = el("input", { class: "lda-input", type: "date", id: "lda-window-start" });
+    const cutoffInput = el("input", { class: "lda-input", type: "date", id: "lda-window-cutoff" });
+    const windowFields = el("div", { class: "lda-window-fields" }, [
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-start", text: "Analysis start date (optional)" }), startInput]),
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-cutoff", text: "Analysis cutoff date (optional)" }), cutoffInput]),
+    ]);
+    const modalError = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
     const choice = await openModal({
       title: "Select failure group",
-      bodyNodes: [el("p", { text: "Choose the failure mechanism or failure mode to analyze:" }), options],
+      bodyNodes: [
+        el("p", { text: "Choose the failure mechanism or failure mode to analyze:" }),
+        anyFittable
+          ? null
+          : el("p", {
+              class: "lda-hint",
+              text: "None of these has enough failures for a Weibull fit yet. Disposition more failures, or come back when more have been recorded.",
+            }),
+        options,
+        windowFields,
+        el("p", {
+          class: "lda-hint",
+          text:
+            "Leave both dates blank to use all of the asset's history and censor the current life at the last " +
+            "completed Limble import. Dates are days on the plant's clock: the start counts from midnight, and the " +
+            "cutoff runs to the end of its day.",
+        }),
+        modalError,
+      ],
       actions: [
         { label: "Cancel", primary: false, value: () => null },
         {
           label: "Run analysis",
           primary: true,
+          validate: () => {
+            const checked = options.querySelector("input[name='lda-group']:checked");
+            let problem = "";
+            if (!checked) problem = "Choose a failure group that has enough failures to fit.";
+            else if (startInput.value && cutoffInput.value && startInput.value >= cutoffInput.value) {
+              problem = "The analysis start date has to be before the cutoff date.";
+            }
+            modalError.textContent = problem;
+            modalError.hidden = !problem;
+            return !problem;
+          },
           value: () => {
             const checked = options.querySelector("input[name='lda-group']:checked");
-            return checked ? Number(checked.value) : null;
+            return checked ? { index: Number(checked.value), start: startInput.value, cutoff: cutoffInput.value } : null;
           },
         },
       ],
     });
     if (choice === null || choice === undefined) return;
-    setActiveMechanism(groups[choice]);
-    runAnalysisForGroup(groups[choice]);
+    setActiveMechanism(groups[choice.index]);
+    const chosenWindow = choice.start || choice.cutoff ? { start: choice.start, cutoff: choice.cutoff } : null;
+    runAnalysisForGroup(groups[choice.index], undefined, { window: chosenWindow });
+  }
+
+  // Whether two Weibull groups ({ grouping_level, failure_mode_id, failure_mechanism_id })
+  // name the same population. A mode-level group's mechanism id may be null or absent.
+  function sameWeibullGroup(a, b) {
+    if (!a || !b) return false;
+    const mechanism = (group) => (group.grouping_level === "FAILURE_MECHANISM" ? group.failure_mechanism_id ?? null : null);
+    return (
+      a.grouping_level === b.grouping_level &&
+      a.failure_mode_id == b.failure_mode_id &&
+      mechanism(a) == mechanism(b)
+    );
   }
 
   // Query string for the read-only saved-analysis lookup. The mechanism id is omitted
@@ -4065,10 +4129,13 @@
   // and a fit the change has made impossible clears the old one off the screen.
   // `options.savedOnly` opens the fit already saved even for an editor, the way a
   // viewer always does: what the tour uses, so that showing somebody around never
-  // runs and stores a fit of its own.
+  // runs and stores a fit of its own. `options.window` ({ start, cutoff } as
+  // YYYY-MM-DD, either blank) is the analysis window an editor chose; without one
+  // the run uses all history and the server's default cutoff.
   async function runAnalysisForGroup(group, message, options) {
     const changedRecord = (options && options.changedRecord) || null;
     const savedOnly = !CAN_EDIT || Boolean(options && options.savedOnly);
+    const analysisWindow = (options && options.window) || null;
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     // Capture the analysis type too: if the user switches away from Weibull while
@@ -4100,6 +4167,8 @@
             grouping_level: group.grouping_level,
             failure_mode_id: group.failure_mode_id,
             failure_mechanism_id: group.failure_mechanism_id,
+            analysis_start: (analysisWindow && analysisWindow.start) || null,
+            analysis_cutoff: (analysisWindow && analysisWindow.cutoff) || null,
           })
         : await getJson(`${API}/saved-analysis?${savedAnalysisQuery(asset, group)}`);
       if (isStale()) return; // superseded, or the asset/analysis type changed mid-request
@@ -4115,6 +4184,7 @@
       }
       state.latestResult = data.result;
       state.latestResultGroup = group;
+      state.latestResultWindow = savedOnly ? null : analysisWindow;
       renderAnalysisResult(data.result, { changedRecord });
       refreshSummary();
     } catch (err) {
@@ -4128,7 +4198,16 @@
         showBanner(`The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run: ${err.message}`, "error");
         refreshSummary();
       } else {
+        // A run the data cannot support (too few failure lives, no likelihood root)
+        // also removes the result saved for that group, so a fit of the same group
+        // still on screen is gone on the server: take it down, and let the rankings
+        // drop it too.
+        if (!savedOnly && state.latestResult && sameWeibullGroup(state.latestResultGroup, group)) {
+          state.latestResult = null;
+          clearWorkspace();
+        }
         showBanner(err.message, "error");
+        if (!savedOnly) refreshSummary();
       }
     } finally {
       endLoading();
@@ -4148,6 +4227,180 @@
     return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
   }
 
+  // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
+  function lifeMetricsText(result) {
+    const part = (label, hours) => {
+      if (hours == null || !isFinite(Number(hours))) return null;
+      const weeks = calendarWeeksText(hours, result.life_basis);
+      return `${label} ${fmt(hours)} h${weeks ? ` (${weeks})` : ""}`;
+    };
+    const parts = [
+      part("B10 life", result.b10_life),
+      part("B50 (median) life", result.b50_life),
+      part("MTTF", result.mean_time_to_failure),
+    ].filter(Boolean);
+    return parts.length ? `${parts.join(" · ")}.` : "";
+  }
+
+  // A stored UTC timestamp on the plant's clock, "2026-03-02 07:00 America/Chicago".
+  // The zone is the one the result's days were split in, so the two always agree.
+  function plantTimeText(value, zoneName) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return String(value);
+    const zone = zoneName || "UTC";
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(when);
+      const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ${zone}`;
+    } catch (err) {
+      return when.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    }
+  }
+
+  const CUTOFF_SOURCE_TEXT = {
+    LAST_IMPORT: "the last completed Limble import",
+    USER: "the cutoff date entered for the run",
+    NOW: "the time of the run",
+  };
+
+  // An entered cutoff date runs to the end of that plant day, which is stored as the
+  // next day's midnight; read it back as "the end of 2025-06-30" rather than as
+  // "2025-07-01 00:00". A cutoff capped at the moment of the run keeps its time.
+  function cutoffText(result, zone) {
+    const shown = plantTimeText(result.analysis_cutoff, zone);
+    if (result.analysis_cutoff_source !== "USER" || !/ 00:00 /.test(shown)) return shown;
+    const instant = new Date(String(result.analysis_cutoff).replace(" ", "T"));
+    if (isNaN(instant.getTime())) return shown;
+    const dayBefore = plantTimeText(new Date(instant.getTime() - 60000).toISOString(), zone);
+    return `the end of ${dayBefore.slice(0, 10)} (${zone})`;
+  }
+
+  // What the lives count and the window they were built in, in one line each.
+  function resultContextLines(result) {
+    const basis = result.life_basis || {};
+    const zone = basis.time_zone || "UTC";
+    const lines = [
+      `Life basis: schedule-adjusted hours, an exposure proxy rather than run-meter hours, on ${scheduleLabel(basis)}, ` +
+        `with days split at midnight ${zone}.`,
+      `Window: ${result.analysis_start ? `from ${plantTimeText(result.analysis_start, zone)}` : "all history"} to ` +
+        `${cutoffText(result, zone) || "an unrecorded cutoff"}` +
+        `${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source] ? `, ${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source]}` : ""}.`,
+      `Lives: ${result.total_observation_count} in total, ${result.failure_count} ending in a failure and ` +
+        `${result.censored_count} right-censored (${result.pm_reset_censored_count || 0} at a PM reset, ` +
+        `${result.current_life_censored_count || 0} current life).`,
+    ];
+    if (result.grouping_level === "FAILURE_MODE") {
+      lines.push(
+        "Grouping: failure mode, the fallback for when the records cannot support one mechanism. It pools every " +
+          "mechanism under the mode, which can blur beta." +
+          (result.fallback_rationale ? ` Why not a mechanism: ${result.fallback_rationale}` : "")
+      );
+    }
+    return lines;
+  }
+
+  // Notices a result has to carry: saved under an earlier method, below the minimum
+  // failure count, days split in UTC for want of the plant zone, or lives that look
+  // like duplicate work orders.
+  function resultNotices(result) {
+    const notices = [];
+    const minimum = result.min_failure_lives || 5;
+    if (result.method_current === false) {
+      notices.push(
+        `Saved by an earlier version of GREMLIN's Weibull method (${result.method_version || "unrecorded"}), which split days ` +
+          "at midnight UTC, dated a work order with no completed date by its start or created date, and had no minimum " +
+          "failure count. " +
+          (CAN_EDIT ? "Run it again to apply the current rules; " : "An editor has to run it again to apply the current rules; ") +
+          "it can't be reported until then."
+      );
+    }
+    if (result.meets_minimum === false) {
+      notices.push(
+        `This result rests on ${result.failure_count} lives that end in a failure; GREMLIN needs at least ${minimum} to ` +
+          "fit and report a Weibull distribution, so it is not ranked and can't be reported."
+      );
+    }
+    if (result.life_basis && result.life_basis.time_zone_warning) notices.push(result.life_basis.time_zone_warning);
+    const flagged = (result.observations || []).filter((obs) => obs.data_quality_assumption_flag).length;
+    if (flagged) {
+      notices.push(
+        `${flagged} ${flagged === 1 ? "life ends" : "lives end"} within an hour of the event before, which is what two work ` +
+          "orders for one breakdown look like. Check the flagged rows in the data table: a duplicate makes a near-zero " +
+          "life that pulls beta down."
+      );
+    }
+    return notices;
+  }
+
+  // R(t) and F(t) at an age the user enters -- the current PM interval, say -- at the
+  // beta and eta on screen: the fitted values, or the ones an editor is trying.
+  function buildTargetAgePanel(result) {
+    const input = el("input", {
+      class: "lda-input",
+      type: "number",
+      min: "0",
+      step: "50",
+      id: "lda-target-age",
+      placeholder: "Life hours, e.g. a PM interval",
+    });
+    const output = el("p", { class: "lda-age-output", "aria-live": "polite" });
+    let beta = Number(result.beta_mle);
+    let eta = Number(result.eta_mle);
+    let fitted = true;
+    function render() {
+      const age = Number(input.value);
+      if (!input.value || !isFinite(age) || age <= 0) {
+        output.textContent = "Enter an age in life hours to see the chance of surviving to it and of failing by it.";
+        return;
+      }
+      if (!(beta > 0) || !(eta > 0)) {
+        output.textContent = "Enter a positive beta and eta to evaluate an age.";
+        return;
+      }
+      const reliability = Math.exp(-Math.pow(age / eta, beta));
+      const weeks = calendarWeeksText(age, result.life_basis);
+      output.textContent =
+        `At ${fmt(age)} life hours${weeks ? ` (${weeks})` : ""}: R = ${reliability.toFixed(3)}, so about ` +
+        `${(reliability * 100).toFixed(1)}% are expected to survive to that age, and F = ${(1 - reliability).toFixed(3)} ` +
+        `to fail by it. At the ${fitted ? "fitted" : "beta and eta entered above, not the fitted"} values.`;
+    }
+    input.addEventListener("input", render);
+    render();
+    const node = el("div", { class: "lda-panel lda-age-panel" }, [
+      el("h3", { text: "Reliability at an age" }),
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-target-age", text: "Age (life hours)" }), input]),
+      output,
+    ]);
+    // The inputs open on the fitted values rounded to six places, so a pair that
+    // still reads as those is the fit itself, evaluated at its unrounded values.
+    const fittedText = [numericInputValue(result.beta_mle, 6), numericInputValue(result.eta_mle, 6)];
+    return {
+      node,
+      // Redraw at another beta/eta: the editor's inputs moved.
+      update(nextBeta, nextEta) {
+        fitted =
+          numericInputValue(nextBeta, 6) === fittedText[0] && numericInputValue(nextEta, 6) === fittedText[1];
+        beta = fitted ? Number(result.beta_mle) : Number(nextBeta);
+        eta = fitted ? Number(result.eta_mle) : Number(nextEta);
+        render();
+      },
+      // The age entered, for the report, or null.
+      value() {
+        const age = Number(input.value);
+        return input.value && isFinite(age) && age > 0 ? age : null;
+      },
+    };
+  }
+
   function renderAnalysisResult(result, options) {
     const changedRecord = (options && options.changedRecord) || null;
     clearWorkspace();
@@ -4159,6 +4412,8 @@
     const dataTable = buildWeibullDataTable(result, (obs) => {
       if (chartApi) chartApi.focus(obs);
     });
+    const eventTable = buildEventProcessingTable(result);
+    const agePanel = buildTargetAgePanel(result);
 
     const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(result.beta_mle, 6) });
     const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(result.eta_mle, 6) });
@@ -4171,6 +4426,7 @@
       const beta = Number(betaInput.value);
       const eta = Number(etaInput.value);
       if (beta > 0 && eta > 0) chartApi.update(beta, eta);
+      agePanel.update(beta, eta);
     }
     betaInput.addEventListener("input", applyParameters);
     etaInput.addEventListener("input", applyParameters);
@@ -4190,17 +4446,18 @@
       el("div", { class: "lda-field" }, [el("label", { html: "&nbsp;" }), saveAdjusted]),
     ]);
 
+    const metrics = lifeMetricsText(result);
+    const notices = resultNotices(result);
     const card = el("section", { class: "glass-card lda-card fade-in-up" }, [
       el("h2", { text: "Weibull Analysis Results" }),
       el("div", { class: "lda-result-headline" }, [
         el("strong", { text: result.analysis_label || "Selected failure group" }),
         el("span", { class: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
         el("span", { class: "lda-hint", text: confidenceIntervalText(result) }),
-        el("span", {
-          class: "lda-hint",
-          text: `Observations: ${result.total_observation_count} total, ${result.failure_count} failures, ${result.censored_count} right-censored.`,
-        }),
+        metrics ? el("span", { class: "lda-hint", text: metrics }) : null,
       ]),
+      el("div", { class: "lda-result-context" }, resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
+      ...notices.map((notice) => el("p", { class: "lda-banner is-warning", role: "note", text: notice })),
       // Adjusting beta/eta and saving the adjustment are writes, so the whole row is
       // left out for a viewer or a signed-out visitor rather than shown inert. They
       // still get the full read-only view at the fitted MLE parameters.
@@ -4211,57 +4468,186 @@
         class: "lda-hint",
         text:
           "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
-          "The red vertical line marks the current life, which is the elapsed time from the most recent valid event to the analysis cutoff. " +
+          "The red vertical line marks the current life: the schedule-adjusted hours from the most recent event to the analysis cutoff. " +
           "The hazard and PDF panes intentionally show only the MLE curve. Hover any plotted point or the current-life line to see its task ID, life hours, start/end dates, request description, and completion notes; click it to jump to the source Weibull data row below.",
       }),
+      agePanel.node,
       panel("Results Interpretation Summary", buildInterpretationTable(result),
         "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
       panel("Weibull Data Used for Graphs", dataTable.node,
 
-        "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Rows are the lives included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Raw elapsed hours are the calendar hours between the two events; weekend and non-run hours are taken out of them to give the life hours. " +
+        "Check flags a life that ends within an hour of the event before it, a likely duplicate work order. " +
         "Click a row to jump back up to the graph that plots it, with that observation ringed. " +
         (CAN_EDIT
           ? "Click a Task ID to review or change that work order's disposition; the analysis re-runs when you save it. "
           : "") +
         "Use the ▾ menu in any column header to sort or filter the rows."),
+      eventTable.node,
       // Generating the report reserves a REL report number, which is a write, so the
       // whole section is editor-only.
-      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput) : null,
+      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) : null,
 
     ]);
     $("lda-workspace").appendChild(card);
     // After a disposition saved from the data table, land back on that record
     // rather than at the top of the card it was edited from. A change that took
     // it out of this failure group leaves nothing to land on, so say so.
-    if (changedRecord && dataTable.revealRecord(changedRecord.mappedRecordId)) return;
+    if (changedRecord && (dataTable.revealRecord(changedRecord.mappedRecordId) || eventTable.revealRecord(changedRecord.mappedRecordId))) return;
     scrollBelowSticky(card);
     if (changedRecord) showToast(`${changedRecord.label} is no longer part of this Weibull analysis.`, "info");
   }
 
-  // Action bar at the bottom of the results: generates a formal, high-level
-  // Weibull report (Word .docx) containing the charts and interpretation summary.
-  function buildReportBar(result, charts, chartApi, betaInput, etaInput) {
+  // REL-WBL-DAT-004's event processing table: every event the failure group's
+  // dispositions offered, in date order, with the note saying how it was used --
+  // including the ones left out of the timeline and why. Collapsed by default; it is
+  // the audit trail behind the data table, not something every reader needs.
+  function buildEventProcessingTable(result) {
+    const events = result.events || [];
+    const excluded = events.filter((event) => event.event_role === "EXCLUDED_EVENT").length;
+    const kindOf = (event) => (Number(event.is_failure_event) ? "wo" : Number(event.is_pm_reset_event) ? "pm" : null);
+    const columns = [
+      { label: "Seq", type: "number", get: (event) => (event.weibull_sequence_number != null ? String(event.weibull_sequence_number) : "") },
+      {
+        label: "Task ID",
+        type: "number",
+        get: (event) => (event.task_id != null ? String(event.task_id) : ""),
+        node: (event) => recordNumberCell(event.task_id, { mappedRecordId: event.mapped_record_id, kind: kindOf(event) }),
+      },
+      { label: "Work Title", cls: "lda-data-text", get: (event) => event.task_name || "" },
+      { label: "Event", get: (event) => (Number(event.is_pm_reset_event) ? "PM reset" : "Failure") },
+      { label: "Completed Date", type: "datetime", get: (event) => event.completed_date_raw || "" },
+      { label: "Note", cls: "lda-data-text", get: (event) => event.weibull_life_note || "" },
+      { label: "Check", cls: "lda-data-text lda-check", get: (event) => event.data_quality_assumption_flag || "" },
+    ];
+    const table = el("table", { class: "lda-data" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
+    const tbody = el("tbody");
+    const rowByRecord = new Map();
+    events.forEach((event) => {
+      const tr = el("tr", { class: event.event_role === "EXCLUDED_EVENT" ? "is-excluded" : null }, columns.map((c) =>
+        c.node ? c.node(event) : el("td", { text: c.get(event), class: c.cls || null })
+      ));
+      if (event.mapped_record_id != null) rowByRecord.set(Number(event.mapped_record_id), tr);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    if (events.length) enableTableColumnTools(table, { columns });
+    const summaryText =
+      `Event processing table: ${events.length} ${events.length === 1 ? "event" : "events"}` +
+      (excluded ? `, ${excluded} left out of the timeline` : "");
+    const details = el("details", { class: "lda-panel lda-events" }, [
+      el("summary", { text: summaryText }),
+      events.length
+        ? el("div", { class: "lda-data-scroll" }, [table])
+        : el("p", { class: "lda-hint", text: "This result was saved before GREMLIN kept its events." }),
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Every event this failure group's dispositions put forward, in date order. The first only starts the clock; each " +
+          "later one ends a life and starts the next. An event with no completed date, a date that can't be read, or a date " +
+          "outside the analysis window is listed but left out, and its note says which.",
+      }),
+    ]);
+    // The row a record is on, opened up and highlighted: where a disposition saved
+    // from this table lands when its record is no longer one of the lives.
+    function revealRecord(mappedRecordId) {
+      const tr = rowByRecord.get(Number(mappedRecordId));
+      if (!tr) return false;
+      details.open = true;
+      tbody.querySelectorAll("tr.is-highlight").forEach((row) => row.classList.remove("is-highlight"));
+      tr.classList.add("is-highlight");
+      tr.scrollIntoView({ behavior: "smooth", block: "center" });
+      return true;
+    }
+    return { node: details, revealRecord };
+  }
+
+  // Action bar at the bottom of the results: generates a formal Weibull report (Word
+  // .docx) with the life basis and window, the charts, the interpretation summary,
+  // the limitations and the lives themselves. A result saved under an earlier method,
+  // or resting on fewer failure lives than the minimum, can't be reported, and the
+  // bar says so rather than offering a button the server would refuse.
+  function buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) {
+    let blocked = "";
+    if (result.method_current === false) {
+      blocked = "Run the analysis again to report it: this result was saved by an earlier version of the method.";
+    } else if (result.meets_minimum === false) {
+      blocked = `A report needs at least ${result.min_failure_lives || 5} lives that end in a failure.`;
+    }
     const button = el("button", {
       class: "btn-primary",
       type: "button",
       text: "Generate Weibull Report",
+      disabled: Boolean(blocked),
     });
-    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput));
+    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
     return el("div", { class: "lda-report-bar" }, [
       button,
       el("p", {
         class: "lda-hint",
         text:
-          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) summarizing this Weibull result at a high level, " +
-          "including the analysis graphs and the interpretation summary.",
+          blocked ||
+          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) for this Weibull result: the population and " +
+            "grouping level, the life basis and analysis window, the fitted values with B10, B50 and the reliability at " +
+            "the age entered above, the graphs, the interpretation summary, the limitations, and every life it rests on. " +
+            (result.grouping_level === "FAILURE_MODE"
+              ? "A failure-mode report also states why a mechanism could not be fitted instead, which it asks you for."
+              : ""),
       }),
     ]);
   }
 
-  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput) {
+  // The reason a failure-mode population was fitted rather than one of its
+  // mechanisms, which its report must state (REL-WBL-PLN-003 §8). Prefilled with
+  // the one saved for the population; resolves null when cancelled.
+  async function askFallbackRationale(result) {
+    const textarea = el("textarea", {
+      class: "lda-input lda-rationale-input",
+      id: "lda-fallback-rationale",
+      rows: "4",
+      placeholder: "e.g. The completion notes don't separate seal wear from pressure loss, so no single mechanism can be assigned.",
+    });
+    textarea.value = result.fallback_rationale || "";
+    const error = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
+    return openModal({
+      title: "Why a failure mode, not a mechanism?",
+      bodyNodes: [
+        el("p", {
+          text:
+            "Failure mode is the fallback grouping, for when the records cannot support one mechanism. The report " +
+            "states why this one was fitted at mode level, and the reason is kept with the population for its next report.",
+        }),
+        el("div", { class: "lda-field" }, [el("label", { for: "lda-fallback-rationale", text: "Reason" }), textarea]),
+        error,
+      ],
+      actions: [
+        { label: "Cancel", primary: false, value: () => null },
+        {
+          label: "Generate report",
+          primary: true,
+          validate: () => {
+            const empty = !textarea.value.trim();
+            error.textContent = empty ? "Write the reason before generating the report." : "";
+            error.hidden = !empty;
+            return !empty;
+          },
+          value: () => textarea.value.trim(),
+        },
+      ],
+    });
+  }
+
+  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput, agePanel) {
     if (!state.selectedAsset) {
       showBanner("Select an Asset Number first.", "error");
       return;
+    }
+    let fallbackRationale = null;
+    if (result.grouping_level === "FAILURE_MODE") {
+      fallbackRationale = await askFallbackRationale(result);
+      if (fallbackRationale === null || fallbackRationale === undefined) return;
     }
     // The report's parameter and interpretation tables come from the analyzed MLE
     // `result`, so the embedded graphs must show that same MLE fit — not any
@@ -4294,11 +4680,19 @@
     try {
       const filename = await postDownload(
         `${API}/weibull-report`,
-        // Send only the saved result id (plus chart images); the server reloads the
-        // authoritative parameters and interpretation summary from the database.
-        { asset: state.selectedAsset, result_id: result.result_id, charts },
+        // Send only the saved result id (plus chart images, the age to evaluate and a
+        // failure mode's rationale); the server reloads the authoritative parameters,
+        // lives and interpretation summary from the database.
+        {
+          asset: state.selectedAsset,
+          result_id: result.result_id,
+          charts,
+          target_age_hours: agePanel ? agePanel.value() : null,
+          fallback_rationale: fallbackRationale,
+        },
         "weibull-report.docx"
       );
+      if (fallbackRationale) result.fallback_rationale = fallbackRationale;
       showBanner(`Generated ${filename}.`, "success");
     } catch (err) {
       showBanner(err.message, "error");
@@ -4345,53 +4739,34 @@
     return table;
   }
 
-  // Value cell for one interpretation-summary row. The MTTF row gets an extra
-  // calendar-time conversion (months/days) plus an editable operating-schedule
-  // input, so users can see the mean life in real terms for their run schedule
-  // (e.g. 20 h/day). Every other metric renders as a plain value cell.
+  // Value cell for one interpretation-summary row. The MTTF row adds how many calendar
+  // weeks that many life hours take on the result's own schedule: life hours exclude
+  // weekends and count each weekday at the schedule's hours, so 24 hours a day of
+  // running would overstate how soon the mean life comes round. Every other metric
+  // renders as a plain value cell.
   function buildInterpretationValueCell(row, result) {
     const isMttf = String(row.metric || "").trim().toUpperCase() === "MTTF";
     const mttfHours = result ? Number(result.mean_time_to_failure) : NaN;
     if (!isMttf || !isFinite(mttfHours) || mttfHours <= 0) {
       return el("td", { text: row.value || "—" });
     }
-
-    const durationLine = el("span", {
-      class: "lda-mttf-duration",
-      text: mttfDurationText(mttfHours, state.operatingHoursPerDay),
-    });
-    const hoursInput = el("input", {
-      class: "lda-input lda-mttf-hours",
-      type: "number",
-      min: "0.1",
-      max: "24",
-      step: "0.5",
-      value: numericInputValue(state.operatingHoursPerDay, 4),
-      "aria-label": "Operating hours per day",
-    });
-    hoursInput.addEventListener("input", () => {
-      // Browsers don't clamp typed values to the input's max, so validate the upper
-      // bound here too: more than 24 h/day is physically impossible and would report a
-      // calendar duration shorter than continuous running.
-      const hpd = Number(hoursInput.value);
-      if (isFinite(hpd) && hpd > 0 && hpd <= 24) {
-        state.operatingHoursPerDay = hpd;
-        durationLine.textContent = mttfDurationText(mttfHours, hpd);
-      } else {
-        durationLine.textContent = "Enter an operating schedule between 0 and 24 h/day to estimate calendar time.";
-      }
-    });
-
+    const weeks = calendarWeeksText(mttfHours, result.life_basis);
     return el("td", { class: "lda-mttf-cell" }, [
       el("span", { class: "lda-mttf-hours-value", text: row.value || `${fmt(mttfHours)} hours` }),
-      durationLine,
-      el("div", { class: "lda-mttf-schedule" }, [
-        el("label", { text: "Operating schedule:" }),
-        hoursInput,
-        el("span", { text: "h/day" }),
-      ]),
+      weeks
+        ? el("span", { class: "lda-mttf-duration", text: `${weeks[0].toUpperCase()}${weeks.slice(1)} on ${scheduleLabel(result.life_basis)}` })
+        : null,
     ]);
   }
+
+  // What a life is, in the words the data table and the report use. The stored codes
+  // predate REL-WBL-DAT-004's vocabulary, so these name the interval itself: a life
+  // that ends at a PM reset is censored there, and the current life at the cutoff.
+  const OBSERVATION_TYPE_LABELS = {
+    COMPLETED_FAILURE_LIFE: "Ends in a failure",
+    PM_RESET_CENSORED_LIFE: "Censored at a PM reset",
+    RIGHT_CENSORED_LIFE: "Censored at the cutoff (current life)",
+  };
 
   function buildWeibullDataTable(result, onRowActivate) {
     // Each column knows how to render its header and pull its value from an
@@ -4417,8 +4792,11 @@
       },
       { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
       { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
-      { label: "Type", get: (obs) => obs.observation_type || "" },
+      { label: "Type", get: (obs) => OBSERVATION_TYPE_LABELS[obs.observation_type] || obs.observation_type || "" },
       { label: "Life Hours", type: "number", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
+      { label: "Raw Elapsed (h)", type: "number", get: (obs) => (obs.life_hours_raw_elapsed != null ? fmtFixed(obs.life_hours_raw_elapsed) : "") },
+      { label: "Excl. Weekend (h)", type: "number", get: (obs) => (obs.excluded_weekend_hours != null ? fmtFixed(obs.excluded_weekend_hours) : "") },
+      { label: "Excl. Non-run (h)", type: "number", get: (obs) => (obs.excluded_schedule_non_run_hours != null ? fmtFixed(obs.excluded_schedule_non_run_hours) : "") },
       { label: "Failure", type: "boolean", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
       { label: "Right Censored", type: "boolean", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
       { label: "Start Datetime", type: "datetime", get: (obs) => obs.start_datetime || "" },
@@ -4432,6 +4810,7 @@
         node: (obs) => narrativeCell(obs, { prefix: "source_", cls: "lda-data-text" }),
       },
       { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
+      { label: "Check", cls: "lda-data-text lda-check", get: (obs) => obs.data_quality_assumption_flag || "" },
     ];
     const table = el("table", { class: "lda-data" });
     table.appendChild(
@@ -5667,7 +6046,8 @@
       body:
         "How many records this asset has, how many work orders and PMs a Weibull fit can use, and " +
         "how many are still to be dispositioned. A record is only usable once it has been " +
-        "dispositioned as an included failure or an approved PM reset.",
+        "dispositioned as an included failure or an approved PM reset, and a fit needs at least five " +
+        "lives that end in a failure.",
     },
     {
       target: "#lda-trend-summary",
@@ -5706,9 +6086,9 @@
       title: "Highest-beta mechanisms",
       when: forType(ANALYSIS_TYPES.WEIBULL),
       body:
-        "The five mechanisms with the highest beta in their last saved Weibull fit. A beta above 1 " +
-        "means failures get likelier with age, which a PM can get ahead of; below 1 points to " +
-        "early-life failures.",
+        "The five mechanisms with the highest beta in their last saved Weibull fit, counting only fits " +
+        "with at least five failure lives. A beta above 1 means failures get likelier with age, which a " +
+        "PM can get ahead of; below 1 points to early-life failures.",
     },
     {
       target: "#lda-pareto-panel",
@@ -5746,13 +6126,15 @@
             "Clicking a bar on the Pareto " +
             (CAN_EDIT ? "runs a Weibull fit on it" : "opens the fit last saved for it") +
             ", and the results appear under the chart: beta and eta with their confidence bounds, the " +
-            "fitted curves, what they mean, and the data behind them."
+            "fitted curves, what they mean, and the data behind them. A fit needs at least five lives " +
+            "that end in a failure."
           );
         }
         return (
-          "Beta and eta with their confidence bounds, the fitted curves, what they mean, and the data " +
-          "behind them. Hover a plotted point for its work order, and click it to find its row in the " +
-          "table." +
+          "Beta and eta with their confidence bounds, B10 and B50, the life basis and window the lives " +
+          "were built in, the fitted curves, the reliability at an age you enter, what it all means, and " +
+          "the data behind it, down to every event left out and why. Hover a plotted point for its work " +
+          "order, and click it to find its row in the table." +
           (CAN_EDIT
             ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
               "generate a Weibull report."

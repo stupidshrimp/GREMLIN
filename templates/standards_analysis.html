@@ -94,7 +94,7 @@
 
     <section class="std-section" id="common-dates">
       <h4>Work order date and downtime</h4>
-      <p>Every analysis places a record in time with the first date it has, in this order:</p>
+      <p>Every analysis but the Weibull fit places a record in time with the first date it has, in this order:</p>
       {% call std.equation("C1", "the work order date is the completed date if there is one, else the start date, else the created date") %}
       <math display="block">
         <msub><mi>t</mi><mi>w</mi></msub><mo>=</mo>
@@ -117,9 +117,10 @@
       {% endcall %}
       <ul>
         <li>A blank date (empty or only spaces) is skipped and the next one is used. A date that is there but cannot be read is not skipped, so the record has no usable date.</li>
-        <li><strong>A record with no usable date</strong> still counts wherever a date is not needed: the readiness summary, the Pareto, the counts beside each choice in the analysis pickers, the trend's Most Frequent and Highest Downtime cards, and the downtime driver's summary cards, distribution, asset totals and top events. It cannot be placed in a month, so it is left off every monthly chart and out of the trend's Fastest Growing and Most Improved cards. The Weibull fit and PM effectiveness leave it out altogether, because both have to place each record in time.</li>
+        <li><strong>The Weibull fit uses the completed date alone</strong>, with no falling back to the start or created date: a life restarts when the repair is finished, and a work order with no completed date has not restored anything yet (REL-WBL-DAT-001 makes Completed Date the Weibull chronology field). Such an event is listed in the fit's event processing table and left out of its lives; see <a href="#weibull-intervals">Events, life intervals and censoring</a>.</li>
+        <li><strong>A record with no usable date</strong> still counts wherever a date is not needed: the readiness summary, the Pareto, the counts beside each choice in the analysis pickers, the trend's Most Frequent and Highest Downtime cards, and the downtime driver's summary cards, distribution, asset totals and top events. It cannot be placed in a month, so it is left off every monthly chart and out of the trend's Fastest Growing and Most Improved cards. PM effectiveness leaves it out altogether, because it has to place each record in time.</li>
         <li>Blank downtime counts as 0 hours, and so does negative downtime.</li>
-        <li><strong>Dates are read in UTC</strong>, the time zone GREMLIN stores them in, so months, days and weekends on this tab are UTC ones. A work order completed in the evening of the last day of a month, plant time, can land in the next month here.</li>
+        <li><strong>Dates are read in UTC</strong>, the time zone GREMLIN stores them in, so months on this tab are UTC ones. A work order completed in the evening of the last day of a month, plant time, can land in the next month here. The Weibull fit's life hours are the exception: they split days at midnight on the plant's clock, because that is the clock the weekends they leave out are kept by.</li>
       </ul>
       <div class="std-note is-caution">
         <p class="std-note-title">Why this differs from availability</p>
@@ -246,7 +247,10 @@
         the clock. A high β marks the
         mechanisms most clearly wearing out (see
         <a href="#analysis-weibull">Weibull life data analysis</a>). A
-        mechanism that has never been fitted is not on the list.
+        mechanism that has never been fitted is not on the list, and nor is
+        a saved fit resting on fewer than five lives that end in a failure.
+        A fit saved under an earlier version of the method is listed with
+        "saved under an earlier method; run it again" after it.
       </p>
     </section>
   {% endcall %}
@@ -266,6 +270,7 @@
         <li><a href="#weibull-purpose">What it answers</a></li>
         <li><a href="#weibull-population">Choosing the population</a></li>
         <li><a href="#weibull-intervals">Events, life intervals and censoring</a></li>
+        <li><a href="#weibull-window">The analysis window</a></li>
         <li><a href="#weibull-life-hours">Schedule-adjusted life hours</a></li>
         <li><a href="#weibull-distribution">The Weibull distribution</a></li>
         <li><a href="#weibull-fit">Fitting β and η by maximum likelihood</a></li>
@@ -298,9 +303,13 @@
         analysis is always run on a population: either a <strong>failure
         mode</strong>, which pools every mechanism under it, or a single
         <strong>failure mode and mechanism</strong> pair. A population is
-        offered once it has at least one included failure, and the list shows
-        how many failures and PM resets each one has.
+        listed once it has at least one included failure, with how many
+        failures and PM resets it has.
       </p>
+      <ul>
+        <li><strong>A fit needs at least five lives that end in a failure</strong>, the threshold REL-WBL-VAL-001 records for the validated pilot workbook. Fewer give a β that looks precise and is not, since maximum likelihood overstates β on small samples, and the interpretation summary would still turn it into a maintenance recommendation. A population with fewer than five included failures can never get there, so it is listed but can't be chosen.</li>
+        <li><strong>Mechanism is the preferred grouping.</strong> A failure mode is the fallback for when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1), so a report on a failure mode has to say why one of its mechanisms was not fitted instead.</li>
+      </ul>
     </section>
 
     <section class="std-section" id="weibull-intervals">
@@ -311,48 +320,66 @@
         <li><strong>PM resets:</strong> Included PM reset events whose reset target is the chosen mode, and the chosen mechanism when the population is a mechanism.</li>
       </ul>
       <p>
-        Each event is placed at its work order date (equation C1), events
-        without a usable date are skipped, and the rest are put in date order.
-        Life is then measured from each event to the next:
+        Each event is dated by its completed date alone (not equation C1; see
+        <a href="#common-dates">Work order date and downtime</a>) and the events
+        are put in date order. Every one of them, used or not, gets a row in the
+        <strong>event processing table</strong> under the Weibull data table,
+        with a note in REL-WBL-DAT-004 §11's words saying how it was used. An
+        event is listed there but left out of the lives when:
       </p>
       <ul>
-        <li><strong>An interval that ends in a failure is a complete life</strong>, with failure indicator <math><mi>&#x3B4;</mi><mo>=</mo><mn>1</mn></math>.</li>
-        <li><strong>An interval that ends in a PM reset is right-censored</strong>, <math><mi>&#x3B4;</mi><mo>=</mo><mn>0</mn></math>: the asset was renewed before this failure mode had its chance to fail, so all that is known is that its life was at least that long.</li>
-        <li><strong>The interval from the last event to the analysis cutoff</strong>, the moment the analysis is run, is the current life. It is right-censored too, because the asset has not failed again yet.</li>
-        <li><strong>The first event only starts the clock.</strong> Nothing is known about the life before it, so no interval ends there.</li>
-        <li>An interval with no scheduled hours in it, such as two events on the same weekend, is left out.</li>
+        <li>it has no completed date: <em>Excluded - missing completed date</em>;</li>
+        <li>its completed date can't be read: <em>Excluded - date parse issue</em>;</li>
+        <li>it falls outside the <a href="#weibull-window">analysis window</a>: <em>Excluded - before analysis start date</em> or <em>Excluded - after analysis cutoff</em>.</li>
       </ul>
-      {% call std.figure("W1", "Five events and the analysis cutoff give five lives. The first failure only starts the clock; the lives ending in failures are complete (δ = 1), and the life ending in the PM reset and the current life are right-censored (δ = 0). These are the lives used in the worked example.") %}
+      <p>Life is then measured from each event to the next:</p>
+      <ul>
+        <li><strong>An interval that ends in a failure is a complete life</strong>, with failure indicator <math><mi>&#x3B4;</mi><mo>=</mo><mn>1</mn></math>: <em>Valid completed life from prior same-population event</em>, or <em>Valid completed life from PM reset event</em> when a PM reset started it.</li>
+        <li><strong>An interval that ends in a PM reset is right-censored</strong>, <math><mi>&#x3B4;</mi><mo>=</mo><mn>0</mn></math>: the asset was renewed before this failure mode had its chance to fail, so all that is known is that its life was at least that long (<em>Censored interval ended by PM reset event</em>).</li>
+        <li><strong>The interval from the last event to the analysis cutoff</strong> is the current life. It is right-censored too, because the asset has not failed again yet: <em>Censored interval to analysis cutoff date</em>, or <em>PM reset censor to analysis cutoff date</em> when the last event was a PM reset.</li>
+        <li><strong>The first event only starts the clock</strong> (<em>Initial occurrence - no prior comparable start point available</em>). Nothing is known about the life before it, so no interval ends there. GREMLIN has no installation or replacement dates to start a first life from.</li>
+        <li>An interval with no scheduled hours in it, such as two events on the same weekend, is left out; its closing event still starts the next life.</li>
+        <li><strong>A life that ends within an hour</strong>, in calendar time, of the event before it is flagged <em>Check for duplicate</em> in the data table's Check column. Two work orders raised for one breakdown look exactly like that, and the near-zero life between them pulls β below 1, the reading that steers away from age-based PM. It is flagged, not removed: a genuine repeat failure is real information about repair quality (REL-WBL-DAT-004 §12).</li>
+      </ul>
+      {% call std.figure("W1", "Seven events and the analysis cutoff give seven lives. The first failure only starts the clock; the lives ending in failures are complete (δ = 1), and the life ending in the PM reset and the current life are right-censored (δ = 0). These are the lives used in the worked example.") %}
       <svg viewBox="0 0 760 236" role="img" aria-labelledby="fig-w1-title fig-w1-desc">
         <title id="fig-w1-title">Life intervals from dispositioned events</title>
-        <desc id="fig-w1-desc">A timeline with a failure that starts the clock, then a failure after 520 hours, a PM reset after 450 hours, a failure after 310 hours, a failure after 980 hours, and the analysis cutoff 1,050 hours after the last failure.</desc>
-        <path class="fig-axis" d="M40 150 H740"/>
-        <path class="fig-bracket" d="M60 120 V112 H164 V120 M164 120 V112 H254 V120 M254 120 V112 H316 V120 M316 120 V112 H512 V120 M512 120 V112 H722 V120"/>
-        <text class="fig-text-strong" x="112" y="84" text-anchor="middle">520 h</text>
-        <text class="fig-text-small" x="112" y="100" text-anchor="middle">δ = 1</text>
-        <text class="fig-text-strong" x="209" y="84" text-anchor="middle">450 h</text>
-        <text class="fig-text-small" x="209" y="100" text-anchor="middle">δ = 0</text>
-        <text class="fig-text-strong" x="285" y="84" text-anchor="middle">310 h</text>
-        <text class="fig-text-small" x="285" y="100" text-anchor="middle">δ = 1</text>
-        <text class="fig-text-strong" x="414" y="84" text-anchor="middle">980 h</text>
-        <text class="fig-text-small" x="414" y="100" text-anchor="middle">δ = 1</text>
-        <text class="fig-text-strong" x="617" y="84" text-anchor="middle">1,050 h</text>
-        <text class="fig-text-small" x="617" y="100" text-anchor="middle">δ = 0, still running</text>
-        <circle class="fig-solid" cx="60" cy="150" r="8"/>
-        <circle class="fig-solid" cx="164" cy="150" r="8"/>
-        <path class="fig-accent" d="M254 140 L264 150 L254 160 L244 150 Z"/>
-        <circle class="fig-solid" cx="316" cy="150" r="8"/>
-        <circle class="fig-solid" cx="512" cy="150" r="8"/>
-        <path class="fig-danger-line" d="M722 128 V172"/>
-        <text class="fig-text-small" x="60" y="178" text-anchor="middle">Failure</text>
-        <text class="fig-text-small" x="60" y="192" text-anchor="middle">starts the clock</text>
-        <text class="fig-text-small" x="164" y="178" text-anchor="middle">Failure</text>
-        <text class="fig-text-small" x="254" y="178" text-anchor="middle">PM reset</text>
-        <text class="fig-text-small" x="316" y="178" text-anchor="middle">Failure</text>
-        <text class="fig-text-small" x="512" y="178" text-anchor="middle">Failure</text>
-        <text class="fig-text-danger fig-text-small" x="722" y="188" text-anchor="middle">Analysis cutoff</text>
-        <text class="fig-text-small" x="40" y="24">δ = 1: the life ended in a failure, so it is complete.</text>
-        <text class="fig-text-small" x="40" y="42">δ = 0: the life ended without a failure, so it is right-censored.</text>
+        <desc id="fig-w1-desc">A timeline with a failure that starts the clock, then a failure after 520 hours, a PM reset after 450 hours, failures after 310, 980, 760 and 640 hours, and the analysis cutoff 1,050 hours after the last failure.</desc>
+        <path class="fig-axis" d="M30 150 H740"/>
+        <path class="fig-bracket" d="M50 120 V112 H122.8 V120 M122.8 120 V112 H185.8 V120 M185.8 120 V112 H229.2 V120 M229.2 120 V112 H366.4 V120 M366.4 120 V112 H472.8 V120 M472.8 120 V112 H562.4 V120 M562.4 120 V112 H709.4 V120"/>
+        <text class="fig-text-strong" x="86.4" y="84" text-anchor="middle">520 h</text>
+        <text class="fig-text-small" x="86.4" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="154.3" y="84" text-anchor="middle">450 h</text>
+        <text class="fig-text-small" x="154.3" y="100" text-anchor="middle">δ = 0</text>
+        <text class="fig-text-strong" x="207.5" y="84" text-anchor="middle">310 h</text>
+        <text class="fig-text-small" x="207.5" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="297.8" y="84" text-anchor="middle">980 h</text>
+        <text class="fig-text-small" x="297.8" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="419.6" y="84" text-anchor="middle">760 h</text>
+        <text class="fig-text-small" x="419.6" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="517.6" y="84" text-anchor="middle">640 h</text>
+        <text class="fig-text-small" x="517.6" y="100" text-anchor="middle">δ = 1</text>
+        <text class="fig-text-strong" x="635.9" y="84" text-anchor="middle">1,050 h</text>
+        <text class="fig-text-small" x="635.9" y="100" text-anchor="middle">δ = 0, still running</text>
+        <circle class="fig-solid" cx="50" cy="150" r="8"/>
+        <circle class="fig-solid" cx="122.8" cy="150" r="8"/>
+        <path class="fig-accent" d="M185.8 140 L195.8 150 L185.8 160 L175.8 150 Z"/>
+        <circle class="fig-solid" cx="229.2" cy="150" r="8"/>
+        <circle class="fig-solid" cx="366.4" cy="150" r="8"/>
+        <circle class="fig-solid" cx="472.8" cy="150" r="8"/>
+        <circle class="fig-solid" cx="562.4" cy="150" r="8"/>
+        <path class="fig-danger-line" d="M709.4 128 V172"/>
+        <text class="fig-text-small" x="50" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="50" y="192" text-anchor="middle">starts the clock</text>
+        <text class="fig-text-small" x="122.8" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="185.8" y="178" text-anchor="middle">PM reset</text>
+        <text class="fig-text-small" x="229.2" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="366.4" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="472.8" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-small" x="562.4" y="178" text-anchor="middle">Failure</text>
+        <text class="fig-text-danger fig-text-small" x="709.4" y="188" text-anchor="middle">Analysis cutoff</text>
+        <text class="fig-text-small" x="30" y="24">δ = 1: the life ended in a failure, so it is complete.</text>
+        <text class="fig-text-small" x="30" y="42">δ = 0: the life ended without a failure, so it is right-censored.</text>
         <circle class="fig-solid" cx="450" cy="214" r="6"/><text class="fig-text-small" x="462" y="218">Failure</text>
         <path class="fig-accent" d="M532 207 L539 214 L532 221 L525 214 Z"/><text class="fig-text-small" x="546" y="218">PM reset</text>
         <path class="fig-danger-line" d="M628 206 V222"/><text class="fig-text-small" x="636" y="218">Cutoff</text>
@@ -360,13 +387,28 @@
       {% endcall %}
     </section>
 
+    <section class="std-section" id="weibull-window">
+      <h4>The analysis window</h4>
+      <p>
+        The lives are built between an optional start date and the analysis
+        cutoff, and both are dates on the plant's calendar:
+      </p>
+      <ul>
+        <li><strong>Start date:</strong> blank means all history. A date counts from that day's first minute, and the first event on or after it starts the clock.</li>
+        <li><strong>Cutoff:</strong> a date runs to the end of that day, or to the moment of the run if that day is today. Blank means the <strong>last completed Limble import</strong>, as long as that is later than every event, and otherwise the moment of the run. Censoring at the moment of the run would credit the current life with hours the database has heard nothing about yet, and a failure in them would be missed.</li>
+        <li>Editors set both in the Select failure group dialog that Perform Analysis opens; a Pareto click uses neither. A run after a disposition saved from the data table keeps the dates of the run on screen.</li>
+        <li>The result states its window and where the cutoff came from: the last completed Limble import, the cutoff date entered for the run, or the time of the run.</li>
+      </ul>
+    </section>
+
     <section class="std-section" id="weibull-life-hours">
       <h4>Schedule-adjusted life hours</h4>
       <p>
         Life is counted in scheduled hours, not calendar hours, so an asset is
         not aged while it is not meant to run. Each interval is cut at every
-        midnight. A Saturday or Sunday adds nothing, and a weekday adds its
-        elapsed hours scaled by the asset's scheduled hours per day:
+        midnight on the plant's clock. A Saturday or Sunday adds nothing, and a
+        weekday adds its elapsed hours scaled by the asset's scheduled hours per
+        day:
       </p>
       {% call std.equation("W1", "a life in hours is the sum over the interval's weekday segments of the segment's elapsed hours times scheduled hours per day over 24") %}
       <math display="block">
@@ -376,7 +418,7 @@
       </math>
       {% endcall %}
       <dl class="std-where">
-        <dt><math><msub><mi mathvariant="normal">&#x394;</mi><mi>s</mi></msub></math></dt><dd>Elapsed hours of the interval that fall in day <math><mi>s</mi></math>, at most 24.</dd>
+        <dt><math><msub><mi mathvariant="normal">&#x394;</mi><mi>s</mi></msub></math></dt><dd>Elapsed hours of the interval that fall in day <math><mi>s</mi></math>, at most 24: 23 or 25 on the two days a year the clocks change, because each day's hours are measured between real instants.</dd>
         <dt><math><mi>h</mi></math></dt><dd>Scheduled hours per day: 24 for the Salvagnini assets 3101 to 3107 and the Hedrich dispensers 3154, 3142, 3023 and 3253, and 20 for every other asset.</dd>
       </dl>
       {% call std.figure("W2", "A life from Monday 08:00 to the next Monday 08:00 is 168 calendar hours. The 48 weekend hours are left out, and the 120 weekday hours count at 20/24, giving 100 life hours for an asset on the 20-hour schedule.") %}
@@ -428,9 +470,19 @@
       </svg>
       {% endcall %}
       <p>
-        Days are split at midnight UTC, the time zone the dates are stored in,
-        so the weekend that is left out runs from Friday evening to Sunday
-        evening on the plant's clock.
+        Days are split at midnight in the plant's time zone, the one the
+        Availability card judges months by (America/Chicago unless it has been
+        changed), so the weekend left out is the plant's own Saturday and Sunday
+        rather than UTC's, which runs from Friday evening to Sunday evening on
+        the plant's clock. If that zone can't be loaded, days are split at
+        midnight UTC and the result carries a notice saying so. The dates
+        themselves are still stored in UTC.
+      </p>
+      <p>
+        Life hours are scheduled hours, so a calendar week holds five scheduled
+        days of <math><mi>h</mi></math>: 100 life hours on the 20-hour schedule
+        and 120 on the 24-hour one. That is how the page and the report turn η,
+        MTTF, B10 and B50 into calendar weeks.
       </p>
     </section>
 
@@ -544,8 +596,8 @@
       {% endcall %}
       <ul>
         <li><strong>How it is solved:</strong> GREMLIN checks 400 evenly spaced values of β from 0.1 to 20 for a change of sign in equation W8, then halves the bracketing interval 80 times. η then follows from equation W7.</li>
-        <li><strong>If there is no root between 0.1 and 20,</strong> β falls back to 1.2 divided by the coefficient of variation of the complete lives, kept between 0.1 and 20, or to 1.2 itself when that coefficient is zero or cannot be worked out, as with a single complete life.</li>
-        <li><strong>The fit needs at least one complete life</strong> and at least one life longer than zero hours; otherwise the analysis stops and says which is missing.</li>
+        <li><strong>If there is no root between 0.1 and 20,</strong> the fit stops and says it did not converge. There is then no maximum-likelihood β to report, and REL-WBL-MTH-001 §5.5 makes β and η maximum-likelihood estimates, so no estimate of another kind is put in its place. It happens when the lives are all but identical, often because of duplicate work orders.</li>
+        <li><strong>The fit needs at least five complete lives</strong>, lives that end in a failure. With fewer, or with no root, the run stops and says why, and any result saved for the group before is removed, because the data no longer supports it.</li>
       </ul>
     </section>
 
@@ -580,9 +632,11 @@
         <dt><math><mn>1.96</mn></math></dt><dd>The two-sided 95% point of the standard normal distribution.</dd>
       </dl>
       <p>
-        With fewer than three lives, or when the curvature cannot be inverted,
-        the intervals are reported as Not available. They are approximate
-        either way, and with few failures they are wide.
+        When the curvature cannot be inverted the intervals are reported as Not
+        available. They are approximate either way: with few failures they are
+        wide, and intervals of this kind also tend to come out narrower than they
+        should when failures are few, so read a narrow one on a small sample with
+        care.
       </p>
     </section>
 
@@ -609,10 +663,20 @@
       {% endcall %}
       <ul>
         <li><strong>MTTF</strong> is the mean life. It is shown with the result and in the report.</li>
-        <li><strong>B10 and B50</strong> are the ages by which 10% and 50% are expected to fail; B50 is the median life.</li>
-        <li><strong>AIC and BIC</strong> score the fit against its two parameters; lower is better when comparing fits of the same lives.</li>
-        <li>B10, B50, AIC and BIC are stored with every saved result but are not shown on the page today.</li>
+        <li><strong>B10 and B50</strong> are the ages by which 10% and 50% are expected to fail; B50 is the median life. Both are shown under the fitted values and in the report.</li>
+        <li>η, MTTF, B10 and B50 are each shown with the <strong>calendar weeks</strong> that many life hours take on the result's schedule (see <a href="#weibull-life-hours">Schedule-adjusted life hours</a>).</li>
+        <li><strong>AIC and BIC</strong> score the fit against its two parameters; lower is better when comparing fits of the same lives. They are stored with every saved result but not shown.</li>
       </ul>
+      <p>
+        <strong>Reliability at an age:</strong> under the charts, enter an age in
+        life hours, such as a PM interval being considered, and the page gives
+        <math><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>
+        and <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>
+        there, from equations W2 and W3: the share expected to survive to that age
+        and to fail by it. It uses the fitted values, or the values an editor is
+        trying, and says which. A report generated with an age entered states it
+        at the fitted values (REL-WBL-MTH-001 §5.7 and §10).
+      </p>
     </section>
 
     <section class="std-section" id="weibull-charts">
@@ -657,11 +721,12 @@
         <li><strong>Probability Density (PDF)</strong> and <strong>Hazard Rate:</strong> equations W4 and W5 as curves alone, with no points or interval curves, drawn at the fitted values or at the values an editor is trying.</li>
         <li><strong>The red vertical line</strong> in every pane is the current life: the scheduled hours from the most recent event to the run's analysis cutoff.</li>
         <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
+        <li><strong>The Weibull data table</strong> under the charts lists each life with its type, its life hours, the raw elapsed hours between its two events and the weekend and non-run hours taken out of them (REL-WBL-DAT-004 §5), its note, and the duplicate check. The <strong>event processing table</strong> under it, closed until opened, lists every event behind those lives, including the ones left out and why.</li>
       </ul>
-      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.12 and it crosses the 63.2% line at η = 932 hours. The first two Kaplan-Meier points sit well above it: with three failures and two censored lives the sample is small, which is also why the confidence intervals are wide.") %}
+      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide.") %}
       <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
         <title id="fig-w4-title">Weibull probability plot of the worked example</title>
-        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Three points at 310, 520 and 980 hours, the first two well above and the third just above a straight fitted line with slope 2.12 that crosses 63.2 percent unreliability at 932 hours.</desc>
+        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Five points at 310, 520, 640, 760 and 980 hours run roughly parallel to and a little above a straight fitted line with slope 2.74 that crosses 63.2 percent unreliability at 847 hours.</desc>
         <path class="fig-grid" d="M80 30 H560 M80 85 H560 M80 140 H560 M80 195 H560 M85.7 30 V250 M270.6 30 V250 M455.4 30 V250 M545.1 30 V250"/>
         <path class="fig-axis" d="M80 30 V250 H560"/>
         <text class="fig-text-small" x="74" y="34" text-anchor="end">93.4%</text>
@@ -675,16 +740,20 @@
         <text class="fig-text-small" x="545.1" y="268" text-anchor="middle">1,400 h</text>
         <text class="fig-text-small" x="320" y="290" text-anchor="middle">Life hours (log scale)</text>
         <text class="fig-text-small" x="0" y="0" transform="translate(22 140) rotate(-90)" text-anchor="middle">Unreliability F(t), Weibull scale</text>
-        <path class="fig-guide" d="M436.6 250 V85 H80"/>
-        <path class="fig-accent-line" d="M80 241.2 L560 31"/>
-        <circle class="fig-point" cx="143.1" cy="167.5" r="5"/>
-        <circle class="fig-point" cx="281" cy="110.5" r="5"/>
-        <circle class="fig-point" cx="450" cy="69.7" r="5"/>
-        <text class="fig-text-small" x="152" y="182">310 h</text>
-        <text class="fig-text-small" x="290" y="125">520 h</text>
-        <text class="fig-text-small" x="458" y="62">980 h</text>
-        <text class="fig-text-accent" x="300" y="166">slope β = 2.12</text>
-        <text class="fig-text-small" x="444" y="236">η = 932 h</text>
+        <path class="fig-guide" d="M411.3 250 V85 H80"/>
+        <path class="fig-accent-line" d="M119.1 250 L508.7 30"/>
+        <circle class="fig-point" cx="143.1" cy="187.8" r="5"/>
+        <circle class="fig-point" cx="281.1" cy="138.6" r="5"/>
+        <circle class="fig-point" cx="336.5" cy="107.4" r="5"/>
+        <circle class="fig-point" cx="382.3" cy="81.3" r="5"/>
+        <circle class="fig-point" cx="450.1" cy="53.8" r="5"/>
+        <text class="fig-text-small" x="131" y="178" text-anchor="end">310 h</text>
+        <text class="fig-text-small" x="269" y="129" text-anchor="end">520 h</text>
+        <text class="fig-text-small" x="324" y="98" text-anchor="end">640 h</text>
+        <text class="fig-text-small" x="370" y="72" text-anchor="end">760 h</text>
+        <text class="fig-text-small" x="438" y="45" text-anchor="end">980 h</text>
+        <text class="fig-text-accent" x="300" y="176">slope β = 2.74</text>
+        <text class="fig-text-small" x="419" y="236">η = 847 h</text>
       </svg>
       {% endcall %}
     </section>
@@ -722,7 +791,7 @@
 
     <section class="std-section" id="weibull-example">
       <h4>Worked example</h4>
-      <p>The five lives from figure W1:</p>
+      <p>The seven lives from figure W1:</p>
       <div class="std-table-scroll">
         <table class="std-table">
           <caption class="visually-hidden">Lives in the Weibull worked example</caption>
@@ -734,45 +803,59 @@
             <tr><td>2</td><td>PM reset</td><td class="is-numeric">450</td><td class="is-numeric">0</td></tr>
             <tr><td>3</td><td>Failure</td><td class="is-numeric">310</td><td class="is-numeric">1</td></tr>
             <tr><td>4</td><td>Failure</td><td class="is-numeric">980</td><td class="is-numeric">1</td></tr>
-            <tr><td>5</td><td>Analysis cutoff, current life</td><td class="is-numeric">1,050</td><td class="is-numeric">0</td></tr>
+            <tr><td>5</td><td>Failure</td><td class="is-numeric">760</td><td class="is-numeric">1</td></tr>
+            <tr><td>6</td><td>Failure</td><td class="is-numeric">640</td><td class="is-numeric">1</td></tr>
+            <tr><td>7</td><td>Analysis cutoff, current life</td><td class="is-numeric">1,050</td><td class="is-numeric">0</td></tr>
           </tbody>
         </table>
       </div>
       <div class="std-example">
         <p class="eyebrow">Kaplan-Meier points, equation W13</p>
         <ul class="std-calc">
-          <li><span>310 h: 5 at risk, 1 failure</span><span>1 × (1 − 1/5) = <span class="std-result">0.800</span></span></li>
-          <li><span>450 h: PM reset</span><span>no point; 3 remain at risk after it</span></li>
-          <li><span>520 h: 3 at risk, 1 failure</span><span>0.800 × (1 − 1/3) = <span class="std-result">0.533</span></span></li>
-          <li><span>980 h: 2 at risk, 1 failure</span><span>0.533 × (1 − 1/2) = <span class="std-result">0.267</span></span></li>
+          <li><span>310 h: 7 at risk, 1 failure</span><span>1 × (1 − 1/7) = <span class="std-result">0.857</span></span></li>
+          <li><span>450 h: PM reset</span><span>no point; 5 remain at risk after it</span></li>
+          <li><span>520 h: 5 at risk, 1 failure</span><span>0.857 × (1 − 1/5) = <span class="std-result">0.686</span></span></li>
+          <li><span>640 h: 4 at risk, 1 failure</span><span>0.686 × (1 − 1/4) = <span class="std-result">0.514</span></span></li>
+          <li><span>760 h: 3 at risk, 1 failure</span><span>0.514 × (1 − 1/3) = <span class="std-result">0.343</span></span></li>
+          <li><span>980 h: 2 at risk, 1 failure</span><span>0.343 × (1 − 1/2) = <span class="std-result">0.171</span></span></li>
         </ul>
       </div>
       <div class="std-example">
-        <p class="eyebrow">Fitted values, n = 5 lives, r = 3 failures</p>
+        <p class="eyebrow">Fitted values, n = 7 lives, r = 5 failures</p>
         <ul class="std-calc">
-          <li><span>β, equation W8</span><span class="std-result">2.123</span></li>
-          <li><span>η, equation W7</span><span>(6,052,589 / 3)<sup>1/2.123</sup> = <span class="std-result">932.0 h</span></span></li>
-          <li><span>95% intervals, equation W9</span><span>β 0.843 to 5.347; η 544.6 to 1,595 h</span></li>
-          <li><span>MTTF, equation W10</span><span class="std-result">825.4 h</span></li>
-          <li><span>B10 and B50, equation W11</span><span>322.9 h and 784.2 h</span></li>
-          <li><span>Log-likelihood, AIC, BIC</span><span>−23.09; 50.18; 49.40</span></li>
+          <li><span>β, equation W8</span><span class="std-result">2.739</span></li>
+          <li><span>η, equation W7</span><span>(523,530,871 / 5)<sup>1/2.739</sup> = <span class="std-result">847.2 h</span></span></li>
+          <li><span>95% intervals, equation W9</span><span>β 1.350 to 5.558; η 615.0 to 1,167 h</span></li>
+          <li><span>MTTF, equation W10</span><span><span class="std-result">753.8 h</span>, about 7.5 calendar weeks on the 20-hour schedule</span></li>
+          <li><span>B10 and B50, equation W11</span><span>372.5 h and 741.1 h</span></li>
+          <li><span>Reliability at 400 h, equation W2</span><span>exp(−(400 / 847.2)<sup>2.739</sup>) = <span class="std-result">0.880</span>, so F(400) = 0.120</span></li>
+          <li><span>Log-likelihood, AIC, BIC</span><span>−36.69; 77.38; 77.28</span></li>
         </ul>
       </div>
       <p>
-        <strong>Reading it:</strong> β = 2.12 is above 1.1, which points to
-        wear-out. But its interval runs from 0.84 to 5.35 and crosses 1.0, so
-        with three failures the pattern is not settled yet, and η's interval is
-        too wide to set an interval from. The honest conclusion is "probably
-        wearing out; collect more failures before committing to a PM interval".
+        <strong>Reading it:</strong> β = 2.74 is above 1.1, which points to
+        wear-out, and with five failures its interval, 1.35 to 5.56, stays above
+        1.0. It is still far wider than 0.3, though, so the pattern is to be
+        treated with caution, and η's interval is 65% of η, too wide to set a PM
+        interval from. A PM every 400 hours would leave about 12% failing before
+        it. The honest conclusion is "wearing out, most likely; collect more
+        failures before fixing a PM interval".
+      </p>
+      <p>
+        Cut off 1,050 hours after its third complete life, as this example used
+        to be, it would not be fitted at all: three lives ending in a failure is
+        under GREMLIN's minimum of five, and the β interval of that fit,
+        0.84 to 5.35, crossed 1.0.
       </p>
     </section>
 
     <section class="std-section" id="weibull-saving">
       <h4>Adjusting, saving and reporting</h4>
       <ul>
-        <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis cutoff, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
+        <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis window, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A run the data can no longer support, with fewer than five failure lives or no likelihood root, removes the group's saved result too. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
+        <li><strong>Every run is stamped with the method it was built by</strong> (life-data-v2 today) and the GREMLIN code it ran on. A result saved under an earlier method shows a notice saying what has changed since; it stays in the Highest-beta list, marked, but can't be reported until it is run again. One resting on fewer than five failure lives is not ranked or reported either.</li>
         <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it. A saved pair lasts until the group is run again, and the page does not show it again: the inputs always open on the fitted values.</li>
-        <li><strong>Generate Weibull Report</strong>, for editors, writes a Word report numbered REL-WBL-RPT, the asset number and a running number, with the charts and the interpretation summary at the fitted values. The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
+        <li><strong>Generate Weibull Report</strong>, for editors, writes a Word report numbered REL-WBL-RPT, the asset number and a running number. It carries what REL-WBL-MTH-001 §10 asks of an analysis package, at the fitted values: the population and its grouping level; the life basis, schedule and time zone, labelled as an exposure proxy; the analysis window and where its cutoff came from; the lives, split into complete, censored at a PM reset and current; β, η, MTTF, B10, B50, their intervals and the reliability at the age entered on the page; the charts; the interpretation summary; the limitations and assumptions; every life it rests on, with its notes; and the method and code version. It opens with REL-WBL-VAL-001's caveat that GREMLIN's Weibull automation is not yet validated, so the report is for reliability engineering review, not a stand-alone maintenance directive. A failure-mode report also asks for, states and keeps with the population the reason a mechanism could not be fitted instead (REL-WBL-PLN-003 §8). The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
         <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition for an editor; saving it runs the analysis again, which replaces the saved run as above. Viewers see the Task ID as plain text.</li>
       </ul>
     </section>
@@ -782,8 +865,10 @@
       <ul>
         <li><strong>Few failures give wide intervals.</strong> Read β and η as directions until the intervals narrow.</li>
         <li><strong>A failure mode that pools different mechanisms</strong> mixes different behaviors and blurs β. Fit the mechanism when there are enough failures.</li>
-        <li><strong>Life is scheduled time, not run time.</strong> It uses the 24 or 20 hour weekday schedule, not meter hours, and ignores holidays and shutdowns.</li>
+        <li><strong>Life is scheduled time, not run time.</strong> It uses the 24 or 20 hour weekday schedule, not meter hours, and ignores holidays, shutdowns and Saturday shifts.</li>
+        <li><strong>No installation or replacement dates.</strong> The first event in the window only starts the clock, so the life before it is never counted.</li>
         <li><strong>Only two parameters.</strong> There is no failure-free period (three-parameter Weibull) and no comparison against other distributions.</li>
+        <li><strong>Not yet validated.</strong> REL-WBL-VAL-001 validates the manual pilot workbook, not GREMLIN, and does not yet approve automated use (§7). Until GREMLIN's own results have been checked against the pilot baseline, use them for reliability engineering review rather than as stand-alone maintenance decisions.</li>
       </ul>
     </section>
   {% endcall %}

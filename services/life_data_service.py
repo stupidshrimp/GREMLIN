@@ -11,18 +11,21 @@ import base64
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
 import zipfile
-from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import xml.etree.ElementTree as ET
 
+from services.availability_config import DEFAULT_TIMEZONE
 from services.wo_narrative import NARRATIVE_FIELDS, NARRATIVE_KEYS, extract_narrative
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -30,6 +33,87 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 WEEKDAY_24H_ASSET_NUMBERS = {"3101", "3102", "3103", "3104", "3105", "3106", "3107", "3154", "3142", "3023", "3253"}
 DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 20.0
 FULL_WEEKDAY_SCHEDULE_HOURS_PER_DAY = 24.0
+
+# The fewest lives ending in a failure GREMLIN fits and reports a Weibull
+# distribution from: the threshold REL-WBL-VAL-001 (VV-071) records for the
+# validated pilot workbook. Fewer give a beta that looks precise and is not
+# (maximum likelihood overstates beta on small samples), and the interpretation
+# summary would still turn it into a maintenance recommendation.
+MIN_WEIBULL_FAILURE_LIVES = 5
+
+# The rules a Weibull run is built and fitted by, stamped on every run as
+# weibull_analysis_run.code_version so a saved result can be traced to the
+# method behind it and one saved under an earlier method is flagged. Bump it
+# whenever life construction or the fit changes. v1 dated events completed,
+# else start, else created; split days at midnight UTC; had no minimum failure
+# count; and fell back to a heuristic beta when the likelihood had no root.
+WEIBULL_METHOD_VERSION = "life-data-v2"
+
+# A life that ends within this many calendar hours of the event that started it
+# is flagged for a duplicate check (REL-WBL-DAT-004 §12). Two work orders for one
+# breakdown close that close together, and the near-zero life between them pulls
+# beta below 1, the reading that steers away from age-based PM. Flagged rather
+# than dropped: a genuine repeat failure is real repair-quality information.
+DUPLICATE_CHECK_RAW_HOURS = 1.0
+
+_CODE_VERSION: str | None = None
+
+
+def _git_commit(root: Path) -> str | None:
+    """The commit a git checkout at ``root`` has checked out, read from its .git files.
+
+    Read from the files rather than by running git, which the machine GREMLIN is
+    deployed on need not have on its PATH. Follows a worktree's ``gitdir:``
+    pointer and falls back to packed-refs. None when it cannot tell.
+    """
+
+    git_dir = root / ".git"
+    try:
+        if git_dir.is_file():
+            pointer = git_dir.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = (root / pointer[len("gitdir:"):].strip()).resolve()
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head[:12] or None
+        ref = head[len("ref:"):].strip()
+        search = [git_dir]
+        common = git_dir / "commondir"
+        if common.is_file():
+            search.append((git_dir / common.read_text(encoding="utf-8").strip()).resolve())
+        for base in search:
+            ref_file = base / ref
+            if ref_file.is_file():
+                return ref_file.read_text(encoding="utf-8").strip()[:12] or None
+        for base in search:
+            packed = base / "packed-refs"
+            if packed.is_file():
+                for line in packed.read_text(encoding="utf-8").splitlines():
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref:
+                        return parts[0][:12]
+    except OSError:
+        return None
+    return None
+
+
+def gremlin_code_version() -> str:
+    """The code a Weibull run was made with, as ``GREMLIN <commit>``.
+
+    GREMLIN_VERSION overrides it, for a deployment that is not a git checkout.
+    Read once per process: the code a process runs does not change under it.
+    """
+
+    global _CODE_VERSION
+    if _CODE_VERSION is None:
+        version = os.environ.get("GREMLIN_VERSION", "").strip() or _git_commit(ROOT_DIR) or "version unknown"
+        _CODE_VERSION = f"GREMLIN {version}"
+    return _CODE_VERSION
+
+
+class WeibullFitError(ValueError):
+    """The lives on hand cannot be fitted: too few failures, or no likelihood root."""
 
 # The one and only location for GREMLIN.db. GREMLIN no longer probes mapped
 # drive letters, UNC shares, or user folders for the database; it opens this
@@ -51,14 +135,18 @@ _LOCK_WAIT_CONTEXT = threading.local()
 # The closing record's mapped_record_id and its event role travel too, so the table can
 # open that record's disposition in place: a FAILURE_EVENT is a corrective work order
 # and a PM_RESET_EVENT a PM, which is the disposition kind the editor has to ask for.
+# So do the raw elapsed hours and the weekend and non-run hours taken out of them, which
+# REL-WBL-DAT-004 §5 asks for so a life's hours can be checked against its dates.
 #
 # Shared by perform_weibull_analysis() (fresh fit) and load_saved_weibull_analysis()
-# (read-back of a saved fit) so both describe an observation identically. Callers append
-# their own WHERE and ORDER BY.
+# (read-back of a saved fit), through _load_weibull_view(), so both describe an
+# observation identically. Callers append their own WHERE and ORDER BY.
 _WEIBULL_OBSERVATION_SELECT = """
     SELECT wo.weibull_observation_id, wo.observation_type, wo.start_datetime, wo.end_datetime,
            wo.analysis_cutoff_datetime, wo.life_hours_for_weibull, wo.failure_indicator,
            wo.is_right_censored, wo.weibull_life_note,
+           wo.life_hours_raw_elapsed, wo.excluded_weekend_hours, wo.excluded_schedule_non_run_hours,
+           wo.data_quality_assumption_flag,
            m.mapped_record_id AS source_mapped_record_id,
            ep.event_role AS source_event_role,
            m.task_id AS source_task_id,
@@ -467,6 +555,34 @@ class AnalysisResultView:
     eta_upper_ci: float | None = None
     mean_time_to_failure: float | None = None
     interpretation_summary: list[dict[str, str]] | None = None
+    asset_number: str = ""
+    b10_life: float | None = None
+    b50_life: float | None = None
+    # The window the lives were built in: the start (None = all history), the
+    # cutoff the current life is censored at, and what set the cutoff -- USER, the
+    # LAST_IMPORT from Limble, or NOW (no import was recorded later than the data).
+    analysis_start: str | None = None
+    analysis_cutoff: str | None = None
+    analysis_cutoff_source: str | None = None
+    # What the life hours count: the life basis, the schedule class, and the time
+    # zone days were split in (with the reason when the plant zone could not load).
+    life_basis: dict[str, Any] | None = None
+    # REL-WBL-DAT-004's event processing table: every event the population's
+    # dispositions offered, in date order, including the ones left out and why.
+    events: list[dict[str, Any]] = field(default_factory=list)
+    pm_reset_censored_count: int = 0
+    current_life_censored_count: int = 0
+    run_datetime: str | None = None
+    method_version: str | None = None
+    software_version: str | None = None
+    # False for a result saved under an earlier method version or with fewer
+    # failure lives than the minimum: shown with a notice, never ranked or reported.
+    method_current: bool = True
+    meets_minimum: bool = True
+    min_failure_lives: int = MIN_WEIBULL_FAILURE_LIVES
+    # Why a failure-mode population was fitted rather than a mechanism, which a
+    # failure-mode report has to state (REL-WBL-PLN-003 §8).
+    fallback_rationale: str | None = None
 
 
 class LifeDataService:
@@ -916,6 +1032,11 @@ class LifeDataService:
                     asset_number TEXT,
                     analysis_name TEXT,
                     analysis_cutoff_datetime TEXT,
+                    analysis_start_datetime TEXT,
+                    analysis_cutoff_source TEXT,
+                    schedule_class_id INTEGER REFERENCES asset_schedule_class(schedule_class_id),
+                    schedule_time_zone TEXT,
+                    schedule_time_zone_warning TEXT,
                     life_basis_id INTEGER,
                     created_by_user_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1142,6 +1263,20 @@ class LifeDataService:
             for column, ddl in required_columns.items():
                 if not self._column_exists(conn, "event_disposition", column):
                     conn.execute(f"ALTER TABLE event_disposition ADD COLUMN {column} {ddl}")
+        if self._table_exists(conn, "analysis_dataset"):
+            # The analysis window and the clock a run's lives were counted on, so a
+            # saved result can say what it was built from. Datasets saved before
+            # these existed read back NULL, which the result view reports as
+            # "not recorded" (and, for the time zone, as the UTC v1 used).
+            for column, ddl in {
+                "analysis_start_datetime": "TEXT",
+                "analysis_cutoff_source": "TEXT",
+                "schedule_class_id": "INTEGER REFERENCES asset_schedule_class(schedule_class_id)",
+                "schedule_time_zone": "TEXT",
+                "schedule_time_zone_warning": "TEXT",
+            }.items():
+                if not self._column_exists(conn, "analysis_dataset", column):
+                    conn.execute(f"ALTER TABLE analysis_dataset ADD COLUMN {column} {ddl}")
         if self._table_exists(conn, "failure_mechanism") and self._column_exists(conn, "failure_mechanism", "failure_mode_id"):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_failure_mechanism_failure_mode ON failure_mechanism(failure_mode_id)")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_failure_mechanism_name_mode ON failure_mechanism(failure_mechanism_name, failure_mode_id)")
@@ -1706,12 +1841,22 @@ class LifeDataService:
                 "failure_count": int(row["failure_count"] or 0),
                 "reset_count": int(row["reset_count"] or 0),
                 "label": label,
+                # Each life ending in a failure ends at one of these failures, so a group
+                # with fewer than the minimum cannot be fitted however its dates fall.
+                "fittable": int(row["failure_count"] or 0) >= MIN_WEIBULL_FAILURE_LIVES,
+                "min_failure_lives": MIN_WEIBULL_FAILURE_LIVES,
             })
         return options
 
 
     def latest_failure_mechanism_beta_rankings(self, asset_number: str, *, limit: int = 5) -> list[dict[str, Any]]:
-        """Return latest saved Weibull beta values for this asset's failure-mechanism populations."""
+        """Return latest saved Weibull beta values for this asset's failure-mechanism populations.
+
+        Only fits resting on at least ``MIN_WEIBULL_FAILURE_LIVES`` failure lives are
+        ranked: a beta from fewer is not one to choose a maintenance strategy by. A fit
+        saved under an earlier method version is still ranked, marked
+        ``method_current: False`` so the page can say it wants running again.
+        """
 
         with self.connect() as conn:
             rows = conn.execute(
@@ -1725,6 +1870,7 @@ class LifeDataService:
                         wr.failure_count,
                         wr.censored_count,
                         war.run_datetime,
+                        war.code_version,
                         ROW_NUMBER() OVER (
                             PARTITION BY ad.modeled_population_id
                             ORDER BY war.run_datetime DESC, wr.weibull_result_id DESC
@@ -1744,7 +1890,8 @@ class LifeDataService:
                     lr.eta_mle,
                     lr.failure_count,
                     lr.censored_count,
-                    lr.run_datetime
+                    lr.run_datetime,
+                    lr.code_version
                 FROM latest_result lr
                 JOIN modeled_population mp ON mp.modeled_population_id = lr.modeled_population_id
                 JOIN failure_mode fm ON fm.failure_mode_id = mp.failure_mode_id
@@ -1752,10 +1899,11 @@ class LifeDataService:
                 WHERE lr.result_rank = 1
                   AND mp.asset_number = :asset_number
                   AND mp.grouping_level_used = 'FAILURE_MECHANISM'
+                  AND lr.failure_count >= :min_failure_lives
                 ORDER BY lr.beta_mle DESC, lr.failure_count DESC, fmech.failure_mechanism_name
                 LIMIT :limit
                 """,
-                {"asset_number": asset_number, "limit": limit},
+                {"asset_number": asset_number, "limit": limit, "min_failure_lives": MIN_WEIBULL_FAILURE_LIVES},
             ).fetchall()
         return [
             {
@@ -1770,6 +1918,8 @@ class LifeDataService:
                 "failure_count": int(row["failure_count"] or 0),
                 "censored_count": int(row["censored_count"] or 0),
                 "run_datetime": row["run_datetime"],
+                "method_version": row["code_version"],
+                "method_current": row["code_version"] == WEIBULL_METHOD_VERSION,
             }
             for row in rows
         ]
@@ -3322,65 +3472,33 @@ class LifeDataService:
     def load_weibull_result_for_report(self, result_id: int, asset_number: str) -> dict[str, Any]:
         """Load a persisted Weibull result and confirm it belongs to ``asset_number``.
 
-        The report's parameters, confidence intervals, MTTF, observation counts, and
-        interpretation summary are read back from ``weibull_result`` (never trusted from
-        the client) so a tampered request cannot mint a numbered REL report with
+        Everything the report states -- parameters, intervals, the life basis and window,
+        the lives themselves and the interpretation summary -- is read back from the
+        database (never trusted from the client), through the same view the page is
+        drawn from, so a tampered request cannot mint a numbered REL report with
         arbitrary values or a result id borrowed from another asset.
         """
 
-        with self.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT wr.weibull_result_id, wr.beta_mle, wr.eta_mle,
-                       wr.beta_lower_ci, wr.beta_upper_ci, wr.eta_lower_ci, wr.eta_upper_ci,
-                       wr.failure_count, wr.censored_count, wr.total_observation_count,
-                       wr.mean_time_to_failure, wr.engineering_interpretation,
-                       ad.asset_number, ad.analysis_name
-                FROM weibull_result wr
-                JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
-                JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
-                WHERE wr.weibull_result_id = ?
-                """,
-                (result_id,),
-            ).fetchone()
-        if row is None:
+        with self.read_transaction() as conn:
+            view = self._load_weibull_view(conn, int(result_id))
+        if view is None:
             raise ValueError("That Weibull result no longer exists. Re-run the analysis before generating a report.")
-        if str(row["asset_number"]) != str(asset_number):
+        if view.asset_number != str(asset_number):
             raise ValueError("The selected Weibull result does not belong to this asset.")
-
-        try:
-            interpretation_summary = json.loads(row["engineering_interpretation"]) if row["engineering_interpretation"] else []
-        except (ValueError, TypeError):
-            interpretation_summary = []
-        if not isinstance(interpretation_summary, list):
-            interpretation_summary = []
-
-        analysis_name = str(row["analysis_name"] or "")
-        label_prefix = "Weibull Analysis - "
-        analysis_label = analysis_name[len(label_prefix):] if analysis_name.startswith(label_prefix) else analysis_name
-        return {
-            "result_id": int(row["weibull_result_id"]),
-            "analysis_label": analysis_label or "Selected failure group",
-            "beta_mle": row["beta_mle"],
-            "eta_mle": row["eta_mle"],
-            "beta_lower_ci": row["beta_lower_ci"],
-            "beta_upper_ci": row["beta_upper_ci"],
-            "eta_lower_ci": row["eta_lower_ci"],
-            "eta_upper_ci": row["eta_upper_ci"],
-            "failure_count": row["failure_count"],
-            "censored_count": row["censored_count"],
-            "total_observation_count": row["total_observation_count"],
-            "mean_time_to_failure": row["mean_time_to_failure"],
-            "interpretation_summary": interpretation_summary,
-        }
+        result = {name: getattr(view, name) for name in view.__dataclass_fields__}
+        result["analysis_label"] = view.analysis_label or "Selected failure group"
+        return result
 
     def build_weibull_report_docx(self, asset_number: str, payload: dict[str, Any], output_path: str | Path) -> str:
-        """Write a high-level Weibull report Word document and return its report number.
+        """Write a Weibull report Word document and return its report number.
 
-        The analysis fields are reloaded from the persisted ``weibull_result`` for the
-        given asset (so the numbered REL report cannot be driven by tampered request
-        data); only the chart images are taken from the client payload, since they are
-        rendered from canvases that exist only in the browser.
+        The analysis fields are reloaded from the persisted result for the given asset
+        (so the numbered REL report cannot be driven by tampered request data); only the
+        chart images, the age to evaluate reliability at and a failure-mode population's
+        fallback rationale come from the payload. A result is refused -- before any
+        report number is reserved -- when it was saved under an earlier method version,
+        rests on fewer failure lives than the minimum, or is a failure-mode population
+        with no written reason a mechanism could not be fitted instead.
         """
 
         client_result = payload.get("result") or {}
@@ -3390,6 +3508,50 @@ class LifeDataService:
         if result_id is None:
             raise ValueError("A saved Weibull result id is required to generate a report.")
         result = self.load_weibull_result_for_report(result_id, asset_number)
+        if not result["method_current"]:
+            raise ValueError(
+                f"This result was saved by an earlier version of GREMLIN's Weibull method ({result['method_version'] or 'unrecorded'}). "
+                "Run the analysis again before reporting it."
+            )
+        if not result["meets_minimum"]:
+            raise ValueError(
+                f"This result rests on {result['failure_count']} lives that end in a failure; a Weibull report needs at least "
+                f"{MIN_WEIBULL_FAILURE_LIVES}."
+            )
+        rationale = self._without_unrepresentable_characters(str(payload.get("fallback_rationale") or "")).strip()
+        if result["grouping_level"] == "FAILURE_MODE":
+            rationale = rationale or str(result.get("fallback_rationale") or "").strip()
+            if not rationale:
+                raise ValueError(
+                    "A report on a failure mode needs the reason it was fitted rather than one of its mechanisms "
+                    "(REL-WBL-PLN-003 §8): failure mode is the fallback grouping, used when the records cannot "
+                    "support a single mechanism."
+                )
+            if rationale != str(result.get("fallback_rationale") or "").strip():
+                with self.write_connection() as conn:
+                    conn.execute(
+                        """
+                        UPDATE modeled_population SET fallback_rationale = ?
+                        WHERE modeled_population_id = (
+                            SELECT ad.modeled_population_id
+                            FROM weibull_result wr
+                            JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+                            JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+                            WHERE wr.weibull_result_id = ?
+                        )
+                        """,
+                        (rationale, result_id),
+                    )
+            result["fallback_rationale"] = rationale
+        target_age_hours = None
+        raw_age = payload.get("target_age_hours")
+        if raw_age not in (None, ""):
+            try:
+                target_age_hours = float(raw_age)
+            except (TypeError, ValueError):
+                target_age_hours = None
+            if target_age_hours is None or not math.isfinite(target_age_hours) or target_age_hours <= 0:
+                raise ValueError("The age to evaluate reliability at has to be a positive number of hours.")
         analysis_label = result["analysis_label"]
         report_number, _ = self.next_weibull_report_number(
             asset_number,
@@ -3404,11 +3566,44 @@ class LifeDataService:
             if not png_bytes:
                 continue
             charts.append({"title": chart.get("title"), "_png_bytes": png_bytes})
-        self._write_docx(output_path, self._weibull_report_body(report_number, asset_number, analysis_label, result, charts), charts)
+        body = self._weibull_report_body(report_number, asset_number, analysis_label, result, charts, target_age_hours=target_age_hours)
+        self._write_docx(output_path, body, charts)
         return report_number
 
-    def _weibull_report_body(self, report_number: str, asset_number: str, analysis_label: str, result: dict[str, Any], charts: list[dict[str, Any]]) -> str:
-        """Build the ``word/document.xml`` body XML for a Weibull report."""
+    @staticmethod
+    def calendar_weeks_for_life_hours(life_hours: float | None, life_basis: dict[str, Any] | None) -> float | None:
+        """How many calendar weeks it takes to build up ``life_hours`` on a result's schedule.
+
+        Life hours are scheduled hours, and a weekend adds none, so a week holds five
+        scheduled days of ``hours_per_day``: 100 hours on the 20-hour schedule. None
+        when the schedule is not known.
+        """
+
+        if life_hours is None or not life_basis or not life_basis.get("hours_per_day"):
+            return None
+        days_per_week = 5.0 if life_basis.get("exclude_weekends", True) else 7.0
+        weekly_hours = float(life_basis["hours_per_day"]) * days_per_week
+        if weekly_hours <= 0:
+            return None
+        return float(life_hours) / weekly_hours
+
+    def _weibull_report_body(
+        self,
+        report_number: str,
+        asset_number: str,
+        analysis_label: str,
+        result: dict[str, Any],
+        charts: list[dict[str, Any]],
+        *,
+        target_age_hours: float | None = None,
+    ) -> str:
+        """Build the ``word/document.xml`` body XML for a Weibull report.
+
+        Carries what REL-WBL-MTH-001 §10 asks of an analysis package -- the modeled
+        population and grouping level, the life basis and censoring, the fitted values
+        and reliability outputs, the recommendation, and the limitations -- plus the lives
+        themselves, so the report can be checked without GREMLIN to hand.
+        """
 
         def fmt(value: Any, suffix: str = "") -> str:
             try:
@@ -3419,10 +3614,38 @@ class LifeDataService:
                 return "Not available"
             return f"{number:.4g}{suffix}"
 
-        generated_on = datetime.now().strftime("%Y-%m-%d %H:%M")
+        life_basis = result.get("life_basis") or {}
+        zone_name = life_basis.get("time_zone") or "UTC"
+        try:
+            zone: tzinfo = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            zone, zone_name = timezone.utc, "UTC"
+
+        def when(value: Any) -> str:
+            parsed = self._parse_datetime(value)
+            if parsed is None:
+                return "Not recorded"
+            return f"{parsed.astimezone(zone).strftime('%Y-%m-%d %H:%M')} {zone_name}"
+
+        def cutoff_text() -> str:
+            # An entered cutoff date runs to the end of that plant day, stored as the
+            # next day's midnight: read it back as the day it names.
+            parsed = self._parse_datetime(result.get("analysis_cutoff"))
+            if parsed is None:
+                return "Not recorded"
+            local = parsed.astimezone(zone)
+            if result.get("analysis_cutoff_source") == "USER" and (local.hour, local.minute, local.second) == (0, 0, 0):
+                return f"End of {(local - timedelta(minutes=1)).strftime('%Y-%m-%d')} ({zone_name})"
+            return when(result.get("analysis_cutoff"))
+
+        def hours_with_weeks(value: Any) -> str:
+            text = fmt(value, " hours")
+            weeks = self.calendar_weeks_for_life_hours(value, life_basis) if text != "Not available" else None
+            return f"{text} (about {weeks:.1f} calendar weeks)" if weeks is not None else text
+
+        generated_on = datetime.now(zone).strftime("%Y-%m-%d %H:%M")
         beta = fmt(result.get("beta_mle"))
         eta = fmt(result.get("eta_mle"), " hours")
-        mttf = fmt(result.get("mean_time_to_failure"), " hours")
         beta_ci = (
             f"{fmt(result.get('beta_lower_ci'))} to {fmt(result.get('beta_upper_ci'))}"
             if result.get("beta_lower_ci") is not None and result.get("beta_upper_ci") is not None
@@ -3436,31 +3659,86 @@ class LifeDataService:
         total = result.get("total_observation_count")
         failures = result.get("failure_count")
         censored = result.get("censored_count")
+        is_mode = result.get("grouping_level") == "FAILURE_MODE"
+        cutoff_source = {
+            "LAST_IMPORT": "the last completed Limble import",
+            "USER": "the cutoff date entered for the run",
+            "NOW": "the time of the run",
+        }.get(str(result.get("analysis_cutoff_source") or ""), "source not recorded")
+        schedule_name = life_basis.get("schedule_name") or "Not recorded"
+        if life_basis.get("exclude_weekends"):
+            schedule_name += ", weekends excluded"
 
         parts: list[str] = []
         parts.append(self._docx_heading(report_number, level=1))
         parts.append(self._docx_heading("Weibull Reliability Analysis Report", level=2))
-        parts.append(self._docx_paragraph(f"Asset Number: {asset_number}", bold=True))
-        parts.append(self._docx_paragraph(f"Failure population: {analysis_label}"))
-        parts.append(self._docx_paragraph(f"Report generated: {generated_on}"))
-        parts.append(self._docx_paragraph(f"Observations: {total} total, {failures} failures, {censored} right-censored."))
-
-        # Headline parameters table.
-        parts.append(self._docx_heading("Fitted Weibull Parameters", level=2))
         parts.append(
-            self._docx_table(
-                ["Parameter", "Value"],
-                [
-                    ["Shape (beta)", beta],
-                    ["Scale (eta)", eta],
-                    ["Mean time to failure (MTTF)", mttf],
-                    ["Beta 95% confidence interval", beta_ci],
-                    ["Eta 95% confidence interval", eta_ci],
-                ],
+            self._docx_paragraph(
+                "Pre-release result: GREMLIN's Weibull automation has not yet been validated against the manual pilot "
+                "baseline (REL-WBL-VAL-001 §7). Use this report for reliability engineering review, not as a stand-alone "
+                "maintenance directive or a PM interval change.",
+                bold=True,
             )
         )
+        parts.append(self._docx_paragraph(f"Asset Number: {asset_number}", bold=True))
+        parts.append(self._docx_paragraph(f"Failure population: {analysis_label}"))
+        parts.append(
+            self._docx_paragraph(
+                "Grouping level: "
+                + (
+                    "Failure mode, the fallback grouping used when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1)"
+                    if is_mode
+                    else "Failure mechanism"
+                )
+            )
+        )
+        if is_mode:
+            parts.append(self._docx_paragraph(f"Why a failure mode rather than a mechanism: {result.get('fallback_rationale') or 'Not recorded'}"))
+        parts.append(self._docx_paragraph(f"Report generated: {generated_on} {zone_name}"))
 
-        # Charts.
+        parts.append(self._docx_heading("Life Basis and Analysis Window", level=2))
+        basis_rows = [
+            ["Life basis", "Schedule-adjusted elapsed hours: an exposure proxy, not run-meter hours"],
+            ["Schedule", schedule_name],
+            ["Days split at", f"Midnight, {zone_name}"],
+        ]
+        if life_basis.get("time_zone_warning"):
+            basis_rows.append(["Time zone warning", str(life_basis["time_zone_warning"])])
+        basis_rows += [
+            ["Analysis start", when(result.get("analysis_start")) if result.get("analysis_start") else "All history in GREMLIN"],
+            ["Analysis cutoff", f"{cutoff_text()}, {cutoff_source}"],
+            [
+                "Lives",
+                f"{total} in total: {failures} end in a failure, {censored} right-censored "
+                f"({result.get('pm_reset_censored_count', 0)} at a PM reset, {result.get('current_life_censored_count', 0)} current life)",
+            ],
+        ]
+        parts.append(self._docx_table(["Item", "Value"], basis_rows))
+
+        parts.append(self._docx_heading("Fitted Weibull Parameters", level=2))
+        parameter_rows = [
+            ["Shape (beta)", beta],
+            ["Scale (eta)", hours_with_weeks(result.get("eta_mle"))],
+            ["Mean time to failure (MTTF)", hours_with_weeks(result.get("mean_time_to_failure"))],
+            ["B10 life", hours_with_weeks(result.get("b10_life"))],
+            ["B50 life (median)", hours_with_weeks(result.get("b50_life"))],
+            ["Beta 95% confidence interval", beta_ci],
+            ["Eta 95% confidence interval", eta_ci],
+        ]
+        if target_age_hours is not None:
+            try:
+                reliability = math.exp(-((target_age_hours / float(result["eta_mle"])) ** float(result["beta_mle"])))
+            except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+                reliability = None
+            if reliability is not None:
+                parameter_rows.append(
+                    [
+                        f"Reliability at {target_age_hours:g} hours",
+                        f"R = {reliability:.3f}; probability of failing by then F = {1 - reliability:.3f}",
+                    ]
+                )
+        parts.append(self._docx_table(["Parameter", "Value"], parameter_rows))
+
         if charts:
             parts.append(self._docx_heading("Analysis Graphs", level=2))
             for index, chart in enumerate(charts, start=1):
@@ -3468,7 +3746,6 @@ class LifeDataService:
                 parts.append(self._docx_paragraph(title, bold=True))
                 parts.append(self._docx_image_paragraph(index, chart))
 
-        # Interpretation summary table.
         parts.append(self._docx_heading("Results Interpretation Summary", level=2))
         rows = result.get("interpretation_summary") or []
         table_rows = [
@@ -3479,11 +3756,74 @@ class LifeDataService:
             table_rows = [["—", "—", "No interpretation summary is available for this Weibull result."]]
         parts.append(self._docx_table(["Metric", "Value", "Interpretation / Recommended Action"], table_rows))
 
+        observations = result.get("observations") or []
+        flagged = sum(1 for obs in observations if obs.get("data_quality_assumption_flag"))
+        limitations = [
+            self._weibull_limitations_text(life_basis.get("schedule_name") or "the weekday schedule", zone_name),
+            "Confidence intervals are approximate (Fisher matrix, on log beta and log eta) and tend to run too narrow "
+            "with few failures, so read beta and eta as directions until more failures accumulate.",
+        ]
+        if is_mode:
+            limitations.append(
+                "A failure-mode population pools every mechanism under it, which can blur beta: a wearing-out "
+                "mechanism can hide inside a beta near 1. Fit the mechanism once it has enough failures."
+            )
+        if flagged:
+            limitations.append(
+                f"{flagged} {'life ends' if flagged == 1 else 'lives end'} within {DUPLICATE_CHECK_RAW_HOURS:g} hour of the "
+                "event before, flagged for a duplicate check in the observation data below. A duplicate work order makes a "
+                "near-zero life that pulls beta down."
+            )
+        parts.append(self._docx_heading("Limitations and Assumptions", level=2))
+        for limitation in limitations:
+            parts.append(self._docx_paragraph(f"• {limitation}"))
+
+        parts.append(self._docx_heading("Observation Data", level=2))
+        observation_rows = []
+        for index, obs in enumerate(observations, start=1):
+            ends_in = {
+                "COMPLETED_FAILURE_LIFE": "Failure",
+                "PM_RESET_CENSORED_LIFE": "PM reset (censored)",
+                "RIGHT_CENSORED_LIFE": "Cutoff (current life)",
+            }.get(str(obs.get("observation_type") or ""), str(obs.get("observation_type") or ""))
+            note = str(obs.get("weibull_life_note") or "")
+            if obs.get("data_quality_assumption_flag"):
+                note = f"{note}. {obs['data_quality_assumption_flag']}" if note else str(obs["data_quality_assumption_flag"])
+            observation_rows.append(
+                [
+                    str(index),
+                    str(obs.get("source_task_id") or "—"),
+                    ends_in,
+                    when(obs.get("start_datetime")),
+                    when(obs.get("end_datetime") or obs.get("analysis_cutoff_datetime")),
+                    fmt(obs.get("life_hours_raw_elapsed")),
+                    fmt(obs.get("life_hours_for_weibull")),
+                    "1" if obs.get("failure_indicator") else "0",
+                    note,
+                ]
+            )
+        if not observation_rows:
+            observation_rows = [["—"] * 8 + ["No observations were saved with this result."]]
+        parts.append(
+            self._docx_table(
+                ["#", "Task ID", "Ends in", "Start", "End or cutoff", "Raw h", "Life h", "δ", "Note"],
+                observation_rows,
+                font_half_points=16,
+            )
+        )
+
+        parts.append(self._docx_heading("Traceability", level=2))
+        parts.append(
+            self._docx_paragraph(
+                f"Weibull result {result.get('result_id')}, run {when(result.get('run_datetime'))}, method "
+                f"{result.get('method_version') or 'not recorded'}, {result.get('software_version') or 'software version not recorded'}."
+            )
+        )
         parts.append(
             self._docx_paragraph(
                 "Recommendations are based on beta, eta, MTTF, and the approximate 95% confidence intervals for the "
-                "fitted Weibull parameters. This report summarizes the analysis at a high level; consult the GREMLIN "
-                "Perform Analysis workspace for the underlying observation data.",
+                "fitted Weibull parameters. The GREMLIN Perform Analysis workspace shows the event processing table "
+                "behind these lives, including every event that was left out and why.",
                 italic=True,
             )
         )
@@ -3527,7 +3867,7 @@ class LifeDataService:
         spacing = '<w:spacing w:before="240" w:after="120"/>'
         return f"<w:p><w:pPr>{spacing}</w:pPr>{self._docx_run(text, bold=True, size_half_points=size)}</w:p>"
 
-    def _docx_table(self, headers: list[str], rows: list[list[str]]) -> str:
+    def _docx_table(self, headers: list[str], rows: list[list[str]], *, font_half_points: int | None = None) -> str:
         border = '<w:tblBorders>' + "".join(
             f'<w:{edge} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>'
             for edge in ("top", "left", "bottom", "right", "insideH", "insideV")
@@ -3541,7 +3881,7 @@ class LifeDataService:
         def cell(text: str, *, header: bool = False) -> str:
             shade = '<w:shd w:val="clear" w:color="auto" w:fill="D9E2F3"/>' if header else ""
             tc_pr = f"<w:tcPr>{shade}</w:tcPr>" if shade else ""
-            return f"<w:tc>{tc_pr}<w:p>{self._docx_run(text, bold=header)}</w:p></w:tc>"
+            return f"<w:tc>{tc_pr}<w:p>{self._docx_run(text, bold=header, size_half_points=font_half_points)}</w:p></w:tc>"
 
         header_row = "<w:tr>" + "".join(cell(h, header=True) for h in headers) + "</w:tr>"
         body_rows = "".join("<w:tr>" + "".join(cell(value) for value in row) + "</w:tr>" for row in rows)
@@ -4975,142 +5315,256 @@ class LifeDataService:
         grouping_level: str,
         failure_mode_id: int,
         failure_mechanism_id: int | None = None,
+        analysis_start: date | None = None,
+        analysis_cutoff: date | None = None,
     ) -> AnalysisResultView:
+        """Build a failure group's lives from current dispositions, fit them, and save the result.
+
+        ``analysis_start`` and ``analysis_cutoff`` are dates on the plant's calendar:
+        the start counts from that day's first minute and the cutoff to its last, so a
+        window names whole days. Without a cutoff the current life is censored at the
+        last completed Limble import when that is later than every event, and at the
+        moment of the run when it is not -- never at a time the data has not reached.
+
+        A group that cannot be fitted -- fewer than ``MIN_WEIBULL_FAILURE_LIVES`` lives
+        ending in a failure, or a likelihood with no root -- raises WeibullFitError
+        *after* committing: its events and lives are rebuilt and any result saved for
+        it earlier is removed, because the data no longer supports it. Anything else
+        that goes wrong rolls back and leaves the saved result as it was.
+        """
+
         if grouping_level not in {"FAILURE_MODE", "FAILURE_MECHANISM"}:
             raise ValueError("Select a failure mode or failure mechanism before performing Weibull analysis.")
         if grouping_level == "FAILURE_MECHANISM" and failure_mechanism_id is None:
             raise ValueError("Failure-mechanism Weibull analysis requires a selected failure mechanism.")
-        cutoff = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        population_mechanism_id = failure_mechanism_id if grouping_level == "FAILURE_MECHANISM" else None
+        refusal: str | None = None
+        view: AnalysisResultView | None = None
         with self.write_connection() as conn:
-            population_id = self._get_or_create_modeled_population(conn, asset_number, failure_mode_id, failure_mechanism_id if grouping_level == "FAILURE_MECHANISM" else None)
+            population_id = self._get_or_create_modeled_population(conn, asset_number, failure_mode_id, population_mechanism_id)
             population = conn.execute(
-                "SELECT population_name, grouping_level_used FROM modeled_population WHERE modeled_population_id = ?",
+                "SELECT population_name FROM modeled_population WHERE modeled_population_id = ?",
                 (population_id,),
             ).fetchone()
+            analysis_label = population["population_name"] if population and population["population_name"] else f"{asset_number} failure group"
+            had_saved_result = (
+                conn.execute("SELECT 1 FROM analysis_dataset WHERE modeled_population_id = ? LIMIT 1", (population_id,)).fetchone()
+                is not None
+            )
             life_basis_id = self._life_basis_id(conn)
             schedule_class_id = self._schedule_class_id(conn, asset_number)
-            self._refresh_event_processing(conn, asset_number, population_id, grouping_level=grouping_level, failure_mode_id=failure_mode_id, failure_mechanism_id=failure_mechanism_id)
-            observation_ids = self._refresh_observations(conn, asset_number, population_id, life_basis_id, schedule_class_id, cutoff)
-            if not observation_ids:
-                raise ValueError("No valid life intervals could be built from dispositioned event dates for the selected failure group.")
-            observations = conn.execute(
-                f"""
-                {_WEIBULL_OBSERVATION_SELECT}
-                WHERE wo.weibull_observation_id IN ({','.join('?' for _ in observation_ids)}) AND wo.is_usable = 1
-                ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
-                """,
-                observation_ids,
-            ).fetchall()
-            observation_views = [dict(row) for row in observations]
-            for index, observation in enumerate(observation_views, start=1):
-                observation["ordered_index"] = index
-            data = [(float(row["life_hours_for_weibull"]), int(row["failure_indicator"])) for row in observations if row["life_hours_for_weibull"] and row["life_hours_for_weibull"] > 0]
-            if not data:
-                raise ValueError("No positive life-hour observations are available for the selected failure group.")
-            if not any(failure for _, failure in data):
-                raise ValueError("At least one INCLUDED_FAILURE observation is required to estimate Weibull MLE beta/eta for the selected failure group.")
-            beta, eta, log_likelihood = self._fit_weibull_2p(data)
-            beta_lo, beta_hi, eta_lo, eta_hi = self._weibull_confidence_intervals(data, beta, eta)
-            mean_time_to_failure = eta * math.gamma(1 + 1 / beta)
-            interpretation_summary = self._weibull_interpretation_summary(beta, eta, mean_time_to_failure, beta_lo, beta_hi, eta_lo, eta_hi)
-            analysis_label = population["population_name"] if population else f"{asset_number} failure group"
-            dataset_id = conn.execute(
-                """
-                INSERT INTO analysis_dataset(modeled_population_id, asset_number, analysis_name, analysis_cutoff_datetime, life_basis_id, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (population_id, asset_number, f"Weibull Analysis - {analysis_label}", cutoff, life_basis_id, "Generated from current GREMLIN failure-mode/mechanism dispositions."),
-            ).lastrowid
-            conn.executemany(
-                "INSERT INTO analysis_dataset_member(analysis_dataset_id, weibull_observation_id, included_in_fit) VALUES (?, ?, 1)",
-                [(dataset_id, row["weibull_observation_id"]) for row in observations],
+            zone, zone_name, zone_warning = self._plant_time_zone(conn)
+            rows = self._population_event_rows(
+                conn,
+                asset_number,
+                grouping_level=grouping_level,
+                failure_mode_id=failure_mode_id,
+                failure_mechanism_id=failure_mechanism_id,
             )
-            run_id = conn.execute(
-                "INSERT INTO weibull_analysis_run(analysis_dataset_id, software_version, code_version, notes) VALUES (?, ?, ?, ?)",
-                (dataset_id, "GREMLIN PyQt", "life-data-v1", "2P Weibull MLE with right-censored observations for selected failure group."),
-            ).lastrowid
-            km_points = self._kaplan_meier_points(data)
-            conn.executemany(
-                """
-                INSERT INTO kaplan_meier_point(weibull_analysis_run_id, ordered_index, life_hours, at_risk_count,
-                    failure_count_at_time, censored_count_at_time, survival_estimate, cdf_estimate, reliability_estimate,
-                    weibull_plot_x, weibull_plot_y)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
+            start, cutoff, cutoff_source = self._resolve_analysis_window(conn, rows, zone, analysis_start, analysis_cutoff)
+            event_counts = self._refresh_event_processing(
+                conn,
+                asset_number,
+                population_id,
+                rows=rows,
+                grouping_level=grouping_level,
+                analysis_start=start,
+                analysis_cutoff=cutoff,
+            )
+            observation_ids = self._refresh_observations(conn, asset_number, population_id, life_basis_id, schedule_class_id, cutoff, zone)
+            data: list[tuple[float, int]] = []
+            if observation_ids:
+                data = [
+                    (float(row["life_hours_for_weibull"]), int(row["failure_indicator"]))
+                    for row in conn.execute(
+                        f"""
+                        SELECT life_hours_for_weibull, failure_indicator FROM weibull_observation
+                        WHERE weibull_observation_id IN ({','.join('?' for _ in observation_ids)}) AND is_usable = 1
+                        ORDER BY life_hours_for_weibull, weibull_observation_id
+                        """,
+                        observation_ids,
+                    ).fetchall()
+                    if row["life_hours_for_weibull"] and row["life_hours_for_weibull"] > 0
+                ]
+            failure_lives = sum(failed for _, failed in data)
+            removed_note = (
+                " The result saved earlier for this failure group has been removed, because these lives no longer support it."
+                if had_saved_result
+                else ""
+            )
+            if failure_lives < MIN_WEIBULL_FAILURE_LIVES:
+                # What became of the failures that did not end a life: the first event
+                # only starts the clock, and a zero-hour interval is left out.
+                first_event = conn.execute(
+                    """
+                    SELECT is_failure_event FROM event_processing_record
+                    WHERE modeled_population_id = ? AND event_role IN ('FAILURE_EVENT','PM_RESET_EVENT')
+                    ORDER BY weibull_sequence_number LIMIT 1
+                    """,
+                    (population_id,),
+                ).fetchone()
+                event_counts["first_is_failure"] = int(bool(first_event and first_event[0]))
+                event_counts["zero_hour_failures"] = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM event_processing_record
+                        WHERE modeled_population_id = ? AND event_role = 'FAILURE_EVENT'
+                          AND weibull_life_note LIKE 'Excluded - no scheduled hours%'
+                        """,
+                        (population_id,),
+                    ).fetchone()[0]
+                )
+                refusal = self._too_few_failure_lives_message(failure_lives, event_counts) + removed_note
+            else:
+                try:
+                    beta, eta, log_likelihood = self._fit_weibull_2p(data)
+                except WeibullFitError as exc:
+                    refusal = str(exc) + removed_note
+            if refusal is None:
+                beta_lo, beta_hi, eta_lo, eta_hi = self._weibull_confidence_intervals(data, beta, eta)
+                mean_time_to_failure = eta * math.gamma(1 + 1 / beta)
+                interpretation_summary = self._weibull_interpretation_summary(beta, eta, mean_time_to_failure, beta_lo, beta_hi, eta_lo, eta_hi)
+                schedule = conn.execute(
+                    "SELECT schedule_class_name FROM asset_schedule_class WHERE schedule_class_id = ?",
+                    (schedule_class_id,),
+                ).fetchone()
+                dataset_id = conn.execute(
+                    """
+                    INSERT INTO analysis_dataset(modeled_population_id, asset_number, analysis_name, analysis_cutoff_datetime,
+                        analysis_start_datetime, analysis_cutoff_source, schedule_class_id, schedule_time_zone,
+                        schedule_time_zone_warning, life_basis_id, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        population_id,
+                        asset_number,
+                        f"Weibull Analysis - {analysis_label}",
+                        cutoff.isoformat(),
+                        start.isoformat() if start is not None else None,
+                        cutoff_source,
+                        schedule_class_id,
+                        zone_name,
+                        zone_warning,
+                        life_basis_id,
+                        "Generated from current GREMLIN failure-mode/mechanism dispositions.",
+                    ),
+                ).lastrowid
+                conn.executemany(
+                    "INSERT INTO analysis_dataset_member(analysis_dataset_id, weibull_observation_id, included_in_fit) VALUES (?, ?, 1)",
+                    [(dataset_id, observation_id) for observation_id in observation_ids],
+                )
+                run_id = conn.execute(
+                    "INSERT INTO weibull_analysis_run(analysis_dataset_id, software_version, code_version, notes) VALUES (?, ?, ?, ?)",
+                    (dataset_id, gremlin_code_version(), WEIBULL_METHOD_VERSION, "2P Weibull MLE with right-censored observations for selected failure group."),
+                ).lastrowid
+                km_points = self._kaplan_meier_points(data)
+                conn.executemany(
+                    """
+                    INSERT INTO kaplan_meier_point(weibull_analysis_run_id, ordered_index, life_hours, at_risk_count,
+                        failure_count_at_time, censored_count_at_time, survival_estimate, cdf_estimate, reliability_estimate,
+                        weibull_plot_x, weibull_plot_y)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            run_id,
+                            point["ordered_index"],
+                            point["life_hours"],
+                            point["at_risk_count"],
+                            point["failure_count_at_time"],
+                            point["censored_count_at_time"],
+                            point["survival_estimate"],
+                            point["cdf_estimate"],
+                            point["reliability_estimate"],
+                            point["weibull_plot_x"],
+                            point["weibull_plot_y"],
+                        )
+                        for point in km_points
+                    ],
+                )
+                curve_points = self._curve_points(beta, eta, max(t for t, _ in data))
+                conn.executemany(
+                    "INSERT INTO weibull_curve_point(weibull_analysis_run_id, life_hours, cdf, reliability, pdf, hazard_rate) VALUES (?, ?, ?, ?, ?, ?)",
+                    [(run_id, point["life_hours"], point["cdf"], point["reliability"], point["pdf"], point["hazard_rate"]) for point in curve_points],
+                )
+                censored = len(data) - failure_lives
+                result_id = conn.execute(
+                    """
+                    INSERT INTO weibull_result(weibull_analysis_run_id, beta_mle, eta_mle, beta_lower_ci, beta_upper_ci, eta_lower_ci, eta_upper_ci,
+                        log_likelihood, aic, bic, failure_count, censored_count, total_observation_count, mean_time_to_failure, b10_life, b50_life,
+                        fit_quality_notes, engineering_interpretation, recommended_action, limitations)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (
                         run_id,
-                        point["ordered_index"],
-                        point["life_hours"],
-                        point["at_risk_count"],
-                        point["failure_count_at_time"],
-                        point["censored_count_at_time"],
-                        point["survival_estimate"],
-                        point["cdf_estimate"],
-                        point["reliability_estimate"],
-                        point["weibull_plot_x"],
-                        point["weibull_plot_y"],
-                    )
-                    for point in km_points
-                ],
-            )
-            curve_points = self._curve_points(beta, eta, max(t for t, _ in data))
-            conn.executemany(
-                "INSERT INTO weibull_curve_point(weibull_analysis_run_id, life_hours, cdf, reliability, pdf, hazard_rate) VALUES (?, ?, ?, ?, ?, ?)",
-                [(run_id, point["life_hours"], point["cdf"], point["reliability"], point["pdf"], point["hazard_rate"]) for point in curve_points],
-            )
-            failures = sum(f for _, f in data)
-            censored = len(data) - failures
-            result_id = conn.execute(
-                """
-                INSERT INTO weibull_result(weibull_analysis_run_id, beta_mle, eta_mle, beta_lower_ci, beta_upper_ci, eta_lower_ci, eta_upper_ci,
-                    log_likelihood, aic, bic, failure_count, censored_count, total_observation_count, mean_time_to_failure, b10_life, b50_life,
-                    fit_quality_notes, engineering_interpretation, recommended_action, limitations)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    beta,
-                    eta,
-                    beta_lo,
-                    beta_hi,
-                    eta_lo,
-                    eta_hi,
-                    log_likelihood,
-                    4 - 2 * log_likelihood,
-                    2 * math.log(len(data)) - 2 * log_likelihood,
-                    failures,
-                    censored,
-                    len(data),
-                    mean_time_to_failure,
-                    eta * (-math.log(0.90)) ** (1 / beta),
-                    eta * (math.log(2)) ** (1 / beta),
-                    "MLE fit includes selected failure-group completed failures and right-censored observations.",
-                    json.dumps(interpretation_summary),
-                    interpretation_summary[0]["recommendation"] if interpretation_summary else "Review the Weibull fit before selecting a maintenance strategy.",
-                    "Foundation implementation uses schedule-adjusted weekday hours with weekend exclusions and current dispositions for a selected failure mode/mechanism population.",
-                ),
-            ).lastrowid
-            return AnalysisResultView(
-                run_id,
-                result_id,
-                beta,
-                eta,
-                failures,
-                censored,
-                len(data),
-                km_points,
-                curve_points,
-                observation_views,
-                analysis_label,
-                population["grouping_level_used"] if population else grouping_level,
-                beta_lo,
-                beta_hi,
-                eta_lo,
-                eta_hi,
-                mean_time_to_failure,
-                interpretation_summary,
-            )
+                        beta,
+                        eta,
+                        beta_lo,
+                        beta_hi,
+                        eta_lo,
+                        eta_hi,
+                        log_likelihood,
+                        4 - 2 * log_likelihood,
+                        2 * math.log(len(data)) - 2 * log_likelihood,
+                        failure_lives,
+                        censored,
+                        len(data),
+                        mean_time_to_failure,
+                        eta * (-math.log(0.90)) ** (1 / beta),
+                        eta * (math.log(2)) ** (1 / beta),
+                        "2P Weibull MLE with right-censored observations; approximate 95% Fisher-matrix intervals.",
+                        json.dumps(interpretation_summary),
+                        interpretation_summary[0]["recommendation"] if interpretation_summary else "Review the Weibull fit before selecting a maintenance strategy.",
+                        self._weibull_limitations_text(schedule["schedule_class_name"] if schedule else "the weekday schedule", zone_name),
+                    ),
+                ).lastrowid
+                view = self._load_weibull_view(conn, int(result_id))
+        if refusal is not None:
+            raise WeibullFitError(refusal)
+        if view is None:
+            raise ValueError("The Weibull result was saved but could not be read back. Run the analysis again.")
+        return view
+
+    @staticmethod
+    def _too_few_failure_lives_message(failure_lives: int, event_counts: dict[str, int]) -> str:
+        """Why a failure group cannot be fitted yet, in terms of what the user can change."""
+
+        message = (
+            f"Weibull analysis needs at least {MIN_WEIBULL_FAILURE_LIVES} lives that end in a failure, "
+            f"and this failure group has {failure_lives}."
+        )
+        included = event_counts.get("included_failures", 0)
+        if included > failure_lives:
+            why = []
+            if event_counts.get("first_is_failure"):
+                why.append("the first only starts the clock")
+            zero_hour = event_counts.get("zero_hour_failures", 0)
+            if zero_hour:
+                why.append(f"{zero_hour} closed a life with no scheduled hours, which is left out")
+            message += f" It has {included} dated failures in the analysis window" + (f": {', and '.join(why)}." if why else ".")
+        left_out = [
+            (event_counts.get("missing_date", 0), "with no completed date"),
+            (event_counts.get("unparseable_date", 0), "with a completed date that could not be read"),
+            (event_counts.get("before_start", 0) + event_counts.get("after_cutoff", 0), "outside the analysis window"),
+        ]
+        reasons = [f"{count} {why}" for count, why in left_out if count]
+        if reasons:
+            message += f" Events left out of the timeline: {', '.join(reasons)}."
+        message += (
+            " Disposition more failures, widen the analysis window, or fit the failure mode the mechanism "
+            "belongs to, with the reason a mechanism could not be fitted."
+        )
+        return message
+
+    @staticmethod
+    def _weibull_limitations_text(schedule_name: str, zone_name: str) -> str:
+        """The limitations saved with a result, so its report states what its hours are."""
+
+        return (
+            f"Life is schedule-adjusted elapsed time, an exposure proxy and not run-meter hours: {schedule_name}, "
+            f"weekends excluded, days split at midnight {zone_name}. Holidays, shutdowns and Saturday shifts are not "
+            "excluded, the first event in the window only starts the clock, and the confidence intervals are approximate."
+        )
 
     def load_saved_weibull_analysis(
         self,
@@ -5134,14 +5588,14 @@ class LifeDataService:
         if grouping_level == "FAILURE_MECHANISM" and failure_mechanism_id is None:
             raise ValueError("Failure-mechanism Weibull analysis requires a selected failure mechanism.")
         population_mechanism_id = failure_mechanism_id if grouping_level == "FAILURE_MECHANISM" else None
-        # One snapshot for all five reads below. An editor rerunning this same population
+        # One snapshot for every read below. An editor rerunning this same population
         # deletes its dataset, run, KM points, curve points and observations and inserts
         # replacements, so reading them in separate implicit transactions could pair the
         # old result row with the new run's (or no) graph and table data.
         with self.read_transaction() as conn:
             population = conn.execute(
                 """
-                SELECT modeled_population_id, population_name, grouping_level_used
+                SELECT modeled_population_id
                 FROM modeled_population
                 WHERE asset_number = ? AND failure_mode_id = ?
                   AND ((failure_mechanism_id IS NULL AND ? IS NULL) OR failure_mechanism_id = ?)
@@ -5155,11 +5609,7 @@ class LifeDataService:
             # "the latest saved Weibull result" for the same populations.
             result = conn.execute(
                 """
-                SELECT wr.weibull_result_id, wr.weibull_analysis_run_id, war.analysis_dataset_id,
-                       wr.beta_mle, wr.eta_mle, wr.beta_lower_ci, wr.beta_upper_ci,
-                       wr.eta_lower_ci, wr.eta_upper_ci, wr.failure_count, wr.censored_count,
-                       wr.total_observation_count, wr.mean_time_to_failure, wr.engineering_interpretation,
-                       ad.analysis_name
+                SELECT wr.weibull_result_id
                 FROM weibull_result wr
                 JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
                 JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
@@ -5171,77 +5621,183 @@ class LifeDataService:
             ).fetchone()
             if result is None:
                 return None
-            run_id = int(result["weibull_analysis_run_id"])
-            km_points = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT ordered_index, life_hours, at_risk_count, failure_count_at_time,
-                           censored_count_at_time, survival_estimate, cdf_estimate, reliability_estimate,
-                           weibull_plot_x, weibull_plot_y
-                    FROM kaplan_meier_point
-                    WHERE weibull_analysis_run_id = ?
-                    ORDER BY ordered_index, kaplan_meier_point_id
-                    """,
-                    (run_id,),
-                ).fetchall()
-            ]
-            curve_points = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT life_hours, cdf, reliability, pdf, hazard_rate
-                    FROM weibull_curve_point
-                    WHERE weibull_analysis_run_id = ?
-                    ORDER BY life_hours, weibull_curve_point_id
-                    """,
-                    (run_id,),
-                ).fetchall()
-            ]
-            observation_views = [
-                dict(row)
-                for row in conn.execute(
-                    f"""
-                    {_WEIBULL_OBSERVATION_SELECT}
-                    JOIN analysis_dataset_member adm ON adm.weibull_observation_id = wo.weibull_observation_id
-                    WHERE adm.analysis_dataset_id = ? AND wo.is_usable = 1
-                    ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
-                    """,
-                    (int(result["analysis_dataset_id"]),),
-                ).fetchall()
-            ]
-        for index, observation in enumerate(observation_views, start=1):
+            return self._load_weibull_view(conn, int(result["weibull_result_id"]))
+
+    def _load_weibull_view(self, conn: sqlite3.Connection, result_id: int) -> AnalysisResultView | None:
+        """One saved Weibull result as the page and the report show it, read through ``conn``.
+
+        Everything is read back, nothing recomputed, so a fresh run, the read-back a
+        viewer opens and the Word report describe the same fit identically. None when
+        the result no longer exists (its group was run again since).
+        """
+
+        row = conn.execute(
+            """
+            SELECT wr.weibull_result_id, wr.weibull_analysis_run_id, wr.beta_mle, wr.eta_mle,
+                   wr.beta_lower_ci, wr.beta_upper_ci, wr.eta_lower_ci, wr.eta_upper_ci,
+                   wr.failure_count, wr.censored_count, wr.total_observation_count,
+                   wr.mean_time_to_failure, wr.b10_life, wr.b50_life, wr.engineering_interpretation,
+                   war.run_datetime, war.software_version, war.code_version,
+                   ad.analysis_dataset_id, ad.asset_number, ad.analysis_name, ad.analysis_cutoff_datetime,
+                   ad.analysis_start_datetime, ad.analysis_cutoff_source, ad.schedule_class_id,
+                   ad.schedule_time_zone, ad.schedule_time_zone_warning,
+                   lb.life_basis_code, lb.life_basis_name,
+                   mp.modeled_population_id, mp.population_name, mp.grouping_level_used, mp.fallback_rationale
+            FROM weibull_result wr
+            JOIN weibull_analysis_run war ON war.weibull_analysis_run_id = wr.weibull_analysis_run_id
+            JOIN analysis_dataset ad ON ad.analysis_dataset_id = war.analysis_dataset_id
+            LEFT JOIN life_basis lb ON lb.life_basis_id = ad.life_basis_id
+            LEFT JOIN modeled_population mp ON mp.modeled_population_id = ad.modeled_population_id
+            WHERE wr.weibull_result_id = ?
+            """,
+            (result_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        run_id = int(row["weibull_analysis_run_id"])
+        dataset_id = int(row["analysis_dataset_id"])
+        km_points = [
+            dict(point)
+            for point in conn.execute(
+                """
+                SELECT ordered_index, life_hours, at_risk_count, failure_count_at_time,
+                       censored_count_at_time, survival_estimate, cdf_estimate, reliability_estimate,
+                       weibull_plot_x, weibull_plot_y
+                FROM kaplan_meier_point
+                WHERE weibull_analysis_run_id = ?
+                ORDER BY ordered_index, kaplan_meier_point_id
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+        curve_points = [
+            dict(point)
+            for point in conn.execute(
+                """
+                SELECT life_hours, cdf, reliability, pdf, hazard_rate
+                FROM weibull_curve_point
+                WHERE weibull_analysis_run_id = ?
+                ORDER BY life_hours, weibull_curve_point_id
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+        observations = [
+            dict(observation)
+            for observation in conn.execute(
+                f"""
+                {_WEIBULL_OBSERVATION_SELECT}
+                JOIN analysis_dataset_member adm ON adm.weibull_observation_id = wo.weibull_observation_id
+                WHERE adm.analysis_dataset_id = ? AND wo.is_usable = 1
+                ORDER BY wo.life_hours_for_weibull, wo.weibull_observation_id
+                """,
+                (dataset_id,),
+            ).fetchall()
+        ]
+        for index, observation in enumerate(observations, start=1):
             observation["ordered_index"] = index
 
+        # Datasets saved before the schedule was recorded on them still have it on
+        # each of their observations.
+        schedule_class_id = row["schedule_class_id"]
+        if schedule_class_id is None:
+            first = conn.execute(
+                """
+                SELECT wo.schedule_class_id FROM weibull_observation wo
+                JOIN analysis_dataset_member adm ON adm.weibull_observation_id = wo.weibull_observation_id
+                WHERE adm.analysis_dataset_id = ? AND wo.schedule_class_id IS NOT NULL
+                LIMIT 1
+                """,
+                (dataset_id,),
+            ).fetchone()
+            schedule_class_id = first["schedule_class_id"] if first else None
+        schedule = (
+            conn.execute(
+                "SELECT schedule_class_code, schedule_class_name, hours_per_day, exclude_weekends FROM asset_schedule_class WHERE schedule_class_id = ?",
+                (schedule_class_id,),
+            ).fetchone()
+            if schedule_class_id is not None
+            else None
+        )
+        life_basis = {
+            "code": row["life_basis_code"],
+            "name": row["life_basis_name"],
+            "schedule_code": schedule["schedule_class_code"] if schedule else None,
+            "schedule_name": schedule["schedule_class_name"] if schedule else None,
+            "hours_per_day": schedule["hours_per_day"] if schedule else None,
+            "exclude_weekends": bool(schedule["exclude_weekends"]) if schedule else None,
+            # Runs before the zone was recorded split days at midnight UTC.
+            "time_zone": row["schedule_time_zone"] or "UTC",
+            "time_zone_warning": row["schedule_time_zone_warning"],
+        }
+        events: list[dict[str, Any]] = []
+        if row["modeled_population_id"] is not None:
+            events = [
+                dict(event)
+                for event in conn.execute(
+                    """
+                    SELECT ep.event_processing_id, ep.event_role, ep.is_failure_event, ep.is_pm_reset_event,
+                           ep.weibull_sequence_number, ep.completed_date_raw, ep.completed_date_parsed,
+                           ep.date_parse_status, ep.previous_same_population_date, ep.weibull_life_note,
+                           ep.data_quality_assumption_flag,
+                           m.mapped_record_id, m.task_id, m.task_name
+                    FROM event_processing_record ep
+                    LEFT JOIN mapped_cmms_record m ON m.mapped_record_id = ep.mapped_record_id
+                    WHERE ep.asset_number = ? AND ep.modeled_population_id = ?
+                    ORDER BY ep.completed_date_parsed IS NULL, ep.completed_date_parsed, ep.event_processing_id
+                    """,
+                    (row["asset_number"], int(row["modeled_population_id"])),
+                ).fetchall()
+            ]
+
         try:
-            interpretation_summary = json.loads(result["engineering_interpretation"]) if result["engineering_interpretation"] else []
+            interpretation_summary = json.loads(row["engineering_interpretation"]) if row["engineering_interpretation"] else []
         except (ValueError, TypeError):
             interpretation_summary = []
         if not isinstance(interpretation_summary, list):
             interpretation_summary = []
 
-        analysis_name = str(result["analysis_name"] or "")
+        analysis_name = str(row["analysis_name"] or "")
         label_prefix = "Weibull Analysis - "
         analysis_label = analysis_name[len(label_prefix):] if analysis_name.startswith(label_prefix) else analysis_name
+        failure_count = int(row["failure_count"] or 0)
+        method_version = row["code_version"]
         return AnalysisResultView(
-            run_id,
-            int(result["weibull_result_id"]),
-            result["beta_mle"],
-            result["eta_mle"],
-            int(result["failure_count"] or 0),
-            int(result["censored_count"] or 0),
-            int(result["total_observation_count"] or 0),
-            km_points,
-            curve_points,
-            observation_views,
-            analysis_label or population["population_name"] or f"{asset_number} failure group",
-            population["grouping_level_used"] or grouping_level,
-            result["beta_lower_ci"],
-            result["beta_upper_ci"],
-            result["eta_lower_ci"],
-            result["eta_upper_ci"],
-            result["mean_time_to_failure"],
-            interpretation_summary,
+            run_id=run_id,
+            result_id=int(row["weibull_result_id"]),
+            beta_mle=row["beta_mle"],
+            eta_mle=row["eta_mle"],
+            failure_count=failure_count,
+            censored_count=int(row["censored_count"] or 0),
+            total_observation_count=int(row["total_observation_count"] or 0),
+            km_points=km_points,
+            curve_points=curve_points,
+            observations=observations,
+            analysis_label=analysis_label or row["population_name"] or f"{row['asset_number']} failure group",
+            grouping_level=row["grouping_level_used"] or "",
+            beta_lower_ci=row["beta_lower_ci"],
+            beta_upper_ci=row["beta_upper_ci"],
+            eta_lower_ci=row["eta_lower_ci"],
+            eta_upper_ci=row["eta_upper_ci"],
+            mean_time_to_failure=row["mean_time_to_failure"],
+            interpretation_summary=interpretation_summary,
+            asset_number=str(row["asset_number"] or ""),
+            b10_life=row["b10_life"],
+            b50_life=row["b50_life"],
+            analysis_start=row["analysis_start_datetime"],
+            analysis_cutoff=row["analysis_cutoff_datetime"],
+            analysis_cutoff_source=row["analysis_cutoff_source"],
+            life_basis=life_basis,
+            events=events,
+            pm_reset_censored_count=sum(1 for obs in observations if obs["observation_type"] == "PM_RESET_CENSORED_LIFE"),
+            current_life_censored_count=sum(1 for obs in observations if obs["observation_type"] == "RIGHT_CENSORED_LIFE"),
+            run_datetime=row["run_datetime"],
+            method_version=method_version,
+            software_version=row["software_version"],
+            method_current=method_version == WEIBULL_METHOD_VERSION,
+            meets_minimum=failure_count >= MIN_WEIBULL_FAILURE_LIVES,
+            min_failure_lives=MIN_WEIBULL_FAILURE_LIVES,
+            fallback_rationale=row["fallback_rationale"],
         )
 
     def _get_or_create_population(self, conn: sqlite3.Connection, asset_number: str) -> int:
@@ -5274,28 +5830,49 @@ class LifeDataService:
         return str(asset_number).strip() in WEEKDAY_24H_ASSET_NUMBERS
 
     @staticmethod
-    def _scheduled_life_hours(start: datetime, end: datetime, hours_per_day: float, *, exclude_weekends: bool = True) -> tuple[float, float, float]:
+    def _scheduled_life_hours(
+        start: datetime,
+        end: datetime,
+        hours_per_day: float,
+        *,
+        exclude_weekends: bool = True,
+        tz: tzinfo | None = None,
+    ) -> tuple[float, float, float]:
         """Return scheduled life hours plus excluded weekend and non-run hours.
 
         Schedule-adjusted Weibull life is based on weekday scheduled time. A full
         included weekday contributes ``hours_per_day`` hours; partial weekdays are
-        prorated across the 24-hour calendar day. Weekend time is excluded when
-        requested.
+        prorated across the calendar day. Weekend time is excluded when requested.
+
+        Days are split at midnight in ``tz`` -- the plant's time zone, because that is
+        the clock its machines run by -- and default to UTC. Each segment's length is
+        taken between UTC instants, so the day the clocks change is the 23 or 25 hours
+        it really was rather than a wall-clock 24.
         """
 
-        if end <= start:
+        zone = tz or timezone.utc
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        current = start.astimezone(timezone.utc)
+        stop = end.astimezone(timezone.utc)
+        if stop <= current:
             return 0.0, 0.0, 0.0
         hours_per_day = max(0.0, min(24.0, float(hours_per_day)))
         scheduled_hours = 0.0
         excluded_weekend_hours = 0.0
         excluded_non_run_hours = 0.0
-        current = start
-        while current < end:
-            next_midnight = datetime.combine(current.date() + timedelta(days=1), time.min, tzinfo=current.tzinfo)
-            segment_end = min(end, next_midnight)
+        while current < stop:
+            local = current.astimezone(zone)
+            next_midnight = datetime.combine(local.date() + timedelta(days=1), time.min, tzinfo=zone).astimezone(timezone.utc)
+            if next_midnight <= current:
+                # Only a zone whose clocks skip midnight itself could land here; an
+                # hour's step still moves the count on rather than looping forever.
+                next_midnight = current + timedelta(hours=1)
+            segment_end = min(stop, next_midnight)
             raw_hours = (segment_end - current).total_seconds() / 3600.0
-            is_weekend = current.weekday() >= 5
-            if exclude_weekends and is_weekend:
+            if exclude_weekends and local.weekday() >= 5:
                 excluded_weekend_hours += raw_hours
             else:
                 segment_scheduled = raw_hours * (hours_per_day / 24.0)
@@ -5304,25 +5881,123 @@ class LifeDataService:
             current = segment_end
         return scheduled_hours, excluded_weekend_hours, excluded_non_run_hours
 
-    def _refresh_event_processing(
+    def _plant_time_zone(self, conn: sqlite3.Connection) -> tuple[tzinfo, str, str | None]:
+        """The zone life-hour days are split in: (zone, its name, why not the plant's if it fell back).
+
+        The plant's zone is the one the Availability card judges months by, stored in
+        ``availability_settings`` (America/Chicago until someone changes it). A zone
+        that cannot be loaded falls back to UTC, and says so, rather than failing the
+        analysis: hours that may be off by the zone's offset at each weekend are worth
+        knowing about, not worth refusing to compute.
+        """
+
+        name = DEFAULT_TIMEZONE
+        if self._table_exists(conn, "availability_settings") and self._column_exists(conn, "availability_settings", "timezone"):
+            row = conn.execute("SELECT timezone FROM availability_settings WHERE id = 1").fetchone()
+            if row is not None and row[0] and str(row[0]).strip():
+                name = str(row[0]).strip()
+        try:
+            return ZoneInfo(name), name, None
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            pass
+        try:
+            ZoneInfo("UTC")
+        except Exception:
+            reason = (
+                f"the time zone database is unavailable, so '{name}' could not be loaded "
+                "(install the 'tzdata' package: pip install -r requirements.txt)"
+            )
+        else:
+            reason = f"'{name}' is not a recognised time zone (set a valid IANA name such as 'America/Chicago')"
+        return timezone.utc, "UTC", f"Days were split at midnight UTC rather than plant time because {reason}."
+
+    def _last_completed_import_at(self, conn: sqlite3.Connection) -> datetime | None:
+        """When the last Limble import that finished successfully completed, if one is recorded."""
+
+        if not self._table_exists(conn, "import_batch") or not self._column_exists(conn, "import_batch", "import_completed_at"):
+            return None
+        if self._column_exists(conn, "import_batch", "status"):
+            rows = conn.execute(
+                "SELECT import_completed_at FROM import_batch "
+                "WHERE UPPER(TRIM(status)) = 'COMPLETED' AND import_completed_at IS NOT NULL"
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT import_completed_at FROM import_batch WHERE import_completed_at IS NOT NULL").fetchall()
+        latest = None
+        for row in rows:
+            completed = self._parse_datetime(row[0])
+            if completed is not None and (latest is None or completed > latest):
+                latest = completed
+        return latest
+
+    @staticmethod
+    def _plant_midnight(day: date, zone: tzinfo) -> datetime:
+        """The first instant of ``day`` on the plant's clock, in UTC."""
+
+        return datetime.combine(day, time.min, tzinfo=zone).astimezone(timezone.utc)
+
+    def _resolve_analysis_window(
+        self,
+        conn: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+        zone: tzinfo,
+        analysis_start: date | None,
+        analysis_cutoff: date | None,
+    ) -> tuple[datetime | None, datetime, str]:
+        """The (start, cutoff, cutoff source) a run builds its lives in, all in UTC.
+
+        A cutoff date runs to the end of that plant day, or to now if that is sooner.
+        Without one, the cutoff is the last completed Limble import, provided it is
+        later than every event: censoring at the moment of the run would credit the
+        current life with hours the database has no news of yet, and a failure in
+        them would be missed. Data newer than the last import means its record is no
+        guide, and the moment of the run is used, as before.
+        """
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        today = now.astimezone(zone).date()
+        if analysis_start is not None and analysis_start > today:
+            raise ValueError("The analysis start date can't be later than today.")
+        if analysis_cutoff is not None:
+            if analysis_cutoff > today:
+                raise ValueError("The analysis cutoff date can't be later than today.")
+            cutoff = min(now, self._plant_midnight(analysis_cutoff + timedelta(days=1), zone))
+            source = "USER"
+        else:
+            latest_event = max(
+                (when for when in (self._parse_datetime(row["completed_date_final"]) for row in rows) if when is not None),
+                default=None,
+            )
+            last_import = self._last_completed_import_at(conn)
+            if last_import is not None:
+                last_import = last_import.replace(microsecond=0)
+            if last_import is not None and last_import <= now and (latest_event is None or last_import >= latest_event):
+                cutoff, source = last_import, "LAST_IMPORT"
+            else:
+                cutoff, source = now, "NOW"
+        start = self._plant_midnight(analysis_start, zone) if analysis_start is not None else None
+        if start is not None and start >= cutoff:
+            raise ValueError("The analysis start date has to be before the cutoff.")
+        return start, cutoff, source
+
+    def _population_event_rows(
         self,
         conn: sqlite3.Connection,
         asset_number: str,
-        population_id: int,
         *,
         grouping_level: str,
         failure_mode_id: int,
-        failure_mechanism_id: int | None = None,
-    ) -> None:
-        self._delete_population_weibull_artifacts(conn, population_id)
-        conn.execute("DELETE FROM event_processing_record WHERE asset_number = ? AND modeled_population_id = ?", (asset_number, population_id))
-        population_row = conn.execute(
-            "SELECT population_name FROM modeled_population WHERE modeled_population_id = ?",
-            (population_id,),
-        ).fetchone()
-        modeled_population_used = (
-            population_row["population_name"] if population_row and population_row["population_name"] else f"Asset {asset_number}"
-        )
+        failure_mechanism_id: int | None,
+    ) -> list[sqlite3.Row]:
+        """The current dispositions that put an event in this failure group's timeline, in date order.
+
+        Each is dated by its completed date alone, the Weibull chronology field of
+        REL-WBL-DAT-001. Unlike the trend and downtime analyses there is no falling back
+        to the start or created date: a life restarts when the repair is finished, and a
+        work order with no completion date has not restored anything yet. The order is
+        by that date read as a date, not as text, with the ones that have none last.
+        """
+
         if grouping_level == "FAILURE_MECHANISM":
             group_filter = """
                 AND (
@@ -5341,45 +6016,59 @@ class LifeDataService:
                     OR (d.disposition_category = 'INCLUDED_PM_RESET_EVENT' AND d.reset_target_failure_mode_id = :failure_mode_id)
                 )
             """
-        # Completed, else start, else created: the same date the trend, downtime
-        # driver and PM effectiveness analyses give a record. NULLIF(TRIM(...), '')
-        # lets a blank (empty or spaces-only) date fall through to the next one;
-        # picked as it stands, it would fail to parse and drop the event from the
-        # fit even when the next date is usable. Events are ordered by that same
-        # date, read as a date rather than as text (gremlin_sort_datetime), so the
-        # sequence numbers below follow the calendar even for a date an older
-        # import wrote as "1/15/2026 15:00".
-        event_date = """COALESCE(
-                NULLIF(TRIM(m.completed_date_final), ''),
-                NULLIF(TRIM(m.start_date_final), ''),
-                NULLIF(TRIM(m.created_date_final), '')
-            )"""
-        rows = conn.execute(
+        return conn.execute(
             f"""
             SELECT m.*, d.event_disposition_id, d.disposition_category, d.failure_mode_id, d.failure_mechanism_id,
-                   d.reset_target_failure_mode_id, d.reset_target_failure_mechanism_id,
-                   {event_date} AS life_event_date
+                   d.reset_target_failure_mode_id, d.reset_target_failure_mechanism_id
             FROM mapped_cmms_record m
             JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
             WHERE m.asset_number = :asset_number
               AND d.include_in_event_processing = 1
               AND d.include_in_weibull_candidate = 1
               {group_filter}
-            ORDER BY gremlin_sort_datetime({event_date}), m.mapped_record_id
+            ORDER BY gremlin_sort_datetime(m.completed_date_final) IS NULL,
+                     gremlin_sort_datetime(m.completed_date_final),
+                     m.mapped_record_id
             """,
             {"asset_number": asset_number, "failure_mode_id": failure_mode_id, "failure_mechanism_id": failure_mechanism_id},
         ).fetchall()
+
+    def _refresh_event_processing(
+        self,
+        conn: sqlite3.Connection,
+        asset_number: str,
+        population_id: int,
+        *,
+        rows: list[sqlite3.Row],
+        grouping_level: str,
+        analysis_start: datetime | None,
+        analysis_cutoff: datetime,
+    ) -> dict[str, int]:
+        """Rebuild REL-WBL-DAT-004's event processing table for a failure group.
+
+        Every event the group's dispositions offer gets a row, including the ones left
+        out of the timeline -- no completed date, a date that cannot be read, or a date
+        outside the analysis window -- each with the DAT-004 §11 note that says why, so
+        the fit's inputs can be traced back to every record behind them. Returns how
+        many events landed where, for the message that explains a refused fit.
+        """
+
+        self._delete_population_weibull_artifacts(conn, population_id)
+        conn.execute("DELETE FROM event_processing_record WHERE asset_number = ? AND modeled_population_id = ?", (asset_number, population_id))
+        population_row = conn.execute(
+            "SELECT population_name FROM modeled_population WHERE modeled_population_id = ?",
+            (population_id,),
+        ).fetchone()
+        modeled_population_used = (
+            population_row["population_name"] if population_row and population_row["population_name"] else f"Asset {asset_number}"
+        )
+        counts = {"included": 0, "included_failures": 0, "missing_date": 0, "unparseable_date": 0, "before_start": 0, "after_cutoff": 0}
         previous_id = None
         previous_date = None
         sequence = 0
         for row in rows:
-            parsed = self._parse_datetime(row["life_event_date"])
-            if not parsed:
-                continue
-            sequence += 1
             is_failure = row["disposition_category"] == "INCLUDED_FAILURE"
             is_pm_reset = row["disposition_category"] == "INCLUDED_PM_RESET_EVENT"
-            role = "FAILURE_EVENT" if is_failure else "PM_RESET_EVENT" if is_pm_reset else "TRACEABILITY_ONLY"
             event_failure_mode_id = row["failure_mode_id"] or row["reset_target_failure_mode_id"]
             event_failure_mechanism_id = row["failure_mechanism_id"] or row["reset_target_failure_mechanism_id"]
             if event_failure_mode_id is not None and not conn.execute("SELECT 1 FROM failure_mode WHERE failure_mode_id = ? AND is_active = 1", (event_failure_mode_id,)).fetchone():
@@ -5388,42 +6077,151 @@ class LifeDataService:
                 if grouping_level == "FAILURE_MECHANISM":
                     raise ValueError(f"A current disposition references deleted failure mechanism id {event_failure_mechanism_id}. Re-save the affected disposition before running Weibull analysis.")
                 event_failure_mechanism_id = None
-            event_id = conn.execute(
+            raw_date = row["completed_date_final"]
+            parsed = self._parse_datetime(raw_date)
+            record = {
+                "row": row,
+                "population_id": population_id,
+                "asset_number": asset_number,
+                "failure_mode_id": event_failure_mode_id,
+                "failure_mechanism_id": event_failure_mechanism_id,
+                "grouping_level": grouping_level,
+                "modeled_population_used": modeled_population_used,
+                "is_failure": is_failure,
+                "is_pm_reset": is_pm_reset,
+            }
+            excluded_note = None
+            if parsed is None:
+                blank = not str(raw_date or "").strip()
+                counts["missing_date" if blank else "unparseable_date"] += 1
+                self._insert_event_processing_record(
+                    conn,
+                    record,
+                    role="EXCLUDED_EVENT",
+                    parsed=None,
+                    parse_status="MISSING" if blank else "UNPARSEABLE",
+                    note="Excluded - missing completed date" if blank else "Excluded - date parse issue",
+                )
+                continue
+            if analysis_start is not None and parsed < analysis_start:
+                counts["before_start"] += 1
+                excluded_note = "Excluded - before analysis start date"
+            elif parsed > analysis_cutoff:
+                counts["after_cutoff"] += 1
+                excluded_note = "Excluded - after analysis cutoff"
+            if excluded_note is not None:
+                self._insert_event_processing_record(conn, record, role="EXCLUDED_EVENT", parsed=parsed, parse_status="PARSED", note=excluded_note)
+                continue
+            sequence += 1
+            if previous_id is None:
+                note = (
+                    "Initial occurrence - no prior comparable start point available"
+                    if is_failure
+                    else "PM reset - starts the first life; no prior comparable start point available"
+                )
+            elif is_failure:
+                note = "Failure - ends the life from the previous event and starts the next"
+            else:
+                note = "PM reset - censors the running life and starts the next"
+            event_id = self._insert_event_processing_record(
+                conn,
+                record,
+                role="FAILURE_EVENT" if is_failure else "PM_RESET_EVENT" if is_pm_reset else "TRACEABILITY_ONLY",
+                parsed=parsed,
+                parse_status="PARSED",
+                note=note,
+                sequence=sequence,
+                previous_id=previous_id,
+                previous_date=previous_date,
+                valid_start=is_failure or is_pm_reset,
+                # The first event opens the first life and closes none.
+                valid_end=is_failure and previous_id is not None,
+            )
+            counts["included"] += 1
+            counts["included_failures"] += int(is_failure)
+            previous_id = event_id
+            previous_date = parsed.isoformat()
+        return counts
+
+    @staticmethod
+    def _insert_event_processing_record(
+        conn: sqlite3.Connection,
+        record: dict[str, Any],
+        *,
+        role: str,
+        parsed: datetime | None,
+        parse_status: str,
+        note: str,
+        sequence: int | None = None,
+        previous_id: int | None = None,
+        previous_date: str | None = None,
+        valid_start: bool = False,
+        valid_end: bool = False,
+    ) -> int:
+        row = record["row"]
+        return int(
+            conn.execute(
                 """
                 INSERT INTO event_processing_record(mapped_record_id, event_disposition_id, modeled_population_id, asset_number,
                     asset_name, event_role, completed_date_raw, completed_date_parsed, date_parse_status, failure_mode_id,
                     failure_mechanism_id, grouping_level_used, modeled_population_used, weibull_sequence_number,
                     previous_same_population_event_id, previous_same_population_date, is_failure_event, is_pm_reset_event,
                     is_valid_life_start, is_valid_life_end, weibull_life_note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PARSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["mapped_record_id"],
                     row["event_disposition_id"],
-                    population_id,
-                    asset_number,
+                    record["population_id"],
+                    record["asset_number"],
                     row["asset_name"],
                     role,
                     row["completed_date_final"],
-                    parsed.isoformat(),
-                    event_failure_mode_id,
-                    event_failure_mechanism_id,
-                    grouping_level,
-                    modeled_population_used,
+                    parsed.isoformat() if parsed is not None else None,
+                    parse_status,
+                    record["failure_mode_id"],
+                    record["failure_mechanism_id"],
+                    record["grouping_level"],
+                    record["modeled_population_used"],
                     sequence,
                     previous_id,
                     previous_date,
-                    int(is_failure),
-                    int(is_pm_reset),
-                    int(is_failure or is_pm_reset),
-                    int(is_failure),
-                    "Current user disposition included this event for REL processing.",
+                    int(record["is_failure"]),
+                    int(record["is_pm_reset"]),
+                    int(valid_start),
+                    int(valid_end),
+                    note,
                 ),
             ).lastrowid
-            previous_id = event_id
-            previous_date = parsed.isoformat()
+        )
 
-    def _refresh_observations(self, conn: sqlite3.Connection, asset_number: str, population_id: int, life_basis_id: int, schedule_class_id: int, cutoff: str) -> list[int]:
+    @staticmethod
+    def _duplicate_check_flag(raw_hours: float) -> str | None:
+        """The DAT-004 §12 duplicate-review flag for a life this short, or None."""
+
+        if raw_hours < DUPLICATE_CHECK_RAW_HOURS:
+            return f"Check for duplicate - completed within {DUPLICATE_CHECK_RAW_HOURS:g} hour of the event before it"
+        return None
+
+    def _refresh_observations(
+        self,
+        conn: sqlite3.Connection,
+        asset_number: str,
+        population_id: int,
+        life_basis_id: int,
+        schedule_class_id: int,
+        cutoff: datetime,
+        zone: tzinfo | None = None,
+    ) -> list[int]:
+        """Turn the event processing table into the lives the fit is run on.
+
+        Each life runs from one event to the next, and its note is DAT-004 §11's: a
+        complete life from a prior failure or from a PM reset, an interval censored at
+        a PM reset, or the current life censored at the cutoff. An interval with no
+        scheduled hours in it gets no life; its closing event says so and still starts
+        the next one.
+        """
+
         self._delete_population_weibull_artifacts(conn, population_id)
         conn.execute("DELETE FROM weibull_observation WHERE asset_number = ? AND modeled_population_id = ?", (asset_number, population_id))
         events = conn.execute(
@@ -5441,6 +6239,7 @@ class LifeDataService:
         ).fetchone()
         hours_per_day = float(schedule["hours_per_day"] if schedule and schedule["hours_per_day"] is not None else DEFAULT_WEEKDAY_SCHEDULE_HOURS_PER_DAY)
         exclude_weekends = bool(schedule["exclude_weekends"] if schedule else 1)
+        cutoff_text = cutoff.isoformat()
         ids: list[int] = []
         previous_event = None
         previous_date = None
@@ -5455,17 +6254,28 @@ class LifeDataService:
                     event_date,
                     hours_per_day,
                     exclude_weekends=exclude_weekends,
+                    tz=zone,
                 )
+                duplicate_flag = self._duplicate_check_flag(raw_hours)
                 if scheduled_hours > 0:
-                    observation_type = "COMPLETED_FAILURE_LIFE" if event["is_failure_event"] else "PM_RESET_CENSORED_LIFE"
+                    if event["is_failure_event"]:
+                        observation_type = "COMPLETED_FAILURE_LIFE"
+                        note = (
+                            "Valid completed life from PM reset event"
+                            if previous_event["is_pm_reset_event"]
+                            else "Valid completed life from prior same-population event"
+                        )
+                    else:
+                        observation_type = "PM_RESET_CENSORED_LIFE"
+                        note = "Censored interval ended by PM reset event"
                     obs_id = conn.execute(
                         """
                         INSERT INTO weibull_observation(modeled_population_id, asset_number, start_event_processing_id,
                             end_event_processing_id, observation_type, censoring_type, start_datetime, end_datetime,
                             analysis_cutoff_datetime, life_basis_id, schedule_class_id, life_hours_raw_elapsed,
                             excluded_weekend_hours, excluded_schedule_non_run_hours, life_hours_for_weibull,
-                            failure_indicator, is_right_censored, is_usable, weibull_life_note)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                            failure_indicator, is_right_censored, is_usable, weibull_life_note, data_quality_assumption_flag)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                         """,
                         (
                             population_id,
@@ -5476,7 +6286,7 @@ class LifeDataService:
                             None if event["is_failure_event"] else "RIGHT",
                             previous_date.isoformat(),
                             event_date.isoformat(),
-                            cutoff,
+                            cutoff_text,
                             life_basis_id,
                             schedule_class_id,
                             raw_hours,
@@ -5485,22 +6295,46 @@ class LifeDataService:
                             scheduled_hours,
                             int(event["is_failure_event"]),
                             int(not event["is_failure_event"]),
-                            "Scheduled life interval between current valid life-start event and this end/reset event.",
+                            note,
+                            duplicate_flag,
                         ),
                     ).lastrowid
                     ids.append(int(obs_id))
+                    if duplicate_flag:
+                        conn.execute(
+                            "UPDATE event_processing_record SET data_quality_assumption_flag = ? WHERE event_processing_id = ?",
+                            (duplicate_flag, event["event_processing_id"]),
+                        )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE event_processing_record
+                        SET weibull_life_note = ?, is_valid_life_end = 0, data_quality_assumption_flag = ?
+                        WHERE event_processing_id = ?
+                        """,
+                        (
+                            "Excluded - no scheduled hours since the previous event; still starts the next life",
+                            duplicate_flag,
+                            event["event_processing_id"],
+                        ),
+                    )
             previous_event = event
             previous_date = event_date
         if previous_date is not None and previous_event is not None:
-            cutoff_dt = self._parse_datetime(cutoff) or datetime.now(timezone.utc)
-            raw_hours = (cutoff_dt - previous_date).total_seconds() / 3600.0
+            raw_hours = (cutoff - previous_date).total_seconds() / 3600.0
             scheduled_hours, excluded_weekend_hours, excluded_non_run_hours = self._scheduled_life_hours(
                 previous_date,
-                cutoff_dt,
+                cutoff,
                 hours_per_day,
                 exclude_weekends=exclude_weekends,
+                tz=zone,
             )
             if scheduled_hours > 0:
+                note = (
+                    "PM reset censor to analysis cutoff date"
+                    if previous_event["is_pm_reset_event"]
+                    else "Censored interval to analysis cutoff date"
+                )
                 obs_id = conn.execute(
                     """
                     INSERT INTO weibull_observation(modeled_population_id, asset_number, start_event_processing_id,
@@ -5510,7 +6344,7 @@ class LifeDataService:
                         is_right_censored, is_usable, weibull_life_note)
                     VALUES (?, ?, ?, 'RIGHT_CENSORED_LIFE', 'RIGHT', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, ?)
                     """,
-                    (population_id, asset_number, previous_event["event_processing_id"], previous_date.isoformat(), cutoff, life_basis_id, schedule_class_id, raw_hours, excluded_weekend_hours, excluded_non_run_hours, scheduled_hours, "Right-censored scheduled life from last valid start/reset/failure event to analysis cutoff."),
+                    (population_id, asset_number, previous_event["event_processing_id"], previous_date.isoformat(), cutoff_text, life_basis_id, schedule_class_id, raw_hours, excluded_weekend_hours, excluded_non_run_hours, scheduled_hours, note),
                 ).lastrowid
                 ids.append(int(obs_id))
         return ids
@@ -5556,11 +6390,21 @@ class LifeDataService:
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
     def _fit_weibull_2p(self, data: list[tuple[float, int]]) -> tuple[float, float, float]:
+        """The maximum-likelihood beta and eta for ``data``, and the log-likelihood there.
+
+        Beta is the root of the profile score (equation W8 on the Standards page),
+        bracketed on a grid over 0.1 to 20 and then bisected. With no root in that
+        range there is no maximum-likelihood beta to report, so this raises rather
+        than substitute an estimate of another kind under the MLE's name (REL-WBL-MTH-001
+        §5.5 makes beta and eta MLEs). That happens when the lives are all but identical
+        -- often duplicate work orders -- or too few to locate a peak.
+        """
+
         failures = [t for t, failed in data if failed]
         all_times = [t for t, _ in data]
         d = len(failures)
         if d == 0:
-            raise ValueError("Cannot fit Weibull without failures.")
+            raise WeibullFitError("Cannot fit Weibull without failures.")
         mean_log_fail = sum(math.log(t) for t in failures) / d
 
         def score(beta: float) -> float:
@@ -5580,16 +6424,19 @@ class LifeDataService:
                 break
             prev_x, prev_y = x, y
         if bracket is None:
-            beta = max(0.1, min(20.0, 1.2 / (self._coefficient_of_variation(failures) or 1.0)))
-        else:
-            a, b = bracket
-            for _ in range(80):
-                mid = (a + b) / 2
-                if score(a) * score(mid) <= 0:
-                    b = mid
-                else:
-                    a = mid
-            beta = (a + b) / 2
+            raise WeibullFitError(
+                "The maximum-likelihood fit did not converge: no beta between 0.1 and 20 maximises the "
+                "likelihood of these lives. That usually means the lives are nearly identical (check the "
+                "data table for duplicate work orders) or too few to fit, so no Weibull result was saved."
+            )
+        a, b = bracket
+        for _ in range(80):
+            mid = (a + b) / 2
+            if score(a) * score(mid) <= 0:
+                b = mid
+            else:
+                a = mid
+        beta = (a + b) / 2
         eta = (sum(t**beta for t in all_times) / d) ** (1 / beta)
         ll = sum(math.log(beta) - beta * math.log(eta) + (beta - 1) * math.log(t) for t in failures) - sum((t / eta) ** beta for t in all_times)
         return beta, eta, ll
@@ -5710,14 +6557,6 @@ class LifeDataService:
         if (eta_hi - eta_lo) / eta <= 0.4:
             return "The interval is reasonably tight, so eta is stable enough to use for planning comparisons, maintenance timing discussions, and communication with stakeholders."
         return "The interval is wide, so avoid pretending there is a precise intervention point. Use eta as directional guidance only, and consider tightening the population or collecting more data before converting it into a hard decision."
-
-    def _coefficient_of_variation(self, values: list[float]) -> float | None:
-        if not values:
-            return None
-        mean = sum(values) / len(values)
-        if mean <= 0:
-            return None
-        return (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5 / mean
 
     def _kaplan_meier_points(self, data: list[tuple[float, int]]) -> list[dict[str, Any]]:
         grouped: dict[float, dict[str, int]] = {}

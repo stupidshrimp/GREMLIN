@@ -1514,7 +1514,8 @@ SEARCH_ENTRIES = [
         "context": "Standards and Documentation",
         "keywords": [
             "beta", "eta", "mle", "likelihood", "censored", "life hours", "kaplan meier",
-            "b10", "b50", "mttf", "confidence interval",
+            "b10", "b50", "mttf", "confidence interval", "analysis cutoff", "analysis window",
+            "event processing", "minimum failures", "reliability at age", "duplicate check",
         ],
     },
     {
@@ -2684,8 +2685,25 @@ def api_perform_analysis():
         grouping_level=grouping_level,
         failure_mode_id=int(failure_mode_id),
         failure_mechanism_id=int(failure_mechanism_id) if failure_mechanism_id is not None else None,
+        analysis_start=_optional_plant_date(payload.get("analysis_start"), "analysis start date"),
+        analysis_cutoff=_optional_plant_date(payload.get("analysis_cutoff"), "analysis cutoff date"),
     )
     return jsonify({"result": _serialize_analysis_result(result)})
+
+
+def _optional_plant_date(value, what: str) -> date | None:
+    """An optional YYYY-MM-DD date from a JSON payload; blank means "not set".
+
+    It names a day on the plant's calendar, which the service turns into that day's
+    first or last minute in the plant's time zone.
+    """
+
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError:
+        raise LifeDataApiError(f"The {what} must be a date in the form YYYY-MM-DD.", status_code=400) from None
 
 
 @app.route("/life-data-analysis/api/saved-analysis")
