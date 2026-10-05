@@ -870,7 +870,9 @@
         el("li", {
           text:
             `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
-            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h)` +
+            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h` +
+            (row.probability_plot_r_squared != null ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}` : "") +
+            ")" +
             (row.method_current === false ? " — saved under an earlier method; run it again" : ""),
         })
       );
@@ -4227,6 +4229,17 @@
     return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
   }
 
+  // The probability plot's R²: how straight its Kaplan-Meier failure points lie. It
+  // checks the model rather than being part of the fit, so adjusting beta and eta
+  // leaves it where it is.
+  function fitCheckText(result) {
+    const r2 = Number(result.probability_plot_r_squared);
+    if (result.probability_plot_r_squared == null || !isFinite(r2)) {
+      return "Probability plot R²: not available (fewer than three distinct failure points).";
+    }
+    return `Probability plot R² ${r2.toFixed(3)}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
+  }
+
   // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
   function lifeMetricsText(result) {
     const part = (label, hours) => {
@@ -4455,6 +4468,7 @@
         el("span", { class: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
         el("span", { class: "lda-hint", text: confidenceIntervalText(result) }),
         metrics ? el("span", { class: "lda-hint", text: metrics }) : null,
+        el("span", { class: "lda-hint", text: fitCheckText(result) }),
       ]),
       el("div", { class: "lda-result-context" }, resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
       ...notices.map((notice) => el("p", { class: "lda-banner is-warning", role: "note", text: notice })),
@@ -4473,7 +4487,7 @@
       }),
       agePanel.node,
       panel("Results Interpretation Summary", buildInterpretationTable(result),
-        "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
+        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals for the fitted Weibull parameters, and the probability plot R²."),
       panel("Weibull Data Used for Graphs", dataTable.node,
 
         "Rows are the lives included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +

@@ -3,8 +3,8 @@
     card per analysis type.
 
     The Weibull worked example was run through LifeDataService's own fitting,
-    interval and Kaplan-Meier code, so its numbers are the ones GREMLIN would
-    show for the same five intervals. -#}
+    interval, Kaplan-Meier and probability-plot R² code, so its numbers are the
+    ones GREMLIN would show for the same five intervals. -#}
 <article class="tab-panel" id="analysis" role="tabpanel" aria-labelledby="analysis-tab" hidden>
   <header class="std-panel-head">
     <div>
@@ -723,7 +723,36 @@
         <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
         <li><strong>The Weibull data table</strong> under the charts lists each life with its type, its life hours, the raw elapsed hours between its two events and the weekend and non-run hours taken out of them (REL-WBL-DAT-004 §5), its note, and the duplicate check. The <strong>event processing table</strong> under it, closed until opened, lists every event behind those lives, including the ones left out and why.</li>
       </ul>
-      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide.") %}
+      <p>
+        How straight the points lie is measured by the probability plot's
+        <strong>R²</strong>: the squared correlation of the plotted points,
+        which is also the R² of the least-squares line through them
+        (REL-WBL-REQ-001 VV-070). It is 1 when they sit exactly on a line. It
+        checks the model, not the fit: β and η come from equation W8, not from
+        a line through these points, so adjusting them leaves R² where it is.
+      </p>
+      {% call std.equation("W15", "R squared is the squared sum of products of the plotted points' deviations from their means, over the product of the sums of their squared deviations") %}
+      <math display="block">
+        <msup><mi>R</mi><mn>2</mn></msup><mo>=</mo>
+        <mfrac>
+          <msup><mrow><mo>[</mo><munder><mo>&#x2211;</mo><mi>j</mi></munder><mo stretchy="false">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo>&#x2212;</mo><mover accent="true"><mi>x</mi><mo>&#xAF;</mo></mover><mo stretchy="false">)</mo><mo stretchy="false">(</mo><msub><mi>y</mi><mi>j</mi></msub><mo>&#x2212;</mo><mover accent="true"><mi>y</mi><mo>&#xAF;</mo></mover><mo stretchy="false">)</mo><mo>]</mo></mrow><mn>2</mn></msup>
+          <mrow><munder><mo>&#x2211;</mo><mi>j</mi></munder><msup><mrow><mo stretchy="false">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo>&#x2212;</mo><mover accent="true"><mi>x</mi><mo>&#xAF;</mo></mover><mo stretchy="false">)</mo></mrow><mn>2</mn></msup><mspace width="0.3em"></mspace><munder><mo>&#x2211;</mo><mi>j</mi></munder><msup><mrow><mo stretchy="false">(</mo><msub><mi>y</mi><mi>j</mi></msub><mo>&#x2212;</mo><mover accent="true"><mi>y</mi><mo>&#xAF;</mo></mover><mo stretchy="false">)</mo></mrow><mn>2</mn></msup></mrow>
+        </mfrac>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>x</mi><mi>j</mi></msub><mo>,</mo><msub><mi>y</mi><mi>j</mi></msub></math></dt><dd>The points on the probability plot, equation W14 at each age where a complete life ends. A point the plot cannot draw, with an estimate of 0, is left out here too.</dd>
+        <dt><math><mover accent="true"><mi>x</mi><mo>&#xAF;</mo></mover><mo>,</mo><mover accent="true"><mi>y</mi><mo>&#xAF;</mo></mover></math></dt><dd>Their averages. With fewer than three points R² is not shown, because two points always lie on a line.</dd>
+      </dl>
+      <p>
+        GREMLIN sets no pass mark for R², so read it with the plot. A low
+        value, a bend or two different slopes usually means the population
+        mixes mechanisms, a life is missing its real start point, or a work
+        order is a duplicate: review the population before acting on β
+        (VV-074). R² is shown with the results, in the interpretation summary
+        and the report, and beside each fit in the Highest-beta list.
+      </p>
+      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide. Among themselves the points are very nearly straight: their R², equation W15, is 0.990.") %}
       <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
         <title id="fig-w4-title">Weibull probability plot of the worked example</title>
         <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Five points at 310, 520, 640, 760 and 980 hours run roughly parallel to and a little above a straight fitted line with slope 2.74 that crosses 63.2 percent unreliability at 847 hours.</desc>
@@ -761,8 +790,9 @@
     <section class="std-section" id="weibull-interpretation">
       <h4>Reading the result</h4>
       <p>
-        The Results Interpretation Summary turns β, η, MTTF and the two
-        intervals into recommendations with these rules:
+        The Results Interpretation Summary turns β, η, MTTF, the two
+        intervals and the probability plot's R² into recommendations with these
+        rules:
       </p>
       <div class="std-table-scroll">
         <table class="std-table">
@@ -779,6 +809,7 @@
             <tr><td>β interval wider than 0.3, not crossing 1.0</td><td>Treat with caution</td><td>Check whether the population mixes mechanisms, the data is weak, or there are still too few failures before choosing a strategy.</td></tr>
             <tr><td>η interval width at most 40% of η</td><td>Stable η</td><td>Usable for planning comparisons and timing discussions.</td></tr>
             <tr><td>η interval wider than that</td><td>Directional only</td><td>Tighten the population or collect more data before treating η as a decision point.</td></tr>
+            <tr><td>Probability plot R², equation W15</td><td>How straight the plotted points lie; no fixed pass mark</td><td>Read it with the plot. A low value, a bend or two slopes calls for a review of the population before acting on β.</td></tr>
           </tbody>
         </table>
       </div>
@@ -818,6 +849,7 @@
           <li><span>640 h: 4 at risk, 1 failure</span><span>0.686 × (1 − 1/4) = <span class="std-result">0.514</span></span></li>
           <li><span>760 h: 3 at risk, 1 failure</span><span>0.514 × (1 − 1/3) = <span class="std-result">0.343</span></span></li>
           <li><span>980 h: 2 at risk, 1 failure</span><span>0.343 × (1 − 1/2) = <span class="std-result">0.171</span></span></li>
+          <li><span>R² of the five points, equation W15</span><span class="std-result">0.990</span></li>
         </ul>
       </div>
       <div class="std-example">
@@ -833,9 +865,10 @@
         </ul>
       </div>
       <p>
-        <strong>Reading it:</strong> β = 2.74 is above 1.1, which points to
-        wear-out, and with five failures its interval, 1.35 to 5.56, stays above
-        1.0. It is still far wider than 0.3, though, so the pattern is to be
+        <strong>Reading it:</strong> the five points lie close to a line
+        (R² = 0.990), so the plot gives no sign of a mixed population.
+        β = 2.74 is above 1.1, which points to wear-out, and with five failures
+        its interval, 1.35 to 5.56, stays above 1.0. It is still far wider than 0.3, though, so the pattern is to be
         treated with caution, and η's interval is 65% of η, too wide to set a PM
         interval from. A PM every 400 hours would leave about 12% failing before
         it. The honest conclusion is "wearing out, most likely; collect more

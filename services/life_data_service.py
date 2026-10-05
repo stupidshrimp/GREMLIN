@@ -56,6 +56,10 @@ WEIBULL_METHOD_VERSION = "life-data-v2"
 # than dropped: a genuine repeat failure is real repair-quality information.
 DUPLICATE_CHECK_RAW_HOURS = 1.0
 
+# The interpretation-summary row for the probability plot's R² (REL-WBL-REQ-001
+# VV-070, VV-074), by which a saved summary that predates it is recognised.
+R_SQUARED_METRIC = "Probability plot R²"
+
 _CODE_VERSION: str | None = None
 
 
@@ -558,6 +562,9 @@ class AnalysisResultView:
     asset_number: str = ""
     b10_life: float | None = None
     b50_life: float | None = None
+    # How straight the probability plot's Kaplan-Meier failure points lie (squared
+    # correlation in Weibull coordinates): a check on the model, not the fit.
+    probability_plot_r_squared: float | None = None
     # The window the lives were built in: the start (None = all history), the
     # cutoff the current life is censored at, and what set the cutoff -- USER, the
     # LAST_IMPORT from Limble, or NOW (no import was recorded later than the data).
@@ -1111,6 +1118,7 @@ class LifeDataService:
                     mean_time_to_failure REAL,
                     b10_life REAL,
                     b50_life REAL,
+                    probability_plot_r_squared REAL,
                     fit_quality_notes TEXT,
                     engineering_interpretation TEXT,
                     recommended_action TEXT,
@@ -1277,6 +1285,10 @@ class LifeDataService:
             }.items():
                 if not self._column_exists(conn, "analysis_dataset", column):
                     conn.execute(f"ALTER TABLE analysis_dataset ADD COLUMN {column} {ddl}")
+        if self._table_exists(conn, "weibull_result") and not self._column_exists(conn, "weibull_result", "probability_plot_r_squared"):
+            # Results saved before R² was stored read back NULL; the result view works
+            # it out from their stored Kaplan-Meier points instead.
+            conn.execute("ALTER TABLE weibull_result ADD COLUMN probability_plot_r_squared REAL")
         if self._table_exists(conn, "failure_mechanism") and self._column_exists(conn, "failure_mechanism", "failure_mode_id"):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_failure_mechanism_failure_mode ON failure_mechanism(failure_mode_id)")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_failure_mechanism_name_mode ON failure_mechanism(failure_mechanism_name, failure_mode_id)")
@@ -1869,6 +1881,7 @@ class LifeDataService:
                         wr.eta_mle,
                         wr.failure_count,
                         wr.censored_count,
+                        wr.probability_plot_r_squared,
                         war.run_datetime,
                         war.code_version,
                         ROW_NUMBER() OVER (
@@ -1890,6 +1903,7 @@ class LifeDataService:
                     lr.eta_mle,
                     lr.failure_count,
                     lr.censored_count,
+                    lr.probability_plot_r_squared,
                     lr.run_datetime,
                     lr.code_version
                 FROM latest_result lr
@@ -1917,6 +1931,8 @@ class LifeDataService:
                 "eta_mle": float(row["eta_mle"]),
                 "failure_count": int(row["failure_count"] or 0),
                 "censored_count": int(row["censored_count"] or 0),
+                # NULL for a fit saved before R² was stored; running it again fills it in.
+                "probability_plot_r_squared": row["probability_plot_r_squared"],
                 "run_datetime": row["run_datetime"],
                 "method_version": row["code_version"],
                 "method_current": row["code_version"] == WEIBULL_METHOD_VERSION,
@@ -3724,6 +3740,12 @@ class LifeDataService:
             ["B50 life (median)", hours_with_weeks(result.get("b50_life"))],
             ["Beta 95% confidence interval", beta_ci],
             ["Eta 95% confidence interval", eta_ci],
+            [
+                "Probability plot R²",
+                f"{float(result['probability_plot_r_squared']):.3f} (how straight the plotted failure points lie; a check on the model, not the fit)"
+                if result.get("probability_plot_r_squared") is not None
+                else "Not available (fewer than three distinct failure points)",
+            ],
         ]
         if target_age_hours is not None:
             try:
@@ -5423,7 +5445,11 @@ class LifeDataService:
             if refusal is None:
                 beta_lo, beta_hi, eta_lo, eta_hi = self._weibull_confidence_intervals(data, beta, eta)
                 mean_time_to_failure = eta * math.gamma(1 + 1 / beta)
-                interpretation_summary = self._weibull_interpretation_summary(beta, eta, mean_time_to_failure, beta_lo, beta_hi, eta_lo, eta_hi)
+                km_points = self._kaplan_meier_points(data)
+                r_squared = self._probability_plot_r_squared(km_points)
+                interpretation_summary = self._weibull_interpretation_summary(
+                    beta, eta, mean_time_to_failure, beta_lo, beta_hi, eta_lo, eta_hi, r_squared
+                )
                 schedule = conn.execute(
                     "SELECT schedule_class_name FROM asset_schedule_class WHERE schedule_class_id = ?",
                     (schedule_class_id,),
@@ -5457,7 +5483,6 @@ class LifeDataService:
                     "INSERT INTO weibull_analysis_run(analysis_dataset_id, software_version, code_version, notes) VALUES (?, ?, ?, ?)",
                     (dataset_id, gremlin_code_version(), WEIBULL_METHOD_VERSION, "2P Weibull MLE with right-censored observations for selected failure group."),
                 ).lastrowid
-                km_points = self._kaplan_meier_points(data)
                 conn.executemany(
                     """
                     INSERT INTO kaplan_meier_point(weibull_analysis_run_id, ordered_index, life_hours, at_risk_count,
@@ -5492,8 +5517,8 @@ class LifeDataService:
                     """
                     INSERT INTO weibull_result(weibull_analysis_run_id, beta_mle, eta_mle, beta_lower_ci, beta_upper_ci, eta_lower_ci, eta_upper_ci,
                         log_likelihood, aic, bic, failure_count, censored_count, total_observation_count, mean_time_to_failure, b10_life, b50_life,
-                        fit_quality_notes, engineering_interpretation, recommended_action, limitations)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        probability_plot_r_squared, fit_quality_notes, engineering_interpretation, recommended_action, limitations)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -5512,7 +5537,9 @@ class LifeDataService:
                         mean_time_to_failure,
                         eta * (-math.log(0.90)) ** (1 / beta),
                         eta * (math.log(2)) ** (1 / beta),
-                        "2P Weibull MLE with right-censored observations; approximate 95% Fisher-matrix intervals.",
+                        r_squared,
+                        "2P Weibull MLE with right-censored observations; approximate 95% Fisher-matrix intervals; "
+                        "probability-plot R² of the Kaplan-Meier failure points.",
                         json.dumps(interpretation_summary),
                         interpretation_summary[0]["recommendation"] if interpretation_summary else "Review the Weibull fit before selecting a maintenance strategy.",
                         self._weibull_limitations_text(schedule["schedule_class_name"] if schedule else "the weekday schedule", zone_name),
@@ -5636,7 +5663,8 @@ class LifeDataService:
             SELECT wr.weibull_result_id, wr.weibull_analysis_run_id, wr.beta_mle, wr.eta_mle,
                    wr.beta_lower_ci, wr.beta_upper_ci, wr.eta_lower_ci, wr.eta_upper_ci,
                    wr.failure_count, wr.censored_count, wr.total_observation_count,
-                   wr.mean_time_to_failure, wr.b10_life, wr.b50_life, wr.engineering_interpretation,
+                   wr.mean_time_to_failure, wr.b10_life, wr.b50_life, wr.probability_plot_r_squared,
+                   wr.engineering_interpretation,
                    war.run_datetime, war.software_version, war.code_version,
                    ad.analysis_dataset_id, ad.asset_number, ad.analysis_name, ad.analysis_cutoff_datetime,
                    ad.analysis_start_datetime, ad.analysis_cutoff_source, ad.schedule_class_id,
@@ -5756,6 +5784,14 @@ class LifeDataService:
             interpretation_summary = []
         if not isinstance(interpretation_summary, list):
             interpretation_summary = []
+        # Results saved before R² was stored still have the plot points it comes from.
+        r_squared = row["probability_plot_r_squared"]
+        if r_squared is None:
+            r_squared = self._probability_plot_r_squared(km_points)
+        if interpretation_summary and not any(
+            isinstance(item, dict) and item.get("metric") == R_SQUARED_METRIC for item in interpretation_summary
+        ):
+            interpretation_summary.append(self._r_squared_interpretation_row(r_squared))
 
         analysis_name = str(row["analysis_name"] or "")
         label_prefix = "Weibull Analysis - "
@@ -5784,6 +5820,7 @@ class LifeDataService:
             asset_number=str(row["asset_number"] or ""),
             b10_life=row["b10_life"],
             b50_life=row["b50_life"],
+            probability_plot_r_squared=r_squared,
             analysis_start=row["analysis_start_datetime"],
             analysis_cutoff=row["analysis_cutoff_datetime"],
             analysis_cutoff_source=row["analysis_cutoff_source"],
@@ -6511,6 +6548,7 @@ class LifeDataService:
         beta_hi: float | None,
         eta_lo: float | None,
         eta_hi: float | None,
+        r_squared: float | None = None,
     ) -> list[dict[str, str]]:
         rows = [
             {"metric": "Beta", "value": f"{beta:.4g}", "recommendation": self._beta_recommendation(beta)},
@@ -6525,7 +6563,24 @@ class LifeDataService:
             rows.append({"metric": "Eta 95% CI", "value": f"{eta_lo:.4g} to {eta_hi:.4g} hours", "recommendation": self._eta_ci_recommendation(eta_lo, eta_hi, eta)})
         else:
             rows.append({"metric": "Eta 95% CI", "value": "Not available", "recommendation": "The eta confidence interval could not be estimated from this dataset. Use eta directionally only until the fit and underlying data are reviewed."})
+        rows.append(self._r_squared_interpretation_row(r_squared))
         return rows
+
+    @staticmethod
+    def _r_squared_interpretation_row(r_squared: float | None) -> dict[str, str]:
+        """The interpretation row for the probability-plot R² (REL-WBL-REQ-001 VV-070, VV-074)."""
+
+        if r_squared is None:
+            return {
+                "metric": R_SQUARED_METRIC,
+                "value": "Not available",
+                "recommendation": "There are fewer than three distinct failure points on the probability plot, so how straight they lie cannot be judged. Rely on engineering review of the records behind the fit.",
+            }
+        return {
+            "metric": R_SQUARED_METRIC,
+            "value": f"{r_squared:.3f}",
+            "recommendation": "How straight the plotted failure points lie, from 0 to 1: a check that the failures look like one Weibull population, not part of the fit. There is no fixed pass mark, so read it with the probability plot. A low value, a bend, or two different slopes usually means mixed mechanisms, a missed start point, or a duplicate work order: review the population before acting on beta.",
+        }
 
     def _beta_recommendation(self, beta: float) -> str:
         if beta < 0.9:
@@ -6595,6 +6650,35 @@ class LifeDataService:
                 )
             at_risk -= failures + censored
         return points
+
+    @staticmethod
+    def _probability_plot_r_squared(km_points: list[dict[str, Any]]) -> float | None:
+        """How straight the probability plot's points lie: their squared correlation.
+
+        The points are the Kaplan-Meier failure points in Weibull coordinates, x = ln t
+        and y = ln(-ln R), exactly the ones the probability plot draws (REL-WBL-MTH-001
+        §5.6, §6). Their squared correlation is also the R² of the least-squares line
+        through them, the standard probability-plot R². It checks whether the data look
+        like one Weibull population; it is not the fit, so it does not depend on beta and
+        eta and adjusting them leaves it alone (REL-WBL-REQ-001 VV-070). None with fewer
+        than three points, since two always lie on a line.
+        """
+
+        points = [
+            (float(point["weibull_plot_x"]), float(point["weibull_plot_y"]))
+            for point in km_points
+            if point.get("weibull_plot_x") is not None and point.get("weibull_plot_y") is not None
+        ]
+        if len(points) < 3:
+            return None
+        mean_x = sum(x for x, _ in points) / len(points)
+        mean_y = sum(y for _, y in points) / len(points)
+        sxx = sum((x - mean_x) ** 2 for x, _ in points)
+        syy = sum((y - mean_y) ** 2 for _, y in points)
+        sxy = sum((x - mean_x) * (y - mean_y) for x, y in points)
+        if sxx <= 0 or syy <= 0:
+            return None
+        return min(1.0, (sxy * sxy) / (sxx * syy))
 
     def _curve_points(self, beta: float, eta: float, max_time: float) -> list[dict[str, float]]:
         upper = max(max_time * 1.15, eta * 1.25, 1.0)

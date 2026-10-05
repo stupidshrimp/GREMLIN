@@ -13,11 +13,16 @@ Each test pins one rule to the document that sets it:
 * each run is stamped with its method version, and a result saved under an earlier
   one, or below the minimum, is neither ranked nor reported;
 * a report carries REL-WBL-MTH-001 §10's contents, and a failure-mode report the
-  reason a mechanism was not fitted (REL-WBL-PLN-003 §8).
+  reason a mechanism was not fitted (REL-WBL-PLN-003 §8);
+* every fit reports its probability plot's R², the squared correlation of the
+  Kaplan-Meier failure points in Weibull coordinates (REL-WBL-REQ-001 VV-070,
+  VV-078).
 """
 
 import importlib
+import json
 import sqlite3
+import statistics
 import tempfile
 import unittest
 import zipfile
@@ -400,6 +405,87 @@ class ReportTests(_Seeded):
         with self.assertRaisesRegex(ValueError, "earlier version"):
             self._report_text({"result_id": result.result_id})
         self.assertEqual(self._report_count(), 0)
+
+
+class ProbabilityPlotRSquaredTests(_Seeded):
+    @staticmethod
+    def _points(xys):
+        return [{"weibull_plot_x": x, "weibull_plot_y": y} for x, y in xys]
+
+    def test_r_squared_is_the_squared_correlation_of_the_plotted_points(self):
+        lives = [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (760.0, 1), (640.0, 1), (1050.0, 0)]
+        km = self.service._kaplan_meier_points(lives)
+        drawn = [(p["weibull_plot_x"], p["weibull_plot_y"]) for p in km if p["weibull_plot_y"] is not None]
+
+        r_squared = LifeDataService._probability_plot_r_squared(km)
+
+        self.assertAlmostEqual(r_squared, statistics.correlation(*zip(*drawn)) ** 2, places=12)
+        self.assertAlmostEqual(r_squared, 0.990, places=3)
+        # Points on a line give exactly 1, whatever the line.
+        self.assertAlmostEqual(
+            LifeDataService._probability_plot_r_squared(self._points([(5.0, -2.0), (6.0, -0.5), (7.0, 1.0), (8.0, 2.5)])), 1.0
+        )
+
+    def test_points_the_plot_cannot_draw_are_left_out_and_two_points_are_not_enough(self):
+        # A Kaplan-Meier estimate of 0 has no place on the plot (y is None), so not in R² either.
+        on_a_line = self._points([(5.0, -2.0), (6.0, -1.0), (7.0, 0.0), (8.0, None)])
+        self.assertAlmostEqual(LifeDataService._probability_plot_r_squared(on_a_line), 1.0)
+        self.assertIsNone(LifeDataService._probability_plot_r_squared(self._points([(5.0, -2.0), (6.0, -1.0), (7.0, None)])))
+        self.assertIsNone(LifeDataService._probability_plot_r_squared(self._points([(5.0, -2.0), (5.0, -1.0), (5.0, 0.0)])))
+
+    def test_a_run_saves_r_squared_and_shows_it_everywhere_the_fit_is_read(self):
+        self._add_all(MONTHLY)
+
+        result = self._perform()
+
+        expected = LifeDataService._probability_plot_r_squared(result.km_points)
+        self.assertIsNotNone(expected)
+        self.assertAlmostEqual(result.probability_plot_r_squared, expected, places=12)
+        self.assertAlmostEqual(self._saved().probability_plot_r_squared, expected, places=12)
+        [row] = [row for row in result.interpretation_summary if row["metric"] == "Probability plot R²"]
+        self.assertEqual(row["value"], f"{expected:.3f}")
+        self.assertIn("not part of the fit", row["recommendation"])
+        [ranked] = self.service.latest_failure_mechanism_beta_rankings("A-1")
+        self.assertAlmostEqual(ranked["probability_plot_r_squared"], expected, places=12)
+
+    def test_a_result_saved_before_r_squared_was_stored_works_it_out_from_its_points(self):
+        self._add_all(MONTHLY)
+        result = self._perform()
+        with sqlite3.connect(self.service.db_path) as conn:
+            summary = [row for row in result.interpretation_summary if row["metric"] != "Probability plot R²"]
+            conn.execute(
+                "UPDATE weibull_result SET probability_plot_r_squared = NULL, engineering_interpretation = ?",
+                (json.dumps(summary),),
+            )
+
+        saved = self._saved()
+
+        self.assertAlmostEqual(saved.probability_plot_r_squared, result.probability_plot_r_squared, places=12)
+        self.assertEqual(saved.interpretation_summary[-1]["metric"], "Probability plot R²")
+        self.assertIsNone(self.service.latest_failure_mechanism_beta_rankings("A-1")[0]["probability_plot_r_squared"])
+
+    def test_an_existing_database_gets_the_column(self):
+        path = self.tmp / "older.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE weibull_result (weibull_result_id INTEGER PRIMARY KEY, weibull_analysis_run_id INTEGER NOT NULL, "
+                "beta_mle REAL, eta_mle REAL, b10_life REAL, b50_life REAL, created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            )
+        LifeDataService(path, refresh_on_startup=False)
+        with sqlite3.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(weibull_result)")}
+        self.assertIn("probability_plot_r_squared", columns)
+
+    def test_the_report_states_r_squared(self):
+        self._add_all(MONTHLY)
+        result = self._perform()
+        path = self.tmp / "report.docx"
+        self.service.build_weibull_report_docx("A-1", {"result_id": result.result_id}, path)
+        root = ET.fromstring(zipfile.ZipFile(path).read("word/document.xml"))
+        cells = ["".join(t.text or "" for t in tc.iter(f"{WORD}t")) for tc in root.iter(f"{WORD}tc")]
+
+        index = cells.index("Probability plot R²")
+        self.assertTrue(cells[index + 1].startswith(f"{result.probability_plot_r_squared:.3f} ("), cells[index + 1])
 
 
 def test_the_run_endpoint_takes_a_window_and_rejects_a_bad_date(monkeypatch, tmp_path):

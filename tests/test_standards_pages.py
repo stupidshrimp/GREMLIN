@@ -316,6 +316,15 @@ def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
     for shown in ("0.857", "0.686", "0.514", "0.343", "0.171"):
         assert shown in standards, shown
 
+    # The probability plot's R² of those five points (equation W15), where the page states it.
+    r_squared = LifeDataService._probability_plot_r_squared(service._kaplan_meier_points(lives))
+    for shown in (
+        f'R² of the five points, equation W15</span><span class="std-result">{r_squared:.3f}</span>',
+        f"their R², equation W15, is {r_squared:.3f}",
+        f"(R² = {r_squared:.3f})",
+    ):
+        assert shown in standards, shown
+
     # Reliability at the 400-hour age the example evaluates, and MTTF in calendar
     # weeks on the 20-hour schedule (100 life hours a week).
     reliability = math.exp(-((400 / eta) ** beta))
