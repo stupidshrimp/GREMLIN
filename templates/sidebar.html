@@ -86,8 +86,12 @@
           </span>
         </button>
         {%- else %}
-        {# title= gives the icon a tooltip once the label is hidden in the collapsed state. #}
-        <a href="{{ link.url }}" title="{{ link.label }}{% if link.coming_soon %} — {{ coming_soon_label }}{% endif %}" class="{% if request.path == link.url %}active{% endif %}">
+        {# title= gives the icon a tooltip once the label is hidden in the collapsed state.
+           An entry is also active on the pages underneath it, so Standards and
+           Documentation stays lit on the Standards and Documentation pages that
+           its landing page opens. Home is left out of that by its own address:
+           every path starts with "/", but none starts with "//". #}
+        <a href="{{ link.url }}" title="{{ link.label }}{% if link.coming_soon %} ({{ coming_soon_label }}){% endif %}" class="{% if request.path == link.url or request.path.startswith(link.url ~ '/') %}active{% endif %}">
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
           {%- if link.coming_soon %}{{ coming_soon_badge() }}{% endif %}
