@@ -321,7 +321,7 @@ def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
     for shown in (
         f'R² of the five points, equation W15</span><span class="std-result">{r_squared:.3f}</span>',
         f"their R², equation W15, is {r_squared:.3f}",
-        f"(R² = {r_squared:.3f})",
+        f"(R² = {r_squared:.3f}, above the",
     ):
         assert shown in standards, shown
 
@@ -333,10 +333,13 @@ def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
     assert f"about {weeks:.1f} calendar weeks on the 20-hour schedule" in standards
 
     # The reading the page gives: wear-out by beta, an interval clear of 1 but wider
-    # than 0.3 (treat with caution), and an eta interval wider than 40% of eta.
-    assert beta > 1.1 and 1 < beta_lo and beta_hi - beta_lo > 0.3
+    # than 70% of beta (treat with caution), and an eta interval wider than 40% of eta.
+    assert beta > 1.1 and 1 < beta_lo and beta_hi - beta_lo > 0.7 * beta
+    assert f"It is still {round(100 * (beta_hi - beta_lo) / beta)}% of β, though, far wider than 70%" in standards
     assert (eta_hi - eta_lo) / eta > 0.4
     assert f"{round(100 * (eta_hi - eta_lo) / eta)}% of η" in standards
+    # And its R² against the review threshold for five failure lives.
+    assert f"above the {LifeDataService.r_squared_review_threshold(5):.3f} review threshold for five failures" in standards
 
     # And what the page says of the example cut off after its third complete life:
     # under the minimum, with a beta interval that crossed 1.
@@ -346,6 +349,15 @@ def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
     short_lo, short_hi, _, _ = service._weibull_confidence_intervals(shorter, short_beta, short_eta)
     assert short_lo < 1 < short_hi
     assert f"{short_lo:.2f} to {short_hi:.2f}" in standards
+
+
+def test_the_r_squared_thresholds_shown_are_gremlins(standards):
+    """The review-threshold table on the Weibull card is the one GREMLIN flags fits by."""
+    from services.life_data_service import LifeDataService
+
+    row = re.search(r"Review below R² of</th>(.*?)</tr>", standards, re.S).group(1)
+    shown = [float(value) for value in re.findall(r">([0-9.]+)</td>", row)]
+    assert shown == [round(LifeDataService.r_squared_review_threshold(n), 3) for n in (5, 10, 15, 20, 30, 50, 100, 200)]
 
 
 def test_the_life_hours_figure_is_what_gremlin_counts(standards):

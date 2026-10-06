@@ -16,11 +16,20 @@ Each test pins one rule to the document that sets it:
   reason a mechanism was not fitted (REL-WBL-PLN-003 §8);
 * every fit reports its probability plot's R², the squared correlation of the
   Kaplan-Meier failure points in Weibull coordinates (REL-WBL-REQ-001 VV-070,
-  VV-078).
+  VV-078), flagged for review below the value 90% of genuine Weibull samples of
+  its size reach (VV-074);
+* an interval counts as stable by its width relative to its estimate (REL-WBL-MTH-001 §8);
+* a PM reset restarts only what it restores (REL-WBL-DAT-004 §7);
+* life hours are counted on the asset's schedule in the Weibull schedule register,
+  the plant default otherwise, and a result counted on a schedule the asset has
+  left says so (REL-WBL-DAT-003 §7);
+* the asset's mechanisms are ranked by beta and by the chance of failing in the
+  next few weeks (REL-WBL-MTH-001 §8).
 """
 
 import importlib
 import json
+import math
 import sqlite3
 import statistics
 import tempfile
@@ -33,6 +42,7 @@ from zoneinfo import ZoneInfo
 
 from services.life_data_service import (
     MIN_WEIBULL_FAILURE_LIVES,
+    R_SQUARED_REVIEW_THRESHOLDS,
     WEIBULL_METHOD_VERSION,
     LifeDataService,
     WeibullFitError,
@@ -444,7 +454,9 @@ class ProbabilityPlotRSquaredTests(_Seeded):
         self.assertAlmostEqual(self._saved().probability_plot_r_squared, expected, places=12)
         [row] = [row for row in result.interpretation_summary if row["metric"] == "Probability plot R²"]
         self.assertEqual(row["value"], f"{expected:.3f}")
-        self.assertIn("not part of the fit", row["recommendation"])
+        threshold = LifeDataService.r_squared_review_threshold(result.failure_count)
+        self.assertEqual(result.probability_plot_r_squared_threshold, threshold)
+        self.assertIn(f"{threshold:.3f}, the R² that 90% of genuine Weibull samples with {result.failure_count} failures reach", row["recommendation"])
         [ranked] = self.service.latest_failure_mechanism_beta_rankings("A-1")
         self.assertAlmostEqual(ranked["probability_plot_r_squared"], expected, places=12)
 
@@ -476,6 +488,32 @@ class ProbabilityPlotRSquaredTests(_Seeded):
             columns = {row[1] for row in conn.execute("PRAGMA table_info(weibull_result)")}
         self.assertIn("probability_plot_r_squared", columns)
 
+    def test_the_review_threshold_rises_with_the_failure_count_and_can_be_regenerated(self):
+        table = [value for _, value in R_SQUARED_REVIEW_THRESHOLDS]
+        self.assertEqual(table, sorted(table))
+        self.assertAlmostEqual(LifeDataService.r_squared_review_threshold(5), 0.806)
+        self.assertAlmostEqual(LifeDataService.r_squared_review_threshold(11), (0.846 + 0.861) / 2)
+        self.assertAlmostEqual(LifeDataService.r_squared_review_threshold(500), 0.976)
+        # The table is what the documented simulation gives; a smaller run of it lands close.
+        for failures, value in ((5, 0.806), (20, 0.893)):
+            self.assertAlmostEqual(LifeDataService.simulated_r_squared_threshold(failures, samples=4000, seed=7), value, delta=0.01)
+
+    def test_a_fit_below_the_threshold_is_flagged_for_review(self):
+        self._add_all(MONTHLY)
+        self._perform()
+        self.assertFalse(self._saved().probability_plot_review)
+        with sqlite3.connect(self.service.db_path) as conn:
+            conn.execute("UPDATE weibull_result SET probability_plot_r_squared = 0.5")
+
+        saved = self._saved()
+        [ranked] = self.service.latest_failure_mechanism_beta_rankings("A-1")
+
+        self.assertTrue(saved.probability_plot_review)
+        self.assertTrue(ranked["probability_plot_review"])
+        row = LifeDataService._r_squared_interpretation_row(0.5, saved.failure_count)
+        self.assertTrue(row["recommendation"].startswith(f"Below {saved.probability_plot_r_squared_threshold:.3f}"))
+        self.assertIn("Review the population before acting on beta", row["recommendation"])
+
     def test_the_report_states_r_squared(self):
         self._add_all(MONTHLY)
         result = self._perform()
@@ -485,7 +523,208 @@ class ProbabilityPlotRSquaredTests(_Seeded):
         cells = ["".join(t.text or "" for t in tc.iter(f"{WORD}t")) for tc in root.iter(f"{WORD}tc")]
 
         index = cells.index("Probability plot R²")
-        self.assertTrue(cells[index + 1].startswith(f"{result.probability_plot_r_squared:.3f} ("), cells[index + 1])
+        self.assertTrue(cells[index + 1].startswith(f"{result.probability_plot_r_squared:.3f}: "), cells[index + 1])
+        self.assertIn(
+            f"Meets {result.probability_plot_r_squared_threshold:.3f}, the review threshold for {result.failure_count} failures.",
+            cells[index + 1],
+        )
+
+
+class PmResetScopeTests(_Seeded):
+    """A PM reset restarts only what it restores (REL-WBL-DAT-004 §7)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        with self.service.write_connection() as conn:
+            self.other_mechanism_id = int(
+                conn.execute(
+                    "INSERT INTO failure_mechanism (failure_mechanism_name, failure_mode_id) VALUES ('Valve sticking', ?)",
+                    (self.mode_id,),
+                ).lastrowid
+            )
+
+    def _add_pm(self, task_id: str, completed: str, *, mechanism_id: int | None) -> None:
+        """A PM reset aimed at the mode and, unless ``mechanism_id`` is None, one mechanism under it."""
+
+        mapped_id = self._add(task_id, completed, pm=True)
+        with self.service.write_connection() as conn:
+            conn.execute(
+                "UPDATE event_disposition SET reset_target_failure_mechanism_id = ? WHERE mapped_record_id = ?",
+                (mechanism_id, mapped_id),
+            )
+
+    def _timeline_tasks(self, result) -> set[str]:
+        return {event["task_id"] for event in result.events if event["weibull_sequence_number"] is not None}
+
+    def test_a_mode_wide_pm_restarts_every_mechanism_under_the_mode(self):
+        self._add_all(MONTHLY)
+        self._add_pm("PM-MODE", _utc(2025, 4, 10, 9), mechanism_id=None)
+
+        mechanism = self._perform()
+        mode = self._perform(mode_level=True)
+
+        self.assertIn("PM-MODE", self._timeline_tasks(mechanism))
+        self.assertEqual(mechanism.pm_reset_censored_count, 1)
+        self.assertIn("PM-MODE", self._timeline_tasks(mode))
+
+    def test_a_pm_aimed_at_one_mechanism_restarts_that_mechanism_alone(self):
+        self._add_all(MONTHLY)
+        self._add_pm("PM-SEAL", _utc(2025, 4, 10, 9), mechanism_id=self.mechanism_id)
+        self._add_pm("PM-VALVE", _utc(2025, 5, 12, 9), mechanism_id=self.other_mechanism_id)
+
+        mechanism = self._perform()
+        mode = self._perform(mode_level=True)
+
+        self.assertIn("PM-SEAL", self._timeline_tasks(mechanism))
+        self.assertNotIn("PM-VALVE", self._timeline_tasks(mechanism))
+        # The mode's other mechanisms keep ageing through a PM aimed at one of them.
+        self.assertFalse({"PM-SEAL", "PM-VALVE"} & self._timeline_tasks(mode))
+        self.assertEqual(mode.pm_reset_censored_count, 0)
+
+    def test_the_group_picker_counts_resets_by_the_same_rule(self):
+        self._add_all(MONTHLY)
+        self._add_pm("PM-MODE", _utc(2025, 4, 10, 9), mechanism_id=None)
+        self._add_pm("PM-SEAL", _utc(2025, 4, 20, 9), mechanism_id=self.mechanism_id)
+
+        options = {(o["grouping_level"], o["failure_mechanism_id"]): o for o in self.service.weibull_group_options("A-1")}
+
+        self.assertEqual(options[("FAILURE_MODE", None)]["reset_count"], 1)
+        self.assertEqual(options[("FAILURE_MECHANISM", self.mechanism_id)]["reset_count"], 2)
+
+    def test_a_mode_wide_pm_reset_is_a_finished_disposition(self):
+        self._add_pm("PM-MODE", _utc(2025, 4, 10, 9), mechanism_id=None)
+
+        self.assertEqual(self.service.disposition_row_count("A-1", "pm", only_needing_disposition=True), 0)
+
+
+class ScheduleRegisterTests(_Seeded):
+    """REL-WBL-DAT-003 §7: the plant default schedule, and the register of assets off it."""
+
+    def test_the_built_in_24_hour_assets_seed_the_register_once(self):
+        register = self.service.weibull_schedule_register()
+
+        self.assertEqual(register["default_code"], "20H_MON_FRI")
+        self.assertEqual([s["code"] for s in register["schedules"]], ["20H_MON_FRI", "24H_MON_FRI", "CONTINUOUS"])
+        self.assertEqual(
+            {(row["asset_number"], row["schedule_code"]) for row in register["assignments"]},
+            {(asset, "24H_MON_FRI") for asset in ("3101", "3102", "3103", "3104", "3105", "3106", "3107", "3154", "3142", "3023", "3253")},
+        )
+        self.assertTrue(all(change["changed_by"] == "GREMLIN" for change in register["history"]))
+        # Emptied on purpose, it stays empty: the change record shows a register was kept.
+        with self.service.write_connection() as conn:
+            conn.execute("DELETE FROM asset_schedule_assignment")
+        self.assertEqual(LifeDataService(self.service.db_path, refresh_on_startup=False).weibull_schedule_register()["assignments"], [])
+
+    def test_life_hours_follow_the_register(self):
+        self._add_all(MONTHLY)
+        self.assertEqual(self._perform().life_basis["schedule_code"], "20H_MON_FRI")
+
+        self.service.set_asset_weibull_schedule("A-1", "CONTINUOUS", reason="Runs through weekends.", changed_by="pat")
+        continuous = self._perform()
+
+        self.assertEqual(continuous.life_basis["schedule_code"], "CONTINUOUS")
+        for obs in continuous.observations:
+            # Every clock hour counts: nothing is taken out.
+            self.assertAlmostEqual(obs["life_hours_for_weibull"], obs["life_hours_raw_elapsed"], places=6)
+            self.assertAlmostEqual(obs["excluded_weekend_hours"], 0.0, places=6)
+
+    def test_a_change_is_recorded_and_flags_saved_results_until_run_again(self):
+        self._add_all(MONTHLY)
+        self._perform()
+
+        register = self.service.set_asset_weibull_schedule("A-1", "24H_MON_FRI", reason="Ops confirmed 3 shifts.", changed_by="pat")
+
+        latest = register["history"][0]
+        self.assertEqual(
+            (latest["asset_number"], latest["from_code"], latest["to_code"], latest["reason"], latest["changed_by"]),
+            ("A-1", "20H_MON_FRI", "24H_MON_FRI", "Ops confirmed 3 shifts.", "pat"),
+        )
+        saved = self._saved()
+        self.assertFalse(saved.schedule_current)
+        self.assertEqual(saved.current_schedule_name, "24 hours Monday-Friday")
+        self.assertFalse(self.service.latest_failure_mechanism_beta_rankings("A-1")[0]["schedule_current"])
+        with self.assertRaisesRegex(ValueError, "now on 24 hours Monday-Friday"):
+            self.service.build_weibull_report_docx("A-1", {"result_id": saved.result_id}, self.tmp / "report.docx")
+        self.assertTrue(self._perform().schedule_current)
+        # Back to the plant default takes the asset off the register.
+        self.service.set_asset_weibull_schedule("A-1", "20H_MON_FRI", reason="Back to two shifts.", changed_by="pat")
+        self.assertNotIn("A-1", {row["asset_number"] for row in self.service.weibull_schedule_register()["assignments"]})
+
+    def test_a_change_needs_a_known_asset_a_listed_schedule_a_reason_and_a_difference(self):
+        self._add_all(MONTHLY)
+        for asset, code, reason, message in (
+            ("NOPE", "24H_MON_FRI", "x", "no Limble records"),
+            ("A-1", "RAW_ELAPSED_ONLY", "x", "listed schedules"),
+            ("A-1", "24H_MON_FRI", "  ", "Say why"),
+            ("A-1", "20H_MON_FRI", "x", "already on that schedule"),
+        ):
+            with self.assertRaisesRegex(ValueError, message):
+                self.service.set_asset_weibull_schedule(asset, code, reason=reason)
+
+
+class RiskRankingTests(_Seeded):
+    """REL-WBL-MTH-001 §8: the chance each mechanism fails in the next few weeks."""
+
+    def test_the_chance_is_conditional_on_the_current_life(self):
+        self._add_all(MONTHLY)
+        result = self._perform(analysis_cutoff=date(2025, 7, 31))
+
+        [four] = self.service.latest_failure_mechanism_risk_rankings("A-1")
+        [eight] = self.service.latest_failure_mechanism_risk_rankings("A-1", weeks=8)
+
+        [current] = [obs for obs in result.observations if obs["observation_type"] == "RIGHT_CENSORED_LIFE"]
+        t = current["life_hours_for_weibull"]
+        beta, eta = result.beta_mle, result.eta_mle
+        for row, weeks in ((four, 4), (eight, 8)):
+            window = weeks * 100.0  # 20 hours a weekday, five weekdays a week
+            self.assertAlmostEqual(row["window_hours"], window)
+            self.assertAlmostEqual(row["current_life_hours"], t)
+            expected = 1 - math.exp(-((t + window) / eta) ** beta) / math.exp(-((t / eta) ** beta))
+            self.assertAlmostEqual(row["probability"], expected, places=12)
+        self.assertGreater(eight["probability"], four["probability"])
+
+    def test_mechanisms_are_ordered_by_the_chance(self):
+        fits = [
+            {"failure_mechanism_name": "Slow", "beta_mle": 3.0, "eta_mle": 5000.0, "current_life_hours": 100.0,
+             "hours_per_day": 20.0, "exclude_weekends": True, "failure_count": 9},
+            {"failure_mechanism_name": "Due", "beta_mle": 3.0, "eta_mle": 900.0, "current_life_hours": 800.0,
+             "hours_per_day": 20.0, "exclude_weekends": True, "failure_count": 6},
+            {"failure_mechanism_name": "Early-life survivor", "beta_mle": 0.6, "eta_mle": 300.0, "current_life_hours": 4000.0,
+             "hours_per_day": 24.0, "exclude_weekends": False, "failure_count": 7},
+        ]
+        self.service._latest_mechanism_fits = lambda asset_number: [dict(fit) for fit in fits]
+
+        ranked = self.service.latest_failure_mechanism_risk_rankings("A-1")
+
+        self.assertEqual([row["failure_mechanism_name"] for row in ranked], ["Due", "Early-life survivor", "Slow"])
+        self.assertAlmostEqual(ranked[1]["window_hours"], 4 * 168.0)  # continuous: every clock hour
+
+    def test_the_window_has_to_be_1_to_52_weeks(self):
+        for weeks in (0, 53, float("nan")):
+            with self.assertRaisesRegex(ValueError, "between 1 and 52 weeks"):
+                self.service.latest_failure_mechanism_risk_rankings("A-1", weeks=weeks)
+
+
+class IntervalRuleTests(unittest.TestCase):
+    """REL-WBL-MTH-001 §8: an interval counts as stable by its width relative to its estimate."""
+
+    def setUp(self) -> None:
+        self.service = LifeDataService.__new__(LifeDataService)
+
+    def test_a_beta_interval_is_judged_against_beta_itself(self):
+        # 40 failures at beta 3: about 2.36 to 3.82, 49% of beta. Stable, though 1.46 wide.
+        self.assertIn("no wider than 70% of beta", self.service._beta_ci_recommendation(2.36, 3.82, 3.0))
+        # The pilot's SQ87 interval, 0.488 to 0.732, is 42% of beta 0.574.
+        self.assertIn("no wider than 70% of beta", self.service._beta_ci_recommendation(0.488, 0.732, 0.574))
+        # The Standards worked example: 1.350 to 5.558 is 154% of beta 2.739.
+        self.assertIn("wider than 70% of beta", self.service._beta_ci_recommendation(1.350, 5.558, 2.739))
+        self.assertNotIn("no wider", self.service._beta_ci_recommendation(1.350, 5.558, 2.739))
+        # Crossing 1 is read first, whatever the width.
+        self.assertIn("crossing 1.0", self.service._beta_ci_recommendation(0.95, 1.05, 1.0))
+
+    def test_an_eta_interval_is_stable_up_to_40_percent_of_eta(self):
+        self.assertIn("reasonably tight", self.service._eta_ci_recommendation(800.0, 1200.0, 1000.0))
+        self.assertIn("directional guidance only", self.service._eta_ci_recommendation(700.0, 1200.0, 1000.0))
 
 
 def test_the_run_endpoint_takes_a_window_and_rejects_a_bad_date(monkeypatch, tmp_path):
@@ -530,6 +769,45 @@ def test_the_run_endpoint_takes_a_window_and_rejects_a_bad_date(monkeypatch, tmp
     assert result["analysis_cutoff_source"] == "USER"
     assert result["analysis_start"] is None
     assert result["events"] and result["life_basis"]["time_zone"] == "America/Chicago"
+
+    # The summary carries both rankings; the risk list takes its own window.
+    summary = client.get("/life-data-analysis/api/summary?asset=A-1&weeks=8").get_json()
+    assert summary["rankings"] and summary["risk_rankings"][0]["window_weeks"] == 8
+    risk = client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=6").get_json()
+    assert risk["weeks"] == 6 and risk["rankings"][0]["window_weeks"] == 6
+    assert client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=0").status_code == 400
+
+
+def test_the_schedule_register_endpoint_needs_an_editor_and_keeps_who(monkeypatch, tmp_path):
+    monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
+    monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
+    monkeypatch.setenv("GREMLIN_ADMIN_USERNAME", "root")
+    monkeypatch.setenv("GREMLIN_ADMIN_PIN", "secret")
+    import app
+
+    module = importlib.reload(app)
+    service = module.get_life_data_service()
+    with service.write_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("INSERT OR IGNORE INTO import_batch (import_batch_id, status) VALUES (1, 'COMPLETED')")
+        conn.execute("CREATE TABLE IF NOT EXISTS raw_cmms_record (raw_record_id INTEGER PRIMARY KEY, import_batch_id INTEGER NOT NULL DEFAULT 1, raw_json TEXT NOT NULL)")
+        conn.execute("INSERT INTO raw_cmms_record (raw_record_id, import_batch_id, raw_json) VALUES (1, 1, '{}')")
+        conn.execute("INSERT INTO mapped_cmms_record (raw_record_id, import_batch_id, asset_number, task_id) VALUES (1, 1, 'C-7', 'T1')")
+    client = module.app.test_client()
+    change = {"asset": "C-7", "schedule_code": "CONTINUOUS", "reason": "Compressor runs all week."}
+
+    assert client.post("/life-data-analysis/api/schedule-register", json=change).status_code == 401
+    # The register names who made each change, so reading it needs an account too.
+    assert client.get("/life-data-analysis/api/schedule-register").status_code == 401
+    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
+    saved = client.post("/life-data-analysis/api/schedule-register", json=change)
+
+    assert saved.status_code == 200
+    assert saved.get_json()["history"][0]["changed_by"] == "root"
+    register = client.get("/life-data-analysis/api/schedule-register").get_json()
+    assert {"asset_number": "C-7", "schedule_code": "CONTINUOUS"}.items() <= next(
+        row for row in register["assignments"] if row["asset_number"] == "C-7"
+    ).items()
 
 
 if __name__ == "__main__":

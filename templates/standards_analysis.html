@@ -54,7 +54,7 @@
           </thead>
           <tbody>
             <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Counted while Include in Weibull Candidate is ticked; the Pareto, trend, downtime driver and PM effectiveness analyses also need a failure mechanism. Needs a failure mode.</td></tr>
-            <tr><td>Included PM reset event</td><td>PMs</td><td>A PM that renewed the asset against one failure mode, and optionally one mechanism. Starts a new life in Weibull analysis and is never counted as a failure. Needs an Approved reset, a reset target and a written rationale.</td></tr>
+            <tr><td>Included PM reset event</td><td>PMs</td><td>A PM that renewed the asset against one failure mode, and optionally one mechanism. Starts a new life in Weibull analysis, for only what it restores (see <a href="#weibull-intervals">Events, life intervals and censoring</a>), and is never counted as a failure. Needs an Approved reset, a reset target and a written rationale.</td></tr>
             <tr><td>Included censored asset event</td><td>Work orders</td><td>Survival with no recurrence through the cutoff. Kept for traceability; none of the four analyses reads it, because the fit already adds the current life by itself. Needs a failure mode.</td></tr>
             <tr><td>Held ambiguous</td><td>Both</td><td>Probably relevant but not decidable yet. Left out until resolved; needs a note saying what is missing.</td></tr>
             <tr><td>Excluded mixed or contaminating</td><td>Work orders</td><td>A real event that mixes failure stories or conflicts with the population. Never counted; needs a note.</td></tr>
@@ -238,10 +238,12 @@
     <section class="std-section" id="common-beta">
       <h4>Highest-beta mechanisms</h4>
       <p>
-        Shown with Weibull Analysis: the five failure mechanisms on the asset
+        Shown with Weibull Analysis, to answer where an age-based PM is most
+        likely to pay off: the five failure mechanisms on the asset
         with the highest β, each taken from the most recent saved Weibull
         result for that mechanism, with ties going to the one whose saved fit
-        has more failures, each shown with that fit's failure count and η. A
+        has more failures, each shown with that fit's failure count, η and
+        probability plot R² (marked when it is below its review threshold). A
         fit counts the lives that ended in a failure, which can be fewer than
         the mechanism's included failures, because the first event only starts
         the clock. A high β marks the
@@ -250,7 +252,41 @@
         mechanism that has never been fitted is not on the list, and nor is
         a saved fit resting on fewer than five lives that end in a failure.
         A fit saved under an earlier version of the method is listed with
-        "saved under an earlier method; run it again" after it.
+        "saved under an earlier method; run it again" after it, and one counted
+        on a schedule its asset has since been moved off with "counted on the
+        asset's old schedule; run it again".
+      </p>
+    </section>
+
+    <section class="std-section" id="common-risk">
+      <h4>Most likely to fail soon</h4>
+      <p>
+        Shown beside it, to answer what needs attention before the next
+        planning cycle (REL-WBL-MTH-001 §8): the same saved fits, ranked by the
+        chance that the mechanism's current life ends in a failure within the
+        next few weeks, given how long it has already lasted. The window is
+        four weeks unless the box on the page says otherwise (1 to 52).
+      </p>
+      {% call std.equation("C5", "the chance of failing within the window is one minus the reliability at the current life plus the window over the reliability at the current life") %}
+      <math display="block">
+        <mi>P</mi><mo>=</mo><mn>1</mn><mo>&#x2212;</mo>
+        <mfrac>
+          <mrow><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo>+</mo><mi mathvariant="normal">&#x394;</mi><mo stretchy="false">)</mo></mrow>
+          <mrow><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow>
+        </mfrac>
+        <mo>=</mo><mn>1</mn><mo>&#x2212;</mo>
+        <msup><mi>e</mi><mrow><msup><mrow><mo stretchy="false">(</mo><mi>t</mi><mo>/</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo></mrow><mi>&#x3B2;</mi></msup><mo>&#x2212;</mo><msup><mrow><mo stretchy="false">(</mo><mo stretchy="false">(</mo><mi>t</mi><mo>+</mo><mi mathvariant="normal">&#x394;</mi><mo stretchy="false">)</mo><mo>/</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo></mrow><mi>&#x3B2;</mi></msup></mrow></msup>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><mi>t</mi></math></dt><dd>The current life at the saved run's cutoff: the scheduled hours since the mechanism's last failure or PM reset. The list says which cutoff each fit is measured from.</dd>
+        <dt><math><mi mathvariant="normal">&#x394;</mi></math></dt><dd>The window in the same hours: the weeks times the hours a week adds on the fit's schedule, 100 on 20 hours Monday-Friday, 120 on 24 hours Monday-Friday and 168 on continuous.</dd>
+      </dl>
+      <p>
+        It replaces the pilot workbook's "current probability of failure", the
+        chance of having failed by the current age, which climbs toward 100%
+        for any long life, even one whose β below 1 means it is getting safer.
+        The same fits are left out and marked as in the Highest-beta list.
       </p>
     </section>
   {% endcall %}
@@ -317,7 +353,7 @@
       <p>The timeline is built from current dispositions on the asset with the flag ticked:</p>
       <ul>
         <li><strong>Failures:</strong> Included failures with the chosen failure mode, and the chosen mechanism when the population is a mechanism.</li>
-        <li><strong>PM resets:</strong> Included PM reset events whose reset target is the chosen mode, and the chosen mechanism when the population is a mechanism.</li>
+        <li><strong>PM resets:</strong> Included PM reset events that restore the population, since a PM restarts only what it restores (REL-WBL-DAT-004 §7). For a mechanism, a PM aimed at that mechanism or at its whole mode (a reset target mode with no mechanism). For a failure mode, only a PM aimed at the whole mode: one aimed at a single mechanism leaves the mode's other mechanisms ageing, so it does not restart the mode's lives.</li>
       </ul>
       <p>
         Each event is dated by its completed date alone (not equation C1; see
@@ -406,9 +442,9 @@
       <p>
         Life is counted in scheduled hours, not calendar hours, so an asset is
         not aged while it is not meant to run. Each interval is cut at every
-        midnight on the plant's clock. A Saturday or Sunday adds nothing, and a
-        weekday adds its elapsed hours scaled by the asset's scheduled hours per
-        day:
+        midnight on the plant's clock. On a weekday schedule a Saturday or
+        Sunday adds nothing, and a weekday adds its elapsed hours scaled by the
+        asset's scheduled hours per day:
       </p>
       {% call std.equation("W1", "a life in hours is the sum over the interval's weekday segments of the segment's elapsed hours times scheduled hours per day over 24") %}
       <math display="block">
@@ -419,8 +455,21 @@
       {% endcall %}
       <dl class="std-where">
         <dt><math><msub><mi mathvariant="normal">&#x394;</mi><mi>s</mi></msub></math></dt><dd>Elapsed hours of the interval that fall in day <math><mi>s</mi></math>, at most 24: 23 or 25 on the two days a year the clocks change, because each day's hours are measured between real instants.</dd>
-        <dt><math><mi>h</mi></math></dt><dd>Scheduled hours per day: 24 for the Salvagnini assets 3101 to 3107 and the Hedrich dispensers 3154, 3142, 3023 and 3253, and 20 for every other asset.</dd>
+        <dt><math><mi>h</mi></math></dt><dd>Scheduled hours per day on the asset's Weibull schedule: 20 on the plant default, 20 hours Monday-Friday, and 24 on 24 hours Monday-Friday.</dd>
       </dl>
+      <p>
+        Every asset is on the plant default unless the <strong>Weibull
+        schedules</strong> register on the Configuration page lists it
+        (REL-WBL-DAT-003 §7). The register started with the Salvagnini assets
+        3101 to 3107 and the Hedrich dispensers 3154, 3142, 3023 and 3253 on 24
+        hours Monday-Friday. Its third schedule, <strong>continuous</strong>,
+        is for an asset that runs around the clock: every hour counts, weekends
+        included, so its life is the plain elapsed time. Editors change an
+        asset's schedule there with a reason, and every change is kept with who
+        made it and when. A saved result counted on the asset's old schedule
+        then says so, is marked in the rankings and can't be reported until it
+        is run again.
+      </p>
       {% call std.figure("W2", "A life from Monday 08:00 to the next Monday 08:00 is 168 calendar hours. The 48 weekend hours are left out, and the 120 weekday hours count at 20/24, giving 100 life hours for an asset on the 20-hour schedule.") %}
       <svg viewBox="0 0 760 206" role="img" aria-labelledby="fig-w2-title fig-w2-desc">
         <title id="fig-w2-title">Counting schedule-adjusted life hours</title>
@@ -481,8 +530,8 @@
       <p>
         Life hours are scheduled hours, so a calendar week holds five scheduled
         days of <math><mi>h</mi></math>: 100 life hours on the 20-hour schedule
-        and 120 on the 24-hour one. That is how the page and the report turn η,
-        MTTF, B10 and B50 into calendar weeks.
+        and 120 on the 24-hour one, and 168 on the continuous one. That is how
+        the page and the report turn η, MTTF, B10 and B50 into calendar weeks.
       </p>
     </section>
 
@@ -745,12 +794,34 @@
         <dt><math><mover accent="true"><mi>x</mi><mo>&#xAF;</mo></mover><mo>,</mo><mover accent="true"><mi>y</mi><mo>&#xAF;</mo></mover></math></dt><dd>Their averages. With fewer than three points R² is not shown, because two points always lie on a line.</dd>
       </dl>
       <p>
-        GREMLIN sets no pass mark for R², so read it with the plot. A low
-        value, a bend or two different slopes usually means the population
-        mixes mechanisms, a life is missing its real start point, or a work
-        order is a duplicate: review the population before acting on β
-        (VV-074). R² is shown with the results, in the interpretation summary
-        and the report, and beside each fit in the Highest-beta list.
+        R² runs lower on few points even when the data really are Weibull, so
+        its review threshold depends on the number of lives that end in a
+        failure (VV-074; REL-WBL-MTH-001 §6). It is the R² that 90% of genuine
+        two-parameter Weibull samples of that size reach, found by simulating
+        them and plotting each as the probability plot does, with counts in
+        between interpolated. A fit below it is less straight than chance alone
+        explains: the result says so in a notice, and the population should be
+        reviewed before acting on β. Mixed mechanisms, a life missing its real
+        start point, or a duplicate work order are the usual causes.
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">Probability plot R² review thresholds</caption>
+          <thead>
+            <tr><th scope="col">Lives ending in a failure</th><th scope="col" class="is-numeric">5</th><th scope="col" class="is-numeric">10</th><th scope="col" class="is-numeric">15</th><th scope="col" class="is-numeric">20</th><th scope="col" class="is-numeric">30</th><th scope="col" class="is-numeric">50</th><th scope="col" class="is-numeric">100</th><th scope="col" class="is-numeric">200</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Review below R² of</th><td class="is-numeric">0.806</td><td class="is-numeric">0.846</td><td class="is-numeric">0.876</td><td class="is-numeric">0.893</td><td class="is-numeric">0.913</td><td class="is-numeric">0.938</td><td class="is-numeric">0.961</td><td class="is-numeric">0.976</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        A fixed pass mark would not do: 0.90 would flag over a third of genuine
+        five-failure samples and miss a real problem at fifty. A value at or
+        above the threshold still needs the plot read, since a bend or two
+        different slopes matters even then. R² is shown with the results, in
+        the interpretation summary and the report, and beside each fit in the
+        Highest-beta and Most likely to fail soon lists.
       </p>
       {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide. Among themselves the points are very nearly straight: their R², equation W15, is 0.990.") %}
       <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
@@ -805,11 +876,12 @@
             <tr><td>β from 0.9 to 1.1</td><td>Random failures</td><td>Improve detection with inspections or condition checks, and plan spares. A fixed replacement age is weak justification.</td></tr>
             <tr><td>β above 1.1</td><td>Wear-out</td><td>Evaluate an age-based PM or planned replacement, set with η, downtime impact and cost.</td></tr>
             <tr><td>β interval crosses 1.0</td><td>Pattern still uncertain</td><td>Check whether the population mixes mechanisms or needs more failures before choosing a strategy.</td></tr>
-            <tr><td>β interval no wider than 0.3, not crossing 1.0</td><td>Stable</td><td>More confidence in the direction above.</td></tr>
-            <tr><td>β interval wider than 0.3, not crossing 1.0</td><td>Treat with caution</td><td>Check whether the population mixes mechanisms, the data is weak, or there are still too few failures before choosing a strategy.</td></tr>
+            <tr><td>β interval no wider than 70% of β, not crossing 1.0</td><td>Stable</td><td>More confidence in the direction above. The upper limit is then no more than about twice the lower, which about 20 failures reach at any β.</td></tr>
+            <tr><td>β interval wider than 70% of β, not crossing 1.0</td><td>Treat with caution</td><td>Check whether the population mixes mechanisms, the data is weak, or there are still too few failures before choosing a strategy.</td></tr>
             <tr><td>η interval width at most 40% of η</td><td>Stable η</td><td>Usable for planning comparisons and timing discussions.</td></tr>
             <tr><td>η interval wider than that</td><td>Directional only</td><td>Tighten the population or collect more data before treating η as a decision point.</td></tr>
-            <tr><td>Probability plot R², equation W15</td><td>How straight the plotted points lie; no fixed pass mark</td><td>Read it with the plot. A low value, a bend or two slopes calls for a review of the population before acting on β.</td></tr>
+            <tr><td>Probability plot R², equation W15, below its review threshold</td><td>Less straight than chance alone explains</td><td>Review the population before acting on β: mixed mechanisms, a missed start point or a duplicate work order.</td></tr>
+            <tr><td>Probability plot R² at or above its threshold</td><td>No sign of a mixed population</td><td>Still read the plot: a bend or two slopes matters even then.</td></tr>
           </tbody>
         </table>
       </div>
@@ -866,9 +938,10 @@
       </div>
       <p>
         <strong>Reading it:</strong> the five points lie close to a line
-        (R² = 0.990), so the plot gives no sign of a mixed population.
+        (R² = 0.990, above the 0.806 review threshold for five failures), so
+        the plot gives no sign of a mixed population.
         β = 2.74 is above 1.1, which points to wear-out, and with five failures
-        its interval, 1.35 to 5.56, stays above 1.0. It is still far wider than 0.3, though, so the pattern is to be
+        its interval, 1.35 to 5.56, stays above 1.0. It is still 154% of β, though, far wider than 70%, so the pattern is to be
         treated with caution, and η's interval is 65% of η, too wide to set a PM
         interval from. A PM every 400 hours would leave about 12% failing before
         it. The honest conclusion is "wearing out, most likely; collect more
@@ -886,7 +959,7 @@
       <h4>Adjusting, saving and reporting</h4>
       <ul>
         <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis window, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A run the data can no longer support, with fewer than five failure lives or no likelihood root, removes the group's saved result too. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
-        <li><strong>Every run is stamped with the method it was built by</strong> (life-data-v2 today) and the GREMLIN code it ran on. A result saved under an earlier method shows a notice saying what has changed since; it stays in the Highest-beta list, marked, but can't be reported until it is run again. One resting on fewer than five failure lives is not ranked or reported either.</li>
+        <li><strong>Every run is stamped with the method it was built by</strong> (life-data-v3 today) and the GREMLIN code it ran on. A result saved under an earlier method shows a notice saying what has changed since; it stays in the rankings, marked, but can't be reported until it is run again. So does a result counted on a schedule its asset has since been moved off. One resting on fewer than five failure lives is not ranked or reported either.</li>
         <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it. A saved pair lasts until the group is run again, and the page does not show it again: the inputs always open on the fitted values.</li>
         <li><strong>Generate Weibull Report</strong>, for editors, writes a Word report numbered REL-WBL-RPT, the asset number and a running number. It carries what REL-WBL-MTH-001 §10 asks of an analysis package, at the fitted values: the population and its grouping level; the life basis, schedule and time zone, labelled as an exposure proxy; the analysis window and where its cutoff came from; the lives, split into complete, censored at a PM reset and current; β, η, MTTF, B10, B50, their intervals and the reliability at the age entered on the page; the charts; the interpretation summary; the limitations and assumptions; every life it rests on, with its notes; and the method and code version. It opens with REL-WBL-VAL-001's caveat that GREMLIN's Weibull automation is not yet validated, so the report is for reliability engineering review, not a stand-alone maintenance directive. A failure-mode report also asks for, states and keeps with the population the reason a mechanism could not be fitted instead (REL-WBL-PLN-003 §8). The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
         <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition for an editor; saving it runs the analysis again, which replaces the saved run as above. Viewers see the Task ID as plain text.</li>
@@ -898,7 +971,7 @@
       <ul>
         <li><strong>Few failures give wide intervals.</strong> Read β and η as directions until the intervals narrow.</li>
         <li><strong>A failure mode that pools different mechanisms</strong> mixes different behaviors and blurs β. Fit the mechanism when there are enough failures.</li>
-        <li><strong>Life is scheduled time, not run time.</strong> It uses the 24 or 20 hour weekday schedule, not meter hours, and ignores holidays, shutdowns and Saturday shifts.</li>
+        <li><strong>Life is scheduled time, not run time.</strong> It uses the asset's Weibull schedule, not meter hours: holidays and shutdowns are not taken out, and Saturday shifts on a weekday schedule are not added back.</li>
         <li><strong>No installation or replacement dates.</strong> The first event in the window only starts the clock, so the life before it is never counted.</li>
         <li><strong>Only two parameters.</strong> There is no failure-free period (three-parameter Weibull) and no comparison against other distributions.</li>
         <li><strong>Not yet validated.</strong> REL-WBL-VAL-001 validates the manual pilot workbook, not GREMLIN, and does not yet approve automated use (§7). Until GREMLIN's own results have been checked against the pilot baseline, use them for reliability engineering review rather than as stand-alone maintenance decisions.</li>

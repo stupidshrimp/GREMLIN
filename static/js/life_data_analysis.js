@@ -808,11 +808,12 @@
     const asset = state.selectedAsset;
     const token = ++state.summaryToken;
     try {
-      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}`);
+      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
       state.rankings = data.rankings || [];
       renderRankings(state.rankings);
+      renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
       drawPareto();
@@ -871,12 +872,65 @@
           text:
             `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
             `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h` +
-            (row.probability_plot_r_squared != null ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}` : "") +
+            (row.probability_plot_r_squared != null
+              ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}${row.probability_plot_review ? ", below its review threshold" : ""}`
+              : "") +
             ")" +
-            (row.method_current === false ? " — saved under an earlier method; run it again" : ""),
+            rankingMarker(row),
         })
       );
     });
+  }
+
+  // Why a ranked fit wants running again, if it does: saved under an earlier method,
+  // or counted on a schedule the asset has since been moved off.
+  function rankingMarker(row) {
+    if (row.method_current === false) return " — saved under an earlier method; run it again";
+    if (row.schedule_current === false) return " — counted on the asset's old schedule; run it again";
+    return "";
+  }
+
+  // The "Most likely to fail soon" window, in weeks: what the box says, kept to 1-52.
+  function riskWeeks() {
+    const box = $("lda-risk-weeks");
+    const weeks = box ? Math.round(Number(box.value)) : 4;
+    return isFinite(weeks) && weeks >= 1 && weeks <= 52 ? weeks : 4;
+  }
+
+  function renderRiskRankings(rankings) {
+    const list = $("lda-risk-rankings");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!rankings.length) {
+      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
+      return;
+    }
+    rankings.forEach((row) => {
+      const percent = 100 * Number(row.probability);
+      const asOf = plantTimeText(row.analysis_cutoff, row.time_zone).slice(0, 10);
+      list.appendChild(
+        el("li", {
+          text:
+            `${row.failure_mechanism_name}: ${percent.toFixed(percent < 10 ? 1 : 0)}% chance of failing in the next ` +
+            `${fmt(row.window_weeks)} weeks (current life ${fmt(row.current_life_hours)} h, beta ${fmt(row.beta_mle)}, ` +
+            `${row.failure_count} failures${row.probability_plot_review ? ", plot R² below its review threshold" : ""}` +
+            `${asOf ? `, as of ${asOf}` : ""})` +
+            rankingMarker(row),
+        })
+      );
+    });
+  }
+
+  async function refreshRiskRankings() {
+    if (!state.selectedAsset || !$("lda-risk-rankings")) return;
+    const asset = state.selectedAsset;
+    try {
+      const data = await getJson(`${API}/risk-rankings?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
+      if (state.selectedAsset !== asset) return;
+      renderRiskRankings(data.rankings || []);
+    } catch (err) {
+      showBanner(err.message, "error");
+    }
   }
 
   // ---- Pareto chart ---------------------------------------------------------
@@ -1239,6 +1293,7 @@
     // Weibull labels remain on screen.
     setHidden($("lda-weibull-summary"), !isWeibull);
     setHidden($("lda-beta-panel"), !isWeibull);
+    setHidden($("lda-risk-panel"), !isWeibull);
     setHidden($("lda-trend-summary"), !isTrend);
     setHidden($("lda-trend-chart-panel"), !isTrend);
     setHidden($("lda-trend-table-panel"), !isTrend);
@@ -4237,7 +4292,14 @@
     if (result.probability_plot_r_squared == null || !isFinite(r2)) {
       return "Probability plot R²: not available (fewer than three distinct failure points).";
     }
-    return `Probability plot R² ${r2.toFixed(3)}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
+    const threshold = Number(result.probability_plot_r_squared_threshold);
+    const against =
+      result.probability_plot_r_squared_threshold == null || !isFinite(threshold)
+        ? ""
+        : result.probability_plot_review
+          ? `, below the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`
+          : `, meeting the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`;
+    return `Probability plot R² ${r2.toFixed(3)}${against}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
   }
 
   // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
@@ -4328,11 +4390,27 @@
     const notices = [];
     const minimum = result.min_failure_lives || 5;
     if (result.method_current === false) {
+      // What the current method changed since the version this result was saved under.
+      const pmScope =
+        "let a PM aimed at one mechanism restart its whole failure mode, and didn't let a PM aimed at the whole mode " +
+        "restart the mechanisms under it";
+      const changed =
+        result.method_version === "life-data-v2"
+          ? pmScope
+          : "split days at midnight UTC, dated a work order with no completed date by its start or created date, had no " +
+            `minimum failure count, and ${pmScope}`;
       notices.push(
-        `Saved by an earlier version of GREMLIN's Weibull method (${result.method_version || "unrecorded"}), which split days ` +
-          "at midnight UTC, dated a work order with no completed date by its start or created date, and had no minimum " +
-          "failure count. " +
+        `Saved by an earlier version of GREMLIN's Weibull method (${result.method_version || "unrecorded"}), which ${changed}. ` +
           (CAN_EDIT ? "Run it again to apply the current rules; " : "An editor has to run it again to apply the current rules; ") +
+          "it can't be reported until then."
+      );
+    }
+    if (result.method_current !== false && result.schedule_current === false) {
+      const countedOn = (result.life_basis && result.life_basis.schedule_name) || "an earlier schedule";
+      notices.push(
+        `Counted on the ${countedOn} schedule, but this asset is now on ${result.current_schedule_name || "another schedule"}, ` +
+          "so its life hours have changed. " +
+          (CAN_EDIT ? "Run it again to count them on the new schedule; " : "An editor has to run it again; ") +
           "it can't be reported until then."
       );
     }
@@ -4340,6 +4418,14 @@
       notices.push(
         `This result rests on ${result.failure_count} lives that end in a failure; GREMLIN needs at least ${minimum} to ` +
           "fit and report a Weibull distribution, so it is not ranked and can't be reported."
+      );
+    }
+    if (result.probability_plot_review) {
+      notices.push(
+        `The probability plot is less straight than 90% of genuine Weibull samples with ${result.failure_count} failures ` +
+          `(R² ${Number(result.probability_plot_r_squared).toFixed(3)}, review threshold ` +
+          `${Number(result.probability_plot_r_squared_threshold).toFixed(3)}). Review the population before acting on ` +
+          "beta: mixed mechanisms, a life missing its real start point, or a duplicate work order are the usual causes."
       );
     }
     if (result.life_basis && result.life_basis.time_zone_warning) notices.push(result.life_basis.time_zone_warning);
@@ -4587,6 +4673,8 @@
     let blocked = "";
     if (result.method_current === false) {
       blocked = "Run the analysis again to report it: this result was saved by an earlier version of the method.";
+    } else if (result.schedule_current === false) {
+      blocked = "Run the analysis again to report it: the asset has been moved to another schedule since this result was counted.";
     } else if (result.meets_minimum === false) {
       blocked = `A report needs at least ${result.min_failure_lives || 5} lives that end in a failure.`;
     }
@@ -6100,9 +6188,18 @@
       title: "Highest-beta mechanisms",
       when: forType(ANALYSIS_TYPES.WEIBULL),
       body:
-        "The five mechanisms with the highest beta in their last saved Weibull fit, counting only fits " +
-        "with at least five failure lives. A beta above 1 means failures get likelier with age, which a " +
-        "PM can get ahead of; below 1 points to early-life failures.",
+        "Where an age-based PM is most likely to pay off: the five mechanisms with the highest beta in their " +
+        "last saved Weibull fit, counting only fits with at least five failure lives. A beta above 1 means " +
+        "failures get likelier with age, which a PM can get ahead of; below 1 points to early-life failures.",
+    },
+    {
+      target: "#lda-risk-panel",
+      title: "Most likely to fail soon",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      body:
+        "What needs attention before the next planning cycle: the same saved fits, ranked by the chance the " +
+        "current life ends in a failure within the weeks in the box (four unless you change it), given how " +
+        "long it has already run.",
     },
     {
       target: "#lda-pareto-panel",
@@ -6580,8 +6677,8 @@
           "the SQ87 bracket to spec resets \"SQ87 bracket / switch out of adjustment\".",
         points: [
           ["From the list", "It offers the mechanisms already dispositioned under the chosen Reset Target Failure Mode."],
-          ["Leave it blank when", "The PM restores the mode in general rather than one mechanism under it."],
-          ["How it counts", "With a mechanism, the reset counts in that mechanism's population and its mode's; without one, only in the mode's, so mechanism-level fits won't see it."],
+          ["Leave it blank when", "The PM restores the whole mode: every mechanism under it, not one in particular."],
+          ["How it counts", "A PM restarts only what it restores. With a mechanism, the reset counts in that mechanism's population alone, not its mode's. Left blank, it counts in the mode's population and in every mechanism's under it."],
         ],
         cite: `${FAILURE_DEFINITION} §3.4, §3.8, §7.3`,
       },
@@ -6922,6 +7019,8 @@
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
     });
+    const riskWeeksBox = $("lda-risk-weeks");
+    if (riskWeeksBox) riskWeeksBox.addEventListener("change", refreshRiskRankings);
     const typeSelect = $("lda-analysis-type");
     if (typeSelect) {
       // ?analysis= preselects the Analysis Type, which is what the topbar's

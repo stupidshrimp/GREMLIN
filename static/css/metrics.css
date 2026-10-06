@@ -1309,3 +1309,10 @@ table.availability-wo-table tfoot td:first-child {
   outline: 2px solid var(--forest-400, #2f8f5b);
   outline-offset: 1px;
 }
+
+/* The Weibull schedules form on Configuration: text fields, not the number boxes
+   the availability rows size these inputs for. */
+#config-weibull-form .availability-input { width: 11rem; text-align: left; }
+#config-weibull-form #config-weibull-schedule { width: 17rem; }
+#config-weibull-form #config-weibull-reason { width: 100%; max-width: 40rem; }
+#config-weibull-form .availability-config-wide { flex: 1 1 22rem; width: auto; }

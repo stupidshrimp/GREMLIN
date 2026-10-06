@@ -81,10 +81,22 @@
        Pareto can span the full page width on every analysis type. -->
   <div class="lda-panel" id="lda-beta-panel">
     <h3>Highest-beta mechanisms</h3>
-    <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
-       failure-mechanism population on this asset that rests on at least 5 lives ending in a failure.
-       Plot R² is how straight that fit's probability plot is.</p>
+    <p class="lda-hint">Where an age-based PM is most likely to pay off: the top 5 failure mechanisms by beta, using
+       the latest saved Weibull result for each failure-mechanism population on this asset that rests on at least
+       5 lives ending in a failure. Plot R² is how straight that fit's probability plot is.</p>
     <ol id="lda-beta-rankings" class="lda-rankings"></ol>
+  </div>
+
+  <!-- Most likely to fail soon: the same saved fits, ranked by the chance the current
+       life ends in a failure within the window (REL-WBL-MTH-001 §8). -->
+  <div class="lda-panel" id="lda-risk-panel">
+    <h3>Most likely to fail soon</h3>
+    <p class="lda-hint">What needs attention before the next planning cycle: the top 5 failure mechanisms by the
+       chance of failing in the next
+       <input id="lda-risk-weeks" class="lda-input lda-risk-weeks" type="number" min="1" max="52" step="1" value="4"
+              aria-label="Weeks ahead"> weeks, given how long each current life has already run, from the same saved
+       results. Each is measured from its run's cutoff.</p>
+    <ol id="lda-risk-rankings" class="lda-rankings"></ol>
   </div>
 
   <!-- Failure mechanism Pareto: always visible and full-width, regardless of analysis type. -->
