@@ -43,14 +43,14 @@ ASSIGNABLE_SCHEDULE_CODES = ("20H_MON_FRI", "24H_MON_FRI", "CONTINUOUS")
 # They seed the register the first time it is created; after that it is the list.
 BUILT_IN_24H_ASSET_NUMBERS = ("3101", "3102", "3103", "3104", "3105", "3106", "3107", "3154", "3142", "3023", "3253")
 # How far ahead the "most likely to fail" list looks unless the page asks otherwise:
-# four weeks, a monthly planning cycle (REL-WBL-MTH-001 §8).
+# four weeks, a monthly planning cycle (REL-WBL-MTH-001 §8.1).
 RISK_WINDOW_WEEKS = 4
 
 # The fewest lives ending in a failure GREMLIN fits and reports a Weibull
-# distribution from: the threshold REL-WBL-VAL-001 (VV-071) records for the
-# validated pilot workbook. Fewer give a beta that looks precise and is not
-# (maximum likelihood overstates beta on small samples), and the interpretation
-# summary would still turn it into a maintenance recommendation.
+# distribution from: the minimum REL-WBL-MTH-001 §4 sets (REL-WBL-REQ-001
+# VV-071). Fewer give a beta that looks precise and is not (maximum likelihood
+# overstates beta on small samples), and the interpretation summary would still
+# turn it into a maintenance recommendation.
 MIN_WEIBULL_FAILURE_LIVES = 5
 
 # The rules a Weibull run is built and fitted by, stamped on every run as
@@ -2104,7 +2104,7 @@ class LifeDataService:
         """The asset's failure mechanisms with the highest beta in their latest saved fits.
 
         Where an age-based PM is most likely to pay off: the strongest wear-out
-        patterns first (REL-WBL-MTH-001 §8).
+        patterns first (REL-WBL-MTH-001 §8.1).
         """
 
         fits = self._latest_mechanism_fits(asset_number)
@@ -2117,7 +2117,7 @@ class LifeDataService:
         """The asset's failure mechanisms most likely to fail in the next ``weeks`` weeks.
 
         For each latest saved fit, the chance its current life ends in a failure within
-        the window, given it has lasted this long (REL-WBL-MTH-001 §8):
+        the window, given it has lasted this long (REL-WBL-MTH-001 §8.1):
 
             P = 1 - R(t + Δ) / R(t)
 

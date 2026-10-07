@@ -262,7 +262,7 @@
       <h4>Most likely to fail soon</h4>
       <p>
         Shown beside it, to answer what needs attention before the next
-        planning cycle (REL-WBL-MTH-001 §8): the same saved fits, ranked by the
+        planning cycle (REL-WBL-MTH-001 §8.1): the same saved fits, ranked by the
         chance that the mechanism's current life ends in a failure within the
         next few weeks, given how long it has already lasted. The window is
         four weeks unless the box on the page says otherwise (1 to 52).
@@ -343,7 +343,7 @@
         failures and PM resets it has.
       </p>
       <ul>
-        <li><strong>A fit needs at least five lives that end in a failure</strong>, the threshold REL-WBL-VAL-001 records for the validated pilot workbook. Fewer give a β that looks precise and is not, since maximum likelihood overstates β on small samples, and the interpretation summary would still turn it into a maintenance recommendation. A population with fewer than five included failures can never get there, so it is listed but can't be chosen.</li>
+        <li><strong>A fit needs at least five lives that end in a failure</strong>, the minimum REL-WBL-MTH-001 §4 sets (REL-WBL-REQ-001 VV-071). Fewer give a β that looks precise and is not, since maximum likelihood overstates β on small samples, and the interpretation summary would still turn it into a maintenance recommendation. A population with fewer than five included failures can never get there, so it is listed but can't be chosen.</li>
         <li><strong>Mechanism is the preferred grouping.</strong> A failure mode is the fallback for when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1), so a report on a failure mode has to say why one of its mechanisms was not fitted instead.</li>
       </ul>
     </section>
@@ -796,7 +796,7 @@
       <p>
         R² runs lower on few points even when the data really are Weibull, so
         its review threshold depends on the number of lives that end in a
-        failure (VV-074; REL-WBL-MTH-001 §6). It is the R² that 90% of genuine
+        failure (VV-074; REL-WBL-MTH-001 §5.6, Table 3). It is the R² that 90% of genuine
         two-parameter Weibull samples of that size reach, found by simulating
         them and plotting each as the probability plot does, with counts in
         between interpolated. A fit below it is less straight than chance alone

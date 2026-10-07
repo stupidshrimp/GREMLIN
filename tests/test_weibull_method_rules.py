@@ -2,12 +2,13 @@
 
 Each test pins one rule to the document that sets it:
 
-* life hours split days at midnight on the plant's clock (REL-WBL-DAT-003 §4, §7.1);
+* life hours split days at midnight on the plant's clock (REL-WBL-DAT-003 §7, §7.1);
 * the current life is censored at the last completed Limble import unless a cutoff
   date is entered, and the analysis window is a pair of plant-calendar days
-  (REL-WBL-DAT-003 §10, §13);
-* a fit needs five lives ending in a failure (REL-WBL-VAL-001 VV-071), and there
-  is no substitute for a maximum-likelihood beta (REL-WBL-MTH-001 §5.5);
+  (REL-WBL-DAT-003 §10);
+* a fit needs five lives ending in a failure (REL-WBL-MTH-001 §4, REL-WBL-REQ-001
+  VV-071), and there is no substitute for a maximum-likelihood beta
+  (REL-WBL-MTH-001 §5.5);
 * lives and events carry REL-WBL-DAT-004 §11's notes, and short lives are flagged
   for the §12 duplicate check;
 * each run is stamped with its method version, and a result saved under an earlier
@@ -24,7 +25,7 @@ Each test pins one rule to the document that sets it:
   the plant default otherwise, and a result counted on a schedule the asset has
   left says so (REL-WBL-DAT-003 §7);
 * the asset's mechanisms are ranked by beta and by the chance of failing in the
-  next few weeks (REL-WBL-MTH-001 §8).
+  next few weeks (REL-WBL-MTH-001 §8.1).
 """
 
 import importlib
@@ -167,10 +168,11 @@ class _Seeded(unittest.TestCase):
 
 class PlantTimeLifeHoursTests(unittest.TestCase):
     def test_the_dat_003_example_holds_on_the_plant_clock(self):
-        # REL-WBL-DAT-003 §7.1: 2022-09-17 4:29 PM to 2023-01-02 2:05 PM on a
-        # 24-hour Monday-Friday asset is 1814.1 schedule-adjusted hours. The interval
-        # spans the November clock change, so it really holds one more weekend hour
-        # than the document's wall-clock arithmetic counts: 752.5 rather than 751.5.
+        # REL-WBL-DAT-003 §7.1, Table 1: 2022-09-17 4:29 PM to 2023-01-02 2:05 PM is
+        # 2566.6 raw hours with 752.5 of them at weekends, leaving 1814.1 life hours on
+        # a 24-hour Monday-Friday asset and 1511.7 on the 20-hour plant default. The
+        # interval spans the November clock change, so the raw and weekend hours are
+        # each one more than a wall-clock count.
         start = datetime(2022, 9, 17, 16, 29, tzinfo=PLANT).astimezone(timezone.utc)
         end = datetime(2023, 1, 2, 14, 5, tzinfo=PLANT).astimezone(timezone.utc)
 
@@ -180,6 +182,7 @@ class PlantTimeLifeHoursTests(unittest.TestCase):
         self.assertAlmostEqual(weekend, 752.5, places=1)
         self.assertAlmostEqual((end - start).total_seconds() / 3600, 2566.6, places=1)
         self.assertEqual(non_run, 0)
+        self.assertAlmostEqual(LifeDataService._scheduled_life_hours(start, end, 20.0, tz=PLANT)[0], 1511.7, places=1)
 
     def test_the_weekend_is_the_plants_saturday_and_sunday(self):
         # Friday 20:00 to Monday 06:00 plant time on a 24-hour asset: four Friday
@@ -663,7 +666,7 @@ class ScheduleRegisterTests(_Seeded):
 
 
 class RiskRankingTests(_Seeded):
-    """REL-WBL-MTH-001 §8: the chance each mechanism fails in the next few weeks."""
+    """REL-WBL-MTH-001 §8.1: the chance each mechanism fails in the next few weeks."""
 
     def test_the_chance_is_conditional_on_the_current_life(self):
         self._add_all(MONTHLY)
