@@ -4579,7 +4579,9 @@
       }
       state.latestResult = data.result;
       state.latestResultGroup = group;
-      state.latestResultWindow = savedOnly ? null : analysisWindow;
+      // A fit opened read-only (the tour, or a viewer) keeps the window it was saved
+      // with, so a disposition changed from its tables re-runs the same dates.
+      state.latestResultWindow = savedOnly ? savedResultWindow(data.result) : analysisWindow;
       renderAnalysisResult(data.result, { changedRecord });
       refreshSummary();
     } catch (err) {
@@ -4657,6 +4659,25 @@
 
   // A stored UTC timestamp on the plant's clock, "2026-03-02 07:00 America/Chicago".
   // The zone is the one the result's days were split in, so the two always agree.
+  // The window an editor chose for a saved fit, as the YYYY-MM-DD plant dates the
+  // Perform Analysis dialog takes, or null for all history to the default cutoff.
+  // The start is the first instant of its plant day. An entered cutoff ends at the
+  // next plant midnight, or at the moment of the run when its day was that day, so
+  // the second before it falls on the cutoff day either way. A default cutoff (the
+  // last import or the time of the run) is not an entered date and stays blank.
+  function savedResultWindow(result) {
+    if (!result) return null;
+    const zone = (result.life_basis && result.life_basis.time_zone) || "UTC";
+    const plantDate = (value, secondsBefore) => {
+      const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+      if (isNaN(when.getTime())) return "";
+      return plantTimeText(new Date(when.getTime() - secondsBefore * 1000).toISOString(), zone).slice(0, 10);
+    };
+    const start = result.analysis_start ? plantDate(result.analysis_start, 0) : "";
+    const cutoff = result.analysis_cutoff_source === "USER" && result.analysis_cutoff ? plantDate(result.analysis_cutoff, 1) : "";
+    return start || cutoff ? { start, cutoff } : null;
+  }
+
   function plantTimeText(value, zoneName) {
     if (!value) return "";
     const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
