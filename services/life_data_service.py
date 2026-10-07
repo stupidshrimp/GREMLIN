@@ -645,6 +645,11 @@ class AnalysisResultView:
     # on now, still ranked but marked, and not reported until it is run again.
     schedule_current: bool = True
     current_schedule_name: str | None = None
+    # False when the plant's time zone is not the one this result's days were split
+    # in -- changed in the settings, or the zone database installed or lost since --
+    # so its life hours have moved: marked and not reported, like a schedule change.
+    time_zone_current: bool = True
+    current_time_zone: str | None = None
 
 
 class LifeDataService:
@@ -1986,13 +1991,14 @@ class LifeDataService:
         beta from fewer is not one to choose a maintenance strategy by. Each carries
         what both rankings need -- the fit, its R² and review flag, the current life
         at the run's cutoff and the schedule it was counted on -- and whether it is
-        still current: saved under today's method, on the asset's current schedule.
-        A fit that is not is still ranked, marked, so the page can say it wants
-        running again.
+        still current: saved under today's method, on the asset's current schedule,
+        with days split in the plant's current time zone. A fit that is not is still
+        ranked, marked, so the page can say it wants running again.
         """
 
         with self.connect() as conn:
             current_schedule_id = self._schedule_class_id(conn, asset_number)
+            current_zone = self._plant_time_zone(conn)[1]
             rows = conn.execute(
                 """
                 WITH latest_result AS (
@@ -2088,6 +2094,7 @@ class LifeDataService:
                 "method_version": row["code_version"],
                 "method_current": row["code_version"] == WEIBULL_METHOD_VERSION,
                 "schedule_current": row["schedule_class_id"] is None or int(row["schedule_class_id"]) == current_schedule_id,
+                "time_zone_current": (row["schedule_time_zone"] or "UTC") == current_zone,
             })
         return fits
 
@@ -3895,6 +3902,12 @@ class LifeDataService:
             raise ValueError(
                 f"This result's life hours were counted on the {counted_on} schedule, but asset {asset_number} is now on "
                 f"{result['current_schedule_name']}. Run the analysis again before reporting it."
+            )
+        if not result["time_zone_current"]:
+            counted_in = (result.get("life_basis") or {}).get("time_zone") or "UTC"
+            raise ValueError(
+                f"This result's days were split at midnight {counted_in}, but the plant's time zone is now "
+                f"{result['current_time_zone']}. Run the analysis again before reporting it."
             )
         if not result["meets_minimum"]:
             raise ValueError(
@@ -6128,6 +6141,7 @@ class LifeDataService:
         current_schedule_name = conn.execute(
             "SELECT schedule_class_name FROM asset_schedule_class WHERE schedule_class_id = ?", (current_schedule_id,)
         ).fetchone()[0]
+        current_zone = self._plant_time_zone(conn)[1]
         life_basis = {
             "code": row["life_basis_code"],
             "name": row["life_basis_name"],
@@ -6224,6 +6238,8 @@ class LifeDataService:
             fallback_rationale=row["fallback_rationale"],
             schedule_current=schedule_current,
             current_schedule_name=current_schedule_name,
+            time_zone_current=(row["schedule_time_zone"] or "UTC") == current_zone,
+            current_time_zone=current_zone,
         )
 
     def _get_or_create_population(self, conn: sqlite3.Connection, asset_number: str) -> int:

@@ -910,6 +910,7 @@
   function rankingMarker(row) {
     if (row.method_current === false) return " — saved under an earlier method; run it again";
     if (row.schedule_current === false) return " — counted on the asset's old schedule; run it again";
+    if (row.time_zone_current === false) return " — counted in an earlier plant time zone; run it again";
     return "";
   }
 
@@ -4751,6 +4752,15 @@
           "it can't be reported until then."
       );
     }
+    if (result.method_current !== false && result.schedule_current !== false && result.time_zone_current === false) {
+      const splitIn = (result.life_basis && result.life_basis.time_zone) || "UTC";
+      notices.push(
+        `Its days were split at midnight ${splitIn}, but the plant's time zone is now ${result.current_time_zone || "another zone"}, ` +
+          "so its life hours have changed. " +
+          (CAN_EDIT ? "Run it again to count them in the plant's zone; " : "An editor has to run it again; ") +
+          "it can't be reported until then."
+      );
+    }
     if (result.meets_minimum === false) {
       notices.push(
         `This result rests on ${result.failure_count} lives that end in a failure; GREMLIN needs at least ${minimum} to ` +
@@ -5012,6 +5022,8 @@
       blocked = "Run the analysis again to report it: this result was saved by an earlier version of the method.";
     } else if (result.schedule_current === false) {
       blocked = "Run the analysis again to report it: the asset has been moved to another schedule since this result was counted.";
+    } else if (result.time_zone_current === false) {
+      blocked = "Run the analysis again to report it: the plant's time zone has changed since this result was counted.";
     } else if (result.meets_minimum === false) {
       blocked = `A report needs at least ${result.min_failure_lives || 5} lives that end in a failure.`;
     }

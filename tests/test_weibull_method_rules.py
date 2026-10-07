@@ -696,6 +696,26 @@ class ScheduleRegisterTests(_Seeded):
             self.assertAlmostEqual(obs["life_hours_for_weibull"], obs["life_hours_raw_elapsed"], places=6)
             self.assertAlmostEqual(obs["excluded_weekend_hours"], 0.0, places=6)
 
+    def test_a_change_of_plant_time_zone_flags_saved_results_until_run_again(self):
+        # The zone splits the days, so changing it, or installing the zone database a
+        # run fell back to UTC without, moves every life's hours.
+        self._add_all(MONTHLY)
+        self.assertTrue(self._perform().time_zone_current)
+        with self.service.write_connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS availability_settings (id INTEGER PRIMARY KEY, timezone TEXT)")
+            conn.execute("INSERT OR REPLACE INTO availability_settings (id, timezone) VALUES (1, 'America/New_York')")
+
+        saved = self._saved()
+        self.assertFalse(saved.time_zone_current)
+        self.assertEqual(saved.current_time_zone, "America/New_York")
+        self.assertTrue(saved.schedule_current)
+        self.assertFalse(self.service.latest_failure_mechanism_beta_rankings("A-1")[0]["time_zone_current"])
+        with self.assertRaisesRegex(ValueError, "split at midnight America/Chicago, but the plant's time zone is now America/New_York"):
+            self.service.build_weibull_report_docx("A-1", {"result_id": saved.result_id}, self.tmp / "report.docx")
+        again = self._perform()
+        self.assertTrue(again.time_zone_current)
+        self.assertEqual(again.life_basis["time_zone"], "America/New_York")
+
     def test_a_change_is_recorded_and_flags_saved_results_until_run_again(self):
         self._add_all(MONTHLY)
         self._perform()

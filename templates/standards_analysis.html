@@ -252,9 +252,11 @@
         mechanism that has never been fitted is not on the list, and nor is
         a saved fit resting on fewer than five lives that end in a failure.
         A fit saved under an earlier version of the method is listed with
-        "saved under an earlier method; run it again" after it, and one counted
+        "saved under an earlier method; run it again" after it, one counted
         on a schedule its asset has since been moved off with "counted on the
-        asset's old schedule; run it again".
+        asset's old schedule; run it again", and one whose days were split in
+        another time zone than the plant's now with "counted in an earlier
+        plant time zone; run it again".
       </p>
     </section>
 
@@ -960,7 +962,7 @@
       <h4>Adjusting, saving and reporting</h4>
       <ul>
         <li><strong>Each failure group keeps only its latest run.</strong> A run saves its dataset, lives, Kaplan-Meier points, curve and result, stamped with its analysis window, and viewers see that saved result. Running the group again picks up every disposition saved since and replaces the previous run, along with any adjusted parameters saved against it, so earlier runs are not kept. A run the data can no longer support, with fewer than five failure lives or no likelihood root, removes the group's saved result too. A failure mode and each mechanism under it are separate groups: running one leaves the others' saved results as they were.</li>
-        <li><strong>Every run is stamped with the method it was built by</strong> (life-data-v3 today) and the GREMLIN code it ran on. A result saved under an earlier method shows a notice saying what has changed since; it stays in the rankings, marked, but can't be reported until it is run again. So does a result counted on a schedule its asset has since been moved off. One resting on fewer than five failure lives is not ranked or reported either.</li>
+        <li><strong>Every run is stamped with the method it was built by</strong> (life-data-v3 today) and the GREMLIN code it ran on. A result saved under an earlier method shows a notice saying what has changed since; it stays in the rankings, marked, but can't be reported until it is run again. So does a result counted on a schedule its asset has since been moved off, and one whose days were split at midnight in a time zone other than the plant's current one: a change of the plant's zone, or the zone database being installed after a run fell back to UTC without it, moves every life's hours. One resting on fewer than five failure lives is not ranked or reported either.</li>
         <li><strong>Editors can try other values of β and η</strong> (the inputs step by 0.2 and by 100 hours) and the charts redraw as they type. Save Adjusted Parameters stores the pair with a reason beside the fitted result, never replacing it. A saved pair lasts until the group is run again, and the page does not show it again: the inputs always open on the fitted values.</li>
         <li><strong>Generate Weibull Report</strong>, for editors, writes a Word report numbered REL-WBL-RPT, the asset number and a running number. It carries what REL-WBL-MTH-001 §10 asks of an analysis package, at the fitted values: the population and its grouping level; the life basis, schedule and time zone, labelled as an exposure proxy; the analysis window and where its cutoff came from; the lives, split into complete, censored at a PM reset and current; β, η, MTTF, B10, B50, their intervals and the reliability at the age entered on the page; the charts; the interpretation summary; the limitations and assumptions; every life it rests on, with its notes; and the method and code version. It opens with REL-WBL-VAL-001's caveat that GREMLIN's Weibull automation is not yet validated, so the report is for reliability engineering review, not a stand-alone maintenance directive. A failure-mode report also asks for, states and keeps with the population the reason a mechanism could not be fitted instead (REL-WBL-PLN-003 §8). The report is downloaded rather than stored: GREMLIN logs its number, so that no number is used twice, but keeps no copy. Keep the download if a run's results need a record, because running the group again replaces them.</li>
         <li><strong>Clicking a Task ID</strong> in the Weibull data table opens that work order's disposition for an editor; saving it runs the analysis again, which replaces the saved run as above. Viewers see the Task ID as plain text.</li>
