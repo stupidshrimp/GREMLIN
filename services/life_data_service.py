@@ -70,6 +70,12 @@ WEIBULL_METHOD_VERSION = "life-data-v3"
 # beta below 1, the reading that steers away from age-based PM. Flagged rather
 # than dropped: a genuine repeat failure is real repair-quality information.
 DUPLICATE_CHECK_RAW_HOURS = 1.0
+# Repeat Fix Rate: a failure is a repeat when it follows the mechanism's last one
+# within this many scheduled hours, and a mechanism needs this many intervals before
+# its rate is ranked, so one quick repeat out of two failures doesn't top the list.
+REPEAT_FIX_DEFAULT_WINDOW_HOURS = 24.0
+REPEAT_FIX_MAX_WINDOW_HOURS = 720.0
+REPEAT_FIX_MIN_INTERVALS = 5
 
 # The interpretation-summary row for the probability plot's R² (REL-WBL-REQ-001
 # VV-070, VV-074), by which a saved summary that predates it is recognised.
@@ -2709,6 +2715,156 @@ class LifeDataService:
             "monthly_counts": monthly_counts,
             "rows": table_rows,
             "has_pm_history": bool(pms),
+        }
+
+    def repeat_fix_rate(self, asset_number: str, window_hours: float = REPEAT_FIX_DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
+        """How often a failure comes straight back after it was fixed, per mechanism.
+
+        Reads the failures Weibull reads -- current INCLUDED_FAILURE dispositions with
+        Include in Weibull Candidate, each with a mechanism, dated by its completed date
+        alone -- and, mechanism by mechanism, measures the gap from each failure to the
+        one after it in scheduled hours, on the asset's Weibull schedule and the plant's
+        time zone, just as a Weibull life is measured. A failure is a repeat when that
+        gap is ``window_hours`` or less: the fix before it did not hold.
+
+        The repeat rate is repeats over intervals, an interval being each failure after
+        a mechanism's first. A PM reset does not break the chain, since the question is
+        whether the last repair held. This is report-only: nothing here changes which
+        lives the Weibull fit uses.
+        """
+
+        window = float(window_hours)
+        with self.connect() as conn:
+            schedule_id = self._schedule_class_id(conn, asset_number)
+            schedule = conn.execute(
+                "SELECT schedule_class_name, hours_per_day, exclude_weekends FROM asset_schedule_class WHERE schedule_class_id = ?",
+                (schedule_id,),
+            ).fetchone()
+            zone, zone_name, zone_warning = self._plant_time_zone(conn)
+            rows = conn.execute(
+                """
+                SELECT
+                    d.failure_mode_id,
+                    d.failure_mechanism_id,
+                    COALESCE(fmech.failure_mechanism_name, 'Unspecified mechanism') AS failure_mechanism_name,
+                    COALESCE(fm.failure_mode_name, 'Unspecified mode') AS failure_mode_name,
+                    m.mapped_record_id,
+                    m.task_id,
+                    m.task_name,
+                    m.completed_date_final
+                FROM mapped_cmms_record m
+                JOIN event_disposition d ON d.mapped_record_id = m.mapped_record_id AND d.is_current = 1
+                LEFT JOIN failure_mode fm ON fm.failure_mode_id = d.failure_mode_id
+                LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
+                WHERE m.asset_number = :asset_number
+                  AND d.disposition_category = 'INCLUDED_FAILURE'
+                  AND d.include_in_weibull_candidate = 1
+                  AND d.failure_mechanism_id IS NOT NULL
+                ORDER BY gremlin_sort_datetime(m.completed_date_final), m.mapped_record_id
+                """,
+                {"asset_number": asset_number},
+            ).fetchall()
+
+        hours_per_day = float(schedule["hours_per_day"])
+        exclude_weekends = bool(schedule["exclude_weekends"])
+        mechanisms: dict[tuple[int, int], dict[str, Any]] = {}
+        undated = 0
+        for row in rows:
+            completed = self._parse_datetime(row["completed_date_final"])
+            if completed is None:
+                undated += 1
+                continue
+            key = (int(row["failure_mode_id"]), int(row["failure_mechanism_id"]))
+            mechanism = mechanisms.setdefault(
+                key,
+                {
+                    "failure_mode_id": key[0],
+                    "failure_mechanism_id": key[1],
+                    "failure_mode_name": row["failure_mode_name"],
+                    "failure_mechanism_name": row["failure_mechanism_name"],
+                    "events": [],
+                },
+            )
+            mechanism["events"].append((completed, row))
+
+        results = []
+        pairs = []
+        for mechanism in mechanisms.values():
+            events = sorted(mechanism.pop("events"), key=lambda e: (e[0], int(e[1]["mapped_record_id"])))
+            repeats = 0
+            for (prior_dt, prior), (repeat_dt, repeat) in zip(events, events[1:]):
+                scheduled, _, _ = self._scheduled_life_hours(
+                    prior_dt, repeat_dt, hours_per_day, exclude_weekends=exclude_weekends, tz=zone
+                )
+                if scheduled > window:
+                    continue
+                repeats += 1
+                raw = (repeat_dt - prior_dt).total_seconds() / 3600.0
+                pairs.append(
+                    {
+                        "failure_mode_id": mechanism["failure_mode_id"],
+                        "failure_mechanism_id": mechanism["failure_mechanism_id"],
+                        "failure_mechanism_name": mechanism["failure_mechanism_name"],
+                        "failure_mode_name": mechanism["failure_mode_name"],
+                        "prior_task_id": prior["task_id"],
+                        "prior_mapped_record_id": int(prior["mapped_record_id"]),
+                        "prior_task_name": prior["task_name"],
+                        "prior_completed": prior_dt.isoformat(),
+                        "repeat_task_id": repeat["task_id"],
+                        "repeat_mapped_record_id": int(repeat["mapped_record_id"]),
+                        "repeat_task_name": repeat["task_name"],
+                        "repeat_completed": repeat_dt.isoformat(),
+                        "scheduled_hours": round(scheduled, 2),
+                        "raw_hours": round(raw, 2),
+                        "duplicate_check": self._duplicate_check_flag(raw),
+                    }
+                )
+            intervals = len(events) - 1
+            results.append(
+                {
+                    **mechanism,
+                    "failures": len(events),
+                    "intervals": intervals,
+                    "repeats": repeats,
+                    "repeat_rate": round(repeats / intervals, 4) if intervals > 0 else None,
+                }
+            )
+        results.sort(key=lambda m: (-m["repeats"], -(m["repeat_rate"] or 0.0), -m["failures"], m["failure_mechanism_name"]))
+        pairs.sort(key=lambda p: (p["repeat_completed"], p["repeat_mapped_record_id"]))
+
+        total_intervals = sum(m["intervals"] for m in results)
+        total_repeats = sum(m["repeats"] for m in results)
+        rated = [m for m in results if m["intervals"] >= REPEAT_FIX_MIN_INTERVALS and m["repeats"] > 0]
+        highest = max(rated, key=lambda m: (m["repeat_rate"], m["repeats"]), default=None)
+        most = results[0] if results and results[0]["repeats"] > 0 else None
+
+        def entry(mechanism: dict[str, Any] | None) -> dict[str, Any] | None:
+            if mechanism is None:
+                return None
+            return {key: mechanism[key] for key in (
+                "failure_mode_id", "failure_mechanism_id", "failure_mechanism_name", "failure_mode_name",
+                "failures", "intervals", "repeats", "repeat_rate",
+            )}
+
+        return {
+            "asset_number": asset_number,
+            "window_hours": window,
+            "min_intervals_for_rate": REPEAT_FIX_MIN_INTERVALS,
+            "schedule_name": schedule["schedule_class_name"],
+            "hours_per_day": hours_per_day,
+            "exclude_weekends": exclude_weekends,
+            "time_zone": zone_name,
+            "time_zone_warning": zone_warning,
+            "failures": sum(m["failures"] for m in results),
+            "undated_failures": undated,
+            "intervals": total_intervals,
+            "repeats": total_repeats,
+            "repeat_rate": round(total_repeats / total_intervals, 4) if total_intervals else None,
+            "possible_duplicates": sum(1 for p in pairs if p["duplicate_check"]),
+            "highest_rate": entry(highest),
+            "most_repeats": entry(most),
+            "mechanisms": results,
+            "pairs": pairs,
         }
 
     @staticmethod

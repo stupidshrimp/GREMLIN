@@ -156,6 +156,7 @@ def test_every_analysis_type_on_offer_has_its_own_card(standards):
         "Failure Mode Trend Analysis",
         "Downtime Driver Analysis",
         "PM Effectiveness Analysis",
+        "Repeat Fix Rate Analysis",
     ]
     panel = _panel(standards, "analysis")
     for analysis_type in offered:

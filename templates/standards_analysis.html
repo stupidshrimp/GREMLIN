@@ -10,11 +10,11 @@
     <div>
       <h2>Analysis</h2>
       <p>
-        Perform an Analysis offers four analysis types, each run on one asset at
-        a time. All four start from the dispositions people save, on the
+        Perform an Analysis offers five analysis types, each run on one asset at
+        a time. All five start from the dispositions people save, on the
         Disposition page or from a record's link in an analysis table, except
         that PM effectiveness picks its PMs by their record class. The first
-        card covers what every analysis reads; the other four explain each
+        card covers what every analysis reads; the other five explain each
         analysis in depth.
       </p>
     </div>
@@ -53,7 +53,7 @@
             <tr><th scope="col">Category</th><th scope="col">For</th><th scope="col">What the analyses do with it</th></tr>
           </thead>
           <tbody>
-            <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Counted while Include in Weibull Candidate is ticked; the Pareto, trend, downtime driver and PM effectiveness analyses also need a failure mechanism. Needs a failure mode.</td></tr>
+            <tr><td>Included failure</td><td>Work orders</td><td>A failure of its failure mode and mechanism. Counted while Include in Weibull Candidate is ticked; the Pareto, trend, downtime driver, PM effectiveness and repeat fix rate analyses also need a failure mechanism. Needs a failure mode.</td></tr>
             <tr><td>Included PM reset event</td><td>PMs</td><td>A PM that renewed the asset against one failure mode, and optionally one mechanism. Starts a new life in Weibull analysis, for only what it restores (see <a href="#weibull-intervals">Events, life intervals and censoring</a>), and is never counted as a failure. Needs an Approved reset, a reset target and a written rationale.</td></tr>
             <tr><td>Included censored asset event</td><td>Work orders</td><td>Survival with no recurrence through the cutoff. Kept for traceability; none of the four analyses reads it, because the fit already adds the current life by itself. Needs a failure mode.</td></tr>
             <tr><td>Held ambiguous</td><td>Both</td><td>Probably relevant but not decidable yet. Left out until resolved; needs a note saying what is missing.</td></tr>
@@ -1343,6 +1343,137 @@
         mechanism is simply rare, and every PM on the asset counts, not only
         those aimed at this mechanism, so compare it with the trend and the
         Weibull fit before changing a PM.
+      </p>
+    </section>
+  {% endcall %}
+
+  {# ======================================================================
+     Repeat fix rate
+     ====================================================================== #}
+  {% call std.doc_card(
+      "analysis-repeat",
+      "Repeat fix rate",
+      "Counts how often a failure comes straight back after a repair, mechanism by mechanism, across the whole asset.",
+      eyebrow="Repeat Fix Rate Analysis") %}
+
+    <section class="std-section" id="repeat-data">
+      <h4>What it reads</h4>
+      <p>
+        The failures a Weibull fit reads: the asset's included failures with
+        Include in Weibull Candidate ticked and a failure mechanism, each dated
+        by its completed date alone, as a Weibull life is. A failure with no
+        completed date cannot be placed, so it is left out and the page says
+        how many were. Every mechanism on the asset is counted at once, so
+        nothing needs picking first.
+      </p>
+      <p>
+        Each mechanism's failures are put in date order, a tie going to the
+        record imported first. Another mechanism's failure in between neither
+        starts nor ends a gap, and neither does a PM reset: the question is
+        whether the last repair held, not how long the part has run.
+      </p>
+    </section>
+
+    <section class="std-section" id="repeat-gaps">
+      <h4>Gaps and repeats</h4>
+      <p>
+        The gap between one failure and the next of the same mechanism is in
+        scheduled hours, counted exactly as equation W1 counts a life: on the
+        asset's schedule in the Weibull schedule register, the plant default
+        otherwise, with days split at midnight on the plant's clock. A repair
+        finished on Friday afternoon that fails again first thing on Monday
+        has had only a few hours of running, and the weekend does not hide that.
+      </p>
+      {% call std.equation("R1", "a failure is a repeat when the scheduled hours since the last failure of the same mechanism are at most the repeat window, 24 hours unless another is entered") %}
+      <math display="block">
+        <msub><mi>g</mi><mi>j</mi></msub><mo>=</mo><mi>L</mi><mo stretchy="false">(</mo><msub><mi>t</mi><mrow><mi>j</mi><mo>&#x2212;</mo><mn>1</mn></mrow></msub><mo>,</mo><msub><mi>t</mi><mi>j</mi></msub><mo stretchy="false">)</mo>
+        <mspace width="2em"></mspace>
+        <mtext>repeat when&#xA0;</mtext><msub><mi>g</mi><mi>j</mi></msub><mo>&#x2264;</mo><mi>w</mi>
+      </math>
+      {% endcall %}
+      {% call std.equation("R2", "the repeat fix rate is the number of repeats over the number of gaps, a mechanism with n failures having n minus one gaps") %}
+      <math display="block">
+        <mi>RFR</mi><mo>=</mo><mfrac><mrow><mo stretchy="false">|</mo><mo stretchy="false">{</mo><mi>j</mi><mo>:</mo><msub><mi>g</mi><mi>j</mi></msub><mo>&#x2264;</mo><mi>w</mi><mo stretchy="false">}</mo><mo stretchy="false">|</mo></mrow><mrow><mi>n</mi><mo>&#x2212;</mo><mn>1</mn></mrow></mfrac>
+      </math>
+      {% endcall %}
+      <dl class="std-where">
+        <dt><math><msub><mi>t</mi><mi>j</mi></msub></math></dt><dd>The completed date of the mechanism's <math><mi>j</mi></math>-th failure, <math><mi>j</mi><mo>=</mo><mn>2</mn><mo>,</mo><mo>&#x2026;</mo><mo>,</mo><mi>n</mi></math>.</dd>
+        <dt><math><mi>L</mi></math></dt><dd>Scheduled life hours between two instants, equation W1.</dd>
+        <dt><math><mi>w</mi></math></dt><dd>The repeat window, in scheduled hours: 24 unless another is entered on the page, from more than 0 up to 720.</dd>
+      </dl>
+      <p>
+        The asset's rate on the first summary card is the same ratio over every
+        mechanism together: all the repeats over all the gaps.
+      </p>
+      {% call std.figure("R1", "A repair finished on Friday at 16:00 and the next failure of the same mechanism completed on Monday at 10:00. That is 66 calendar hours, but the weekend counts for nothing and the 8 Friday and 10 Monday hours count at 20/24, so on the 20-hour schedule the gap is 15 scheduled hours: within the 24-hour window, a repeat.") %}
+      <svg viewBox="0 0 760 196" role="img" aria-labelledby="fig-r1-title fig-r1-desc">
+        <title id="fig-r1-title">A repeat across a weekend</title>
+        <desc id="fig-r1-desc">Four day columns, Friday to Monday. A failure on Friday at 16:00 and the next on Monday at 10:00. The last 8 hours of Friday and first 10 hours of Monday are weekday time; Saturday and Sunday are left out.</desc>
+        <text class="fig-text-small" x="185" y="34" text-anchor="middle">Fri</text>
+        <text class="fig-text-small" x="335" y="34" text-anchor="middle">Sat</text>
+        <text class="fig-text-small" x="485" y="34" text-anchor="middle">Sun</text>
+        <text class="fig-text-small" x="635" y="34" text-anchor="middle">Mon</text>
+        <rect class="fig-box" x="110" y="44" width="600" height="44"/>
+        <path class="fig-grid" d="M260 44 V88 M410 44 V88 M560 44 V88"/>
+        <rect class="fig-weekday" x="210" y="48" width="50" height="36"/>
+        <rect class="fig-weekend" x="260" y="48" width="150" height="36"/>
+        <rect class="fig-weekend" x="410" y="48" width="150" height="36"/>
+        <rect class="fig-weekday" x="560" y="48" width="62.5" height="36"/>
+        <text class="fig-text-small" x="335" y="70" text-anchor="middle">left out</text>
+        <text class="fig-text-small" x="485" y="70" text-anchor="middle">left out</text>
+        <path class="fig-danger-line" d="M210 40 V92 M622.5 40 V92"/>
+        <text class="fig-text-small" x="210" y="106" text-anchor="middle">16:00</text>
+        <text class="fig-text-small" x="622.5" y="106" text-anchor="middle">10:00</text>
+        <text class="fig-text-small" x="104" y="130" text-anchor="end">Elapsed</text>
+        <text class="fig-text-small" x="235" y="130" text-anchor="middle">8 h</text>
+        <text class="fig-text-small" x="410" y="130" text-anchor="middle">48 h</text>
+        <text class="fig-text-small" x="591" y="130" text-anchor="middle">10 h</text>
+        <text class="fig-text-small" x="104" y="152" text-anchor="end">Scheduled</text>
+        <text class="fig-text-small" x="235" y="152" text-anchor="middle">6.67</text>
+        <text class="fig-text-small" x="410" y="152" text-anchor="middle">0</text>
+        <text class="fig-text-small" x="591" y="152" text-anchor="middle">8.33</text>
+        <text class="fig-text-strong fig-text-small" x="410" y="182" text-anchor="middle">66 calendar hours, 15 scheduled hours: a repeat</text>
+      </svg>
+      {% endcall %}
+    </section>
+
+    <section class="std-section" id="repeat-cards">
+      <h4>The four summary cards</h4>
+      <ul>
+        <li><strong>Repeat Fix Rate:</strong> equation R2 over every mechanism on the asset, with the repeats and gaps behind it. With no mechanism having two dated failures there is no gap, and it reads Insufficient Data.</li>
+        <li><strong>Highest Rate:</strong> the mechanism with the highest rate among those with at least five gaps and one repeat, so one quick repeat out of two failures cannot top it.</li>
+        <li><strong>Most Repeats:</strong> the mechanism with the most repeats, whatever its number of gaps.</li>
+        <li><strong>Possible Duplicates:</strong> the repeats that completed less than an hour after the failure before them, by calendar time. These are the lives REL-WBL-DAT-004 §12 flags for a duplicate check: two work orders closed together are often one breakdown recorded twice.</li>
+      </ul>
+      <div class="std-example">
+        <p class="eyebrow">Worked example, 20-hour schedule</p>
+        <ul class="std-calc">
+          <li><span>Mon 09:00 to Tue 08:00</span><span>23 h &#xD7; 20/24 = 19.2 scheduled hours: a repeat</span></li>
+          <li><span>Tue 08:00 to Fri 16:00 the next week</span><span>200 weekday hours &#xD7; 20/24 = 166.7 scheduled hours: the fix held</span></li>
+          <li><span>Fri 16:00 to Mon 10:00, figure R1</span><span>15 scheduled hours: a repeat</span></li>
+          <li><span>Mon 10:00 to Mon 10:00 two weeks on</span><span>200 scheduled hours: the fix held</span></li>
+          <li><span>Five failures, four gaps</span><span>2 / 4 = <span class="std-result">50%</span></span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="std-section" id="repeat-views">
+      <h4>Tables and the window</h4>
+      <ul>
+        <li><strong>Repeat fix rate by mechanism</strong> lists every mechanism with its failures, gaps, repeats and rate, the most repeats first. The line under it names the schedule and time zone the hours were counted on.</li>
+        <li><strong>Repeat failures</strong> lists each repeat with the failure before it: both work order numbers and completed dates, and the gap in scheduled and in calendar hours. Editors can click either number to review its disposition. Clicking a Pareto bar or a row in the table above lists only that mechanism's repeats; clicking it again, or Show every mechanism, lists them all.</li>
+        <li><strong>The window</strong> box changes <math><mi>w</mi></math> and counts again. Perform Analysis counts again too, with whatever is in the box.</li>
+      </ul>
+      <p>
+        <strong>Reading it:</strong> a high rate says repairs on that mechanism
+        often do not hold: a wrong diagnosis, a part fitted or adjusted badly,
+        or the work order closed before the fault was cleared. It is also
+        one reason a Weibull fit of the same mechanism can come out with beta
+        below 1, since each quick repeat is a very short life. The analysis is
+        report-only: the Weibull fit keeps every one of those lives, and
+        nothing here changes it. Check the possible duplicates first, and read
+        the repeats' narratives before deciding the repair, not the PM, is
+        what needs changing.
       </p>
     </section>
   {% endcall %}

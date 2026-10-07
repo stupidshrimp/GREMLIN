@@ -30,6 +30,8 @@ from services.life_data_service import (
     NARRATIVE_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
+    REPEAT_FIX_DEFAULT_WINDOW_HOURS,
+    REPEAT_FIX_MAX_WINDOW_HOURS,
     RISK_WINDOW_WEEKS,
     WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
@@ -1400,6 +1402,13 @@ SEARCH_ENTRIES = [
         "keywords": ["failures following pm", "preventive maintenance", "pm to failure"],
     },
     {
+        "label": "Repeat Fix Rate Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Repeat+Fix+Rate+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["repeat failure", "repair quality", "came back", "rework", "fix did not hold"],
+    },
+    {
         "label": "Disposition Work Orders",
         "url": "/life-data-analysis/disposition?kind=wo",
         "kind": "function",
@@ -1547,6 +1556,13 @@ SEARCH_ENTRIES = [
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["days to failure", "failures after pm", "pm rating", "preventive maintenance"],
+    },
+    {
+        "label": "Repeat Fix Rate Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-repeat",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["repeat window", "repeat failure", "repair quality", "scheduled hours"],
     },
     {
         "label": "How GREMLIN works",
@@ -2690,6 +2706,26 @@ def api_pm_effectiveness():
             )
         }
     )
+
+
+@app.route("/life-data-analysis/api/repeat-fixes")
+@life_data_api
+def api_repeat_fixes():
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    window_raw = request.values.get("window_hours")
+    window_hours = REPEAT_FIX_DEFAULT_WINDOW_HOURS
+    if window_raw not in (None, ""):
+        try:
+            window_hours = float(window_raw)
+        except (TypeError, ValueError):
+            raise LifeDataApiError("The repeat window must be a number of scheduled hours.", status_code=400)
+        if not math.isfinite(window_hours) or window_hours <= 0 or window_hours > REPEAT_FIX_MAX_WINDOW_HOURS:
+            raise LifeDataApiError(
+                f"The repeat window must be more than 0 and at most {REPEAT_FIX_MAX_WINDOW_HOURS:g} scheduled hours.",
+                status_code=400,
+            )
+    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours)})
 
 
 @app.route("/life-data-analysis/api/downtime-drivers")

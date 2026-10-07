@@ -34,6 +34,7 @@
     TREND: "Failure Mode Trend Analysis",
     DOWNTIME: "Downtime Driver Analysis",
     PM: "PM Effectiveness Analysis",
+    REPEAT: "Repeat Fix Rate Analysis",
   };
   // The editable half of a disposition, per record kind, as columns: what the
   // disposition table draws after the read-only record columns, and what the
@@ -113,6 +114,14 @@
     downtimeSelection: null,
     downtimeData: null,
     downtimeToken: 0,
+    // Repeat Fix Rate Analysis: `repeatData` is the latest asset-wide payload from the
+    // repeat-fixes endpoint, `repeatWindow` the scheduled hours it was counted with,
+    // `repeatFilter` the one mechanism the repeats list is narrowed to (null for
+    // all), and `repeatToken` drops stale responses.
+    repeatData: null,
+    repeatWindow: 24,
+    repeatFilter: null,
+    repeatToken: 0,
     // `latestResult` is the Weibull result rendered in the workspace; `analysisToken`
     // drops stale responses (same pattern as the PM and Downtime analyses above), so an
     // older group's result -- or its "nothing saved" empty state -- cannot land on top
@@ -757,6 +766,9 @@
       state.downtimeSelection = null;
       state.downtimeData = null;
       state.downtimeToken += 1;
+      state.repeatData = null;
+      state.repeatFilter = null;
+      state.repeatToken += 1;
       // Same for a Weibull lookup still in flight: clearWorkspace() below empties the
       // workspace, and a late response for the old asset must not refill it.
       state.analysisToken += 1;
@@ -838,6 +850,9 @@
         if (state.downtimeSelection) loadDowntime();
         else renderDowntime();
       }
+      // Repeat Fix Rate reads the same included failures, so a disposition change
+      // can make or break a repeat: re-fetch it whenever it is showing.
+      if (state.analysisType === ANALYSIS_TYPES.REPEAT) loadRepeatFixes();
       offerAnalysisResultsTour();
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
@@ -1114,6 +1129,7 @@
     [ANALYSIS_TYPES.TREND]: "lda-trend-chart-panel",
     [ANALYSIS_TYPES.PM]: "lda-pm-chart-panel",
     [ANALYSIS_TYPES.DOWNTIME]: "lda-downtime-trend-panel",
+    [ANALYSIS_TYPES.REPEAT]: "lda-repeat-pairs-panel",
   };
 
   // Scroll to the active analysis type's first result panel. Deferred to the next
@@ -1138,6 +1154,8 @@
       return selectPmMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
       return selectDowntimeMechanism(row);
+    } else if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
+      return selectRepeatMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
       return runParetoMechanism(row);
     }
@@ -1249,6 +1267,19 @@
       selectDowntimeMechanism(active);
       return true;
     }
+    if (type === ANALYSIS_TYPES.REPEAT) {
+      // The repeats load for every mechanism anyway; the carried one only narrows
+      // the list, so the type's own load below still runs.
+      state.repeatFilter =
+        active.failure_mechanism_id != null
+          ? {
+              failure_mode_id: active.failure_mode_id,
+              failure_mechanism_id: active.failure_mechanism_id,
+              label: pmSelectionLabel(active),
+            }
+          : null;
+      return false;
+    }
     if (type === ANALYSIS_TYPES.WEIBULL) {
       if (active.failure_mode_id == null) return false;
       const groupingLevel = weibullGroupingLevel(active);
@@ -1274,7 +1305,8 @@
     const isTrend = type === ANALYSIS_TYPES.TREND;
     const isPm = type === ANALYSIS_TYPES.PM;
     const isDowntime = type === ANALYSIS_TYPES.DOWNTIME;
-    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime;
+    const isRepeat = type === ANALYSIS_TYPES.REPEAT;
+    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime && !isRepeat;
 
     const heading = $("lda-step-2");
     if (heading) {
@@ -1286,6 +1318,8 @@
         ? "PM effectiveness summary"
         : isDowntime
         ? "Downtime driver summary"
+        : isRepeat
+        ? "Repeat fix rate summary"
         : type;
     }
 
@@ -1306,6 +1340,9 @@
     setHidden($("lda-downtime-dist-panel"), !isDowntime);
     setHidden($("lda-downtime-asset-panel"), !isDowntime);
     setHidden($("lda-downtime-events-panel"), !isDowntime);
+    setHidden($("lda-repeat-summary"), !isRepeat);
+    setHidden($("lda-repeat-rate-panel"), !isRepeat);
+    setHidden($("lda-repeat-pairs-panel"), !isRepeat);
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
     // The beta panel now sits in its own full-width row above the Pareto, so
@@ -1345,6 +1382,10 @@
       // mid-request type switch) re-fetches instead of showing the reselect prompt.
       if (state.downtimeSelection && !state.downtimeData) loadDowntime();
       else renderDowntime();
+    }
+    if (isRepeat) {
+      if (state.selectedAsset && !state.repeatData) loadRepeatFixes();
+      else renderRepeat();
     }
   }
 
@@ -2304,6 +2345,266 @@
           el("td", { text: row.failure_mechanism_name || "" }),
           el("td", { text: row.downtime_hours != null ? `${fmt(row.downtime_hours)} h` : "" }),
           recordNumberCell(row.corrective_wo_number, { mappedRecordId: row.corrective_mapped_record_id, kind: "wo" }),
+        ])
+      );
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  // ---- repeat fix rate -------------------------------------------------------
+  // Asset-wide: every mechanism's repeats load at once, so there is nothing to pick
+  // before it draws. A Pareto click, or a row in the rate table, narrows the list of
+  // repeats to one mechanism; clicking the same one again shows them all.
+  function repeatWindowHours() {
+    const input = $("lda-repeat-window");
+    const value = input ? Number(input.value) : state.repeatWindow;
+    if (!isFinite(value) || value <= 0 || value > 720) return null;
+    return value;
+  }
+
+  function onRepeatWindowChange() {
+    const value = repeatWindowHours();
+    if (value == null) {
+      showBanner("The repeat window must be more than 0 and at most 720 scheduled hours.", "error");
+      const input = $("lda-repeat-window");
+      if (input) input.value = String(state.repeatWindow);
+      return;
+    }
+    if (value === state.repeatWindow && state.repeatData) return;
+    state.repeatWindow = value;
+    loadRepeatFixes();
+  }
+
+  async function loadRepeatFixes(opts) {
+    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
+    if (state.pageMode === "disposition") return;
+    if (!state.selectedAsset) {
+      renderRepeat();
+      return;
+    }
+    const asset = state.selectedAsset;
+    const windowHours = state.repeatWindow;
+    const token = ++state.repeatToken;
+    const isStale = () =>
+      token !== state.repeatToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== ANALYSIS_TYPES.REPEAT;
+    beginLoading("Finding repeat failures…");
+    try {
+      const params = new URLSearchParams({ asset, window_hours: String(windowHours) });
+      const data = await getJson(`${API}/repeat-fixes?${params.toString()}`);
+      if (isStale()) return;
+      state.repeatData = data.repeat_fixes || null;
+      renderRepeat();
+      if (scrollWhenRendered) scrollToAnalysisPanel();
+    } catch (err) {
+      if (!isStale()) {
+        state.repeatData = null;
+        showBanner(err.message, "error");
+        renderRepeat();
+      }
+    } finally {
+      endLoading();
+    }
+  }
+
+  // Narrow the repeats list to one mechanism, or show them all again when it is the
+  // one already shown. Resolves once drawn, for the tour.
+  function selectRepeatMechanism(row) {
+    if (row == null || row.failure_mechanism_id == null) {
+      showBanner("Repeat fix rate is per failure mechanism. Pick a mechanism-level Pareto bar.", "error");
+      return undefined;
+    }
+    setActiveMechanism(row);
+    state.repeatFilter = selectionMatches(state.repeatFilter, row)
+      ? null
+      : {
+          failure_mode_id: row.failure_mode_id,
+          failure_mechanism_id: row.failure_mechanism_id,
+          label: pmSelectionLabel(row),
+        };
+    if (!state.repeatData) return loadRepeatFixes({ scrollToPanel: true });
+    renderRepeat();
+    scrollToAnalysisPanel();
+    return undefined;
+  }
+
+  function clearRepeatFilter() {
+    state.repeatFilter = null;
+    renderRepeat();
+  }
+
+  function renderRepeat() {
+    renderRepeatCards();
+    renderRepeatRates();
+    renderRepeatPairs();
+  }
+
+  function fmtRate(rate) {
+    return rate == null ? "—" : `${fmt(rate * 100, 3)}%`;
+  }
+
+  function renderRepeatCards() {
+    const grid = $("lda-repeat-cards");
+    const message = $("lda-repeat-message");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const data = state.repeatData;
+    if (!data) {
+      if (message) {
+        message.hidden = false;
+        message.textContent = state.selectedAsset ? "Finding repeat failures…" : "Select an asset to find its repeat failures.";
+      }
+      return;
+    }
+    // [label, value, detail]: a mechanism's card names it under the value, the way
+    // the Failure Mode Trend cards do.
+    const mechanismCard = (label, entry, value) =>
+      entry
+        ? [label, value(entry), `${entry.failure_mechanism_name}: ${entry.repeats} of ${entry.intervals} gaps`]
+        : [label, "None", null];
+    const cards = [
+      [
+        "Repeat Fix Rate",
+        data.repeat_rate == null ? "Insufficient Data" : fmtRate(data.repeat_rate),
+        data.repeat_rate == null ? null : `${data.repeats} of ${data.intervals} gaps`,
+      ],
+      mechanismCard(`Highest Rate (${data.min_intervals_for_rate}+ gaps)`, data.highest_rate, (e) => fmtRate(e.repeat_rate)),
+      mechanismCard("Most Repeats", data.most_repeats, (e) => String(e.repeats)),
+      ["Possible Duplicates", String(data.possible_duplicates ?? 0), "repeats within 1 calendar hour"],
+    ];
+    cards.forEach(([label, value, detail]) => {
+      grid.appendChild(
+        el("div", { class: "lda-metric lda-trend-metric" }, [
+          el("span", { class: "lda-metric-label", text: label }),
+          el("span", { class: "lda-metric-value lda-trend-metric-value", text: value }),
+          detail ? el("span", { class: "lda-metric-label", text: detail }) : null,
+        ])
+      );
+    });
+    if (message) {
+      const notes = [];
+      if (!data.intervals) {
+        notes.push("No mechanism on this asset has two dated included failures yet, so there is no gap to measure.");
+      }
+      if (data.undated_failures) {
+        notes.push(
+          `${data.undated_failures} included ${data.undated_failures === 1 ? "failure has" : "failures have"} no completed ` +
+            "date and could not be placed."
+        );
+      }
+      if (data.possible_duplicates) {
+        notes.push(
+          "A possible duplicate closed within an hour of the failure before it: check it is not the same breakdown " +
+            "recorded twice before reading it as a repeat."
+        );
+      }
+      message.hidden = !notes.length;
+      message.textContent = notes.join(" ");
+    }
+  }
+
+  function renderRepeatRates() {
+    const wrap = $("lda-repeat-rate-wrap");
+    const basis = $("lda-repeat-basis");
+    const input = $("lda-repeat-window");
+    if (input && document.activeElement !== input) input.value = String(state.repeatWindow);
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.repeatData;
+    if (basis) {
+      basis.textContent = data
+        ? `Counted on the ${data.schedule_name} schedule, with days split at midnight ${data.time_zone}.` +
+          (data.time_zone_warning ? ` ${data.time_zone_warning}.` : "")
+        : "";
+    }
+    const headers = ["Failure Mechanism", "Failure Mode", "Failures", "Gaps", "Repeats", "Repeat Rate"];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    const rows = (data && data.mechanisms) || [];
+    if (!rows.length) {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", {
+            class: "lda-readonly lda-empty-row",
+            colspan: String(headers.length),
+            text: data ? "No included failures with a failure mechanism on this asset yet." : "",
+          }),
+        ])
+      );
+    }
+    rows.forEach((row) => {
+      const isActive = selectionMatches(state.repeatFilter, row);
+      tbody.appendChild(
+        el(
+          "tr",
+          {
+            class: `lda-trend-month-row${isActive ? " is-active" : ""}`,
+            title: "Click to list only this mechanism's repeats below",
+            onclick: () => selectRepeatMechanism(row),
+          },
+          [
+            el("td", { text: row.failure_mechanism_name || "" }),
+            el("td", { text: row.failure_mode_name || "" }),
+            el("td", { text: String(row.failures) }),
+            el("td", { text: String(row.intervals) }),
+            el("td", { text: String(row.repeats) }),
+            el("td", { text: fmtRate(row.repeat_rate) }),
+          ]
+        )
+      );
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  function renderRepeatPairs() {
+    const wrap = $("lda-repeat-pairs-wrap");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.repeatData;
+    const filter = state.repeatFilter;
+    const filterBar = $("lda-repeat-filter");
+    const filterText = $("lda-repeat-filter-text");
+    setHidden(filterBar, !filter);
+    if (filterText) filterText.textContent = filter ? `Showing ${filter.label} only.` : "";
+    const rows = ((data && data.pairs) || []).filter((pair) => !filter || selectionMatches(filter, pair));
+    const headers = [
+      "Failure Mechanism",
+      "Previous WO",
+      "Previous Completed",
+      "Repeat WO",
+      "Repeat Completed",
+      "Scheduled Hours",
+      "Calendar Hours",
+      "Check",
+    ];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    if (!rows.length) {
+      const text = !data
+        ? ""
+        : filter
+        ? `No repeats of ${filter.label} within ${fmt(data.window_hours)} scheduled hours.`
+        : `No failure came back within ${fmt(data.window_hours)} scheduled hours.`;
+      tbody.appendChild(
+        el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text })])
+      );
+    }
+    rows.forEach((pair) => {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { text: pair.failure_mechanism_name || "" }),
+          recordNumberCell(pair.prior_task_id, { mappedRecordId: pair.prior_mapped_record_id, kind: "wo" }),
+          el("td", { text: formatRecordDate(pair.prior_completed) }),
+          recordNumberCell(pair.repeat_task_id, { mappedRecordId: pair.repeat_mapped_record_id, kind: "wo" }),
+          el("td", { text: formatRecordDate(pair.repeat_completed) }),
+          el("td", { text: fmtFixed(pair.scheduled_hours, 3) }),
+          el("td", { text: fmtFixed(pair.raw_hours, 3) }),
+          el("td", { text: pair.duplicate_check ? "Possible duplicate" : "" }),
         ])
       );
     });
@@ -4057,6 +4358,12 @@
     if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
     if (state.analysisType === ANALYSIS_TYPES.PM) return performPmSelection();
     if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return performDowntimeSelection();
+    // Repeat Fix Rate covers every mechanism at once, so there is nothing to pick:
+    // the button counts the repeats again, with the window in the box.
+    if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
+      state.repeatWindow = repeatWindowHours() || state.repeatWindow;
+      return loadRepeatFixes({ scrollToPanel: true });
+    }
     if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
       showBanner(`${state.analysisType} is coming soon.`, "info");
       return;
@@ -6056,6 +6363,7 @@
     if (state.analysisType === ANALYSIS_TYPES.TREND) return Boolean(state.selectedTrend);
     if (state.analysisType === ANALYSIS_TYPES.PM) return Boolean(state.pmSelection);
     if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return Boolean(state.downtimeSelection);
+    if (state.analysisType === ANALYSIS_TYPES.REPEAT) return Boolean(state.repeatData);
     return true;
   }
 
@@ -6128,7 +6436,8 @@
       body: () =>
         "Weibull Analysis fits a life distribution to one failure mode or mechanism. Failure Mode " +
         "Trend counts it month by month, Downtime Driver shows where its downtime comes from, and " +
-        "PM Effectiveness how soon it fails after a PM. Switching keeps the mechanism you last picked. " +
+        "PM Effectiveness how soon it fails after a PM. Repeat Fix Rate shows how often each mechanism comes " +
+        "straight back after a repair. Switching keeps the mechanism you last picked. " +
         `The rest of this tour is about ${state.analysisType}; choose another and take the tour again for its panels.`,
     },
   ];
@@ -6138,6 +6447,7 @@
     [ANALYSIS_TYPES.TREND]: "chart its trend below.",
     [ANALYSIS_TYPES.PM]: "see how soon it follows a PM.",
     [ANALYSIS_TYPES.DOWNTIME]: "break its downtime down below.",
+    [ANALYSIS_TYPES.REPEAT]: "list only its repeat failures below.",
   };
 
   const ANALYSIS_RESULTS_TOUR_STEPS = [
@@ -6182,6 +6492,16 @@
         tourMechanismLead("shows") +
         "For the selected mechanism: its total, average, median and longest downtime, and how many " +
         "work orders it came from.",
+    },
+    {
+      target: "#lda-repeat-summary",
+      title: "Repeat fixes at a glance",
+      when: forType(ANALYSIS_TYPES.REPEAT),
+      body:
+        "How often a failure on this asset came back within the repeat window of the last one of the same " +
+        "mechanism, which says the repair did not hold. Highest Rate only ranks mechanisms with enough gaps " +
+        "between failures for the rate to mean something, and a possible duplicate is a repeat that closed " +
+        "within an hour, worth checking is not the same breakdown recorded twice.",
     },
     {
       target: "#lda-beta-panel",
@@ -6274,6 +6594,17 @@
         "Failures of the selected mechanism that came after a completed PM, month by month. From " +
         "and To narrow the months, and the table under it pairs each PM with the failure that " +
         "followed it.",
+    },
+    {
+      target: "#lda-repeat-rate-panel",
+      title: "Repeat fix rate by mechanism",
+      when: forType(ANALYSIS_TYPES.REPEAT),
+      body:
+        "Each mechanism's failures, the gaps between them, and how many of those gaps were within the " +
+        "window, in scheduled hours on the asset's Weibull schedule just as a Weibull life is counted, so a " +
+        "weekend does not hide a repeat. Change the hours in the box to widen or narrow it. The table under " +
+        "it lists every repeat with the failure before it; click a row here or a Pareto bar to see one " +
+        "mechanism's.",
     },
     {
       target: "#lda-downtime-trend-panel",
@@ -7051,6 +7382,11 @@
     if (pmFrom) pmFrom.addEventListener("change", onPmRangeChange);
     if (pmTo) pmTo.addEventListener("change", onPmRangeChange);
     if (pmReset) pmReset.addEventListener("click", resetPmRange);
+    // Repeat Fix Rate window and mechanism filter.
+    const repeatWindow = $("lda-repeat-window");
+    const repeatClear = $("lda-repeat-filter-clear");
+    if (repeatWindow) repeatWindow.addEventListener("change", onRepeatWindowChange);
+    if (repeatClear) repeatClear.addEventListener("click", clearRepeatFilter);
     // Set the initial secondary-panel visibility for the default analysis type.
     applyAnalysisTypeUI();
     window.addEventListener("resize", redrawCharts);
