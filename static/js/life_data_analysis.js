@@ -915,12 +915,13 @@
   }
 
   // The "Most likely to fail soon" window, in weeks: what the box says when that is a
-  // whole number of weeks from 1 to 52, otherwise the last window that was. The box is
+  // whole number of weeks from 1 to 52 (a fraction is refused, not rounded),
+  // otherwise the last window that was. The box is
   // put back to the window used, so the sentence around it never names another.
   function riskWeekValue(box) {
     const text = box ? String(box.value).trim() : "";
-    const weeks = Math.round(Number(text));
-    return text !== "" && isFinite(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
+    const weeks = Number(text);
+    return text !== "" && Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
   }
 
   function riskWeeks() {
