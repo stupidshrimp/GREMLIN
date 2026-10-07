@@ -286,10 +286,24 @@ class AnalysisWindowTests(_Seeded):
         self.assertLess(sequence["FS"], sequence["F3"])
         self.assertEqual(sorted(sequence, key=sequence.get), ["F1", "F2", "FS", "F3", "F4", "F5", "F6", "F7"])
 
+    def test_a_start_and_cutoff_on_the_same_day_is_a_one_day_window(self):
+        # Six failures on one Tuesday, closer together on some gaps than others.
+        hours = [(8, 0), (9, 30), (11, 0), (13, 15), (15, 0), (17, 40)]
+        self._add_all([(f"D{i}", _utc(2025, 3, 4, h, m)) for i, (h, m) in enumerate(hours)])
+        self._add("NEXT", _utc(2025, 3, 5, 9))
+
+        result = self._perform(analysis_start=date(2025, 3, 4), analysis_cutoff=date(2025, 3, 4))
+
+        self.assertEqual(result.analysis_start, datetime(2025, 3, 4, tzinfo=PLANT).astimezone(timezone.utc).isoformat())
+        self.assertEqual(result.analysis_cutoff, datetime(2025, 3, 5, tzinfo=PLANT).astimezone(timezone.utc).isoformat())
+        self.assertEqual(result.failure_count, len(hours) - 1)
+        notes = {event["task_id"]: event["weibull_life_note"] for event in result.events}
+        self.assertEqual(notes["NEXT"], "Excluded - after analysis cutoff")
+
     def test_a_window_has_to_make_sense(self):
         self._add_all(MONTHLY)
         today = datetime.now(PLANT).date()
-        with self.assertRaisesRegex(ValueError, "start date has to be before the cutoff"):
+        with self.assertRaisesRegex(ValueError, "start date can't be later than the cutoff date"):
             self._perform(analysis_start=date(2025, 6, 1), analysis_cutoff=date(2025, 5, 1))
         with self.assertRaisesRegex(ValueError, "cutoff date can't be later than today"):
             self._perform(analysis_cutoff=today + timedelta(days=1))

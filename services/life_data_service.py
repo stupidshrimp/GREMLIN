@@ -6546,7 +6546,7 @@ class LifeDataService:
                 cutoff, source = now, "NOW"
         start = self._plant_midnight(analysis_start, zone) if analysis_start is not None else None
         if start is not None and start >= cutoff:
-            raise ValueError("The analysis start date has to be before the cutoff.")
+            raise ValueError("The analysis start date can't be later than the cutoff date.")
         return start, cutoff, source
 
     def _population_event_rows(

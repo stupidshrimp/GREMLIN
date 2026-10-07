@@ -122,6 +122,11 @@
     repeatWindow: 24,
     repeatFilter: null,
     repeatToken: 0,
+    // "Most likely to fail soon": the window in weeks the list was last asked for, and
+    // a token both requests that draw it (the summary and the risk-rankings call)
+    // take, so a response for an older window cannot land on top of a newer one.
+    riskWeeks: 4,
+    riskToken: 0,
     // `latestResult` is the Weibull result rendered in the workspace; `analysisToken`
     // drops stale responses (same pattern as the PM and Downtime analyses above), so an
     // older group's result -- or its "nothing saved" empty state -- cannot land on top
@@ -819,13 +824,16 @@
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     const token = ++state.summaryToken;
+    // The summary carries the risk list too, so it takes a risk token: a weeks change
+    // made while it is in flight asks again, and the older list must not land last.
+    const riskToken = ++state.riskToken;
     try {
       const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
       state.rankings = data.rankings || [];
       renderRankings(state.rankings);
-      renderRiskRankings(data.risk_rankings || []);
+      if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
       drawPareto();
@@ -905,11 +913,30 @@
     return "";
   }
 
-  // The "Most likely to fail soon" window, in weeks: what the box says, kept to 1-52.
+  // The "Most likely to fail soon" window, in weeks: what the box says when that is a
+  // whole number of weeks from 1 to 52, otherwise the last window that was. The box is
+  // put back to the window used, so the sentence around it never names another.
+  function riskWeekValue(box) {
+    const text = box ? String(box.value).trim() : "";
+    const weeks = Math.round(Number(text));
+    return text !== "" && isFinite(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
+  }
+
   function riskWeeks() {
     const box = $("lda-risk-weeks");
-    const weeks = box ? Math.round(Number(box.value)) : 4;
-    return isFinite(weeks) && weeks >= 1 && weeks <= 52 ? weeks : 4;
+    const weeks = riskWeekValue(box);
+    if (weeks != null) state.riskWeeks = weeks;
+    if (box && box.value !== String(state.riskWeeks)) box.value = String(state.riskWeeks);
+    return state.riskWeeks;
+  }
+
+  function onRiskWeeksChange() {
+    if (riskWeekValue($("lda-risk-weeks")) == null) {
+      riskWeeks();
+      showBanner("The window must be a whole number of weeks from 1 to 52.", "error");
+      return;
+    }
+    refreshRiskRankings();
   }
 
   function renderRiskRankings(rankings) {
@@ -939,12 +966,13 @@
   async function refreshRiskRankings() {
     if (!state.selectedAsset || !$("lda-risk-rankings")) return;
     const asset = state.selectedAsset;
+    const token = ++state.riskToken;
     try {
       const data = await getJson(`${API}/risk-rankings?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
-      if (state.selectedAsset !== asset) return;
+      if (token !== state.riskToken || state.selectedAsset !== asset) return;
       renderRiskRankings(data.rankings || []);
     } catch (err) {
-      showBanner(err.message, "error");
+      if (token === state.riskToken) showBanner(err.message, "error");
     }
   }
 
@@ -4444,8 +4472,10 @@
             const checked = options.querySelector("input[name='lda-group']:checked");
             let problem = "";
             if (!checked) problem = "Choose a failure group that has enough failures to fit.";
-            else if (startInput.value && cutoffInput.value && startInput.value >= cutoffInput.value) {
-              problem = "The analysis start date has to be before the cutoff date.";
+            // The start counts from midnight and the cutoff runs to the end of its
+            // day, so the same date is a one-day window; only a later start is wrong.
+            else if (startInput.value && cutoffInput.value && startInput.value > cutoffInput.value) {
+              problem = "The analysis start date can't be later than the cutoff date.";
             }
             modalError.textContent = problem;
             modalError.hidden = !problem;
@@ -7351,7 +7381,7 @@
       drawPareto();
     });
     const riskWeeksBox = $("lda-risk-weeks");
-    if (riskWeeksBox) riskWeeksBox.addEventListener("change", refreshRiskRankings);
+    if (riskWeeksBox) riskWeeksBox.addEventListener("change", onRiskWeeksChange);
     const typeSelect = $("lda-analysis-type");
     if (typeSelect) {
       // ?analysis= preselects the Analysis Type, which is what the topbar's
