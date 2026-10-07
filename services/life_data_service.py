@@ -70,6 +70,9 @@ WEIBULL_METHOD_VERSION = "life-data-v3"
 # beta below 1, the reading that steers away from age-based PM. Flagged rather
 # than dropped: a genuine repeat failure is real repair-quality information.
 DUPLICATE_CHECK_RAW_HOURS = 1.0
+# Completed dates that carry no time. The Limble sync stores a timestamp, but an
+# exported or hand-entered date can be a bare day, which names a plant-calendar day.
+DATE_ONLY_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y")
 # Repeat Fix Rate: a failure is a repeat when it follows the mechanism's last one
 # within this many scheduled hours, and a mechanism needs this many intervals before
 # its rate is ranked, so one quick repeat out of two failures doesn't top the list.
@@ -2770,7 +2773,7 @@ class LifeDataService:
         mechanisms: dict[tuple[int, int], dict[str, Any]] = {}
         undated = 0
         for row in rows:
-            completed = self._parse_datetime(row["completed_date_final"])
+            completed = self._parse_event_datetime(row["completed_date_final"], zone)
             if completed is None:
                 undated += 1
                 continue
@@ -5753,6 +5756,8 @@ class LifeDataService:
                 grouping_level=grouping_level,
                 analysis_start=start,
                 analysis_cutoff=cutoff,
+                cutoff_is_exclusive=cutoff_source == "USER",
+                zone=zone,
             )
             observation_ids = self._refresh_observations(conn, asset_number, population_id, life_basis_id, schedule_class_id, cutoff, zone)
             data: list[tuple[float, int]] = []
@@ -6481,6 +6486,25 @@ class LifeDataService:
 
         return datetime.combine(day, time.min, tzinfo=zone).astimezone(timezone.utc)
 
+    def _parse_event_datetime(self, value: Any, zone: tzinfo) -> datetime | None:
+        """A completed date as the instant a life starts or ends, in UTC.
+
+        A date with no time names a day on the plant's calendar, the one the
+        analysis window and the life-hour days are counted in, so it is taken as
+        the start of that plant day rather than midnight UTC, which on the plant's
+        clock is the evening before. A value with a time is read as
+        :meth:`_parse_datetime` reads it.
+        """
+
+        text = str(value).strip() if value is not None else ""
+        for fmt in DATE_ONLY_FORMATS:
+            try:
+                day = datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+            return self._plant_midnight(day, zone)
+        return self._parse_datetime(value)
+
     def _resolve_analysis_window(
         self,
         conn: sqlite3.Connection,
@@ -6510,7 +6534,7 @@ class LifeDataService:
             source = "USER"
         else:
             latest_event = max(
-                (when for when in (self._parse_datetime(row["completed_date_final"]) for row in rows) if when is not None),
+                (when for when in (self._parse_event_datetime(row["completed_date_final"], zone) for row in rows) if when is not None),
                 default=None,
             )
             last_import = self._last_completed_import_at(conn)
@@ -6596,6 +6620,8 @@ class LifeDataService:
         grouping_level: str,
         analysis_start: datetime | None,
         analysis_cutoff: datetime,
+        cutoff_is_exclusive: bool = False,
+        zone: tzinfo = timezone.utc,
     ) -> dict[str, int]:
         """Rebuild REL-WBL-DAT-004's event processing table for a failure group.
 
@@ -6604,6 +6630,11 @@ class LifeDataService:
         outside the analysis window -- each with the DAT-004 §11 note that says why, so
         the fit's inputs can be traced back to every record behind them. Returns how
         many events landed where, for the message that explains a refused fit.
+
+        An entered cutoff date ends at the next plant midnight, which belongs to the
+        day after it, so ``cutoff_is_exclusive`` leaves out an event at that instant.
+        The last import and the moment of the run are inclusive: the last import is
+        only used as the cutoff when no event is later than it.
         """
 
         self._delete_population_weibull_artifacts(conn, population_id)
@@ -6619,7 +6650,14 @@ class LifeDataService:
         previous_id = None
         previous_date = None
         sequence = 0
-        for row in rows:
+        # Ordered as the dates are read here, a date with no time on the plant
+        # calendar, which SQL's sort (midnight UTC) can put on the wrong side of a
+        # timed event that evening. Ties and unreadable dates keep the query's order.
+        parsed_rows = sorted(
+            ((self._parse_event_datetime(row["completed_date_final"], zone), index, row) for index, row in enumerate(rows)),
+            key=lambda item: (item[0] is None, item[0] or datetime.min.replace(tzinfo=timezone.utc), item[1]),
+        )
+        for parsed, _, row in parsed_rows:
             is_failure = row["disposition_category"] == "INCLUDED_FAILURE"
             is_pm_reset = row["disposition_category"] == "INCLUDED_PM_RESET_EVENT"
             event_failure_mode_id = row["failure_mode_id"] or row["reset_target_failure_mode_id"]
@@ -6631,7 +6669,6 @@ class LifeDataService:
                     raise ValueError(f"A current disposition references deleted failure mechanism id {event_failure_mechanism_id}. Re-save the affected disposition before running Weibull analysis.")
                 event_failure_mechanism_id = None
             raw_date = row["completed_date_final"]
-            parsed = self._parse_datetime(raw_date)
             record = {
                 "row": row,
                 "population_id": population_id,
@@ -6659,7 +6696,7 @@ class LifeDataService:
             if analysis_start is not None and parsed < analysis_start:
                 counts["before_start"] += 1
                 excluded_note = "Excluded - before analysis start date"
-            elif parsed > analysis_cutoff:
+            elif (parsed >= analysis_cutoff) if cutoff_is_exclusive else (parsed > analysis_cutoff):
                 counts["after_cutoff"] += 1
                 excluded_note = "Excluded - after analysis cutoff"
             if excluded_note is not None:

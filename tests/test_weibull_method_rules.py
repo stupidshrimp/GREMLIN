@@ -235,6 +235,57 @@ class AnalysisWindowTests(_Seeded):
         self.assertEqual(notes["F8"], "Excluded - after analysis cutoff")
         self.assertEqual(result.failure_count, len(MONTHLY) - 1)
 
+    def test_an_entered_cutoff_leaves_out_an_event_at_the_next_plant_midnight(self):
+        # A cutoff of June 30 runs to midnight starting July 1, which is July's.
+        self._add_all(MONTHLY + [("F8", _utc(2025, 7, 1, 0))])
+
+        result = self._perform(analysis_cutoff=date(2025, 6, 30))
+
+        notes = {event["task_id"]: event["weibull_life_note"] for event in result.events}
+        self.assertEqual(notes["F8"], "Excluded - after analysis cutoff")
+        self.assertEqual(result.failure_count, len(MONTHLY) - 1)
+
+    def test_an_event_at_the_last_import_is_inside_the_window(self):
+        self._add_all(MONTHLY)
+        self._import_completed(MONTHLY[-1][1])
+
+        result = self._perform()
+
+        self.assertEqual(result.analysis_cutoff_source, "LAST_IMPORT")
+        notes = {event["task_id"]: event["weibull_life_note"] for event in result.events}
+        self.assertFalse(notes["F7"].startswith("Excluded"), notes["F7"])
+
+    def test_a_date_with_no_time_is_that_day_on_the_plant_calendar(self):
+        # F1 and F8 carry a bare date. F1's day is the start date, so it is in the
+        # window, and F8's is the day after the cutoff, so it is out; read as
+        # midnight UTC, the evening before on the plant's clock, both would flip.
+        self._add("F1", "2025-01-06")
+        self._add_all(MONTHLY[1:])
+        self._add("F8", "07/01/2025")
+
+        result = self._perform(analysis_start=date(2025, 1, 6), analysis_cutoff=date(2025, 6, 30))
+
+        events = {event["task_id"]: event for event in result.events}
+        self.assertEqual(events["F1"]["completed_date_parsed"], datetime(2025, 1, 6, tzinfo=PLANT).astimezone(timezone.utc).isoformat())
+        self.assertEqual(events["F1"]["weibull_life_note"], "Initial occurrence - no prior comparable start point available")
+        self.assertEqual(events["F8"]["weibull_life_note"], "Excluded - after analysis cutoff")
+        self.assertEqual(result.failure_count, len(MONTHLY) - 1)
+
+    def test_a_date_with_no_time_is_sequenced_by_its_plant_day(self):
+        # FS closes on Sunday evening on the plant's clock, 03:00 UTC on Monday. F3
+        # is that Monday with no time, so it comes after FS, though as text, and as
+        # midnight UTC, it would sort before it.
+        self._add_all(MONTHLY[:2])
+        self._add("FS", _utc(2025, 3, 2, 21))
+        self._add("F3", "2025-03-03")
+        self._add_all(MONTHLY[3:])
+
+        result = self._perform()
+
+        sequence = {event["task_id"]: event["weibull_sequence_number"] for event in result.events}
+        self.assertLess(sequence["FS"], sequence["F3"])
+        self.assertEqual(sorted(sequence, key=sequence.get), ["F1", "F2", "FS", "F3", "F4", "F5", "F6", "F7"])
+
     def test_a_window_has_to_make_sense(self):
         self._add_all(MONTHLY)
         today = datetime.now(PLANT).date()

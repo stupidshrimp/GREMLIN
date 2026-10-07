@@ -190,6 +190,18 @@ class RepeatFixRateTests(unittest.TestCase):
         self.assertEqual(result["most_repeats"]["failure_mechanism_id"], seal)
         self.assertEqual(result["mechanisms"][0]["failure_mechanism_id"], seal)
 
+    def test_a_date_with_no_time_is_that_day_on_the_plant_calendar(self):
+        seal = self.seed.seal
+        # Friday 20:00 on the plant's clock, then a bare Monday date: the start of
+        # Monday, 4 scheduled hours of Friday later at 20/24. Read as midnight UTC it
+        # would be Sunday evening, and would count none of Friday's hours either way.
+        self.seed.add("1", _utc(2025, 3, 14, 20), seal)
+        self.seed.add("2", "2025-03-17", seal)
+        pair = self.service.repeat_fix_rate("A-1")["pairs"][0]
+        self.assertEqual(pair["repeat_completed"], datetime(2025, 3, 17, tzinfo=PLANT).astimezone(timezone.utc).isoformat())
+        self.assertAlmostEqual(pair["scheduled_hours"], 4 * 20 / 24, places=2)
+        self.assertAlmostEqual(pair["raw_hours"], 52.0, places=2)
+
     def test_nothing_to_report(self):
         result = self.service.repeat_fix_rate("A-1")
         self.assertEqual((result["failures"], result["repeats"], result["repeat_rate"]), (0, 0, None))
