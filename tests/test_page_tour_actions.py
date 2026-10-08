@@ -103,7 +103,11 @@ global.getComputedStyle = (node) => ({
   overflowY: (node && node.overflow) || "visible",
 });
 global.matchMedia = () => ({ matches: true });
-global.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+// Frames are queued and run by settle(), not left to a timer: the tour places its
+// spotlight two frames after a step shows, and a fixed wait could lose that race
+// on a busy machine and look before the second frame had run.
+const frames = [];
+global.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
 global.localStorage = { getItem: () => null, setItem() {} };
 
 eval(fs.readFileSync(process.argv[2], "utf8"));
@@ -137,7 +141,16 @@ const card = () => ({
 });
 const next = () => byId["page-tour-next"].click();
 const skip = () => byId["page-tour-skip"].click();
-const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+// Let pending promise work land (an action finishing), then run every frame it
+// asked for, and any those frames ask for, until the tour has nothing left to do.
+const settle = async () => {
+  for (let round = 0; round < 100; round += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!frames.length) return;
+    frames.splice(0).forEach((fn) => fn(0));
+  }
+  throw new Error("the tour kept asking for frames");
+};
 // A key pressed with focus on the card; true when the tour kept it from the page.
 const press = (key, extra) => {
   let prevented = false;
