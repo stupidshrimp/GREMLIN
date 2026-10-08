@@ -156,6 +156,7 @@ def test_every_analysis_type_on_offer_has_its_own_card(standards):
         "Failure Mode Trend Analysis",
         "Downtime Driver Analysis",
         "PM Effectiveness Analysis",
+        "Repeat Fix Rate Analysis",
     ]
     panel = _panel(standards, "analysis")
     for analysis_type in offered:
@@ -286,10 +287,12 @@ def test_the_availability_examples_are_what_the_calculator_returns(standards):
 
 
 def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
-    from services.life_data_service import LifeDataService
+    from services.life_data_service import MIN_WEIBULL_FAILURE_LIVES, LifeDataService
 
     service = LifeDataService.__new__(LifeDataService)
-    lives = [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (1050.0, 0)]
+    lives = [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (760.0, 1), (640.0, 1), (1050.0, 0)]
+    # The example is one GREMLIN would fit: it has the minimum number of failure lives.
+    assert sum(failed for _, failed in lives) >= MIN_WEIBULL_FAILURE_LIVES
     beta, eta, log_likelihood = service._fit_weibull_2p(lives)
     beta_lo, beta_hi, eta_lo, eta_hi = service._weibull_confidence_intervals(lives, beta, eta)
     mttf = eta * math.gamma(1 + 1 / beta)
@@ -310,12 +313,70 @@ def test_the_weibull_example_is_the_fit_gremlin_would_make(standards):
         assert shown in standards, shown
 
     survival = [round(point["survival_estimate"], 3) for point in service._kaplan_meier_points(lives)]
-    assert survival == [0.8, 0.533, 0.267]
-    for shown in ("0.800", "0.533", "0.267"):
+    assert survival == [0.857, 0.686, 0.514, 0.343, 0.171]
+    for shown in ("0.857", "0.686", "0.514", "0.343", "0.171"):
         assert shown in standards, shown
 
-    # The reading the page gives: wear-out by beta, but an interval crossing 1.
-    assert beta > 1.1 and beta_lo < 1 < beta_hi
+    # The probability plot's R² of those five points (equation W15), where the page states it.
+    r_squared = LifeDataService._probability_plot_r_squared(service._kaplan_meier_points(lives))
+    for shown in (
+        f'R² of the five points, equation W15</span><span class="std-result">{r_squared:.3f}</span>',
+        f"their R², equation W15, is {r_squared:.3f}",
+        f"(R² = {r_squared:.3f}, above the",
+    ):
+        assert shown in standards, shown
+
+    # Reliability at the 400-hour age the example evaluates, and MTTF in calendar
+    # weeks on the 20-hour schedule (100 life hours a week).
+    reliability = math.exp(-((400 / eta) ** beta))
+    assert f'<span class="std-result">{reliability:.3f}</span>, so F(400) = {1 - reliability:.3f}' in standards
+    weeks = LifeDataService.calendar_weeks_for_life_hours(mttf, {"hours_per_day": 20.0, "exclude_weekends": True})
+    assert f"about {weeks:.1f} calendar weeks on the 20-hour schedule" in standards
+
+    # The reading the page gives: wear-out by beta, an interval clear of 1 but wider
+    # than 70% of beta (treat with caution), and an eta interval wider than 40% of eta.
+    assert beta > 1.1 and 1 < beta_lo and beta_hi - beta_lo > 0.7 * beta
+    assert f"It is still {round(100 * (beta_hi - beta_lo) / beta)}% of β, though, far wider than 70%" in standards
+    assert (eta_hi - eta_lo) / eta > 0.4
+    assert f"{round(100 * (eta_hi - eta_lo) / eta)}% of η" in standards
+    # And its R² against the review threshold for five failure lives.
+    assert f"above the {LifeDataService.r_squared_review_threshold(5):.3f} review threshold for five failures" in standards
+
+    # And what the page says of the example cut off after its third complete life:
+    # under the minimum, with a beta interval that crossed 1.
+    shorter = [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (1050.0, 0)]
+    assert sum(failed for _, failed in shorter) < MIN_WEIBULL_FAILURE_LIVES
+    short_beta, short_eta, _ = service._fit_weibull_2p(shorter)
+    short_lo, short_hi, _, _ = service._weibull_confidence_intervals(shorter, short_beta, short_eta)
+    assert short_lo < 1 < short_hi
+    assert f"{short_lo:.2f} to {short_hi:.2f}" in standards
+
+
+def test_the_r_squared_thresholds_shown_are_gremlins(standards):
+    """The review-threshold table on the Weibull card is the one GREMLIN flags fits by."""
+    from services.life_data_service import LifeDataService
+
+    row = re.search(r"Review below R² of</th>(.*?)</tr>", standards, re.S).group(1)
+    shown = [float(value) for value in re.findall(r">([0-9.]+)</td>", row)]
+    assert shown == [round(LifeDataService.r_squared_review_threshold(n), 3) for n in (5, 10, 15, 20, 30, 50, 100, 200)]
+
+
+def test_the_life_hours_figure_is_what_gremlin_counts(standards):
+    """Figure W2: Monday 08:00 to the next Monday 08:00, plant time, on the 20-hour schedule."""
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+
+    from services.life_data_service import LifeDataService
+
+    plant = ZoneInfo("America/Chicago")
+    # A week with no clock change in it: the week the clocks spring forward has a
+    # 47-hour weekend, which GREMLIN counts as such.
+    start = datetime(2026, 4, 6, 8, 0, tzinfo=plant).astimezone(timezone.utc)
+    end = datetime(2026, 4, 13, 8, 0, tzinfo=plant).astimezone(timezone.utc)
+    life, weekend, non_run = LifeDataService._scheduled_life_hours(start, end, 20.0, tz=plant)
+    assert round(life, 6) == 100 and round(weekend, 6) == 48 and round(non_run, 6) == 20
+    assert "giving 100 life hours for an asset on the 20-hour schedule" in standards
+    assert "100 life hours on the 20-hour schedule" in standards
 
 
 def test_the_pm_and_downtime_examples_match_the_service(standards):

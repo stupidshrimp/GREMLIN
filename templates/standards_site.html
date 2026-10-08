@@ -86,7 +86,7 @@
       <li><strong>The mapping is rebuilt by itself</strong> whenever its rules change, and editors can catch it up from Configuration with Refresh CMMS mapping, which maps any records imported or changed since the last mapping.</li>
       <li><strong>GREMLIN keeps its data in four SQLite files</strong>, so a backup of GREMLIN.db alone is not enough:
         <ul>
-          <li><strong>GREMLIN.db:</strong> the Limble records, dispositions, failure modes and mechanisms, Weibull results, and the availability configuration, goals and overtime.</li>
+          <li><strong>GREMLIN.db:</strong> the Limble records, dispositions, failure modes and mechanisms, Weibull results and the Weibull schedule register, and the availability configuration, goals and overtime.</li>
           <li><strong>accesscontrol.db</strong>, beside GREMLIN.db: the accounts and their login and change history.</li>
           <li><strong>auxillary.db</strong>, in the GREMLIN Global DB folder on the shared drive: the bug reports, one list for every installation.</li>
           <li><strong>PM_Calendar_local.db</strong>, beside GREMLIN.db: the PM Task Tracker's copy of PM tasks. It holds only what it pulls from Limble, and every pull fetches all of it again.</li>
@@ -224,7 +224,7 @@
       <li><strong>New Limble records, and most corrections,</strong> reach GREMLIN.db with the nightly sync, or sooner if an administrator runs one; <a href="#site-data">From Limble to GREMLIN</a> lists the corrections that do not carry over. The PM Task Tracker keeps its own copy, refreshed when an editor presses Sync from Limble on that page.</li>
       <li><strong>Availability is recalculated every time the Metrics page loads</strong>, from the configuration as it is at that moment. See <a href="#metrics-availability">Asset availability by month</a>.</li>
       <li><strong>The trend, downtime driver and PM effectiveness analyses</strong> read the current dispositions every time they load.</li>
-      <li><strong>Weibull results are saved snapshots, one per failure group.</strong> Run the analysis again to include dispositions saved since; the new run replaces the group's previous one and any adjusted parameters saved with it. Changing a disposition from the Weibull data table re-runs it straight away.</li>
+      <li><strong>Weibull results are saved snapshots, one per failure group.</strong> Run the analysis again to include dispositions saved since; the new run replaces the group's previous one and any adjusted parameters saved with it. Changing a disposition from the Weibull data table re-runs it straight away. Unless a cutoff date is entered, a run censors the current life at the last completed Limble import, so a sync before running brings the lives up to date too. A result saved under an earlier version of the Weibull method, or counted on a schedule its asset has since been moved off, says so, and has to be run again before it can be reported.</li>
       <li><strong>Configuration changes</strong> to schedules, group membership and linked downtime recalculate every month of availability. Goals and overtime change one month at a time.</li>
     </ul>
   {% endcall %}

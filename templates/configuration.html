@@ -48,8 +48,9 @@
     <div>
       <p class="eyebrow">Reliability</p>
       <h2 id="config-reliability-heading">Reliability configuration</h2>
-      <p>The structural inputs behind the Metrics dashboard's Availability card. Editing any of
-         them recalculates <strong>every month, including ones already reported</strong>.</p>
+      <p>The structural inputs behind the Metrics dashboard's Availability card and the Weibull life hours.
+         Editing an availability input recalculates <strong>every month, including ones already reported</strong>;
+         changing an asset's Weibull schedule flags its saved Weibull results to be run again.</p>
     </div>
     {% if auth_can_edit %}
     <button type="button" class="btn-secondary config-expand-all" id="config-expand-all" aria-expanded="false">
@@ -94,6 +95,48 @@
       </div>
     </details>
 
+    <details class="config-panel" id="config-weibull-schedules">
+      <summary class="config-panel-summary">
+        <h3 class="config-panel-title">Weibull schedules</h3>
+        <span class="config-panel-hint">Which schedule each asset's Weibull life hours are counted on, and why.</span>
+        <span class="config-panel-marker" aria-hidden="true"></span>
+      </summary>
+      <div class="config-panel-body">
+        <p>Weibull life hours count only the time an asset is scheduled to run (REL-WBL-DAT-003 §7). Every asset
+           is on the plant default, <strong>20 hours Monday-Friday</strong>, unless it is listed below. The
+           schedules:</p>
+        <ul>
+          <li><strong>20 hours Monday-Friday</strong> (plant default): each weekday clock hour counts as 20/24 of an hour, and weekends count nothing.</li>
+          <li><strong>24 hours Monday-Friday</strong>: each weekday clock hour counts in full, and weekends count nothing.</li>
+          <li><strong>Continuous, every clock hour</strong>: for an asset that runs around the clock, weekends included.</li>
+        </ul>
+        <p class="lda-warning">Changing an asset's schedule changes its life hours. Its saved Weibull results say
+           they were counted on its old schedule and can't be reported until they are run again. Every change is
+           kept, with who made it, when and why.</p>
+        <div id="config-weibull-status" class="lda-banner" role="status" hidden></div>
+        <form id="config-weibull-form" class="availability-config-row" novalidate>
+          <label class="availability-config-field">Asset Number
+            <input class="availability-input" id="config-weibull-asset" list="config-weibull-asset-list" autocomplete="off" required>
+          </label>
+          <datalist id="config-weibull-asset-list"></datalist>
+          <label class="availability-config-field">Schedule
+            <select class="availability-input" id="config-weibull-schedule"></select>
+          </label>
+          <label class="availability-config-field availability-config-wide">Reason
+            <input class="availability-input" id="config-weibull-reason" required
+                   placeholder="e.g. Operations confirmed it runs through weekends">
+          </label>
+          <div class="lda-row-actions" style="align-self:end">
+            <button type="submit" class="btn-secondary" id="config-weibull-save">Save schedule</button>
+          </div>
+        </form>
+        <h4>Assets not on the plant default</h4>
+        <div id="config-weibull-assignments" class="metrics-table-scroll"><p class="metrics-hint">Loading the Weibull schedule register…</p></div>
+        <h4>Change record</h4>
+        <div id="config-weibull-history" class="metrics-table-scroll"></div>
+      </div>
+    </details>
+
     <details class="config-panel" id="config-cmms">
       <summary class="config-panel-summary">
         <h3 class="config-panel-title">Refresh CMMS mapping</h3>
@@ -126,6 +169,7 @@
 {% block scripts %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/metrics.css') }}">
   {% if auth_can_edit %}<script src="{{ url_for('static', filename='js/availability_config.js') }}"></script>{% endif %}
+  {% if auth_can_edit %}<script src="{{ url_for('static', filename='js/weibull_schedule_config.js') }}"></script>{% endif %}
 {% if auth_can_edit %}
 <script>
   (function () {
@@ -133,7 +177,7 @@
     const expandAll = document.getElementById("config-expand-all");
 
     /* The button says what the next click will do, so it has to follow the
-       panels rather than only lead them -- opening all three by hand and then
+       panels rather than only lead them -- opening them all by hand and then
        reading "Expand all" would be a button that lies. */
     function syncExpandAll() {
       if (!expandAll) return;

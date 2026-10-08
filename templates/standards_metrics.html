@@ -166,7 +166,7 @@
             <tr><td>Linked downtime rules</td><td>Parent asset, linked asset and impact factor</td><td><code>availability_<wbr>linked_<wbr>downtime_<wbr>rules</code></td><td>Configuration, Linked downtime rules</td></tr>
             <tr><td>Goal %</td><td>The target for each group and month (95% unless changed)</td><td><code>availability_<wbr>goal_<wbr>percent</code></td><td>The Goal % row under each chart (editors)</td></tr>
             <tr><td>Overtime</td><td>Extra scheduled hours for one asset in one month</td><td><code>availability_<wbr>manual_<wbr>ot</code></td><td>Edit OT hours at the top right of each chart, then the table under it (editors)</td></tr>
-            <tr><td>Plant timezone</td><td>The clock months are judged on: America/Chicago</td><td><code>availability_<wbr>settings</code></td><td>Set in the database</td></tr>
+            <tr><td>Plant timezone</td><td>The clock months are judged on: America/Chicago. The Weibull fit splits its <a href="#weibull-life-hours">life-hour days</a> on it too, so changing it changes every Weibull result run afterwards.</td><td><code>availability_<wbr>settings</code></td><td>Set in the database</td></tr>
           </tbody>
         </table>
       </div>

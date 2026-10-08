@@ -34,6 +34,7 @@
     TREND: "Failure Mode Trend Analysis",
     DOWNTIME: "Downtime Driver Analysis",
     PM: "PM Effectiveness Analysis",
+    REPEAT: "Repeat Fix Rate Analysis",
   };
   // The editable half of a disposition, per record kind, as columns: what the
   // disposition table draws after the read-only record columns, and what the
@@ -113,21 +114,36 @@
     downtimeSelection: null,
     downtimeData: null,
     downtimeToken: 0,
+    // Repeat Fix Rate Analysis: `repeatData` is the latest asset-wide payload from the
+    // repeat-fixes endpoint, `repeatWindow` the scheduled hours it was counted with,
+    // `repeatFilter` the one mechanism the repeats list is narrowed to (null for
+    // all), and `repeatToken` drops stale responses.
+    repeatData: null,
+    repeatWindow: 24,
+    repeatFilter: null,
+    repeatToken: 0,
+    // "Most likely to fail soon": the window in weeks the list was last asked for, and
+    // a token both requests that draw it (the summary and the risk-rankings call)
+    // take, so a response for an older window cannot land on top of a newer one.
+    riskWeeks: 4,
+    riskToken: 0,
     // `latestResult` is the Weibull result rendered in the workspace; `analysisToken`
     // drops stale responses (same pattern as the PM and Downtime analyses above), so an
     // older group's result -- or its "nothing saved" empty state -- cannot land on top
     // of a newer one.
     latestResult: null,
     // The failure group `latestResult` was fitted for, so a disposition changed
-    // from its data table can run the same group again. Only read alongside a
-    // non-null latestResult, which every path that drops the result clears.
+    // from its data table can run the same group again. It outlives latestResult
+    // when the page switches to another analysis type, so that coming back can
+    // run the group over the same window; a new asset, or a refusal that removes
+    // the group's saved fit, clears it.
     latestResultGroup: null,
+    // The analysis start and cutoff dates an editor entered for that run, if any
+    // ({ start, cutoff } as YYYY-MM-DD, either blank), so the re-run after a
+    // disposition change or a type switch keeps the same window rather than
+    // quietly widening it.
+    latestResultWindow: null,
     analysisToken: 0,
-    // Operating schedule (hours per day the asset actually runs) used to convert the
-    // Weibull MTTF from operating hours into approximate calendar months/days. 24 =
-    // continuous running; users with a fixed shift (e.g. 20 h/day) can adjust it
-    // inline next to the MTTF value, and the conversion recomputes live.
-    operatingHoursPerDay: 24,
     // The most recently selected failure mode/mechanism, regardless of which
     // analysis type made the selection. Carried forward when the user switches
     // analysis types so the new analysis auto-computes for the same failure focus.
@@ -369,29 +385,29 @@
     return Number(num.toPrecision(digits || 4)).toString();
   }
 
-  // Convert an MTTF expressed in operating hours into approximate calendar time,
-  // given how many hours per day the asset actually runs. Returns null for invalid
-  // inputs (non-positive hours or schedule). 30.4375 = mean calendar-month length
-  // (365.25 / 12), so the months/days split lines up with the calendar rather than a
-  // flat 30-day month.
-  const DAYS_PER_CALENDAR_MONTH = 30.4375;
-  function mttfCalendarDuration(operatingHours, hoursPerDay) {
-    const hours = Number(operatingHours);
-    const hpd = Number(hoursPerDay);
-    if (!isFinite(hours) || hours <= 0 || !isFinite(hpd) || hpd <= 0) return null;
-    const calendarDays = hours / hpd;
-    const months = Math.floor(calendarDays / DAYS_PER_CALENDAR_MONTH);
-    const days = Math.round(calendarDays - months * DAYS_PER_CALENDAR_MONTH);
-    return { calendarDays, months, days };
+  // How many calendar weeks it takes to build up `hours` of life on a Weibull result's
+  // schedule. Life hours are scheduled hours and a weekend adds none, so a week holds
+  // five scheduled days of hours_per_day: 100 life hours on the 20-hour schedule, 120
+  // on the 24-hour one. Mirrors LifeDataService.calendar_weeks_for_life_hours, which
+  // the Word report uses. Null when the result does not say what its schedule is.
+  function calendarWeeksForLifeHours(hours, lifeBasis) {
+    const value = Number(hours);
+    const perDay = lifeBasis ? Number(lifeBasis.hours_per_day) : NaN;
+    if (!isFinite(value) || value <= 0 || !isFinite(perDay) || perDay <= 0) return null;
+    const daysPerWeek = lifeBasis.exclude_weekends === false ? 7 : 5;
+    return value / (perDay * daysPerWeek);
   }
 
-  // "≈ 14 months, 13 days" style label for the MTTF calendar conversion.
-  function mttfDurationText(operatingHours, hoursPerDay) {
-    const d = mttfCalendarDuration(operatingHours, hoursPerDay);
-    if (!d) return "";
-    const monthLabel = d.months === 1 ? "month" : "months";
-    const dayLabel = d.days === 1 ? "day" : "days";
-    return `≈ ${d.months} ${monthLabel}, ${d.days} ${dayLabel} of calendar time`;
+  // "about 7.5 calendar weeks" for a life-hours figure, or "" when it can't be worked out.
+  function calendarWeeksText(hours, lifeBasis) {
+    const weeks = calendarWeeksForLifeHours(hours, lifeBasis);
+    return weeks == null ? "" : `about ${weeks.toFixed(1)} calendar weeks`;
+  }
+
+  // "20 hours Monday-Friday, weekends excluded": the schedule a result's hours count.
+  function scheduleLabel(lifeBasis) {
+    if (!lifeBasis || !lifeBasis.schedule_name) return "the weekday schedule";
+    return lifeBasis.schedule_name + (lifeBasis.exclude_weekends ? ", weekends excluded" : "");
   }
 
   // Plain machine-readable number string (no thousands separators) for use as the
@@ -419,7 +435,10 @@
         error.toastShown = true;
         throw error;
       }
-      throw new Error(message);
+      const error = new Error(message);
+      // The rest of the error body, for a caller that needs more than the message.
+      error.payload = data;
+      throw error;
     }
     return data;
   }
@@ -741,6 +760,8 @@
     state.selectedAsset = asset ? asset.asset_number : null;
     if (previous !== state.selectedAsset) {
       state.latestResult = null;
+      state.latestResultGroup = null;
+      state.latestResultWindow = null;
       // A new asset invalidates the cached trend data and any failure-mechanism
       // selection driving the trend chart or PM effectiveness analysis.
       state.trend = null;
@@ -758,6 +779,9 @@
       state.downtimeSelection = null;
       state.downtimeData = null;
       state.downtimeToken += 1;
+      state.repeatData = null;
+      state.repeatFilter = null;
+      state.repeatToken += 1;
       // Same for a Weibull lookup still in flight: clearWorkspace() below empties the
       // workspace, and a late response for the old asset must not refill it.
       state.analysisToken += 1;
@@ -808,12 +832,16 @@
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     const token = ++state.summaryToken;
+    // The summary carries the risk list too, so it takes a risk token: a weeks change
+    // made while it is in flight asks again, and the older list must not land last.
+    const riskToken = ++state.riskToken;
     try {
-      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}`);
+      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
       state.rankings = data.rankings || [];
       renderRankings(state.rankings);
+      if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
       drawPareto();
@@ -838,6 +866,9 @@
         if (state.downtimeSelection) loadDowntime();
         else renderDowntime();
       }
+      // Repeat Fix Rate reads the same included failures, so a disposition change
+      // can make or break a repeat: re-fetch it whenever it is showing.
+      if (state.analysisType === ANALYSIS_TYPES.REPEAT) loadRepeatFixes();
       offerAnalysisResultsTour();
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
@@ -861,18 +892,98 @@
     const list = $("lda-beta-rankings");
     list.innerHTML = "";
     if (!rankings.length) {
-      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results yet." }));
+      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
       return;
     }
+    // Only fits with enough failure lives are ranked at all; one saved under an earlier
+    // method still is, marked, because its beta is close but not what a run today gives.
     rankings.forEach((row) => {
       list.appendChild(
         el("li", {
           text:
             `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
-            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h)`,
+            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h` +
+            (row.probability_plot_r_squared != null
+              ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}${row.probability_plot_review ? ", below its review threshold" : ""}`
+              : "") +
+            ")" +
+            rankingMarker(row),
         })
       );
     });
+  }
+
+  // Why a ranked fit wants running again, if it does: saved under an earlier method,
+  // or counted on a schedule the asset has since been moved off.
+  function rankingMarker(row) {
+    if (row.method_current === false) return " — saved under an earlier method; run it again";
+    if (row.schedule_current === false) return " — counted on the asset's old schedule; run it again";
+    if (row.time_zone_current === false) return " — counted in an earlier plant time zone; run it again";
+    return "";
+  }
+
+  // The "Most likely to fail soon" window, in weeks: what the box says when that is a
+  // whole number of weeks from 1 to 52 (a fraction is refused, not rounded),
+  // otherwise the last window that was. The box is
+  // put back to the window used, so the sentence around it never names another.
+  function riskWeekValue(box) {
+    const text = box ? String(box.value).trim() : "";
+    const weeks = Number(text);
+    return text !== "" && Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
+  }
+
+  function riskWeeks() {
+    const box = $("lda-risk-weeks");
+    const weeks = riskWeekValue(box);
+    if (weeks != null) state.riskWeeks = weeks;
+    if (box && box.value !== String(state.riskWeeks)) box.value = String(state.riskWeeks);
+    return state.riskWeeks;
+  }
+
+  function onRiskWeeksChange() {
+    if (riskWeekValue($("lda-risk-weeks")) == null) {
+      riskWeeks();
+      showBanner("The window must be a whole number of weeks from 1 to 52.", "error");
+      return;
+    }
+    refreshRiskRankings();
+  }
+
+  function renderRiskRankings(rankings) {
+    const list = $("lda-risk-rankings");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!rankings.length) {
+      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
+      return;
+    }
+    rankings.forEach((row) => {
+      const percent = 100 * Number(row.probability);
+      const asOf = cutoffPlantDate(row.analysis_cutoff, row.analysis_cutoff_source, row.time_zone);
+      list.appendChild(
+        el("li", {
+          text:
+            `${row.failure_mechanism_name}: ${percent.toFixed(percent < 10 ? 1 : 0)}% chance of failing in the next ` +
+            `${fmt(row.window_weeks)} weeks (current life ${fmt(row.current_life_hours)} h, beta ${fmt(row.beta_mle)}, ` +
+            `${row.failure_count} failures${row.probability_plot_review ? ", plot R² below its review threshold" : ""}` +
+            `${asOf ? `, as of ${asOf}` : ""})` +
+            rankingMarker(row),
+        })
+      );
+    });
+  }
+
+  async function refreshRiskRankings() {
+    if (!state.selectedAsset || !$("lda-risk-rankings")) return;
+    const asset = state.selectedAsset;
+    const token = ++state.riskToken;
+    try {
+      const data = await getJson(`${API}/risk-rankings?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
+      if (token !== state.riskToken || state.selectedAsset !== asset) return;
+      renderRiskRankings(data.rankings || []);
+    } catch (err) {
+      if (token === state.riskToken) showBanner(err.message, "error");
+    }
   }
 
   // ---- Pareto chart ---------------------------------------------------------
@@ -1056,6 +1167,7 @@
     [ANALYSIS_TYPES.TREND]: "lda-trend-chart-panel",
     [ANALYSIS_TYPES.PM]: "lda-pm-chart-panel",
     [ANALYSIS_TYPES.DOWNTIME]: "lda-downtime-trend-panel",
+    [ANALYSIS_TYPES.REPEAT]: "lda-repeat-pairs-panel",
   };
 
   // Scroll to the active analysis type's first result panel. Deferred to the next
@@ -1080,6 +1192,8 @@
       return selectPmMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
       return selectDowntimeMechanism(row);
+    } else if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
+      return selectRepeatMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
       return runParetoMechanism(row);
     }
@@ -1191,17 +1305,33 @@
       selectDowntimeMechanism(active);
       return true;
     }
+    if (type === ANALYSIS_TYPES.REPEAT) {
+      // The repeats load for every mechanism anyway; the carried one only narrows
+      // the list, so the type's own load below still runs.
+      state.repeatFilter =
+        active.failure_mechanism_id != null
+          ? {
+              failure_mode_id: active.failure_mode_id,
+              failure_mechanism_id: active.failure_mechanism_id,
+              label: pmSelectionLabel(active),
+            }
+          : null;
+      return false;
+    }
     if (type === ANALYSIS_TYPES.WEIBULL) {
       if (active.failure_mode_id == null) return false;
       const groupingLevel = weibullGroupingLevel(active);
-      runAnalysisForGroup(
-        {
-          grouping_level: groupingLevel,
-          failure_mode_id: active.failure_mode_id,
-          failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
-        },
-        "Recomputing Weibull analysis for the carried-over selection…"
-      );
+      const group = {
+        grouping_level: groupingLevel,
+        failure_mode_id: active.failure_mode_id,
+        failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
+      };
+      // Coming back to the group whose fit was last on screen runs it over the
+      // window that fit had, so a fit over entered dates isn't replaced by one over
+      // all history just for looking at another analysis type in between.
+      runAnalysisForGroup(group, "Recomputing Weibull analysis for the carried-over selection…", {
+        window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null,
+      });
       return true;
     }
     return false;
@@ -1216,7 +1346,8 @@
     const isTrend = type === ANALYSIS_TYPES.TREND;
     const isPm = type === ANALYSIS_TYPES.PM;
     const isDowntime = type === ANALYSIS_TYPES.DOWNTIME;
-    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime;
+    const isRepeat = type === ANALYSIS_TYPES.REPEAT;
+    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime && !isRepeat;
 
     const heading = $("lda-step-2");
     if (heading) {
@@ -1228,6 +1359,8 @@
         ? "PM effectiveness summary"
         : isDowntime
         ? "Downtime driver summary"
+        : isRepeat
+        ? "Repeat fix rate summary"
         : type;
     }
 
@@ -1235,6 +1368,7 @@
     // Weibull labels remain on screen.
     setHidden($("lda-weibull-summary"), !isWeibull);
     setHidden($("lda-beta-panel"), !isWeibull);
+    setHidden($("lda-risk-panel"), !isWeibull);
     setHidden($("lda-trend-summary"), !isTrend);
     setHidden($("lda-trend-chart-panel"), !isTrend);
     setHidden($("lda-trend-table-panel"), !isTrend);
@@ -1247,6 +1381,9 @@
     setHidden($("lda-downtime-dist-panel"), !isDowntime);
     setHidden($("lda-downtime-asset-panel"), !isDowntime);
     setHidden($("lda-downtime-events-panel"), !isDowntime);
+    setHidden($("lda-repeat-summary"), !isRepeat);
+    setHidden($("lda-repeat-rate-panel"), !isRepeat);
+    setHidden($("lda-repeat-pairs-panel"), !isRepeat);
     setHidden($("lda-placeholder-summary"), !isPlaceholder);
 
     // The beta panel now sits in its own full-width row above the Pareto, so
@@ -1286,6 +1423,13 @@
       // mid-request type switch) re-fetches instead of showing the reselect prompt.
       if (state.downtimeSelection && !state.downtimeData) loadDowntime();
       else renderDowntime();
+    }
+    if (isRepeat) {
+      // Re-fetch when the results on hand were counted with another window: a window
+      // change whose request was dropped on a type switch leaves the old ones behind.
+      const stale = !state.repeatData || Number(state.repeatData.window_hours) !== Number(state.repeatWindow);
+      if (state.selectedAsset && stale) loadRepeatFixes();
+      else renderRepeat();
     }
   }
 
@@ -2245,6 +2389,272 @@
           el("td", { text: row.failure_mechanism_name || "" }),
           el("td", { text: row.downtime_hours != null ? `${fmt(row.downtime_hours)} h` : "" }),
           recordNumberCell(row.corrective_wo_number, { mappedRecordId: row.corrective_mapped_record_id, kind: "wo" }),
+        ])
+      );
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  // ---- repeat fix rate -------------------------------------------------------
+  // Asset-wide: every mechanism's repeats load at once, so there is nothing to pick
+  // before it draws. A Pareto click, or a row in the rate table, narrows the list of
+  // repeats to one mechanism; clicking the same one again shows them all.
+  function repeatWindowHours() {
+    const input = $("lda-repeat-window");
+    const value = input ? Number(input.value) : state.repeatWindow;
+    if (!isFinite(value) || value <= 0 || value > 720) return null;
+    return value;
+  }
+
+  function onRepeatWindowChange() {
+    const value = repeatWindowHours();
+    if (value == null) {
+      showBanner("The repeat window must be more than 0 and at most 720 scheduled hours.", "error");
+      const input = $("lda-repeat-window");
+      if (input) input.value = String(state.repeatWindow);
+      return;
+    }
+    if (value === state.repeatWindow && state.repeatData) return;
+    state.repeatWindow = value;
+    loadRepeatFixes();
+  }
+
+  async function loadRepeatFixes(opts) {
+    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
+    if (state.pageMode === "disposition") return;
+    if (!state.selectedAsset) {
+      renderRepeat();
+      return;
+    }
+    const asset = state.selectedAsset;
+    const windowHours = state.repeatWindow;
+    const token = ++state.repeatToken;
+    const isStale = () =>
+      token !== state.repeatToken ||
+      state.selectedAsset !== asset ||
+      state.analysisType !== ANALYSIS_TYPES.REPEAT;
+    beginLoading("Finding repeat failures…");
+    try {
+      const params = new URLSearchParams({ asset, window_hours: String(windowHours) });
+      const data = await getJson(`${API}/repeat-fixes?${params.toString()}`);
+      if (isStale()) return;
+      state.repeatData = data.repeat_fixes || null;
+      renderRepeat();
+      if (scrollWhenRendered) scrollToAnalysisPanel();
+    } catch (err) {
+      if (!isStale()) {
+        state.repeatData = null;
+        showBanner(err.message, "error");
+        renderRepeat();
+      }
+    } finally {
+      endLoading();
+    }
+  }
+
+  // Narrow the repeats list to one mechanism, or show them all again when it is the
+  // one already shown. Resolves once drawn, for the tour.
+  function selectRepeatMechanism(row) {
+    if (row == null || row.failure_mechanism_id == null) {
+      showBanner("Repeat fix rate is per failure mechanism. Pick a mechanism-level Pareto bar.", "error");
+      return undefined;
+    }
+    setActiveMechanism(row);
+    state.repeatFilter = selectionMatches(state.repeatFilter, row)
+      ? null
+      : {
+          failure_mode_id: row.failure_mode_id,
+          failure_mechanism_id: row.failure_mechanism_id,
+          label: pmSelectionLabel(row),
+        };
+    if (!state.repeatData) return loadRepeatFixes({ scrollToPanel: true });
+    renderRepeat();
+    scrollToAnalysisPanel();
+    return undefined;
+  }
+
+  function clearRepeatFilter() {
+    state.repeatFilter = null;
+    renderRepeat();
+  }
+
+  function renderRepeat() {
+    renderRepeatCards();
+    renderRepeatRates();
+    renderRepeatPairs();
+  }
+
+  function fmtRate(rate) {
+    return rate == null ? "—" : `${fmt(rate * 100, 3)}%`;
+  }
+
+  function renderRepeatCards() {
+    const grid = $("lda-repeat-cards");
+    const message = $("lda-repeat-message");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const data = state.repeatData;
+    if (!data) {
+      if (message) {
+        message.hidden = false;
+        message.textContent = state.selectedAsset ? "Finding repeat failures…" : "Select an asset to find its repeat failures.";
+      }
+      return;
+    }
+    // [label, value, detail]: a mechanism's card names it under the value, the way
+    // the Failure Mode Trend cards do.
+    const mechanismCard = (label, entry, value) =>
+      entry
+        ? [label, value(entry), `${entry.failure_mechanism_name}: ${entry.repeats} of ${entry.intervals} gaps`]
+        : [label, "None", null];
+    const cards = [
+      [
+        "Repeat Fix Rate",
+        data.repeat_rate == null ? "Insufficient Data" : fmtRate(data.repeat_rate),
+        data.repeat_rate == null ? null : `${data.repeats} of ${data.intervals} gaps`,
+      ],
+      mechanismCard(`Highest Rate (${data.min_intervals_for_rate}+ gaps)`, data.highest_rate, (e) => fmtRate(e.repeat_rate)),
+      mechanismCard("Most Repeats", data.most_repeats, (e) => String(e.repeats)),
+      ["Possible Duplicates", String(data.possible_duplicates ?? 0), "repeats within 1 calendar hour"],
+    ];
+    cards.forEach(([label, value, detail]) => {
+      grid.appendChild(
+        el("div", { class: "lda-metric lda-trend-metric" }, [
+          el("span", { class: "lda-metric-label", text: label }),
+          el("span", { class: "lda-metric-value lda-trend-metric-value", text: value }),
+          detail ? el("span", { class: "lda-metric-label", text: detail }) : null,
+        ])
+      );
+    });
+    if (message) {
+      const notes = [];
+      if (!data.intervals) {
+        notes.push("No mechanism on this asset has two dated included failures yet, so there is no gap to measure.");
+      }
+      if (data.undated_failures) {
+        notes.push(
+          `${data.undated_failures} included ${data.undated_failures === 1 ? "failure has" : "failures have"} no completed ` +
+            "date and could not be placed."
+        );
+      }
+      if (data.future_failures) {
+        notes.push(
+          `${data.future_failures} included ${data.future_failures === 1 ? "failure is" : "failures are"} dated after ` +
+            "today, which can only be a data-entry error, and left out."
+        );
+      }
+      if (data.possible_duplicates) {
+        notes.push(
+          "A possible duplicate closed within an hour of the failure before it: check it is not the same breakdown " +
+            "recorded twice before reading it as a repeat."
+        );
+      }
+      message.hidden = !notes.length;
+      message.textContent = notes.join(" ");
+    }
+  }
+
+  function renderRepeatRates() {
+    const wrap = $("lda-repeat-rate-wrap");
+    const basis = $("lda-repeat-basis");
+    const input = $("lda-repeat-window");
+    if (input && document.activeElement !== input) input.value = String(state.repeatWindow);
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.repeatData;
+    if (basis) {
+      basis.textContent = data
+        ? `Counted on the ${data.schedule_name} schedule, with days split at midnight ${data.time_zone}.` +
+          (data.time_zone_warning ? ` ${data.time_zone_warning}` : "")
+        : "";
+    }
+    const headers = ["Failure Mechanism", "Failure Mode", "Failures", "Gaps", "Repeats", "Repeat Rate"];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    const rows = (data && data.mechanisms) || [];
+    if (!rows.length) {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", {
+            class: "lda-readonly lda-empty-row",
+            colspan: String(headers.length),
+            text: data ? "No included failures with a failure mechanism on this asset yet." : "",
+          }),
+        ])
+      );
+    }
+    rows.forEach((row) => {
+      const isActive = selectionMatches(state.repeatFilter, row);
+      tbody.appendChild(
+        el(
+          "tr",
+          {
+            class: `lda-trend-month-row${isActive ? " is-active" : ""}`,
+            title: "Click to list only this mechanism's repeats below",
+            onclick: () => selectRepeatMechanism(row),
+          },
+          [
+            el("td", { text: row.failure_mechanism_name || "" }),
+            el("td", { text: row.failure_mode_name || "" }),
+            el("td", { text: String(row.failures) }),
+            el("td", { text: String(row.intervals) }),
+            el("td", { text: String(row.repeats) }),
+            el("td", { text: fmtRate(row.repeat_rate) }),
+          ]
+        )
+      );
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  function renderRepeatPairs() {
+    const wrap = $("lda-repeat-pairs-wrap");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const data = state.repeatData;
+    const filter = state.repeatFilter;
+    const filterBar = $("lda-repeat-filter");
+    const filterText = $("lda-repeat-filter-text");
+    setHidden(filterBar, !filter);
+    if (filterText) filterText.textContent = filter ? `Showing ${filter.label} only.` : "";
+    const rows = ((data && data.pairs) || []).filter((pair) => !filter || selectionMatches(filter, pair));
+    const headers = [
+      "Failure Mechanism",
+      "Previous WO",
+      "Previous Completed",
+      "Repeat WO",
+      "Repeat Completed",
+      "Scheduled Hours",
+      "Calendar Hours",
+      "Check",
+    ];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    if (!rows.length) {
+      const text = !data
+        ? ""
+        : filter
+        ? `No repeats of ${filter.label} within ${fmt(data.window_hours)} scheduled hours.`
+        : `No failure came back within ${fmt(data.window_hours)} scheduled hours.`;
+      tbody.appendChild(
+        el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text })])
+      );
+    }
+    rows.forEach((pair) => {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { text: pair.failure_mechanism_name || "" }),
+          recordNumberCell(pair.prior_task_id, { mappedRecordId: pair.prior_mapped_record_id, kind: "wo" }),
+          el("td", { text: formatRecordDate(pair.prior_completed_raw ?? pair.prior_completed) }),
+          recordNumberCell(pair.repeat_task_id, { mappedRecordId: pair.repeat_mapped_record_id, kind: "wo" }),
+          el("td", { text: formatRecordDate(pair.repeat_completed_raw ?? pair.repeat_completed) }),
+          el("td", { text: fmtFixed(pair.scheduled_hours, 3) }),
+          el("td", { text: fmtFixed(pair.raw_hours, 3) }),
+          el("td", { text: pair.duplicate_check ? "Possible duplicate" : "" }),
         ])
       );
     });
@@ -3453,6 +3863,7 @@
     if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.latestResult && state.latestResultGroup) {
       runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis with the updated disposition…", {
         changedRecord: saved,
+        window: state.latestResultWindow,
       });
       return;
     }
@@ -3997,6 +4408,12 @@
     if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
     if (state.analysisType === ANALYSIS_TYPES.PM) return performPmSelection();
     if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return performDowntimeSelection();
+    // Repeat Fix Rate covers every mechanism at once, so there is nothing to pick:
+    // the button counts the repeats again, with the window in the box.
+    if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
+      state.repeatWindow = repeatWindowHours() || state.repeatWindow;
+      return loadRepeatFixes({ scrollToPanel: true });
+    }
     if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
       showBanner(`${state.analysisType} is coming soon.`, "info");
       return;
@@ -4019,33 +4436,100 @@
       );
       return;
     }
+    // A group whose events make fewer lives ending in a failure than the minimum --
+    // counted as the run counts them, the first event only starting the clock -- can
+    // never reach it, so it is shown, with why, but can't be chosen.
     const options = el("div", { class: "lda-modal-options" });
+    let anyFittable = false;
     groups.forEach((group, index) => {
+      const fittable = group.fittable !== false;
       const labelText =
         `${group.grouping_level === "FAILURE_MECHANISM" ? "Failure mechanism" : "Failure mode"}: ` +
-        `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)`;
+        `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)` +
+        (fittable
+          ? ""
+          : ` — too few to fit: ${
+              group.failure_lives_possible != null ? `${group.failure_lives_possible} ${group.failure_lives_possible === 1 ? "life ends" : "lives end"} in a failure, and ` : ""
+            }a Weibull fit needs ${group.min_failure_lives || 5}`);
       const radio = el("input", { type: "radio", name: "lda-group", value: String(index) });
-      if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: labelText })]));
+      if (!fittable) radio.disabled = true;
+      else if (!anyFittable) radio.checked = true;
+      anyFittable = anyFittable || fittable;
+      options.appendChild(
+        el("label", { class: "lda-modal-option" + (fittable ? "" : " is-disabled") }, [radio, el("span", { text: labelText })])
+      );
     });
+    // The window the lives are built in. Both are optional plant-calendar dates: the
+    // start counts from that day's first minute and the cutoff to its last.
+    const startInput = el("input", { class: "lda-input", type: "date", id: "lda-window-start" });
+    const cutoffInput = el("input", { class: "lda-input", type: "date", id: "lda-window-cutoff" });
+    const windowFields = el("div", { class: "lda-window-fields" }, [
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-start", text: "Analysis start date (optional)" }), startInput]),
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-cutoff", text: "Analysis cutoff date (optional)" }), cutoffInput]),
+    ]);
+    const modalError = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
     const choice = await openModal({
       title: "Select failure group",
-      bodyNodes: [el("p", { text: "Choose the failure mechanism or failure mode to analyze:" }), options],
+      bodyNodes: [
+        el("p", { text: "Choose the failure mechanism or failure mode to analyze:" }),
+        anyFittable
+          ? null
+          : el("p", {
+              class: "lda-hint",
+              text: "None of these has enough failures for a Weibull fit yet. Disposition more failures, or come back when more have been recorded.",
+            }),
+        options,
+        windowFields,
+        el("p", {
+          class: "lda-hint",
+          text:
+            "Leave both dates blank to use all of the asset's history and censor the current life at the last " +
+            "completed Limble import. Dates are days on the plant's clock: the start counts from midnight, and the " +
+            "cutoff runs to the end of its day.",
+        }),
+        modalError,
+      ],
       actions: [
         { label: "Cancel", primary: false, value: () => null },
         {
           label: "Run analysis",
           primary: true,
+          validate: () => {
+            const checked = options.querySelector("input[name='lda-group']:checked");
+            let problem = "";
+            if (!checked) problem = "Choose a failure group that has enough failures to fit.";
+            // The start counts from midnight and the cutoff runs to the end of its
+            // day, so the same date is a one-day window; only a later start is wrong.
+            else if (startInput.value && cutoffInput.value && startInput.value > cutoffInput.value) {
+              problem = "The analysis start date can't be later than the cutoff date.";
+            }
+            modalError.textContent = problem;
+            modalError.hidden = !problem;
+            return !problem;
+          },
           value: () => {
             const checked = options.querySelector("input[name='lda-group']:checked");
-            return checked ? Number(checked.value) : null;
+            return checked ? { index: Number(checked.value), start: startInput.value, cutoff: cutoffInput.value } : null;
           },
         },
       ],
     });
     if (choice === null || choice === undefined) return;
-    setActiveMechanism(groups[choice]);
-    runAnalysisForGroup(groups[choice]);
+    setActiveMechanism(groups[choice.index]);
+    const chosenWindow = choice.start || choice.cutoff ? { start: choice.start, cutoff: choice.cutoff } : null;
+    runAnalysisForGroup(groups[choice.index], undefined, { window: chosenWindow });
+  }
+
+  // Whether two Weibull groups ({ grouping_level, failure_mode_id, failure_mechanism_id })
+  // name the same population. A mode-level group's mechanism id may be null or absent.
+  function sameWeibullGroup(a, b) {
+    if (!a || !b) return false;
+    const mechanism = (group) => (group.grouping_level === "FAILURE_MECHANISM" ? group.failure_mechanism_id ?? null : null);
+    return (
+      a.grouping_level === b.grouping_level &&
+      a.failure_mode_id == b.failure_mode_id &&
+      mechanism(a) == mechanism(b)
+    );
   }
 
   // Query string for the read-only saved-analysis lookup. The mechanism id is omitted
@@ -4062,13 +4546,17 @@
 
   // `options.changedRecord` marks a re-run after a disposition saved from the data
   // table ({ mappedRecordId, label }): the new table scrolls back to that record,
-  // and a fit the change has made impossible clears the old one off the screen.
+  // and a refusal says the change was saved; the old fit stays on screen unless
+  // the refusal removed it.
   // `options.savedOnly` opens the fit already saved even for an editor, the way a
   // viewer always does: what the tour uses, so that showing somebody around never
-  // runs and stores a fit of its own.
+  // runs and stores a fit of its own. `options.window` ({ start, cutoff } as
+  // YYYY-MM-DD, either blank) is the analysis window an editor chose; without one
+  // the run uses all history and the server's default cutoff.
   async function runAnalysisForGroup(group, message, options) {
     const changedRecord = (options && options.changedRecord) || null;
     const savedOnly = !CAN_EDIT || Boolean(options && options.savedOnly);
+    const analysisWindow = (options && options.window) || null;
     if (!state.selectedAsset) return;
     const asset = state.selectedAsset;
     // Capture the analysis type too: if the user switches away from Weibull while
@@ -4100,6 +4588,8 @@
             grouping_level: group.grouping_level,
             failure_mode_id: group.failure_mode_id,
             failure_mechanism_id: group.failure_mechanism_id,
+            analysis_start: (analysisWindow && analysisWindow.start) || null,
+            analysis_cutoff: (analysisWindow && analysisWindow.cutoff) || null,
           })
         : await getJson(`${API}/saved-analysis?${savedAnalysisQuery(asset, group)}`);
       if (isStale()) return; // superseded, or the asset/analysis type changed mid-request
@@ -4115,20 +4605,40 @@
       }
       state.latestResult = data.result;
       state.latestResultGroup = group;
+      // A fit opened read-only (the tour, or a viewer) keeps the window it was saved
+      // with, so a disposition changed from its tables re-runs the same dates.
+      state.latestResultWindow = savedOnly ? savedResultWindow(data.result) : analysisWindow;
       renderAnalysisResult(data.result, { changedRecord });
       refreshSummary();
     } catch (err) {
       if (isStale()) return;
+      // A run over all history that the data cannot support (too few failure lives,
+      // no likelihood root) also removes the result saved for that group, and the
+      // server says so: take a fit of it still on screen down, forget its window,
+      // and let the rankings drop it too. A refusal over an entered window, or any
+      // other error, leaves the saved result as it was, so the fit on screen stays,
+      // as it does in the rankings.
+      const removed = Boolean(err.payload && err.payload.result_removed);
+      if (removed && sameWeibullGroup(state.latestResultGroup, group)) {
+        if (state.latestResult) {
+          state.latestResult = null;
+          clearWorkspace();
+        }
+        state.latestResultGroup = null;
+        state.latestResultWindow = null;
+      }
       if (changedRecord) {
-        // The fit on screen predates the change -- the change may have taken away
-        // the last failure it rested on -- so leaving it up would show numbers the
-        // data no longer supports. The summary still has to catch up with the save.
-        state.latestResult = null;
-        clearWorkspace();
-        showBanner(`The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run: ${err.message}`, "error");
+        // A fit kept on screen predates the change, so the banner says so. The
+        // summary has to catch up with the save either way.
+        const kept = state.latestResult ? ", so the fit shown is the one saved before this change" : "";
+        showBanner(
+          `The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run${kept}: ${err.message}`,
+          "error"
+        );
         refreshSummary();
       } else {
         showBanner(err.message, "error");
+        if (removed) refreshSummary();
       }
     } finally {
       endLoading();
@@ -4148,6 +4658,263 @@
     return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
   }
 
+  // The probability plot's R²: how straight its Kaplan-Meier failure points lie. It
+  // checks the model rather than being part of the fit, so adjusting beta and eta
+  // leaves it where it is.
+  function fitCheckText(result) {
+    const r2 = Number(result.probability_plot_r_squared);
+    if (result.probability_plot_r_squared == null || !isFinite(r2)) {
+      return "Probability plot R²: not available (fewer than three distinct failure points).";
+    }
+    const threshold = Number(result.probability_plot_r_squared_threshold);
+    const against =
+      result.probability_plot_r_squared_threshold == null || !isFinite(threshold)
+        ? ""
+        : result.probability_plot_review
+          ? `, below the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`
+          : `, meeting the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`;
+    return `Probability plot R² ${r2.toFixed(3)}${against}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
+  }
+
+  // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
+  function lifeMetricsText(result) {
+    const part = (label, hours) => {
+      if (hours == null || !isFinite(Number(hours))) return null;
+      const weeks = calendarWeeksText(hours, result.life_basis);
+      return `${label} ${fmt(hours)} h${weeks ? ` (${weeks})` : ""}`;
+    };
+    const parts = [
+      part("B10 life", result.b10_life),
+      part("B50 (median) life", result.b50_life),
+      part("MTTF", result.mean_time_to_failure),
+    ].filter(Boolean);
+    return parts.length ? `${parts.join(" · ")}.` : "";
+  }
+
+  // A stored UTC timestamp on the plant's clock, "2026-03-02 07:00 America/Chicago".
+  // The zone is the one the result's days were split in, so the two always agree.
+  // The window an editor chose for a saved fit, as the YYYY-MM-DD plant dates the
+  // Perform Analysis dialog takes, or null for all history to the default cutoff.
+  // The start is the first instant of its plant day. An entered cutoff ends at the
+  // next plant midnight, or at the moment of the run when its day was that day, so
+  // the second before it falls on the cutoff day either way. A default cutoff (the
+  // last import or the time of the run) is not an entered date and stays blank.
+  function savedResultWindow(result) {
+    if (!result) return null;
+    const zone = (result.life_basis && result.life_basis.time_zone) || "UTC";
+    const start = result.analysis_start ? plantDateOf(result.analysis_start, zone, 0) : "";
+    const cutoff =
+      result.analysis_cutoff_source === "USER" && result.analysis_cutoff
+        ? cutoffPlantDate(result.analysis_cutoff, "USER", zone)
+        : "";
+    return start || cutoff ? { start, cutoff } : null;
+  }
+
+  // The YYYY-MM-DD plant date of a stored UTC instant, `secondsBefore` it.
+  function plantDateOf(value, zone, secondsBefore) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return "";
+    return plantTimeText(new Date(when.getTime() - (secondsBefore || 0) * 1000).toISOString(), zone || "UTC").slice(0, 10);
+  }
+
+  // The plant day a run's cutoff falls on. An entered cutoff is stored as the next
+  // plant midnight (or the moment of the run, when its day was that day), so its day
+  // is the one the second before it falls on; any other cutoff is the day it is on.
+  function cutoffPlantDate(value, source, zone) {
+    return plantDateOf(value, zone, source === "USER" ? 1 : 0);
+  }
+
+  function plantTimeText(value, zoneName) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return String(value);
+    const zone = zoneName || "UTC";
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(when);
+      const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ${zone}`;
+    } catch (err) {
+      return when.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    }
+  }
+
+  const CUTOFF_SOURCE_TEXT = {
+    LAST_IMPORT: "the last completed Limble import",
+    USER: "the cutoff date entered for the run",
+    NOW: "the time of the run",
+  };
+
+  // An entered cutoff date runs to the end of that plant day, which is stored as the
+  // next day's midnight; read it back as "the end of 2025-06-30" rather than as
+  // "2025-07-01 00:00". A cutoff capped at the moment of the run keeps its time.
+  function cutoffText(result, zone) {
+    const shown = plantTimeText(result.analysis_cutoff, zone);
+    if (result.analysis_cutoff_source !== "USER" || !/ 00:00 /.test(shown)) return shown;
+    const instant = new Date(String(result.analysis_cutoff).replace(" ", "T"));
+    if (isNaN(instant.getTime())) return shown;
+    const dayBefore = plantTimeText(new Date(instant.getTime() - 60000).toISOString(), zone);
+    return `the end of ${dayBefore.slice(0, 10)} (${zone})`;
+  }
+
+  // What the lives count and the window they were built in, in one line each.
+  function resultContextLines(result) {
+    const basis = result.life_basis || {};
+    const zone = basis.time_zone || "UTC";
+    const lines = [
+      `Life basis: schedule-adjusted hours, an exposure proxy rather than run-meter hours, on ${scheduleLabel(basis)}, ` +
+        `with days split at midnight ${zone}.`,
+      `Window: ${result.analysis_start ? `from ${plantTimeText(result.analysis_start, zone)}` : "all history"} to ` +
+        `${cutoffText(result, zone) || "an unrecorded cutoff"}` +
+        `${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source] ? `, ${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source]}` : ""}.`,
+      `Lives: ${result.total_observation_count} in total, ${result.failure_count} ending in a failure and ` +
+        `${result.censored_count} right-censored (${result.pm_reset_censored_count || 0} at a PM reset, ` +
+        `${result.current_life_censored_count || 0} current life).`,
+    ];
+    if (result.grouping_level === "FAILURE_MODE") {
+      lines.push(
+        "Grouping: failure mode, the fallback for when the records cannot support one mechanism. It pools every " +
+          "mechanism under the mode, which can blur beta." +
+          (result.fallback_rationale ? ` Why not a mechanism: ${result.fallback_rationale}` : "")
+      );
+    }
+    return lines;
+  }
+
+  // Notices a result has to carry: saved under an earlier method, below the minimum
+  // failure count, days split in UTC for want of the plant zone, or lives that look
+  // like duplicate work orders.
+  function resultNotices(result) {
+    const notices = [];
+    const minimum = result.min_failure_lives || 5;
+    if (result.method_current === false) {
+      // What the current method changed since the version this result was saved under.
+      const pmScope =
+        "let a PM aimed at one mechanism restart its whole failure mode, and didn't let a PM aimed at the whole mode " +
+        "restart the mechanisms under it";
+      const changed =
+        result.method_version === "life-data-v2"
+          ? pmScope
+          : "split days at midnight UTC, dated a work order with no completed date by its start or created date, had no " +
+            `minimum failure count, and ${pmScope}`;
+      notices.push(
+        `Saved by an earlier version of GREMLIN's Weibull method (${result.method_version || "unrecorded"}), which ${changed}. ` +
+          (CAN_EDIT ? "Run it again to apply the current rules; " : "An editor has to run it again to apply the current rules; ") +
+          "it can't be reported until then."
+      );
+    }
+    if (result.method_current !== false && result.schedule_current === false) {
+      const countedOn = (result.life_basis && result.life_basis.schedule_name) || "an earlier schedule";
+      notices.push(
+        `Counted on the ${countedOn} schedule, but this asset is now on ${result.current_schedule_name || "another schedule"}, ` +
+          "so its life hours have changed. " +
+          (CAN_EDIT ? "Run it again to count them on the new schedule; " : "An editor has to run it again; ") +
+          "it can't be reported until then."
+      );
+    }
+    if (result.method_current !== false && result.schedule_current !== false && result.time_zone_current === false) {
+      const splitIn = (result.life_basis && result.life_basis.time_zone) || "UTC";
+      notices.push(
+        `Its days were split at midnight ${splitIn}, but the plant's time zone is now ${result.current_time_zone || "another zone"}, ` +
+          "so its life hours have changed. " +
+          (CAN_EDIT ? "Run it again to count them in the plant's zone; " : "An editor has to run it again; ") +
+          "it can't be reported until then."
+      );
+    }
+    if (result.meets_minimum === false) {
+      notices.push(
+        `This result rests on ${result.failure_count} lives that end in a failure; GREMLIN needs at least ${minimum} to ` +
+          "fit and report a Weibull distribution, so it is not ranked and can't be reported."
+      );
+    }
+    if (result.probability_plot_review) {
+      notices.push(
+        `The probability plot is less straight than 90% of genuine Weibull samples with ${result.failure_count} failures ` +
+          `(R² ${Number(result.probability_plot_r_squared).toFixed(3)}, review threshold ` +
+          `${Number(result.probability_plot_r_squared_threshold).toFixed(3)}). Review the population before acting on ` +
+          "beta: mixed mechanisms, a life missing its real start point, or a duplicate work order are the usual causes."
+      );
+    }
+    if (result.life_basis && result.life_basis.time_zone_warning) notices.push(result.life_basis.time_zone_warning);
+    const flagged = (result.observations || []).filter((obs) => obs.data_quality_assumption_flag).length;
+    if (flagged) {
+      notices.push(
+        `${flagged} ${flagged === 1 ? "life ends" : "lives end"} within an hour of the event before, which is what two work ` +
+          "orders for one breakdown look like. Check the flagged rows in the data table: a duplicate makes a near-zero " +
+          "life that pulls beta down."
+      );
+    }
+    return notices;
+  }
+
+  // R(t) and F(t) at an age the user enters -- the current PM interval, say -- at the
+  // beta and eta on screen: the fitted values, or the ones an editor is trying.
+  function buildTargetAgePanel(result) {
+    const input = el("input", {
+      class: "lda-input",
+      type: "number",
+      min: "0",
+      step: "50",
+      id: "lda-target-age",
+      placeholder: "Life hours, e.g. a PM interval",
+    });
+    const output = el("p", { class: "lda-age-output", "aria-live": "polite" });
+    let beta = Number(result.beta_mle);
+    let eta = Number(result.eta_mle);
+    let fitted = true;
+    function render() {
+      const age = Number(input.value);
+      if (!input.value || !isFinite(age) || age <= 0) {
+        output.textContent = "Enter an age in life hours to see the chance of surviving to it and of failing by it.";
+        return;
+      }
+      if (!(beta > 0) || !(eta > 0)) {
+        output.textContent = "Enter a positive beta and eta to evaluate an age.";
+        return;
+      }
+      const reliability = Math.exp(-Math.pow(age / eta, beta));
+      const weeks = calendarWeeksText(age, result.life_basis);
+      output.textContent =
+        `At ${fmt(age)} life hours${weeks ? ` (${weeks})` : ""}: R = ${reliability.toFixed(3)}, so about ` +
+        `${(reliability * 100).toFixed(1)}% are expected to survive to that age, and F = ${(1 - reliability).toFixed(3)} ` +
+        `to fail by it. At the ${fitted ? "fitted" : "beta and eta entered above, not the fitted"} values.`;
+    }
+    input.addEventListener("input", render);
+    render();
+    const node = el("div", { class: "lda-panel lda-age-panel" }, [
+      el("h3", { text: "Reliability at an age" }),
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-target-age", text: "Age (life hours)" }), input]),
+      output,
+    ]);
+    // The inputs open on the fitted values rounded to six places, so a pair that
+    // still reads as those is the fit itself, evaluated at its unrounded values.
+    const fittedText = [numericInputValue(result.beta_mle, 6), numericInputValue(result.eta_mle, 6)];
+    return {
+      node,
+      // Redraw at another beta/eta: the editor's inputs moved.
+      update(nextBeta, nextEta) {
+        fitted =
+          numericInputValue(nextBeta, 6) === fittedText[0] && numericInputValue(nextEta, 6) === fittedText[1];
+        beta = fitted ? Number(result.beta_mle) : Number(nextBeta);
+        eta = fitted ? Number(result.eta_mle) : Number(nextEta);
+        render();
+      },
+      // The age entered, for the report, or null.
+      value() {
+        const age = Number(input.value);
+        return input.value && isFinite(age) && age > 0 ? age : null;
+      },
+    };
+  }
+
   function renderAnalysisResult(result, options) {
     const changedRecord = (options && options.changedRecord) || null;
     clearWorkspace();
@@ -4159,6 +4926,8 @@
     const dataTable = buildWeibullDataTable(result, (obs) => {
       if (chartApi) chartApi.focus(obs);
     });
+    const eventTable = buildEventProcessingTable(result);
+    const agePanel = buildTargetAgePanel(result);
 
     const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(result.beta_mle, 6) });
     const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(result.eta_mle, 6) });
@@ -4171,6 +4940,7 @@
       const beta = Number(betaInput.value);
       const eta = Number(etaInput.value);
       if (beta > 0 && eta > 0) chartApi.update(beta, eta);
+      agePanel.update(beta, eta);
     }
     betaInput.addEventListener("input", applyParameters);
     etaInput.addEventListener("input", applyParameters);
@@ -4190,17 +4960,19 @@
       el("div", { class: "lda-field" }, [el("label", { html: "&nbsp;" }), saveAdjusted]),
     ]);
 
+    const metrics = lifeMetricsText(result);
+    const notices = resultNotices(result);
     const card = el("section", { class: "glass-card lda-card fade-in-up" }, [
       el("h2", { text: "Weibull Analysis Results" }),
       el("div", { class: "lda-result-headline" }, [
         el("strong", { text: result.analysis_label || "Selected failure group" }),
         el("span", { class: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
         el("span", { class: "lda-hint", text: confidenceIntervalText(result) }),
-        el("span", {
-          class: "lda-hint",
-          text: `Observations: ${result.total_observation_count} total, ${result.failure_count} failures, ${result.censored_count} right-censored.`,
-        }),
+        metrics ? el("span", { class: "lda-hint", text: metrics }) : null,
+        el("span", { class: "lda-hint", text: fitCheckText(result) }),
       ]),
+      el("div", { class: "lda-result-context" }, resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
+      ...notices.map((notice) => el("p", { class: "lda-banner is-warning", role: "note", text: notice })),
       // Adjusting beta/eta and saving the adjustment are writes, so the whole row is
       // left out for a viewer or a signed-out visitor rather than shown inert. They
       // still get the full read-only view at the fitted MLE parameters.
@@ -4211,57 +4983,190 @@
         class: "lda-hint",
         text:
           "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
-          "The red vertical line marks the current life, which is the elapsed time from the most recent valid event to the analysis cutoff. " +
+          "The red vertical line marks the current life: the schedule-adjusted hours from the most recent event to the analysis cutoff. " +
           "The hazard and PDF panes intentionally show only the MLE curve. Hover any plotted point or the current-life line to see its task ID, life hours, start/end dates, request description, and completion notes; click it to jump to the source Weibull data row below.",
       }),
+      agePanel.node,
       panel("Results Interpretation Summary", buildInterpretationTable(result),
-        "Recommendations are based on beta, eta, MTTF, and approximate 95% confidence intervals for the fitted Weibull parameters."),
+        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals for the fitted Weibull parameters, and the probability plot R²."),
       panel("Weibull Data Used for Graphs", dataTable.node,
 
-        "Rows are the observations included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Rows are the lives included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
+        "Raw elapsed hours are the calendar hours between the two events; weekend and non-run hours are taken out of them to give the life hours. " +
+        "Check flags a life that ends within an hour of the event before it, a likely duplicate work order. " +
         "Click a row to jump back up to the graph that plots it, with that observation ringed. " +
         (CAN_EDIT
           ? "Click a Task ID to review or change that work order's disposition; the analysis re-runs when you save it. "
           : "") +
         "Use the ▾ menu in any column header to sort or filter the rows."),
+      eventTable.node,
       // Generating the report reserves a REL report number, which is a write, so the
       // whole section is editor-only.
-      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput) : null,
+      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) : null,
 
     ]);
     $("lda-workspace").appendChild(card);
     // After a disposition saved from the data table, land back on that record
     // rather than at the top of the card it was edited from. A change that took
     // it out of this failure group leaves nothing to land on, so say so.
-    if (changedRecord && dataTable.revealRecord(changedRecord.mappedRecordId)) return;
+    if (changedRecord && (dataTable.revealRecord(changedRecord.mappedRecordId) || eventTable.revealRecord(changedRecord.mappedRecordId))) return;
     scrollBelowSticky(card);
     if (changedRecord) showToast(`${changedRecord.label} is no longer part of this Weibull analysis.`, "info");
   }
 
-  // Action bar at the bottom of the results: generates a formal, high-level
-  // Weibull report (Word .docx) containing the charts and interpretation summary.
-  function buildReportBar(result, charts, chartApi, betaInput, etaInput) {
+  // REL-WBL-DAT-004's event processing table: every event the failure group's
+  // dispositions offered, in date order, with the note saying how it was used --
+  // including the ones left out of the timeline and why. Collapsed by default; it is
+  // the audit trail behind the data table, not something every reader needs.
+  function buildEventProcessingTable(result) {
+    const events = result.events || [];
+    const excluded = events.filter((event) => event.event_role === "EXCLUDED_EVENT").length;
+    const kindOf = (event) => (Number(event.is_failure_event) ? "wo" : Number(event.is_pm_reset_event) ? "pm" : null);
+    const columns = [
+      { label: "Seq", type: "number", get: (event) => (event.weibull_sequence_number != null ? String(event.weibull_sequence_number) : "") },
+      {
+        label: "Task ID",
+        type: "number",
+        get: (event) => (event.task_id != null ? String(event.task_id) : ""),
+        node: (event) => recordNumberCell(event.task_id, { mappedRecordId: event.mapped_record_id, kind: kindOf(event) }),
+      },
+      { label: "Work Title", cls: "lda-data-text", get: (event) => event.task_name || "" },
+      { label: "Event", get: (event) => (Number(event.is_pm_reset_event) ? "PM reset" : "Failure") },
+      { label: "Completed Date", type: "datetime", get: (event) => event.completed_date_raw || "" },
+      { label: "Note", cls: "lda-data-text", get: (event) => event.weibull_life_note || "" },
+      { label: "Check", cls: "lda-data-text lda-check", get: (event) => event.data_quality_assumption_flag || "" },
+    ];
+    const table = el("table", { class: "lda-data" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
+    const tbody = el("tbody");
+    const rowByRecord = new Map();
+    events.forEach((event) => {
+      const tr = el("tr", { class: event.event_role === "EXCLUDED_EVENT" ? "is-excluded" : null }, columns.map((c) =>
+        c.node ? c.node(event) : el("td", { text: c.get(event), class: c.cls || null })
+      ));
+      if (event.mapped_record_id != null) rowByRecord.set(Number(event.mapped_record_id), tr);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    if (events.length) enableTableColumnTools(table, { columns });
+    const summaryText =
+      `Event processing table: ${events.length} ${events.length === 1 ? "event" : "events"}` +
+      (excluded ? `, ${excluded} left out of the timeline` : "");
+    const details = el("details", { class: "lda-panel lda-events" }, [
+      el("summary", { text: summaryText }),
+      events.length
+        ? el("div", { class: "lda-data-scroll" }, [table])
+        : el("p", { class: "lda-hint", text: "This result was saved before GREMLIN kept its events." }),
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Every event this failure group's dispositions put forward, in date order. The first only starts the clock; each " +
+          "later one ends a life and starts the next. An event with no completed date, a date that can't be read, or a date " +
+          "outside the analysis window is listed but left out, and its note says which.",
+      }),
+    ]);
+    // The row a record is on, opened up and highlighted: where a disposition saved
+    // from this table lands when its record is no longer one of the lives.
+    function revealRecord(mappedRecordId) {
+      const tr = rowByRecord.get(Number(mappedRecordId));
+      if (!tr) return false;
+      details.open = true;
+      tbody.querySelectorAll("tr.is-highlight").forEach((row) => row.classList.remove("is-highlight"));
+      tr.classList.add("is-highlight");
+      tr.scrollIntoView({ behavior: "smooth", block: "center" });
+      return true;
+    }
+    return { node: details, revealRecord };
+  }
+
+  // Action bar at the bottom of the results: generates a formal Weibull report (Word
+  // .docx) with the life basis and window, the charts, the interpretation summary,
+  // the limitations and the lives themselves. A result saved under an earlier method,
+  // or resting on fewer failure lives than the minimum, can't be reported, and the
+  // bar says so rather than offering a button the server would refuse.
+  function buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) {
+    let blocked = "";
+    if (result.method_current === false) {
+      blocked = "Run the analysis again to report it: this result was saved by an earlier version of the method.";
+    } else if (result.schedule_current === false) {
+      blocked = "Run the analysis again to report it: the asset has been moved to another schedule since this result was counted.";
+    } else if (result.time_zone_current === false) {
+      blocked = "Run the analysis again to report it: the plant's time zone has changed since this result was counted.";
+    } else if (result.meets_minimum === false) {
+      blocked = `A report needs at least ${result.min_failure_lives || 5} lives that end in a failure.`;
+    }
     const button = el("button", {
       class: "btn-primary",
       type: "button",
       text: "Generate Weibull Report",
+      disabled: Boolean(blocked),
     });
-    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput));
+    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
     return el("div", { class: "lda-report-bar" }, [
       button,
       el("p", {
         class: "lda-hint",
         text:
-          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) summarizing this Weibull result at a high level, " +
-          "including the analysis graphs and the interpretation summary.",
+          blocked ||
+          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) for this Weibull result: the population and " +
+            "grouping level, the life basis and analysis window, the fitted values with B10, B50 and the reliability at " +
+            "the age entered above, the graphs, the interpretation summary, the limitations, and every life it rests on. " +
+            (result.grouping_level === "FAILURE_MODE"
+              ? "A failure-mode report also states why a mechanism could not be fitted instead, which it asks you for."
+              : ""),
       }),
     ]);
   }
 
-  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput) {
+  // The reason a failure-mode population was fitted rather than one of its
+  // mechanisms, which its report must state (REL-WBL-PLN-003 §8). Prefilled with
+  // the one saved for the population; resolves null when cancelled.
+  async function askFallbackRationale(result) {
+    const textarea = el("textarea", {
+      class: "lda-input lda-rationale-input",
+      id: "lda-fallback-rationale",
+      rows: "4",
+      placeholder: "e.g. The completion notes don't separate seal wear from pressure loss, so no single mechanism can be assigned.",
+    });
+    textarea.value = result.fallback_rationale || "";
+    const error = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
+    return openModal({
+      title: "Why a failure mode, not a mechanism?",
+      bodyNodes: [
+        el("p", {
+          text:
+            "Failure mode is the fallback grouping, for when the records cannot support one mechanism. The report " +
+            "states why this one was fitted at mode level, and the reason is kept with the population for its next report.",
+        }),
+        el("div", { class: "lda-field" }, [el("label", { for: "lda-fallback-rationale", text: "Reason" }), textarea]),
+        error,
+      ],
+      actions: [
+        { label: "Cancel", primary: false, value: () => null },
+        {
+          label: "Generate report",
+          primary: true,
+          validate: () => {
+            const empty = !textarea.value.trim();
+            error.textContent = empty ? "Write the reason before generating the report." : "";
+            error.hidden = !empty;
+            return !empty;
+          },
+          value: () => textarea.value.trim(),
+        },
+      ],
+    });
+  }
+
+  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput, agePanel) {
     if (!state.selectedAsset) {
       showBanner("Select an Asset Number first.", "error");
       return;
+    }
+    let fallbackRationale = null;
+    if (result.grouping_level === "FAILURE_MODE") {
+      fallbackRationale = await askFallbackRationale(result);
+      if (fallbackRationale === null || fallbackRationale === undefined) return;
     }
     // The report's parameter and interpretation tables come from the analyzed MLE
     // `result`, so the embedded graphs must show that same MLE fit — not any
@@ -4294,11 +5199,19 @@
     try {
       const filename = await postDownload(
         `${API}/weibull-report`,
-        // Send only the saved result id (plus chart images); the server reloads the
-        // authoritative parameters and interpretation summary from the database.
-        { asset: state.selectedAsset, result_id: result.result_id, charts },
+        // Send only the saved result id (plus chart images, the age to evaluate and a
+        // failure mode's rationale); the server reloads the authoritative parameters,
+        // lives and interpretation summary from the database.
+        {
+          asset: state.selectedAsset,
+          result_id: result.result_id,
+          charts,
+          target_age_hours: agePanel ? agePanel.value() : null,
+          fallback_rationale: fallbackRationale,
+        },
         "weibull-report.docx"
       );
+      if (fallbackRationale) result.fallback_rationale = fallbackRationale;
       showBanner(`Generated ${filename}.`, "success");
     } catch (err) {
       showBanner(err.message, "error");
@@ -4345,53 +5258,34 @@
     return table;
   }
 
-  // Value cell for one interpretation-summary row. The MTTF row gets an extra
-  // calendar-time conversion (months/days) plus an editable operating-schedule
-  // input, so users can see the mean life in real terms for their run schedule
-  // (e.g. 20 h/day). Every other metric renders as a plain value cell.
+  // Value cell for one interpretation-summary row. The MTTF row adds how many calendar
+  // weeks that many life hours take on the result's own schedule: life hours exclude
+  // weekends and count each weekday at the schedule's hours, so 24 hours a day of
+  // running would overstate how soon the mean life comes round. Every other metric
+  // renders as a plain value cell.
   function buildInterpretationValueCell(row, result) {
     const isMttf = String(row.metric || "").trim().toUpperCase() === "MTTF";
     const mttfHours = result ? Number(result.mean_time_to_failure) : NaN;
     if (!isMttf || !isFinite(mttfHours) || mttfHours <= 0) {
       return el("td", { text: row.value || "—" });
     }
-
-    const durationLine = el("span", {
-      class: "lda-mttf-duration",
-      text: mttfDurationText(mttfHours, state.operatingHoursPerDay),
-    });
-    const hoursInput = el("input", {
-      class: "lda-input lda-mttf-hours",
-      type: "number",
-      min: "0.1",
-      max: "24",
-      step: "0.5",
-      value: numericInputValue(state.operatingHoursPerDay, 4),
-      "aria-label": "Operating hours per day",
-    });
-    hoursInput.addEventListener("input", () => {
-      // Browsers don't clamp typed values to the input's max, so validate the upper
-      // bound here too: more than 24 h/day is physically impossible and would report a
-      // calendar duration shorter than continuous running.
-      const hpd = Number(hoursInput.value);
-      if (isFinite(hpd) && hpd > 0 && hpd <= 24) {
-        state.operatingHoursPerDay = hpd;
-        durationLine.textContent = mttfDurationText(mttfHours, hpd);
-      } else {
-        durationLine.textContent = "Enter an operating schedule between 0 and 24 h/day to estimate calendar time.";
-      }
-    });
-
+    const weeks = calendarWeeksText(mttfHours, result.life_basis);
     return el("td", { class: "lda-mttf-cell" }, [
       el("span", { class: "lda-mttf-hours-value", text: row.value || `${fmt(mttfHours)} hours` }),
-      durationLine,
-      el("div", { class: "lda-mttf-schedule" }, [
-        el("label", { text: "Operating schedule:" }),
-        hoursInput,
-        el("span", { text: "h/day" }),
-      ]),
+      weeks
+        ? el("span", { class: "lda-mttf-duration", text: `${weeks[0].toUpperCase()}${weeks.slice(1)} on ${scheduleLabel(result.life_basis)}` })
+        : null,
     ]);
   }
+
+  // What a life is, in the words the data table and the report use. The stored codes
+  // predate REL-WBL-DAT-004's vocabulary, so these name the interval itself: a life
+  // that ends at a PM reset is censored there, and the current life at the cutoff.
+  const OBSERVATION_TYPE_LABELS = {
+    COMPLETED_FAILURE_LIFE: "Ends in a failure",
+    PM_RESET_CENSORED_LIFE: "Censored at a PM reset",
+    RIGHT_CENSORED_LIFE: "Censored at the cutoff (current life)",
+  };
 
   function buildWeibullDataTable(result, onRowActivate) {
     // Each column knows how to render its header and pull its value from an
@@ -4417,8 +5311,11 @@
       },
       { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
       { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
-      { label: "Type", get: (obs) => obs.observation_type || "" },
+      { label: "Type", get: (obs) => OBSERVATION_TYPE_LABELS[obs.observation_type] || obs.observation_type || "" },
       { label: "Life Hours", type: "number", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
+      { label: "Raw Elapsed (h)", type: "number", get: (obs) => (obs.life_hours_raw_elapsed != null ? fmtFixed(obs.life_hours_raw_elapsed) : "") },
+      { label: "Excl. Weekend (h)", type: "number", get: (obs) => (obs.excluded_weekend_hours != null ? fmtFixed(obs.excluded_weekend_hours) : "") },
+      { label: "Excl. Non-run (h)", type: "number", get: (obs) => (obs.excluded_schedule_non_run_hours != null ? fmtFixed(obs.excluded_schedule_non_run_hours) : "") },
       { label: "Failure", type: "boolean", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
       { label: "Right Censored", type: "boolean", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
       { label: "Start Datetime", type: "datetime", get: (obs) => obs.start_datetime || "" },
@@ -4432,6 +5329,7 @@
         node: (obs) => narrativeCell(obs, { prefix: "source_", cls: "lda-data-text" }),
       },
       { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
+      { label: "Check", cls: "lda-data-text lda-check", get: (obs) => obs.data_quality_assumption_flag || "" },
     ];
     const table = el("table", { class: "lda-data" });
     table.appendChild(
@@ -5575,6 +6473,7 @@
     if (state.analysisType === ANALYSIS_TYPES.TREND) return Boolean(state.selectedTrend);
     if (state.analysisType === ANALYSIS_TYPES.PM) return Boolean(state.pmSelection);
     if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return Boolean(state.downtimeSelection);
+    if (state.analysisType === ANALYSIS_TYPES.REPEAT) return Boolean(state.repeatData);
     return true;
   }
 
@@ -5647,7 +6546,8 @@
       body: () =>
         "Weibull Analysis fits a life distribution to one failure mode or mechanism. Failure Mode " +
         "Trend counts it month by month, Downtime Driver shows where its downtime comes from, and " +
-        "PM Effectiveness how soon it fails after a PM. Switching keeps the mechanism you last picked. " +
+        "PM Effectiveness how soon it fails after a PM. Repeat Fix Rate shows how often each mechanism comes " +
+        "straight back after a repair. Switching keeps the mechanism you last picked. " +
         `The rest of this tour is about ${state.analysisType}; choose another and take the tour again for its panels.`,
     },
   ];
@@ -5657,6 +6557,7 @@
     [ANALYSIS_TYPES.TREND]: "chart its trend below.",
     [ANALYSIS_TYPES.PM]: "see how soon it follows a PM.",
     [ANALYSIS_TYPES.DOWNTIME]: "break its downtime down below.",
+    [ANALYSIS_TYPES.REPEAT]: "list only its repeat failures below.",
   };
 
   const ANALYSIS_RESULTS_TOUR_STEPS = [
@@ -5667,7 +6568,8 @@
       body:
         "How many records this asset has, how many work orders and PMs a Weibull fit can use, and " +
         "how many are still to be dispositioned. A record is only usable once it has been " +
-        "dispositioned as an included failure or an approved PM reset.",
+        "dispositioned as an included failure or an approved PM reset, and a fit needs at least five " +
+        "lives that end in a failure.",
     },
     {
       target: "#lda-trend-summary",
@@ -5702,13 +6604,32 @@
         "work orders it came from.",
     },
     {
+      target: "#lda-repeat-summary",
+      title: "Repeat fixes at a glance",
+      when: forType(ANALYSIS_TYPES.REPEAT),
+      body:
+        "How often a failure on this asset came back within the repeat window of the last one of the same " +
+        "mechanism, which says the repair did not hold. Highest Rate only ranks mechanisms with enough gaps " +
+        "between failures for the rate to mean something, and a possible duplicate is a repeat that closed " +
+        "within an hour, worth checking is not the same breakdown recorded twice.",
+    },
+    {
       target: "#lda-beta-panel",
       title: "Highest-beta mechanisms",
       when: forType(ANALYSIS_TYPES.WEIBULL),
       body:
-        "The five mechanisms with the highest beta in their last saved Weibull fit. A beta above 1 " +
-        "means failures get likelier with age, which a PM can get ahead of; below 1 points to " +
-        "early-life failures.",
+        "Where an age-based PM is most likely to pay off: the five mechanisms with the highest beta in their " +
+        "last saved Weibull fit, counting only fits with at least five failure lives. A beta above 1 means " +
+        "failures get likelier with age, which a PM can get ahead of; below 1 points to early-life failures.",
+    },
+    {
+      target: "#lda-risk-panel",
+      title: "Most likely to fail soon",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      body:
+        "What needs attention before the next planning cycle: the same saved fits, ranked by the chance the " +
+        "current life ends in a failure within the weeks in the box (four unless you change it), given how " +
+        "long it has already run.",
     },
     {
       target: "#lda-pareto-panel",
@@ -5746,13 +6667,15 @@
             "Clicking a bar on the Pareto " +
             (CAN_EDIT ? "runs a Weibull fit on it" : "opens the fit last saved for it") +
             ", and the results appear under the chart: beta and eta with their confidence bounds, the " +
-            "fitted curves, what they mean, and the data behind them."
+            "fitted curves, what they mean, and the data behind them. A fit needs at least five lives " +
+            "that end in a failure."
           );
         }
         return (
-          "Beta and eta with their confidence bounds, the fitted curves, what they mean, and the data " +
-          "behind them. Hover a plotted point for its work order, and click it to find its row in the " +
-          "table." +
+          "Beta and eta with their confidence bounds, B10 and B50, the life basis and window the lives " +
+          "were built in, the fitted curves, the reliability at an age you enter, what it all means, and " +
+          "the data behind it, down to every event left out and why. Hover a plotted point for its work " +
+          "order, and click it to find its row in the table." +
           (CAN_EDIT
             ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
               "generate a Weibull report."
@@ -5781,6 +6704,17 @@
         "Failures of the selected mechanism that came after a completed PM, month by month. From " +
         "and To narrow the months, and the table under it pairs each PM with the failure that " +
         "followed it.",
+    },
+    {
+      target: "#lda-repeat-rate-panel",
+      title: "Repeat fix rate by mechanism",
+      when: forType(ANALYSIS_TYPES.REPEAT),
+      body:
+        "Each mechanism's failures, the gaps between them, and how many of those gaps were within the " +
+        "window, in scheduled hours on the asset's Weibull schedule just as a Weibull life is counted, so a " +
+        "weekend does not hide a repeat. Change the hours in the box to widen or narrow it. The table under " +
+        "it lists every repeat with the failure before it; click a row here or a Pareto bar to see one " +
+        "mechanism's.",
     },
     {
       target: "#lda-downtime-trend-panel",
@@ -6184,8 +7118,8 @@
           "the SQ87 bracket to spec resets \"SQ87 bracket / switch out of adjustment\".",
         points: [
           ["From the list", "It offers the mechanisms already dispositioned under the chosen Reset Target Failure Mode."],
-          ["Leave it blank when", "The PM restores the mode in general rather than one mechanism under it."],
-          ["How it counts", "With a mechanism, the reset counts in that mechanism's population and its mode's; without one, only in the mode's, so mechanism-level fits won't see it."],
+          ["Leave it blank when", "The PM restores the whole mode: every mechanism under it, not one in particular."],
+          ["How it counts", "A PM restarts only what it restores. With a mechanism, the reset counts in that mechanism's population alone, not its mode's. Left blank, it counts in the mode's population and in every mechanism's under it."],
         ],
         cite: `${FAILURE_DEFINITION} §3.4, §3.8, §7.3`,
       },
@@ -6526,6 +7460,8 @@
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
     });
+    const riskWeeksBox = $("lda-risk-weeks");
+    if (riskWeeksBox) riskWeeksBox.addEventListener("change", onRiskWeeksChange);
     const typeSelect = $("lda-analysis-type");
     if (typeSelect) {
       // ?analysis= preselects the Analysis Type, which is what the topbar's
@@ -6556,6 +7492,11 @@
     if (pmFrom) pmFrom.addEventListener("change", onPmRangeChange);
     if (pmTo) pmTo.addEventListener("change", onPmRangeChange);
     if (pmReset) pmReset.addEventListener("click", resetPmRange);
+    // Repeat Fix Rate window and mechanism filter.
+    const repeatWindow = $("lda-repeat-window");
+    const repeatClear = $("lda-repeat-filter-clear");
+    if (repeatWindow) repeatWindow.addEventListener("change", onRepeatWindowChange);
+    if (repeatClear) repeatClear.addEventListener("click", clearRepeatFilter);
     // Set the initial secondary-panel visibility for the default analysis type.
     applyAnalysisTypeUI();
     window.addEventListener("resize", redrawCharts);

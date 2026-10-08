@@ -31,8 +31,17 @@ TEMPLATE = (ROOT / "templates" / "perform_analysis.html").read_text()
 
 ASSET = "A-1"
 # (task id, completed date) for the corrective work orders dispositioned onto the
-# one mechanism. Three dated failures give two closed life intervals.
-WORK_ORDERS = [("101", "2024-01-15"), ("102", "2024-02-15"), ("103", "2024-03-15")]
+# one mechanism. Seven dated failures give six closed life intervals, one more
+# than the five a Weibull fit needs, so moving one away still leaves a fit.
+WORK_ORDERS = [
+    ("101", "2024-01-15"),
+    ("102", "2024-02-15"),
+    ("103", "2024-03-15"),
+    ("104", "2024-04-15"),
+    ("105", "2024-05-15"),
+    ("106", "2024-06-17"),
+    ("107", "2024-07-15"),
+]
 
 
 def _seed(service: LifeDataService, *, with_pm: bool = False) -> dict:
@@ -142,8 +151,8 @@ class AnalysisRowsNameTheirRecordTests(unittest.TestCase):
         observations = self._perform().observations
         closing = {obs["source_task_id"]: obs for obs in observations if obs["source_mapped_record_id"] is not None}
         # 101 only ever opens the first interval, so it closes no row of its own.
-        self.assertEqual(set(closing), {"900", "102", "103"})
-        for task_id in ("102", "103"):
+        self.assertEqual(set(closing), {"900"} | {task_id for task_id, _ in WORK_ORDERS[1:]})
+        for task_id, _ in WORK_ORDERS[1:]:
             self.assertEqual(closing[task_id]["source_mapped_record_id"], self.ids["wo"][task_id])
             self.assertEqual(closing[task_id]["source_event_role"], "FAILURE_EVENT")
         # A PM reset is a PM disposition, which the editor has to ask for by kind.
@@ -232,7 +241,7 @@ class DispositionRecordTests(unittest.TestCase):
         )
         before = run()
         target = next(obs for obs in before.observations if obs["source_task_id"] == "103")
-        self.assertEqual(before.failure_count, 2)
+        self.assertEqual(before.failure_count, 6)
 
         # The payload the editor sends: the same shape the disposition table saves.
         self.service.save_dispositions(
@@ -253,7 +262,7 @@ class DispositionRecordTests(unittest.TestCase):
         )
 
         after = run()
-        self.assertEqual(after.failure_count, 1)
+        self.assertEqual(after.failure_count, 5)
         self.assertNotIn(
             target["source_mapped_record_id"], {obs["source_mapped_record_id"] for obs in after.observations}
         )
@@ -406,6 +415,28 @@ def test_a_weibull_save_reruns_the_group_on_screen():
     assert "state.latestResultGroup = group;" in SCRIPT
     # The other analyses re-read their own endpoints inside refreshSummary().
     assert "refreshSummary();" in refresh[: refresh.index("\n  }\n")]
+
+
+def test_a_refused_rerun_keeps_the_fit_unless_the_server_removed_it():
+    run = SCRIPT[SCRIPT.index("async function runAnalysisForGroup"):SCRIPT.index("function confidenceIntervalText")]
+    refused = run[run.index("} catch (err) {"):]
+    # A refusal over an entered window keeps the saved fit, after a disposition
+    # change as after any other run, so the one place the fit comes off the
+    # screen is behind the server saying it removed it.
+    assert refused.count("clearWorkspace();") == 1
+    removed = refused[refused.index("if (removed && sameWeibullGroup(state.latestResultGroup, group))"):]
+    assert removed.index("clearWorkspace();") < removed.index("if (changedRecord)")
+    assert "the fit shown is the one saved before this change" in refused
+
+
+def test_the_window_survives_a_switch_to_another_analysis_type():
+    carried = SCRIPT[SCRIPT.index("function applyCarriedSelection"):SCRIPT.index("function applyAnalysisTypeUI")]
+    weibull = carried[carried.index("type === ANALYSIS_TYPES.WEIBULL"):]
+    assert "window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null" in weibull
+    # It belongs to one asset's fit, so a new asset drops it.
+    asset_change = SCRIPT[SCRIPT.index("function evaluateAssetSelection"):SCRIPT.index("function clearWorkspace")]
+    assert "state.latestResultGroup = null;" in asset_change
+    assert "state.latestResultWindow = null;" in asset_change
 
 
 def test_the_option_lists_open_above_the_modal():

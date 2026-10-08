@@ -51,7 +51,7 @@ def test_searching_the_old_name_still_finds_the_page(monkeypatch, tmp_path):
 
 # --- the panels -------------------------------------------------------------
 
-PANELS = ["config-availability", "config-linked", "config-cmms"]
+PANELS = ["config-availability", "config-linked", "config-weibull-schedules", "config-cmms"]
 
 
 def test_every_reliability_panel_ships_collapsed(monkeypatch, tmp_path):

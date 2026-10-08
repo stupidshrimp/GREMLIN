@@ -568,7 +568,13 @@ class TimezoneAvailabilityTests(AvailabilityTestCase):
         original_path = list(zoneinfo.TZPATH)
         zoneinfo.reset_tzpath([])
         zoneinfo.ZoneInfo.clear_cache()
-        patched = mock.patch.dict(sys.modules, {"tzdata": None})
+        # Hide the package's submodules as well as the package. Once an earlier
+        # lookup has fallen through to tzdata (an unrecognised name does), its
+        # tzdata.zoneinfo modules sit in sys.modules, and zoneinfo imports
+        # tzdata.zoneinfo.<Area> without going back through the hidden parent,
+        # so the "missing" database would still load every zone.
+        hidden = {"tzdata": None, **{name: None for name in sys.modules if name.startswith("tzdata.")}}
+        patched = mock.patch.dict(sys.modules, hidden)
         patched.start()
 
         def restore():

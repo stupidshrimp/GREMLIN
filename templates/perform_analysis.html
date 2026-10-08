@@ -36,6 +36,7 @@
         <option value="Failure Mode Trend Analysis">Failure Mode Trend Analysis</option>
         <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
         <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
+        <option value="Repeat Fix Rate Analysis">Repeat Fix Rate Analysis</option>
       </select>
     </div>
   </div>
@@ -72,6 +73,12 @@
     <p class="lda-hint" id="lda-downtime-message" hidden></p>
   </div>
 
+  <!-- Repeat Fix Rate summary cards (Repeat Fix Rate Analysis only). -->
+  <div id="lda-repeat-summary" hidden>
+    <div id="lda-repeat-cards" class="lda-summary-grid"></div>
+    <p class="lda-hint" id="lda-repeat-message" hidden></p>
+  </div>
+
   <!-- Placeholder for analysis types that are not implemented yet. -->
   <div id="lda-placeholder-summary" hidden>
     <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
@@ -81,9 +88,22 @@
        Pareto can span the full page width on every analysis type. -->
   <div class="lda-panel" id="lda-beta-panel">
     <h3>Highest-beta mechanisms</h3>
-    <p class="lda-hint">Top 5 failure mechanisms by beta, using the latest saved Weibull result for each
-       failure-mechanism population on this asset.</p>
+    <p class="lda-hint">Where an age-based PM is most likely to pay off: the top 5 failure mechanisms by beta, using
+       the latest saved Weibull result for each failure-mechanism population on this asset that rests on at least
+       5 lives ending in a failure. Plot R² is how straight that fit's probability plot is.</p>
     <ol id="lda-beta-rankings" class="lda-rankings"></ol>
+  </div>
+
+  <!-- Most likely to fail soon: the same saved fits, ranked by the chance the current
+       life ends in a failure within the window (REL-WBL-MTH-001 §8.1). -->
+  <div class="lda-panel" id="lda-risk-panel">
+    <h3>Most likely to fail soon</h3>
+    <p class="lda-hint">What needs attention before the next planning cycle: the top 5 failure mechanisms by the
+       chance of failing in the next
+       <input id="lda-risk-weeks" class="lda-input lda-risk-weeks" type="number" min="1" max="52" step="1" value="4"
+              aria-label="Weeks ahead"> weeks, given how long each current life has already run, from the same saved
+       results. Each is measured from its run's cutoff.</p>
+    <ol id="lda-risk-rankings" class="lda-rankings"></ol>
   </div>
 
   <!-- Failure mechanism Pareto: always visible and full-width, regardless of analysis type. -->
@@ -169,6 +189,29 @@
     <h3>PM-to-Failure Detail</h3>
     <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.{% if auth_can_edit %} Click a Corrective WO Number to review or change its disposition.{% endif %}</p>
     <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
+  </div>
+
+  <!-- Repeat fix rate per mechanism (Repeat Fix Rate Analysis only). -->
+  <div class="lda-panel" id="lda-repeat-rate-panel" hidden>
+    <h3>Repeat fix rate by mechanism</h3>
+    <p class="lda-hint">A failure is a repeat when it comes back within
+      <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="0" max="720" step="any" value="24"
+             aria-label="Repeat window in scheduled hours"> scheduled hours of the mechanism's last one, counted on the
+      asset's Weibull schedule just as a Weibull life is. The rate is repeats over the gaps between failures. Click a
+      Pareto bar or a row to list only that mechanism's repeats below.</p>
+    <p class="lda-hint" id="lda-repeat-basis"></p>
+    <div class="lda-table-scroll" id="lda-repeat-rate-wrap"></div>
+  </div>
+
+  <!-- The repeat pairs behind the rates (Repeat Fix Rate Analysis only). -->
+  <div class="lda-panel" id="lda-repeat-pairs-panel" hidden>
+    <h3>Repeat failures</h3>
+    <p class="lda-hint" id="lda-repeat-pairs-hint">Each failure that came back within the window, with the one before it.{% if auth_can_edit %} Click a WO number to review or change its disposition.{% endif %}</p>
+    <div class="lda-trend-controls" id="lda-repeat-filter" hidden>
+      <span class="lda-hint" id="lda-repeat-filter-text"></span>
+      <button type="button" class="btn-secondary" id="lda-repeat-filter-clear">Show every mechanism</button>
+    </div>
+    <div class="lda-table-scroll" id="lda-repeat-pairs-wrap"></div>
   </div>
 
   <!-- Monthly Downtime Trend chart (Downtime Driver Analysis only). -->

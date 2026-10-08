@@ -141,7 +141,7 @@ def test_each_analysis_type_panel_step_says_which_type_it_is_for():
     Type's panel has to say so, or it would appear, pointing at nothing, in every
     other type's tour.
     """
-    types = {"Weibull": "WEIBULL", "Trend": "TREND", "Pm": "PM", "Downtime": "DOWNTIME"}
+    types = {"Weibull": "WEIBULL", "Trend": "TREND", "Pm": "PM", "Downtime": "DOWNTIME", "Repeat": "REPEAT"}
     shown = _panels_shown_by_analysis_type()
     checked = 0
     for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS"):

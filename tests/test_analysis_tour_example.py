@@ -59,8 +59,13 @@ def _seed(service: LifeDataService, asset_number: str, mechanism: str, completed
     return int(mode_id), int(mechanism_id)
 
 
-THREE_DATES = ["2024-01-15", "2024-02-15", "2024-03-15"]
-FIVE_DATES = ["2024-01-10", "2024-02-10", "2024-03-10", "2024-04-10", "2024-05-10"]
+# "Few" still has the six failures a fit needs (five lives ending in one, the first
+# only starting the clock); "Many" has more than that, so which asset counts as the
+# busier one does not change with whether the other can be fitted.
+FEW_DATES = ["2024-01-15", "2024-02-15", "2024-03-15", "2024-04-15", "2024-05-15", "2024-06-17"]
+MANY_DATES = [
+    "2024-01-10", "2024-02-10", "2024-03-11", "2024-04-10", "2024-05-10", "2024-06-10", "2024-07-10", "2024-08-12",
+]
 
 
 class TourExampleAssetTests(unittest.TestCase):
@@ -87,26 +92,26 @@ class TourExampleAssetTests(unittest.TestCase):
 
     def test_there_is_no_example_without_an_included_failure(self):
         self.assertIsNone(self.service.tour_example_asset())
-        _seed(self.service, "A-1", "Excluded", THREE_DATES, category="EXCLUDED_NON_FAILURE")
+        _seed(self.service, "A-1", "Excluded", FEW_DATES, category="EXCLUDED_NON_FAILURE")
         self.assertIsNone(self.service.tour_example_asset())
 
     def test_without_saved_fits_it_is_the_asset_with_the_most_failures(self):
-        _seed(self.service, "A-1", "Few", THREE_DATES)
-        _seed(self.service, "B-2", "Many", FIVE_DATES)
+        _seed(self.service, "A-1", "Few", FEW_DATES)
+        _seed(self.service, "B-2", "Many", MANY_DATES)
 
         self.assertEqual(self.service.tour_example_asset(), "B-2")
 
     def test_an_asset_with_a_saved_fit_comes_first(self):
         # The tour can only open a fit that is already saved, so an asset with one
         # has more to show than a busier asset without.
-        fitted = _seed(self.service, "A-1", "Few", THREE_DATES)
-        _seed(self.service, "B-2", "Many", FIVE_DATES)
+        fitted = _seed(self.service, "A-1", "Few", FEW_DATES)
+        _seed(self.service, "B-2", "Many", MANY_DATES)
         self._fit("A-1", fitted)
 
         self.assertEqual(self.service.tour_example_asset(), "A-1")
 
     def test_picking_the_example_writes_nothing(self):
-        fitted = _seed(self.service, "A-1", "Few", THREE_DATES)
+        fitted = _seed(self.service, "A-1", "Few", FEW_DATES)
         self._fit("A-1", fitted)
         before = self._counts()
 
@@ -120,7 +125,7 @@ class TourExampleAssetTests(unittest.TestCase):
         So a ranking row has to name the failure mode and mechanism that
         saved-analysis reads the fit back by, not only their display names.
         """
-        mode_id, mechanism_id = _seed(self.service, "A-1", "Few", THREE_DATES)
+        mode_id, mechanism_id = _seed(self.service, "A-1", "Few", FEW_DATES)
         performed = self._fit("A-1", (mode_id, mechanism_id))
 
         [ranked] = self.service.latest_failure_mechanism_beta_rankings("A-1")

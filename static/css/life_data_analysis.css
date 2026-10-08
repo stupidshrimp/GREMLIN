@@ -20,6 +20,9 @@
 .lda-banner.is-error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-ink); }
 .lda-banner.is-success { border-color: var(--success-border); background: var(--success-bg); color: var(--success-ink); }
 .lda-banner.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
+/* A caveat a Weibull result carries: saved under an earlier method, below the
+   minimum failure count, days split in UTC, lives that look like duplicates. */
+.lda-banner.is-warning { border-color: var(--warning-tint); background: var(--warning-tint); color: var(--warning-ink); margin: 0; }
 
 /* Toast notifications (top-right) — used for disposition save outcomes. */
 .lda-toast-container {
@@ -442,23 +445,25 @@ table.lda-data thead th {
 }
 table.lda-interpretation td:last-child { color: var(--muted); }
 
-/* MTTF value cell: the fitted hours, the calendar-time conversion, and an editable
-   operating-schedule (hours/day) control that recomputes the months/days inline. */
+/* MTTF value cell: the fitted hours and the calendar weeks they take on the
+   result's own schedule. */
 .lda-mttf-cell { display: grid; gap: 0.3rem; }
 .lda-mttf-cell .lda-mttf-hours-value { font-weight: 600; color: var(--text); }
 .lda-mttf-cell .lda-mttf-duration { color: var(--forest-800); font-weight: 600; }
-.lda-mttf-schedule {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.82rem;
-  color: var(--muted);
-  flex-wrap: wrap;
-}
-.lda-mttf-schedule input.lda-mttf-hours {
-  width: 4.5rem;
-  padding: 0.25rem 0.4rem;
-}
+
+/* What a Weibull result's lives count and the window they were built in. */
+.lda-result-context { display: grid; gap: 0.2rem; }
+
+/* Reliability at an age the user enters. */
+.lda-age-panel .lda-field { max-width: 260px; }
+.lda-age-output { margin: 0; color: var(--text); }
+
+/* The event processing table behind the lives, collapsed by default. */
+details.lda-events > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+details.lda-events[open] > summary { margin-bottom: 0.4rem; }
+table.lda-data tbody tr.is-excluded td { color: var(--muted); }
+/* A life flagged for a duplicate check reads as a caveat, not as data. */
+table.lda-data td.lda-check { color: var(--warning-ink); font-weight: 600; }
 table.lda-data tbody tr.is-highlight { background: rgba(85, 116, 143, 0.22); }
 /* Each observation row jumps to the graph that plots it, so it reads as a target. */
 table.lda-data tbody tr.is-clickable { cursor: pointer; }
@@ -607,6 +612,13 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
 .lda-modal-options { display: grid; gap: 0.45rem; max-height: 320px; overflow: auto; }
 .lda-modal-option { display: flex; gap: 0.55rem; align-items: flex-start; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .lda-modal-option:hover { border-color: var(--forest-500); background: var(--forest-100); }
+/* A failure group with too few failures to fit: listed, with why, but not choosable. */
+.lda-modal-option.is-disabled { opacity: 0.6; cursor: not-allowed; }
+.lda-modal-option.is-disabled:hover { border-color: var(--border); background: none; }
+/* The optional analysis start and cutoff dates under the group list. */
+.lda-window-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.7rem; margin-top: 0.6rem; }
+.lda-modal-error { color: var(--danger-ink); font-weight: 600; margin: 0.4rem 0 0; }
+textarea.lda-rationale-input { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; }
 .lda-modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap; }
 
 /* A record's number in an analysis table, as the button that opens its
@@ -842,4 +854,12 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
   .lda-charts { grid-template-columns: 1fr; }
   .lda-selectors { grid-template-columns: 1fr; }
   .lda-disp-controls { grid-template-columns: 1fr; }
+}
+
+/* The weeks-ahead box inside the "Most likely to fail soon" hint. */
+.lda-input.lda-risk-weeks {
+  display: inline-block;
+  width: 4.5em;
+  padding: 0.1rem 0.35rem;
+  margin: 0 0.15rem;
 }

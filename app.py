@@ -30,9 +30,13 @@ from services.life_data_service import (
     NARRATIVE_COLUMNS,
     PM_DISPOSITION_CATEGORIES,
     PM_RESET_DECISIONS,
+    REPEAT_FIX_DEFAULT_WINDOW_HOURS,
+    REPEAT_FIX_MAX_WINDOW_HOURS,
+    RISK_WINDOW_WEEKS,
     WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
     LifeDataService,
+    WeibullFitError,
 )
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
@@ -659,6 +663,10 @@ def life_data_api(view):
             return view(*args, **kwargs)
         except LifeDataApiError as exc:
             return jsonify({"error": exc.message}), exc.status_code
+        except WeibullFitError as exc:
+            # Whether the refusal took the group's saved result with it, so the page
+            # only takes down a fit on screen when it really is gone.
+            return jsonify({"error": str(exc), "result_removed": bool(exc.result_removed)}), 400
         except DatabaseWriteError as exc:
             return jsonify({"error": str(exc)}), 503
         except ValueError as exc:
@@ -1399,6 +1407,13 @@ SEARCH_ENTRIES = [
         "keywords": ["failures following pm", "preventive maintenance", "pm to failure"],
     },
     {
+        "label": "Repeat Fix Rate Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Repeat+Fix+Rate+Analysis",
+        "kind": "function",
+        "context": "Perform an Analysis",
+        "keywords": ["repeat failure", "repair quality", "came back", "rework", "fix did not hold"],
+    },
+    {
         "label": "Disposition Work Orders",
         "url": "/life-data-analysis/disposition?kind=wo",
         "kind": "function",
@@ -1458,6 +1473,14 @@ SEARCH_ENTRIES = [
         "keywords": ["linked work order", "double count", "downtime rule"],
     },
     {
+        "label": "Weibull schedules",
+        "url": "/configuration#config-weibull-schedules",
+        "kind": "function",
+        "context": "Configuration",
+        "role": "editor",
+        "keywords": ["life hours", "24 hour", "20 hour", "continuous", "schedule register", "weibull schedule"],
+    },
+    {
         "label": "Refresh CMMS mapping",
         "url": "/configuration#config-cmms",
         "kind": "function",
@@ -1514,7 +1537,8 @@ SEARCH_ENTRIES = [
         "context": "Standards and Documentation",
         "keywords": [
             "beta", "eta", "mle", "likelihood", "censored", "life hours", "kaplan meier",
-            "b10", "b50", "mttf", "confidence interval",
+            "b10", "b50", "mttf", "confidence interval", "analysis cutoff", "analysis window",
+            "event processing", "minimum failures", "reliability at age", "duplicate check",
         ],
     },
     {
@@ -1537,6 +1561,13 @@ SEARCH_ENTRIES = [
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["days to failure", "failures after pm", "pm rating", "preventive maintenance"],
+    },
+    {
+        "label": "Repeat Fix Rate Analysis method",
+        "url": "/standards-and-documentation/standards#analysis-repeat",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": ["repeat window", "repeat failure", "repair quality", "scheduled hours"],
     },
     {
         "label": "How GREMLIN works",
@@ -2346,9 +2377,71 @@ def api_summary():
             "asset_number": asset_number,
             "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
             "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
+            "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
             "pareto": service.failure_mechanism_pareto(asset_number),
             "trend": service.failure_mode_trend(asset_number),
         }
+    )
+
+
+def _risk_window_weeks() -> float:
+    """The "most likely to fail" window in weeks from ``?weeks=``, the default when absent."""
+
+    value = (request.values.get("weeks") or "").strip()
+    if not value:
+        return float(RISK_WINDOW_WEEKS)
+    try:
+        weeks = float(value)
+    except ValueError:
+        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400) from None
+    if not (math.isfinite(weeks) and 1 <= weeks <= 52):
+        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400)
+    return weeks
+
+
+@app.route("/life-data-analysis/api/risk-rankings")
+@life_data_api
+def api_risk_rankings():
+    """The asset's mechanisms most likely to fail in the next ``weeks`` weeks (default 4)."""
+
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    weeks = _risk_window_weeks()
+    return jsonify(
+        {"weeks": weeks, "rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=weeks, limit=5)}
+    )
+
+
+@app.route("/life-data-analysis/api/schedule-register")
+@life_data_api
+def api_schedule_register():
+    """The Weibull schedule register: the schedules, the assets off the plant default, recent changes.
+
+    For signed-in accounts only, since the change record names who made each change.
+    Checked without requires_role, which would log the read as a change.
+    """
+
+    _user, error = _authorised_user("viewer")
+    if error:
+        return error
+    return jsonify(_service_or_api_error().weibull_schedule_register())
+
+
+@app.route("/life-data-analysis/api/schedule-register", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_set_asset_schedule():
+    """Put one asset on a Weibull schedule. The reason and the editor are kept with the change."""
+
+    payload = request.get_json(silent=True) or {}
+    user = current_user() or {}
+    return jsonify(
+        _service_or_api_error().set_asset_weibull_schedule(
+            payload.get("asset") or "",
+            payload.get("schedule_code") or "",
+            reason=payload.get("reason") or "",
+            changed_by=user.get("username"),
+        )
     )
 
 
@@ -2620,6 +2713,26 @@ def api_pm_effectiveness():
     )
 
 
+@app.route("/life-data-analysis/api/repeat-fixes")
+@life_data_api
+def api_repeat_fixes():
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    window_raw = request.values.get("window_hours")
+    window_hours = REPEAT_FIX_DEFAULT_WINDOW_HOURS
+    if window_raw not in (None, ""):
+        try:
+            window_hours = float(window_raw)
+        except (TypeError, ValueError):
+            raise LifeDataApiError("The repeat window must be a number of scheduled hours.", status_code=400)
+        if not math.isfinite(window_hours) or window_hours <= 0 or window_hours > REPEAT_FIX_MAX_WINDOW_HOURS:
+            raise LifeDataApiError(
+                f"The repeat window must be more than 0 and at most {REPEAT_FIX_MAX_WINDOW_HOURS:g} scheduled hours.",
+                status_code=400,
+            )
+    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours)})
+
+
 @app.route("/life-data-analysis/api/downtime-drivers")
 @life_data_api
 def api_downtime_drivers():
@@ -2684,8 +2797,25 @@ def api_perform_analysis():
         grouping_level=grouping_level,
         failure_mode_id=int(failure_mode_id),
         failure_mechanism_id=int(failure_mechanism_id) if failure_mechanism_id is not None else None,
+        analysis_start=_optional_plant_date(payload.get("analysis_start"), "analysis start date"),
+        analysis_cutoff=_optional_plant_date(payload.get("analysis_cutoff"), "analysis cutoff date"),
     )
     return jsonify({"result": _serialize_analysis_result(result)})
+
+
+def _optional_plant_date(value, what: str) -> date | None:
+    """An optional YYYY-MM-DD date from a JSON payload; blank means "not set".
+
+    It names a day on the plant's calendar, which the service turns into that day's
+    first or last minute in the plant's time zone.
+    """
+
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError:
+        raise LifeDataApiError(f"The {what} must be a date in the form YYYY-MM-DD.", status_code=400) from None
 
 
 @app.route("/life-data-analysis/api/saved-analysis")
