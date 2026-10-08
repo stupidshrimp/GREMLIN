@@ -16,7 +16,7 @@
 import importlib
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -221,7 +221,14 @@ class RepeatFixRateTests(unittest.TestCase):
             ("7", _utc(2025, 5, 22, 8)), ("8", _utc(2025, 6, 23, 10)),
         ]:
             self.seed.add(task, when, seal)
-        kwargs = dict(grouping_level="FAILURE_MECHANISM", failure_mode_id=self.seed.mode_id, failure_mechanism_id=seal)
+        # A fixed cutoff: the default one is the moment of the run, and a weekday second
+        # between the two runs would lengthen the current life and move beta.
+        kwargs = dict(
+            grouping_level="FAILURE_MECHANISM",
+            failure_mode_id=self.seed.mode_id,
+            failure_mechanism_id=seal,
+            analysis_cutoff=date(2025, 7, 31),
+        )
         before = self.service.perform_weibull_analysis("A-1", **kwargs)
         self.assertEqual(self.service.repeat_fix_rate("A-1")["repeats"], 1)
         after = self.service.perform_weibull_analysis("A-1", **kwargs)
