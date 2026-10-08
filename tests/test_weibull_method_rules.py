@@ -892,7 +892,7 @@ class IntervalRuleTests(unittest.TestCase):
         self.assertIn("no wider than 70% of beta", self.service._beta_ci_recommendation(2.36, 3.82, 3.0))
         # The pilot's SQ87 interval, 0.488 to 0.732, is 42% of beta 0.574.
         self.assertIn("no wider than 70% of beta", self.service._beta_ci_recommendation(0.488, 0.732, 0.574))
-        # The Standards worked example: 1.350 to 5.558 is 154% of beta 2.739.
+        # The Documentation worked example: 1.350 to 5.558 is 154% of beta 2.739.
         self.assertIn("wider than 70% of beta", self.service._beta_ci_recommendation(1.350, 5.558, 2.739))
         self.assertNotIn("no wider", self.service._beta_ci_recommendation(1.350, 5.558, 2.739))
         # Crossing 1 is read first, whatever the width.
