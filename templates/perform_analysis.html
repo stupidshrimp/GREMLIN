@@ -195,7 +195,7 @@
   <div class="lda-panel" id="lda-repeat-rate-panel" hidden>
     <h3>Repeat fix rate by mechanism</h3>
     <p class="lda-hint">A failure is a repeat when it comes back within
-      <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="1" max="720" step="1" value="24"
+      <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="0" max="720" step="any" value="24"
              aria-label="Repeat window in scheduled hours"> scheduled hours of the mechanism's last one, counted on the
       asset's Weibull schedule just as a Weibull life is. The rate is repeats over the gaps between failures. Click a
       Pareto bar or a row to list only that mechanism's repeats below.</p>

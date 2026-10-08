@@ -36,6 +36,7 @@ from services.life_data_service import (
     WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
     LifeDataService,
+    WeibullFitError,
 )
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
@@ -662,6 +663,10 @@ def life_data_api(view):
             return view(*args, **kwargs)
         except LifeDataApiError as exc:
             return jsonify({"error": exc.message}), exc.status_code
+        except WeibullFitError as exc:
+            # Whether the refusal took the group's saved result with it, so the page
+            # only takes down a fit on screen when it really is gone.
+            return jsonify({"error": str(exc), "result_removed": bool(exc.result_removed)}), 400
         except DatabaseWriteError as exc:
             return jsonify({"error": str(exc)}), 503
         except ValueError as exc:

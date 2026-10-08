@@ -199,6 +199,8 @@ class RepeatFixRateTests(unittest.TestCase):
         self.seed.add("2", "2025-03-17", seal)
         pair = self.service.repeat_fix_rate("A-1")["pairs"][0]
         self.assertEqual(pair["repeat_completed"], datetime(2025, 3, 17, tzinfo=PLANT).astimezone(timezone.utc).isoformat())
+        # The table shows the date as stored, not the plant midnight it was read as.
+        self.assertEqual((pair["prior_completed_raw"], pair["repeat_completed_raw"]), (_utc(2025, 3, 14, 20), "2025-03-17"))
         self.assertAlmostEqual(pair["scheduled_hours"], 4 * 20 / 24, places=2)
         self.assertAlmostEqual(pair["raw_hours"], 52.0, places=2)
 

@@ -163,7 +163,15 @@ def gremlin_code_version() -> str:
 
 
 class WeibullFitError(ValueError):
-    """The lives on hand cannot be fitted: too few failures, or no likelihood root."""
+    """The lives on hand cannot be fitted: too few failures, or no likelihood root.
+
+    ``result_removed`` says whether the refusal also removed the result saved for
+    the group, so the page knows whether a fit of it still on screen is gone.
+    """
+
+    def __init__(self, message: str, *, result_removed: bool = False) -> None:
+        super().__init__(message)
+        self.result_removed = result_removed
 
 # The one and only location for GREMLIN.db. GREMLIN no longer probes mapped
 # drive letters, UNC shares, or user folders for the database; it opens this
@@ -1962,6 +1970,26 @@ class LifeDataService:
                 """,
                 (asset_number,),
             ).fetchall()
+            zone = self._plant_time_zone(conn)[0]
+            schedule = conn.execute(
+                "SELECT hours_per_day, exclude_weekends FROM asset_schedule_class WHERE schedule_class_id = ?",
+                (self._schedule_class_id(conn, asset_number),),
+            ).fetchone()
+            possible_lives = {
+                (row["grouping_level"], row["failure_mode_id"], row["failure_mechanism_id"]): self._possible_failure_lives(
+                    self._population_event_rows(
+                        conn,
+                        asset_number,
+                        grouping_level=row["grouping_level"],
+                        failure_mode_id=int(row["failure_mode_id"]),
+                        failure_mechanism_id=row["failure_mechanism_id"],
+                    ),
+                    zone,
+                    float(schedule["hours_per_day"]),
+                    bool(schedule["exclude_weekends"]),
+                )
+                for row in rows
+            }
         options = []
         for row in rows:
             label = row["failure_mode_name"]
@@ -1976,19 +2004,48 @@ class LifeDataService:
                 "failure_count": int(row["failure_count"] or 0),
                 "reset_count": int(row["reset_count"] or 0),
                 "label": label,
-                # Each life ending in a failure ends at one of these failures, and the
-                # first event only starts the clock. With no PM reset to be that first
-                # event, a failure is, so the group has one life fewer than failures; a
-                # group short of the minimum either way cannot be fitted however its
-                # dates fall. (With a reset this is the most it could have: a reset that
-                # comes after the first failure leaves one fewer, which the run reports.)
-                "fittable": (
-                    int(row["failure_count"] or 0) - (0 if int(row["reset_count"] or 0) else 1)
-                ) >= MIN_WEIBULL_FAILURE_LIVES,
+                # The lives ending in a failure the run would build over all history,
+                # the most any window can hold: a group short of the minimum cannot be
+                # fitted however the window is set, so it is offered but can't be chosen.
+                "failure_lives_possible": possible_lives[(row["grouping_level"], row["failure_mode_id"], row["failure_mechanism_id"])],
+                "fittable": possible_lives[(row["grouping_level"], row["failure_mode_id"], row["failure_mechanism_id"])]
+                >= MIN_WEIBULL_FAILURE_LIVES,
                 "min_failure_lives": MIN_WEIBULL_FAILURE_LIVES,
             })
         return options
 
+
+    def _possible_failure_lives(
+        self, rows: list[sqlite3.Row], zone: tzinfo, hours_per_day: float, exclude_weekends: bool
+    ) -> int:
+        """How many lives ending in a failure a failure group's events make over all history.
+
+        Counted as the run builds them: only events with a readable completed date, in
+        date order with a date that has no time on the plant calendar; the first event
+        only starts the clock, and a failure with no scheduled hours since the event
+        before it ends no life, though it starts the next. A window can only leave
+        events out, which never adds a life, so this is the most any run can fit.
+        """
+
+        dated = sorted(
+            (
+                (when, index, row)
+                for index, row in enumerate(rows)
+                if (when := self._parse_event_datetime(row["completed_date_final"], zone)) is not None
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        lives = 0
+        previous = None
+        for when, _, row in dated:
+            if previous is not None and row["disposition_category"] == "INCLUDED_FAILURE":
+                scheduled, _, _ = self._scheduled_life_hours(
+                    previous, when, hours_per_day, exclude_weekends=exclude_weekends, tz=zone
+                )
+                if scheduled > 0:
+                    lives += 1
+            previous = when
+        return lives
 
     def _latest_mechanism_fits(self, asset_number: str) -> list[dict[str, Any]]:
         """The latest saved fit of each failure mechanism on the asset that can be ranked.
@@ -2012,6 +2069,7 @@ class LifeDataService:
                         ad.modeled_population_id,
                         ad.analysis_dataset_id,
                         ad.analysis_cutoff_datetime,
+                        ad.analysis_cutoff_source,
                         ad.schedule_time_zone,
                         COALESCE(
                             ad.schedule_class_id,
@@ -2051,6 +2109,7 @@ class LifeDataService:
                     lr.run_datetime,
                     lr.code_version,
                     lr.analysis_cutoff_datetime,
+                    lr.analysis_cutoff_source,
                     lr.schedule_time_zone,
                     lr.schedule_class_id,
                     sc.schedule_class_name,
@@ -2092,6 +2151,7 @@ class LifeDataService:
                 "probability_plot_review": bool(r_squared is not None and r_squared < self.r_squared_review_threshold(failure_count)),
                 "run_datetime": row["run_datetime"],
                 "analysis_cutoff": row["analysis_cutoff_datetime"],
+                "analysis_cutoff_source": row["analysis_cutoff_source"],
                 "time_zone": row["schedule_time_zone"] or "UTC",
                 "current_life_hours": float(row["current_life_hours"] or 0.0),
                 "schedule_name": row["schedule_class_name"],
@@ -2826,10 +2886,14 @@ class LifeDataService:
                         "prior_mapped_record_id": int(prior["mapped_record_id"]),
                         "prior_task_name": prior["task_name"],
                         "prior_completed": prior_dt.isoformat(),
+                        # As stored, for display: a date with no time stays one, rather
+                        # than showing the plant midnight it was read as.
+                        "prior_completed_raw": prior["completed_date_final"],
                         "repeat_task_id": repeat["task_id"],
                         "repeat_mapped_record_id": int(repeat["mapped_record_id"]),
                         "repeat_task_name": repeat["task_name"],
                         "repeat_completed": repeat_dt.isoformat(),
+                        "repeat_completed_raw": repeat["completed_date_final"],
                         "scheduled_hours": round(scheduled, 2),
                         "raw_hours": round(raw, 2),
                         "duplicate_check": self._duplicate_check_flag(raw),
@@ -3888,7 +3952,9 @@ class LifeDataService:
         report number is reserved -- when it was saved under an earlier method version,
         was counted on a schedule the asset is no longer on, rests on fewer failure
         lives than the minimum, or is a failure-mode population
-        with no written reason a mechanism could not be fitted instead.
+        with no written reason a mechanism could not be fitted instead. Every check,
+        the age included, comes before anything is saved, so a refused report
+        changes nothing.
         """
 
         client_result = payload.get("result") or {}
@@ -3920,6 +3986,17 @@ class LifeDataService:
                 f"This result rests on {result['failure_count']} lives that end in a failure; a Weibull report needs at least "
                 f"{MIN_WEIBULL_FAILURE_LIVES}."
             )
+        # Every check comes before the rationale below is saved, so a refused report
+        # changes nothing.
+        target_age_hours = None
+        raw_age = payload.get("target_age_hours")
+        if raw_age not in (None, ""):
+            try:
+                target_age_hours = float(raw_age)
+            except (TypeError, ValueError):
+                target_age_hours = None
+            if target_age_hours is None or not math.isfinite(target_age_hours) or target_age_hours <= 0:
+                raise ValueError("The age to evaluate reliability at has to be a positive number of hours.")
         rationale = self._without_unrepresentable_characters(str(payload.get("fallback_rationale") or "")).strip()
         if result["grouping_level"] == "FAILURE_MODE":
             rationale = rationale or str(result.get("fallback_rationale") or "").strip()
@@ -3945,15 +4022,6 @@ class LifeDataService:
                         (rationale, result_id),
                     )
             result["fallback_rationale"] = rationale
-        target_age_hours = None
-        raw_age = payload.get("target_age_hours")
-        if raw_age not in (None, ""):
-            try:
-                target_age_hours = float(raw_age)
-            except (TypeError, ValueError):
-                target_age_hours = None
-            if target_age_hours is None or not math.isfinite(target_age_hours) or target_age_hours <= 0:
-                raise ValueError("The age to evaluate reliability at has to be a positive number of hours.")
         analysis_label = result["analysis_label"]
         report_number, _ = self.next_weibull_report_number(
             asset_number,
@@ -5732,10 +5800,13 @@ class LifeDataService:
         moment of the run when it is not -- never at a time the data has not reached.
 
         A group that cannot be fitted -- fewer than ``MIN_WEIBULL_FAILURE_LIVES`` lives
-        ending in a failure, or a likelihood with no root -- raises WeibullFitError
-        *after* committing: its events and lives are rebuilt and any result saved for
-        it earlier is removed, because the data no longer supports it. Anything else
-        that goes wrong rolls back and leaves the saved result as it was.
+        ending in a failure, or a likelihood with no root -- raises WeibullFitError.
+        Over all of its history that is *after* committing: its events and lives are
+        rebuilt and any result saved for it earlier is removed, because the data no
+        longer supports it. Over a window an editor entered, it rolls back instead:
+        a window too narrow to fit says nothing against the result saved for the
+        whole history, so that result is kept as it was. Anything else that goes
+        wrong rolls back too.
         """
 
         if grouping_level not in {"FAILURE_MODE", "FAILURE_MECHANISM"}:
@@ -5794,11 +5865,21 @@ class LifeDataService:
                     if row["life_hours_for_weibull"] and row["life_hours_for_weibull"] > 0
                 ]
             failure_lives = sum(failed for _, failed in data)
-            removed_note = (
-                " The result saved earlier for this failure group has been removed, because these lives no longer support it."
-                if had_saved_result
-                else ""
-            )
+            # A window an editor entered is a look at part of the history: being too
+            # narrow to fit says nothing against the result saved for all of it.
+            windowed = analysis_start is not None or analysis_cutoff is not None
+            if not had_saved_result:
+                removed_note = ""
+            elif windowed:
+                removed_note = (
+                    " The result saved for this failure group is unchanged: only the window entered for this run "
+                    "is too narrow to fit."
+                )
+            else:
+                removed_note = (
+                    " The result saved earlier for this failure group has been removed, because these lives no "
+                    "longer support it."
+                )
             if failure_lives < MIN_WEIBULL_FAILURE_LIVES:
                 # What became of the failures that did not end a life: the first event
                 # only starts the clock, and a zero-hour interval is left out.
@@ -5935,8 +6016,12 @@ class LifeDataService:
                     ),
                 ).lastrowid
                 view = self._load_weibull_view(conn, int(result_id))
+            if refusal is not None and windowed:
+                # Raised inside the transaction, so it rolls back and the saved result,
+                # its events and its lives stay as they were.
+                raise WeibullFitError(refusal, result_removed=False)
         if refusal is not None:
-            raise WeibullFitError(refusal)
+            raise WeibullFitError(refusal, result_removed=had_saved_result)
         if view is None:
             raise ValueError("The Weibull result was saved but could not be read back. Run the analysis again.")
         return view
@@ -6568,7 +6653,18 @@ class LifeDataService:
                 cutoff, source = now, "NOW"
         start = self._plant_midnight(analysis_start, zone) if analysis_start is not None else None
         if start is not None and start >= cutoff:
-            raise ValueError("The analysis start date can't be later than the cutoff date.")
+            if analysis_cutoff is not None:
+                raise ValueError("The analysis start date can't be later than the cutoff date.")
+            # No cutoff was entered, so the one the start ran into is the default.
+            ended = (
+                f"the last completed Limble import, {cutoff.astimezone(zone).strftime('%Y-%m-%d %H:%M')}"
+                if source == "LAST_IMPORT"
+                else "the time of the run"
+            )
+            raise ValueError(
+                f"With no cutoff date entered the analysis runs to {ended}, and the start date is not before it. "
+                "Enter a cutoff date, or an earlier start date."
+            )
         return start, cutoff, source
 
     def _population_event_rows(

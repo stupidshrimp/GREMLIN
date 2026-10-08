@@ -345,7 +345,7 @@
         failures and PM resets it has.
       </p>
       <ul>
-        <li><strong>A fit needs at least five lives that end in a failure</strong>, the minimum REL-WBL-MTH-001 §4 sets (REL-WBL-REQ-001 VV-071). Fewer give a β that looks precise and is not, since maximum likelihood overstates β on small samples, and the interpretation summary would still turn it into a maintenance recommendation. A population that can never get there is listed but can't be chosen: one with fewer than five included failures, or exactly five and no PM reset, since its first failure only starts the clock and leaves four.</li>
+        <li><strong>A fit needs at least five lives that end in a failure</strong>, the minimum REL-WBL-MTH-001 §4 sets (REL-WBL-REQ-001 VV-071). Fewer give a β that looks precise and is not, since maximum likelihood overstates β on small samples, and the interpretation summary would still turn it into a maintenance recommendation. A population that can never get there is listed but can't be chosen: one whose dated events, counted as the run counts them, make fewer than five such lives. Five failures with no dated PM reset before them make four, since the first only starts the clock.</li>
         <li><strong>Mechanism is the preferred grouping.</strong> A failure mode is the fallback for when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1), so a report on a failure mode has to say why one of its mechanisms was not fitted instead.</li>
       </ul>
     </section>
@@ -649,7 +649,7 @@
       <ul>
         <li><strong>How it is solved:</strong> GREMLIN checks 400 evenly spaced values of β from 0.1 to 20 for a change of sign in equation W8, then halves the bracketing interval 80 times. η then follows from equation W7.</li>
         <li><strong>If there is no root between 0.1 and 20,</strong> the fit stops and says it did not converge. There is then no maximum-likelihood β to report, and REL-WBL-MTH-001 §5.5 makes β and η maximum-likelihood estimates, so no estimate of another kind is put in its place. It happens when the lives are all but identical, often because of duplicate work orders.</li>
-        <li><strong>The fit needs at least five complete lives</strong>, lives that end in a failure. With fewer, or with no root, the run stops and says why, and any result saved for the group before is removed, because the data no longer supports it.</li>
+        <li><strong>The fit needs at least five complete lives</strong>, lives that end in a failure. With fewer, or with no root, the run stops and says why. Over all of the group's history, any result saved for it before is then removed, because the data no longer supports it. Over a window an editor entered, the saved result is kept: a window too narrow to fit says nothing against the whole history.</li>
       </ul>
     </section>
 

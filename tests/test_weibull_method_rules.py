@@ -309,6 +309,10 @@ class AnalysisWindowTests(_Seeded):
             self._perform(analysis_cutoff=today + timedelta(days=1))
         with self.assertRaisesRegex(ValueError, "start date can't be later than today"):
             self._perform(analysis_start=today + timedelta(days=1))
+        # With no cutoff entered, a start past the default one says which it ran into.
+        self._import_completed("2025-08-01 12:00:00")
+        with self.assertRaisesRegex(ValueError, "no cutoff date entered.*last completed Limble import, 2025-08-01 07:00"):
+            self._perform(analysis_start=date(2025, 8, 2))
 
 
 class FitGateTests(_Seeded):
@@ -331,7 +335,25 @@ class FitGateTests(_Seeded):
         self.assertIn("has 4", message)
         self.assertIn("the first only starts the clock", message)
         self.assertIn("has been removed", message)
+        self.assertTrue(caught.exception.result_removed)
         self.assertIsNone(self._saved())
+
+    def test_a_window_too_narrow_to_fit_keeps_the_saved_result(self):
+        # Six failure lives over all history; from May on there are only two.
+        self._add_all(MONTHLY)
+        saved = self._perform()
+        events_before = len(saved.events)
+
+        with self.assertRaises(WeibullFitError) as caught:
+            self._perform(analysis_start=date(2025, 5, 1))
+
+        self.assertFalse(caught.exception.result_removed)
+        self.assertIn("is unchanged", str(caught.exception))
+        kept = self._saved()
+        self.assertIsNotNone(kept)
+        self.assertEqual(kept.result_id, saved.result_id)
+        self.assertEqual(len(kept.events), events_before)
+        self.assertEqual(self.service.latest_failure_mechanism_beta_rankings("A-1")[0]["beta_mle"], saved.beta_mle)
 
     def test_there_is_no_substitute_for_a_maximum_likelihood_beta(self):
         service = LifeDataService.__new__(LifeDataService)
@@ -367,11 +389,34 @@ class GroupFittableTests(_Seeded):
         self.assertEqual(self._perform().failure_count, 5)
 
     def test_five_failures_after_a_reset_are_offered(self):
-        # A PM reset first starts the clock, so all five failures end a life.
+        # A PM reset first starts the clock, so all five failures end a life. It is
+        # aimed at the mechanism, so the mode-level group has no reset and four lives.
         self._add("PM0", _utc(2024, 12, 2, 9), pm=True)
         self._add_all(MONTHLY[:5])
-        self.assertTrue(self._fittable()["FAILURE_MECHANISM"])
+        self.assertEqual(self._fittable(), {"FAILURE_MODE": False, "FAILURE_MECHANISM": True})
         self.assertEqual(self._perform().failure_count, 5)
+        with self.assertRaises(WeibullFitError):
+            self._perform(mode_level=True)
+
+    def test_a_reset_that_cannot_start_the_clock_does_not_count(self):
+        # Undated, it is left out of the timeline; dated after the failures, it comes
+        # too late to be the first event. Either way the first failure starts the clock.
+        for when in (None, _utc(2025, 8, 4, 9)):
+            with self.subTest(reset=when):
+                self.setUp()
+                self._add("PM0", when, pm=True)
+                self._add_all(MONTHLY[:5])
+                self.assertFalse(self._fittable()["FAILURE_MECHANISM"])
+                with self.assertRaises(WeibullFitError):
+                    self._perform()
+
+    def test_an_undated_failure_ends_no_life(self):
+        self._add_all(MONTHLY[:5])
+        self._add("F-undated", None)
+        options = self.service.weibull_group_options("A-1")
+        mechanism = next(group for group in options if group["grouping_level"] == "FAILURE_MECHANISM")
+        self.assertEqual((mechanism["failure_count"], mechanism["failure_lives_possible"]), (6, 4))
+        self.assertFalse(mechanism["fittable"])
 
 
 class LifeNoteTests(_Seeded):
@@ -492,6 +537,11 @@ class ReportTests(_Seeded):
         with self.assertRaisesRegex(ValueError, "REL-WBL-PLN-003"):
             self._report_text({"result_id": result.result_id})
         self.assertEqual(self._report_count(), 0)  # refused before a number was used
+        # Refused for a bad age, it saves nothing either: not even the reason given.
+        with self.assertRaisesRegex(ValueError, "positive number of hours"):
+            self._report_text({"result_id": result.result_id, "fallback_rationale": "Not this one.", "target_age_hours": -5})
+        refused = self.service.load_saved_weibull_analysis("A-1", grouping_level="FAILURE_MODE", failure_mode_id=self.mode_id)
+        self.assertFalse(refused.fallback_rationale)
 
         text = self._report_text({"result_id": result.result_id, "fallback_rationale": "Notes don't name the seal."})
         self.assertIn("Why a failure mode rather than a mechanism: Notes don't name the seal.", text)
@@ -877,12 +927,19 @@ def test_the_run_endpoint_takes_a_window_and_rejects_a_bad_date(monkeypatch, tmp
     bad = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_cutoff": "31/07/2025"})
     assert bad.status_code == 400
     assert "YYYY-MM-DD" in bad.get_json()["error"]
+    # A window too narrow to fit is refused, and says nothing was removed.
+    narrow = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_start": "2025-05-01"})
+    assert narrow.status_code == 400
+    assert narrow.get_json()["result_removed"] is False
 
     ran = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_cutoff": "2025-07-31", "analysis_start": ""})
     assert ran.status_code == 200
     result = ran.get_json()["result"]
     assert result["analysis_cutoff_source"] == "USER"
     assert result["analysis_start"] is None
+    # The rankings carry it too, so the page can name the cutoff's own day.
+    ranked = client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=4").get_json()["rankings"][0]
+    assert (ranked["analysis_cutoff"], ranked["analysis_cutoff_source"]) == (result["analysis_cutoff"], "USER")
     assert result["events"] and result["life_basis"]["time_zone"] == "America/Chicago"
 
     # The summary carries both rankings; the risk list takes its own window.

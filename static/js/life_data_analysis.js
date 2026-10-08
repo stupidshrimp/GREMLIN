@@ -432,7 +432,10 @@
         error.toastShown = true;
         throw error;
       }
-      throw new Error(message);
+      const error = new Error(message);
+      // The rest of the error body, for a caller that needs more than the message.
+      error.payload = data;
+      throw error;
     }
     return data;
   }
@@ -951,7 +954,7 @@
     }
     rankings.forEach((row) => {
       const percent = 100 * Number(row.probability);
-      const asOf = plantTimeText(row.analysis_cutoff, row.time_zone).slice(0, 10);
+      const asOf = cutoffPlantDate(row.analysis_cutoff, row.analysis_cutoff_source, row.time_zone);
       list.appendChild(
         el("li", {
           text:
@@ -2546,7 +2549,7 @@
     if (basis) {
       basis.textContent = data
         ? `Counted on the ${data.schedule_name} schedule, with days split at midnight ${data.time_zone}.` +
-          (data.time_zone_warning ? ` ${data.time_zone_warning}.` : "")
+          (data.time_zone_warning ? ` ${data.time_zone_warning}` : "")
         : "";
     }
     const headers = ["Failure Mechanism", "Failure Mode", "Failures", "Gaps", "Repeats", "Repeat Rate"];
@@ -2629,9 +2632,9 @@
         el("tr", {}, [
           el("td", { text: pair.failure_mechanism_name || "" }),
           recordNumberCell(pair.prior_task_id, { mappedRecordId: pair.prior_mapped_record_id, kind: "wo" }),
-          el("td", { text: formatRecordDate(pair.prior_completed) }),
+          el("td", { text: formatRecordDate(pair.prior_completed_raw ?? pair.prior_completed) }),
           recordNumberCell(pair.repeat_task_id, { mappedRecordId: pair.repeat_mapped_record_id, kind: "wo" }),
-          el("td", { text: formatRecordDate(pair.repeat_completed) }),
+          el("td", { text: formatRecordDate(pair.repeat_completed_raw ?? pair.repeat_completed) }),
           el("td", { text: fmtFixed(pair.scheduled_hours, 3) }),
           el("td", { text: fmtFixed(pair.raw_hours, 3) }),
           el("td", { text: pair.duplicate_check ? "Possible duplicate" : "" }),
@@ -4416,9 +4419,9 @@
       );
       return;
     }
-    // A group with fewer included failures than the minimum can never reach it --
-    // every life that ends in a failure ends at one of them -- so it is shown, with
-    // why, but can't be chosen.
+    // A group whose events make fewer lives ending in a failure than the minimum --
+    // counted as the run counts them, the first event only starting the clock -- can
+    // never reach it, so it is shown, with why, but can't be chosen.
     const options = el("div", { class: "lda-modal-options" });
     let anyFittable = false;
     groups.forEach((group, index) => {
@@ -4426,7 +4429,11 @@
       const labelText =
         `${group.grouping_level === "FAILURE_MECHANISM" ? "Failure mechanism" : "Failure mode"}: ` +
         `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)` +
-        (fittable ? "" : ` — too few to fit: a Weibull fit needs ${group.min_failure_lives || 5} lives ending in a failure`);
+        (fittable
+          ? ""
+          : ` — too few to fit: ${
+              group.failure_lives_possible != null ? `${group.failure_lives_possible} ${group.failure_lives_possible === 1 ? "life ends" : "lives end"} in a failure, and ` : ""
+            }a Weibull fit needs ${group.min_failure_lives || 5}`);
       const radio = el("input", { type: "radio", name: "lda-group", value: String(index) });
       if (!fittable) radio.disabled = true;
       else if (!anyFittable) radio.checked = true;
@@ -4596,16 +4603,18 @@
         showBanner(`The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run: ${err.message}`, "error");
         refreshSummary();
       } else {
-        // A run the data cannot support (too few failure lives, no likelihood root)
-        // also removes the result saved for that group, so a fit of the same group
-        // still on screen is gone on the server: take it down, and let the rankings
-        // drop it too.
-        if (!savedOnly && state.latestResult && sameWeibullGroup(state.latestResultGroup, group)) {
+        // A run over all history that the data cannot support (too few failure lives,
+        // no likelihood root) also removes the result saved for that group, and the
+        // server says so: take a fit of it still on screen down, and let the rankings
+        // drop it too. A refusal over an entered window, or any other error, leaves
+        // the saved result as it was, so the fit on screen stays.
+        const removed = Boolean(err.payload && err.payload.result_removed);
+        if (removed && state.latestResult && sameWeibullGroup(state.latestResultGroup, group)) {
           state.latestResult = null;
           clearWorkspace();
         }
         showBanner(err.message, "error");
-        if (!savedOnly) refreshSummary();
+        if (removed) refreshSummary();
       }
     } finally {
       endLoading();
@@ -4669,14 +4678,27 @@
   function savedResultWindow(result) {
     if (!result) return null;
     const zone = (result.life_basis && result.life_basis.time_zone) || "UTC";
-    const plantDate = (value, secondsBefore) => {
-      const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
-      if (isNaN(when.getTime())) return "";
-      return plantTimeText(new Date(when.getTime() - secondsBefore * 1000).toISOString(), zone).slice(0, 10);
-    };
-    const start = result.analysis_start ? plantDate(result.analysis_start, 0) : "";
-    const cutoff = result.analysis_cutoff_source === "USER" && result.analysis_cutoff ? plantDate(result.analysis_cutoff, 1) : "";
+    const start = result.analysis_start ? plantDateOf(result.analysis_start, zone, 0) : "";
+    const cutoff =
+      result.analysis_cutoff_source === "USER" && result.analysis_cutoff
+        ? cutoffPlantDate(result.analysis_cutoff, "USER", zone)
+        : "";
     return start || cutoff ? { start, cutoff } : null;
+  }
+
+  // The YYYY-MM-DD plant date of a stored UTC instant, `secondsBefore` it.
+  function plantDateOf(value, zone, secondsBefore) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return "";
+    return plantTimeText(new Date(when.getTime() - (secondsBefore || 0) * 1000).toISOString(), zone || "UTC").slice(0, 10);
+  }
+
+  // The plant day a run's cutoff falls on. An entered cutoff is stored as the next
+  // plant midnight (or the moment of the run, when its day was that day), so its day
+  // is the one the second before it falls on; any other cutoff is the day it is on.
+  function cutoffPlantDate(value, source, zone) {
+    return plantDateOf(value, zone, source === "USER" ? 1 : 0);
   }
 
   function plantTimeText(value, zoneName) {
