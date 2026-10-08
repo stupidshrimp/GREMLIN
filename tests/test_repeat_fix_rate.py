@@ -16,7 +16,7 @@
 import importlib
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -153,12 +153,15 @@ class RepeatFixRateTests(unittest.TestCase):
         self.seed.add("3", _utc(2025, 3, 3, 13), seal, weibull=False)
         self.seed.add("4", _utc(2025, 3, 3, 14), seal, category="EXCLUDED_NON_FAILURE")
         self.seed.add("5", None, seal)
+        # Dated after now: a data-entry error, left out as Weibull leaves it out.
+        self.seed.add("7", (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(), seal)
         # A PM reset does not break the chain: the question is whether the repair held.
         self.seed.add("PM", _utc(2025, 3, 3, 15), seal, pm=True)
         self.seed.add("6", _utc(2025, 3, 3, 17), seal)
 
         result = self.service.repeat_fix_rate("A-1")
         self.assertEqual(result["undated_failures"], 1)
+        self.assertEqual(result["future_failures"], 1)
         self.assertEqual(result["failures"], 3)
         self.assertEqual([(p["prior_task_id"], p["repeat_task_id"]) for p in result["pairs"]], [("1", "6")])
         switch_row = self._mechanism(result, switch)

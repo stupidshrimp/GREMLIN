@@ -2530,6 +2530,12 @@
             "date and could not be placed."
         );
       }
+      if (data.future_failures) {
+        notes.push(
+          `${data.future_failures} included ${data.future_failures === 1 ? "failure is" : "failures are"} dated after ` +
+            "today, which can only be a data-entry error, and left out."
+        );
+      }
       if (data.possible_duplicates) {
         notes.push(
           "A possible duplicate closed within an hour of the failure before it: check it is not the same breakdown " +

@@ -2848,10 +2848,17 @@ class LifeDataService:
         exclude_weekends = bool(schedule["exclude_weekends"])
         mechanisms: dict[tuple[int, int], dict[str, Any]] = {}
         undated = 0
+        # A completion dated after now is a data-entry error: no Weibull cutoff can
+        # reach it, so it is left out here too, and counted so the page can say so.
+        future = 0
+        now = datetime.now(timezone.utc)
         for row in rows:
             completed = self._parse_event_datetime(row["completed_date_final"], zone)
             if completed is None:
                 undated += 1
+                continue
+            if completed > now:
+                future += 1
                 continue
             key = (int(row["failure_mode_id"]), int(row["failure_mechanism_id"]))
             mechanism = mechanisms.setdefault(
@@ -2940,6 +2947,7 @@ class LifeDataService:
             "time_zone_warning": zone_warning,
             "failures": sum(m["failures"] for m in results),
             "undated_failures": undated,
+            "future_failures": future,
             "intervals": total_intervals,
             "repeats": total_repeats,
             "repeat_rate": round(total_repeats / total_intervals, 4) if total_intervals else None,
