@@ -410,6 +410,17 @@ class GroupFittableTests(_Seeded):
                 with self.assertRaises(WeibullFitError):
                     self._perform()
 
+    def test_a_failure_dated_after_now_ends_no_life(self):
+        # No cutoff can be later than now, so the run leaves it out too.
+        self._add_all(MONTHLY[:5])
+        self._add("F-future", (datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
+        options = self.service.weibull_group_options("A-1")
+        mechanism = next(group for group in options if group["grouping_level"] == "FAILURE_MECHANISM")
+        self.assertEqual((mechanism["failure_count"], mechanism["failure_lives_possible"]), (6, 4))
+        self.assertFalse(mechanism["fittable"])
+        with self.assertRaises(WeibullFitError):
+            self._perform()
+
     def test_an_undated_failure_ends_no_life(self):
         self._add_all(MONTHLY[:5])
         self._add("F-undated", None)

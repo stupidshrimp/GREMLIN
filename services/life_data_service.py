@@ -2023,15 +2023,18 @@ class LifeDataService:
         Counted as the run builds them: only events with a readable completed date, in
         date order with a date that has no time on the plant calendar; the first event
         only starts the clock, and a failure with no scheduled hours since the event
-        before it ends no life, though it starts the next. A window can only leave
-        events out, which never adds a life, so this is the most any run can fit.
+        before it ends no life, though it starts the next. No cutoff can be later than
+        now, so an event dated after it is left out as the run leaves it out. A window
+        can only leave events out, which never adds a life, so this is the most any
+        run can fit.
         """
 
+        now = datetime.now(timezone.utc)
         dated = sorted(
             (
                 (when, index, row)
                 for index, row in enumerate(rows)
-                if (when := self._parse_event_datetime(row["completed_date_final"], zone)) is not None
+                if (when := self._parse_event_datetime(row["completed_date_final"], zone)) is not None and when <= now
             ),
             key=lambda item: (item[0], item[1]),
         )

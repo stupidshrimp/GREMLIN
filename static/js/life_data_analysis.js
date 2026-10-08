@@ -1417,7 +1417,10 @@
       else renderDowntime();
     }
     if (isRepeat) {
-      if (state.selectedAsset && !state.repeatData) loadRepeatFixes();
+      // Re-fetch when the results on hand were counted with another window: a window
+      // change whose request was dropped on a type switch leaves the old ones behind.
+      const stale = !state.repeatData || Number(state.repeatData.window_hours) !== Number(state.repeatWindow);
+      if (state.selectedAsset && stale) loadRepeatFixes();
       else renderRepeat();
     }
   }
