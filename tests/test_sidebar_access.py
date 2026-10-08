@@ -178,9 +178,11 @@ def test_a_locked_entry_carries_the_toast_and_the_hover(monkeypatch, tmp_path):
 
 
 def test_signing_in_unlocks_the_sidebar(monkeypatch, tmp_path):
+    """As an editor: Disposition also needs that role, and a viewer is shown it
+    locked for that reason -- checked under the Data heading below."""
     module = _app(monkeypatch, tmp_path)
     assert any(locked for _, locked in _entries(module.app.test_client()))
-    assert not any(locked for _, locked in _entries(_client(module)))
+    assert not any(locked for _, locked in _entries(_client(module, role="editor")))
 
 
 def test_the_open_pages_are_served_to_a_visitor(monkeypatch, tmp_path):
@@ -597,6 +599,79 @@ def test_analysis_and_other_entries_are_drawn_under_their_headings(
     )
 
 
+def test_disposition_is_drawn_under_a_data_heading_below_analysis(
+    monkeypatch, tmp_path
+):
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department="all", role="editor")
+    sections = {heading: labels for heading, labels, _ in _sections(client)}
+
+    assert module.NAV_GROUP_DATA == "Data"
+    assert sections[module.NAV_GROUP_DATA] == ["Disposition"]
+    # Straight after Analysis, and nothing else between them.
+    assert _headings(client) == [
+        module.NAV_GROUP_ANALYSIS,
+        module.NAV_GROUP_DATA,
+        module.NAV_GROUP_DASHBOARDS,
+        module.NAV_GROUP_OTHER,
+    ]
+
+
+def test_disposition_carries_an_icon_of_its_own(monkeypatch, tmp_path):
+    """Two entries drawn with one shape read as one entry drawn twice."""
+    module = _app(monkeypatch, tmp_path)
+    disposition = module.PAGES_BY_ROUTE["/life-data-analysis/disposition"]
+    assert disposition["icon"] == module.ICONS["database"]
+    others = [page["icon"] for page in module.PAGES if page is not disposition]
+    assert disposition["icon"] not in others
+
+
+def test_an_editor_gets_disposition_as_a_link(monkeypatch, tmp_path):
+    client = _client(_app(monkeypatch, tmp_path), role="editor")
+    assert dict(_entries(client))["Disposition"] is False
+    assert 'href="/life-data-analysis/disposition"' in _sidebar(client)
+    # And it is lit on its own page.
+    sidebar = _sidebar(client, "/life-data-analysis/disposition")
+    active = re.findall(r'<a href="([^"]+)"[^>]*class="active"', sidebar)
+    assert active == ["/life-data-analysis/disposition"]
+
+
+def test_a_viewer_gets_disposition_locked_with_the_role_it_needs(monkeypatch, tmp_path):
+    """Signed in already, so being told to log in would be no help. The entry
+    names the role instead -- what the Home card and the refused page say."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, role="viewer")
+    entries = dict(_entries(client))
+    assert entries["Disposition"] is True
+    # Only Disposition: every other page a viewer is offered stays a link.
+    assert [label for label, locked in entries.items() if locked] == ["Disposition"]
+
+    sidebar = _sidebar(client)
+    assert 'href="/life-data-analysis/disposition"' not in sidebar
+    item = next(
+        entry for entry in re.findall(r"<li>(.*?)</li>", sidebar, re.S)
+        if "Disposition" in entry
+    )
+    assert (
+        'data-locked-message="Only authorized users can open Disposition. It needs '
+        'the editor role; ask an administrator to change yours."'
+    ) in item
+    assert "Needs the editor role to see this page." in item
+    assert module.LOCKED_NAV_HINT not in item
+    assert client.get("/life-data-analysis/disposition").status_code == 403
+
+
+def test_a_visitor_gets_disposition_struck_through_and_refused(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    sections = {heading: labels for heading, labels, _ in _sections(client)}
+    assert sections[module.NAV_GROUP_DATA] == ["Disposition"]
+    assert dict(_entries(client))["Disposition"] is True
+    response = client.get("/life-data-analysis/disposition")
+    assert response.status_code == 403
+    assert b"needs an account" in response.data
+
+
 @pytest.mark.parametrize(
     "path",
     ["/standards-and-documentation", *STANDARDS_SUBPAGES],
@@ -673,6 +748,10 @@ def test_no_heading_is_drawn_over_a_group_this_account_has_none_of(
     assert "Life Data Analysis" not in labels
     assert "Metrics" not in labels
     assert module.NAV_GROUP_ANALYSIS not in _headings(client)
+    # Disposition is inside Life Data Analysis's section, so it goes with it,
+    # and its heading with it.
+    assert "Disposition" not in labels
+    assert module.NAV_GROUP_DATA not in _headings(client)
 
 
 def test_a_heading_is_drawn_over_the_one_entry_an_account_does_have(
@@ -800,7 +879,8 @@ def test_the_login_dialog_explains_session_duration(monkeypatch, tmp_path, page)
 
 
 def test_the_refusal_page_does_not_promise_what_it_just_refused(monkeypatch, tmp_path):
-    """The editor-role refusal is rendered for signed-out visitors too."""
+    """Disposition is a sidebar page, so a signed-out visitor meets the login
+    refusal there, the same as at every other page off the open floor."""
     body = (
         _app(monkeypatch, tmp_path)
         .app.test_client()

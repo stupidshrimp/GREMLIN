@@ -319,6 +319,10 @@ ICONS = {
     "shield": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2 4.9 5a1 1 0 0 0-.6.9v5.3c0 4.2 2.7 8.1 7.3 10.5.3.1.5.1.8 0 4.6-2.4 7.3-6.3 7.3-10.5V5.9a1 1 0 0 0-.6-.9L12 2.2Zm3.5 6.6a1 1 0 0 1 0 1.4l-4 4a1 1 0 0 1-1.4 0l-2-2a1 1 0 1 1 1.4-1.4l1.3 1.3 3.3-3.3a1 1 0 0 1 1.4 0Z"/></svg>',
     "checklist": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 4.6a1 1 0 0 1 0 1.4L4.9 7.7a1 1 0 0 1-1.4 0L2.6 6.8a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0Zm0 6.5a1 1 0 0 1 0 1.4l-1.7 1.7a1 1 0 0 1-1.4 0l-.9-.9a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0Zm0 6.5a1 1 0 0 1 0 1.4l-1.7 1.7a1 1 0 0 1-1.4 0l-.9-.9a1 1 0 1 1 1.4-1.4l.2.2 1-1a1 1 0 0 1 1.4 0ZM9.3 6.1c0-.5.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Zm0 6.5c0-.6.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Zm0 6.4c0-.5.4-1 1-1h10.2a1 1 0 1 1 0 2H10.3a1 1 0 0 1-1-1Z"/></svg>',
     "overdue": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8a9.2 9.2 0 1 0 0 18.4 9.2 9.2 0 0 0 0-18.4Zm0 2a1 1 0 0 1 1 1V12l3.3 2a1 1 0 1 1-1 1.7l-3.8-2.3a1 1 0 0 1-.5-.9V5.8c0-.6.4-1 1-1Z"/></svg>',
+    # A database: a lid and two stacked bands. For Disposition, the page under
+    # the Data heading, whose every table writes back to GREMLIN.db -- and a
+    # shape none of the analysis or dashboard entries above it already uses.
+    "database": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6a7.5 2.75 0 1 0 15 0 7.5 2.75 0 1 0-15 0Z"/><path d="M4.5 7.5V12a7.5 2.75 0 0 0 15 0V7.5a7.5 2.75 0 0 1-15 0Z"/><path d="M4.5 13.5V18a7.5 2.75 0 0 0 15 0v-4.5a7.5 2.75 0 0 1-15 0Z"/></svg>',
 }
 
 # The mark a page that is not built yet carries. An hourglass rather than a
@@ -393,7 +397,14 @@ app.jinja_env.globals.update(
 # the key existed. The heading is written here rather than in sidebar.html for
 # the same reason the rest of this list is: which pages sit under it is decided
 # in one place, and a page that moves under it moves by gaining this key alone.
+#
+# "role" is the one key here the account's role answers rather than its
+# department. It does not refuse anything -- the page's own route does that, in
+# its own words -- it only makes the sidebar agree with the route: an account
+# below the role is shown the entry locked, with the role it is missing, rather
+# than a link that answers 403.
 NAV_GROUP_ANALYSIS = "Analysis"
+NAV_GROUP_DATA = "Data"
 NAV_GROUP_DASHBOARDS = "Dashboards"
 NAV_GROUP_OTHER = "Other"
 
@@ -424,6 +435,21 @@ PAGES = [
         "group": NAV_GROUP_ANALYSIS,
         "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "section": ("/metrics",),
+    },
+    # The disposition workspace, and the whole of the "Data" group: it is where
+    # records are corrected rather than analysed. Placed straight after the two
+    # Analysis entries so that heading comes next down the rail.
+    #
+    # It sits inside Life Data Analysis's section, so it needs no
+    # "withheld_from_department" of its own: an Operations & Maintenance account
+    # is kept out of it by that section, and the sidebar drops it with the rest.
+    {
+        "route": "/life-data-analysis/disposition",
+        "template": "disposition.html",
+        "title": "Disposition",
+        "icon": ICONS["database"],
+        "group": NAV_GROUP_DATA,
+        "role": "editor",
     },
     {
         "route": "/developer",
@@ -889,9 +915,10 @@ def _path_is_offered(path: str, user: dict | None) -> bool:
 
     The same two questions ``_refuse_a_page_this_account_may_not_open`` asks,
     in the same order, for markup that needs the answer before the click. It
-    covers paths PAGES does not name -- the disposition workspace is one -- by
-    asking the withheld section they sit inside, which is why a template cannot
-    get this right with ``_may_open_page`` alone.
+    covers paths whose own entry says nothing about a department -- the
+    disposition workspace is one, and every endpoint PAGES does not name is
+    another -- by asking the withheld section they sit inside, which is why a
+    template cannot get this right with ``_may_open_page`` alone.
     """
 
     withheld = _withheld_section_for(path)
@@ -906,6 +933,23 @@ def _path_is_offered(path: str, user: dict | None) -> bool:
 LOCKED_NAV_MESSAGE = "To see this page, please log in."
 LOCKED_NAV_HINT = "Log in first to see this page!"
 
+# The same pair for an entry whose page needs a higher role than the signed-in
+# account holds. Logging in again would change nothing, so these name the role
+# and who can grant it -- the wording the Disposition card on Home already uses.
+ROLE_LOCKED_NAV_MESSAGE = (
+    "Only authorized users can open {title}. It needs the {role} role; "
+    "ask an administrator to change yours."
+)
+ROLE_LOCKED_NAV_HINT = "Needs the {role} role to see this page."
+
+
+def _account_holds_role(user: dict | None, role: str | None) -> bool:
+    """Whether this account is at or above ``role``; no role asks nothing."""
+
+    if role is None:
+        return True
+    return bool(user and ROLE_LEVEL.get(user["role"], -1) >= ROLE_LEVEL[role])
+
 
 def _nav_links_for(user: dict | None) -> list[dict]:
     """The sidebar as this account should see it.
@@ -917,6 +961,10 @@ def _nav_links_for(user: dict | None) -> list[dict]:
     it, so advertising a page it will never be given is only clutter. A page the
     account's department is kept out of goes the same way, and for the same
     reason -- including Configuration, which every other account is shown.
+
+    A page that needs a role the account does not hold is locked too, not gone:
+    the role is something an administrator can grant, so the entry stays and
+    says which one, the same way the Disposition card on Home does.
     """
 
     links = []
@@ -926,13 +974,33 @@ def _nav_links_for(user: dict | None) -> list[dict]:
             continue
         if _page_is_withheld_from(page, user):
             continue
+        # A page inside another page's withheld section goes with that section,
+        # even though it is not withheld in its own right: Disposition answers
+        # to Life Data Analysis.
+        owner = _withheld_section_for(route)
+        if owner is not None and _page_is_withheld_from(owner, user):
+            continue
         if not _page_is_open(route) and not _page_suits_account(page, user):
             continue
+        role = page.get("role")
+        if not _may_open_page(route, user):
+            locked, message, hint = True, LOCKED_NAV_MESSAGE, LOCKED_NAV_HINT
+        elif not _account_holds_role(user, role):
+            locked = True
+            message = ROLE_LOCKED_NAV_MESSAGE.format(title=page["title"], role=role)
+            hint = ROLE_LOCKED_NAV_HINT.format(role=role)
+        else:
+            locked, message, hint = False, None, None
         links.append({
             "label": page["title"],
             "url": route,
             "icon": page["icon"],
-            "locked": not _may_open_page(route, user),
+            "locked": locked,
+            # What the locked entry says on click and on hover. Carried per link
+            # because the two locks ask different things of the person: one to
+            # log in, the other to ask an administrator for a role.
+            "locked_message": message,
+            "locked_hint": hint,
             # Drawn as an hourglass beside the label. Carried on the link rather
             # than read off the route in the template, so the sidebar never has
             # to know which pages are still empty.

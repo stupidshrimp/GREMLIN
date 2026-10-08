@@ -65,11 +65,15 @@
 
             No title= on this one, because the hint below is the tooltip and two
             tooltips on one control fight each other. The hint carries the label
-            as well, for the collapsed rail where nothing else names the page. -#}
+            as well, for the collapsed rail where nothing else names the page.
+
+            The toast and the hint come with the link, because there are two
+            locks: signed out, it asks for a login; signed in below the page's
+            role -- a viewer at Disposition -- it names the role instead. -#}
         <button
           type="button"
           class="nav-locked"
-          data-locked-message="{{ locked_nav_message }}"
+          data-locked-message="{{ link.locked_message }}"
         >
           <span class="nav-icon" aria-hidden="true">{{ link.icon | safe }}</span>
           <span class="nav-label">{{ link.label }}</span>
@@ -82,7 +86,7 @@
               still in the tree there. -#}
           <span class="nav-lock-hint">
             <span class="nav-lock-hint-label" aria-hidden="true">{{ link.label }}</span>
-            {{ locked_nav_hint }}
+            {{ link.locked_hint }}
           </span>
         </button>
         {%- else %}
