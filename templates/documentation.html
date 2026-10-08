@@ -1,8 +1,17 @@
 {% extends "base.html" %}
 
-{#- Reserved for the reliability team's documents, none of which have been
-    published yet. It says so plainly, with the same hourglass a page that is not
-    built yet carries everywhere else, rather than looking finished and empty. -#}
+{#- How GREMLIN calculates what it shows, in three tabs: the Metrics page's cards,
+    the analyses on Perform an Analysis, and how the site itself fits
+    together. Each tab is a list of expandable cards; the tabs' contents live in
+    documentation_metrics.html, documentation_analysis.html and
+    documentation_site.html.
+
+    Every tab panel and every card has an id, and a fragment naming one opens it:
+    #analysis opens the Analysis tab, #analysis-weibull opens that tab and expands
+    the Weibull card. documentation.js does that on load and on every fragment
+    change, which is what lets the topbar search and links between cards land on
+    the right place. Without a script the first tab still reads in full and every
+    card still expands. -#}
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/standards.css') }}">
@@ -17,23 +26,33 @@
 </nav>
 
 <section class="glass-card fade-in-up std-hero">
-  <p class="eyebrow placeholder-eyebrow">
-    <span class="placeholder-badge" aria-hidden="true">{{ coming_soon_icon | safe }}</span>
-    {{ coming_soon_label }}
-  </p>
-  <h1>Documentation</h1>
+  <p class="eyebrow">Documentation</p>
+  <h1>How GREMLIN calculates what it shows.</h1>
   <p class="hero-copy">
-    This is where the reliability team's procedures, templates and reference
-    documents will be published.
+    GREMLIN's metrics and analyses, written out: what each one counts, where
+    each input comes from and, in every finished card, the equations behind
+    it, most with a worked example you can check by hand. Cards still being
+    written say so. Pick a tab, then open any card. Equations and figures are
+    numbered so the text can refer to them.
   </p>
-  <p class="placeholder-note">
-    No documents have been published yet, so there is nothing to open here for
-    now. In the meantime, the Standards page explains how GREMLIN's metrics
-    and analyses are calculated.
-  </p>
-  <div class="std-hero-actions">
-    <a class="btn-primary" href="{{ url_for('standards') }}">Read the Standards</a>
-    <a class="btn-secondary" href="{{ url_for('standards_and_documentation') }}">Back to Standards and Documentation</a>
-  </div>
 </section>
+
+<section class="glass-card slide-in documentation-tabs std-tabs" id="documentation-tabs" aria-label="Documentation">
+  <div class="tab-list" role="tablist" aria-label="Documentation sections">
+    <button type="button" id="metrics-tab" class="active" role="tab" aria-selected="true"
+            aria-controls="metrics" data-tab-target="metrics">Metrics</button>
+    <button type="button" id="analysis-tab" role="tab" aria-selected="false"
+            aria-controls="analysis" data-tab-target="analysis" tabindex="-1">Analysis</button>
+    <button type="button" id="how-gremlin-works-tab" role="tab" aria-selected="false"
+            aria-controls="how-gremlin-works" data-tab-target="how-gremlin-works" tabindex="-1">How GREMLIN Works</button>
+  </div>
+
+  {% include "documentation_metrics.html" %}
+  {% include "documentation_analysis.html" %}
+  {% include "documentation_site.html" %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/documentation.js') }}"></script>
 {% endblock %}

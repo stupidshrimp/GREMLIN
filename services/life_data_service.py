@@ -7115,7 +7115,7 @@ class LifeDataService:
     def _fit_weibull_2p(self, data: list[tuple[float, int]]) -> tuple[float, float, float]:
         """The maximum-likelihood beta and eta for ``data``, and the log-likelihood there.
 
-        Beta is the root of the profile score (equation W8 on the Standards page),
+        Beta is the root of the profile score (equation W8 on the Documentation page),
         bracketed on a grid over 0.1 to 20 and then bisected. With no root in that
         range there is no maximum-likelihood beta to report, so this raises rather
         than substitute an estimate of another kind under the MLE's name (REL-WBL-MTH-001

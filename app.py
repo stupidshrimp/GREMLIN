@@ -536,7 +536,7 @@ PAGES = [
     # Reference material, open to everybody signed in or not (it is on the open
     # floor below), so it sits beside the other reference page rather than in
     # one of the groups a department can lose. The route is a landing page with
-    # two cards; the Standards and Documentation pages it opens live underneath
+    # two cards; the Documentation and Standards pages it opens live underneath
     # it, and "covers" hands them this entry's rule, so a typed sub-page address
     # is opened or refused exactly as the landing page is.
     {
@@ -1556,34 +1556,34 @@ SEARCH_ENTRIES = [
         "role": "editor",
         "keywords": ["limble", "asset mapping", "remap", "reimport"],
     },
-    # The Standards page and the tabs and cards on it. A fragment naming a tab
-    # opens that tab; one naming a card opens the card's tab and expands the
-    # card. standards.js does both on load, so every entry here survives the
+    # The Documentation page and the tabs and cards on it. A fragment naming a
+    # tab opens that tab; one naming a card opens the card's tab and expands the
+    # card. documentation.js does both on load, so every entry here survives the
     # cold page load a click in the dropdown makes.
-    {
-        "label": "Standards",
-        "url": "/standards-and-documentation/standards",
-        "kind": "page",
-        "context": "Standards and Documentation",
-        "keywords": ["formula", "equation", "calculation", "method", "definition", "how it is calculated"],
-    },
     {
         "label": "Documentation",
         "url": "/standards-and-documentation/documentation",
         "kind": "page",
         "context": "Standards and Documentation",
-        "keywords": ["procedures", "templates", "reference documents", "docs"],
+        "keywords": ["formula", "equation", "calculation", "method", "definition", "how it is calculated", "docs"],
     },
     {
-        "label": "Metrics standards",
-        "url": "/standards-and-documentation/standards#metrics",
+        "label": "Standards",
+        "url": "/standards-and-documentation/standards",
+        "kind": "page",
+        "context": "Standards and Documentation",
+        "keywords": ["procedures", "templates", "reference documents"],
+    },
+    {
+        "label": "Metrics documentation",
+        "url": "/standards-and-documentation/documentation#metrics",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["mtbf formula", "mttr formula", "risk score", "percent change", "kpi definitions"],
     },
     {
         "label": "Availability calculation",
-        "url": "/standards-and-documentation/standards#metrics-availability",
+        "url": "/standards-and-documentation/documentation#metrics-availability",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": [
@@ -1592,15 +1592,15 @@ SEARCH_ENTRIES = [
         ],
     },
     {
-        "label": "Analysis standards",
-        "url": "/standards-and-documentation/standards#analysis",
+        "label": "Analysis documentation",
+        "url": "/standards-and-documentation/documentation#analysis",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["included failure", "work order date", "pareto", "cumulative percent", "readiness"],
     },
     {
         "label": "Weibull Analysis method",
-        "url": "/standards-and-documentation/standards#analysis-weibull",
+        "url": "/standards-and-documentation/documentation#analysis-weibull",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": [
@@ -1611,35 +1611,35 @@ SEARCH_ENTRIES = [
     },
     {
         "label": "Failure Mode Trend Analysis method",
-        "url": "/standards-and-documentation/standards#analysis-trend",
+        "url": "/standards-and-documentation/documentation#analysis-trend",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["monthly trend", "fastest growing", "most improved", "occurrences"],
     },
     {
         "label": "Downtime Driver Analysis method",
-        "url": "/standards-and-documentation/standards#analysis-downtime",
+        "url": "/standards-and-documentation/documentation#analysis-downtime",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["downtime distribution", "median downtime", "top events", "by location"],
     },
     {
         "label": "PM Effectiveness Analysis method",
-        "url": "/standards-and-documentation/standards#analysis-pm",
+        "url": "/standards-and-documentation/documentation#analysis-pm",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["days to failure", "failures after pm", "pm rating", "preventive maintenance"],
     },
     {
         "label": "Repeat Fix Rate Analysis method",
-        "url": "/standards-and-documentation/standards#analysis-repeat",
+        "url": "/standards-and-documentation/documentation#analysis-repeat",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": ["repeat window", "repeat failure", "repair quality", "scheduled hours"],
     },
     {
         "label": "How GREMLIN works",
-        "url": "/standards-and-documentation/standards#how-gremlin-works",
+        "url": "/standards-and-documentation/documentation#how-gremlin-works",
         "kind": "function",
         "context": "Standards and Documentation",
         "keywords": [
@@ -2169,15 +2169,15 @@ def api_availability_save_linked_rules():
 
 @app.route("/standards-and-documentation")
 def standards_and_documentation():
-    """The landing page: one card for Standards and one for Documentation."""
+    """The landing page: one card for Documentation and one for Standards."""
     return render_template(
         "standards_and_documentation.html",
         page_title="Standards and Documentation",
     )
 
 
-@app.route("/standards-and-documentation/standards")
-def standards():
+@app.route("/standards-and-documentation/documentation")
+def documentation():
     """How every metric and analysis is calculated, in three tabs.
 
     Everything on it is static reference text, so it reads nothing from the
@@ -2186,13 +2186,17 @@ def standards():
     out. The tab and the card a fragment names are opened by the page's own
     script, which is what lets the search catalog deep link into it.
     """
-    return render_template("standards.html", page_title="Standards")
-
-
-@app.route("/standards-and-documentation/documentation")
-def documentation():
-    """Reserved for the team's documents; it says plainly that none are here yet."""
     return render_template("documentation.html", page_title="Documentation")
+
+
+@app.route("/standards-and-documentation/standards")
+def standards():
+    """Reserved for the team's standards; it says plainly that none are here yet.
+
+    It held the Documentation page's tabs before the two were renamed, so a
+    fragment from an old link is forwarded there by the page's own script.
+    """
+    return render_template("standards.html", page_title="Standards")
 
 
 @app.route("/configuration")
