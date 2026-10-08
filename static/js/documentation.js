@@ -1,4 +1,4 @@
-/* The Standards page: three tabs, each a list of expandable cards.
+/* The Documentation page: three tabs, each a list of expandable cards.
  *
  * Three jobs, all small:
  *
@@ -87,7 +87,7 @@
     // A tab is revealed by bringing its tab row into view; anything inside a
     // tab by bringing the thing itself there. Deferred a frame so the panel
     // that was hidden a moment ago has been laid out and has a position.
-    const scrollTarget = target === panel ? document.getElementById("standards-tabs") : target;
+    const scrollTarget = target === panel ? document.getElementById("documentation-tabs") : target;
     requestAnimationFrame(() => scrollTarget.scrollIntoView({ block: "start" }));
   }
 

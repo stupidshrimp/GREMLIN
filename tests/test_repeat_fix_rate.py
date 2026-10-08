@@ -269,7 +269,7 @@ def test_the_endpoint_refuses_a_window_it_cannot_use(monkeypatch, tmp_path, wind
 
 
 def test_the_standards_example_is_what_gremlin_counts(tmp_path):
-    """The Standards page's worked example, run through the service on the 20-hour default."""
+    """The Documentation page's worked example, run through the service on the 20-hour default."""
 
     service = LifeDataService(tmp_path / "gremlin.db", refresh_on_startup=False)
     seed = _Seeded(service)
@@ -285,7 +285,7 @@ def test_the_standards_example_is_what_gremlin_counts(tmp_path):
     for start, end in zip(dates, dates[1:]):
         gaps.append(service._scheduled_life_hours(start, end, 20, tz=zone)[0])
     result = service.repeat_fix_rate("A-1")
-    page = (Path(__file__).resolve().parent.parent / "templates" / "standards_analysis.html").read_text(encoding="utf-8")
+    page = (Path(__file__).resolve().parent.parent / "templates" / "documentation_analysis.html").read_text(encoding="utf-8")
     example = page.split('id="repeat-cards"', 1)[1].split("</section>", 1)[0]
     assert f"= {gaps[0]:.1f} scheduled hours: a repeat" in example
     assert f"= {gaps[1]:.1f} scheduled hours: the fix held" in example

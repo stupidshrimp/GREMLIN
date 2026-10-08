@@ -1,8 +1,8 @@
 /* Standards and Documentation.
    ---------------------------------------------------------------------------
    Three pages share this sheet: the landing page with its two cards, the
-   Standards page (three tabs of expandable cards holding equations, figures and
-   worked examples), and the Documentation page, which is still a placeholder.
+   Documentation page (three tabs of expandable cards holding equations, figures
+   and worked examples), and the Standards page, which is still a placeholder.
 
    Every colour comes from a token in theme.css, figures included: an inline SVG
    is part of the document, so its fills and strokes can name the same chart
@@ -39,7 +39,7 @@
   margin: 0;
 }
 
-/* What the Standards card holds, named the way its tabs are named. */
+/* What the Documentation card holds, named the way its tabs are named. */
 .std-landing-chips {
   display: flex;
   flex-wrap: wrap;
