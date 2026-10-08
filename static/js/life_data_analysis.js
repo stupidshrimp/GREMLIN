@@ -133,12 +133,15 @@
     // of a newer one.
     latestResult: null,
     // The failure group `latestResult` was fitted for, so a disposition changed
-    // from its data table can run the same group again. Only read alongside a
-    // non-null latestResult, which every path that drops the result clears.
+    // from its data table can run the same group again. It outlives latestResult
+    // when the page switches to another analysis type, so that coming back can
+    // run the group over the same window; a new asset, or a refusal that removes
+    // the group's saved fit, clears it.
     latestResultGroup: null,
     // The analysis start and cutoff dates an editor entered for that run, if any
     // ({ start, cutoff } as YYYY-MM-DD, either blank), so the re-run after a
-    // disposition change keeps the same window rather than quietly widening it.
+    // disposition change or a type switch keeps the same window rather than
+    // quietly widening it.
     latestResultWindow: null,
     analysisToken: 0,
     // The most recently selected failure mode/mechanism, regardless of which
@@ -757,6 +760,8 @@
     state.selectedAsset = asset ? asset.asset_number : null;
     if (previous !== state.selectedAsset) {
       state.latestResult = null;
+      state.latestResultGroup = null;
+      state.latestResultWindow = null;
       // A new asset invalidates the cached trend data and any failure-mechanism
       // selection driving the trend chart or PM effectiveness analysis.
       state.trend = null;
@@ -1316,14 +1321,17 @@
     if (type === ANALYSIS_TYPES.WEIBULL) {
       if (active.failure_mode_id == null) return false;
       const groupingLevel = weibullGroupingLevel(active);
-      runAnalysisForGroup(
-        {
-          grouping_level: groupingLevel,
-          failure_mode_id: active.failure_mode_id,
-          failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
-        },
-        "Recomputing Weibull analysis for the carried-over selection…"
-      );
+      const group = {
+        grouping_level: groupingLevel,
+        failure_mode_id: active.failure_mode_id,
+        failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
+      };
+      // Coming back to the group whose fit was last on screen runs it over the
+      // window that fit had, so a fit over entered dates isn't replaced by one over
+      // all history just for looking at another analysis type in between.
+      runAnalysisForGroup(group, "Recomputing Weibull analysis for the carried-over selection…", {
+        window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null,
+      });
       return true;
     }
     return false;
@@ -4538,7 +4546,8 @@
 
   // `options.changedRecord` marks a re-run after a disposition saved from the data
   // table ({ mappedRecordId, label }): the new table scrolls back to that record,
-  // and a fit the change has made impossible clears the old one off the screen.
+  // and a refusal says the change was saved; the old fit stays on screen unless
+  // the refusal removed it.
   // `options.savedOnly` opens the fit already saved even for an editor, the way a
   // viewer always does: what the tour uses, so that showing somebody around never
   // runs and stores a fit of its own. `options.window` ({ start, cutoff } as
@@ -4603,25 +4612,31 @@
       refreshSummary();
     } catch (err) {
       if (isStale()) return;
-      if (changedRecord) {
-        // The fit on screen predates the change -- the change may have taken away
-        // the last failure it rested on -- so leaving it up would show numbers the
-        // data no longer supports. The summary still has to catch up with the save.
-        state.latestResult = null;
-        clearWorkspace();
-        showBanner(`The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run: ${err.message}`, "error");
-        refreshSummary();
-      } else {
-        // A run over all history that the data cannot support (too few failure lives,
-        // no likelihood root) also removes the result saved for that group, and the
-        // server says so: take a fit of it still on screen down, and let the rankings
-        // drop it too. A refusal over an entered window, or any other error, leaves
-        // the saved result as it was, so the fit on screen stays.
-        const removed = Boolean(err.payload && err.payload.result_removed);
-        if (removed && state.latestResult && sameWeibullGroup(state.latestResultGroup, group)) {
+      // A run over all history that the data cannot support (too few failure lives,
+      // no likelihood root) also removes the result saved for that group, and the
+      // server says so: take a fit of it still on screen down, forget its window,
+      // and let the rankings drop it too. A refusal over an entered window, or any
+      // other error, leaves the saved result as it was, so the fit on screen stays,
+      // as it does in the rankings.
+      const removed = Boolean(err.payload && err.payload.result_removed);
+      if (removed && sameWeibullGroup(state.latestResultGroup, group)) {
+        if (state.latestResult) {
           state.latestResult = null;
           clearWorkspace();
         }
+        state.latestResultGroup = null;
+        state.latestResultWindow = null;
+      }
+      if (changedRecord) {
+        // A fit kept on screen predates the change, so the banner says so. The
+        // summary has to catch up with the save either way.
+        const kept = state.latestResult ? ", so the fit shown is the one saved before this change" : "";
+        showBanner(
+          `The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run${kept}: ${err.message}`,
+          "error"
+        );
+        refreshSummary();
+      } else {
         showBanner(err.message, "error");
         if (removed) refreshSummary();
       }

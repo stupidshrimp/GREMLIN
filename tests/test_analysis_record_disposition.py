@@ -417,6 +417,28 @@ def test_a_weibull_save_reruns_the_group_on_screen():
     assert "refreshSummary();" in refresh[: refresh.index("\n  }\n")]
 
 
+def test_a_refused_rerun_keeps_the_fit_unless_the_server_removed_it():
+    run = SCRIPT[SCRIPT.index("async function runAnalysisForGroup"):SCRIPT.index("function confidenceIntervalText")]
+    refused = run[run.index("} catch (err) {"):]
+    # A refusal over an entered window keeps the saved fit, after a disposition
+    # change as after any other run, so the one place the fit comes off the
+    # screen is behind the server saying it removed it.
+    assert refused.count("clearWorkspace();") == 1
+    removed = refused[refused.index("if (removed && sameWeibullGroup(state.latestResultGroup, group))"):]
+    assert removed.index("clearWorkspace();") < removed.index("if (changedRecord)")
+    assert "the fit shown is the one saved before this change" in refused
+
+
+def test_the_window_survives_a_switch_to_another_analysis_type():
+    carried = SCRIPT[SCRIPT.index("function applyCarriedSelection"):SCRIPT.index("function applyAnalysisTypeUI")]
+    weibull = carried[carried.index("type === ANALYSIS_TYPES.WEIBULL"):]
+    assert "window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null" in weibull
+    # It belongs to one asset's fit, so a new asset drops it.
+    asset_change = SCRIPT[SCRIPT.index("function evaluateAssetSelection"):SCRIPT.index("function clearWorkspace")]
+    assert "state.latestResultGroup = null;" in asset_change
+    assert "state.latestResultWindow = null;" in asset_change
+
+
 def test_the_option_lists_open_above_the_modal():
     """They are portaled to <body>, so they have to out-stack the backdrop."""
 
