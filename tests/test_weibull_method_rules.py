@@ -347,6 +347,33 @@ class FitGateTests(_Seeded):
         self.assertTrue(all(group["fittable"] is False for group in groups))
 
 
+class GroupFittableTests(_Seeded):
+    """The Perform Analysis dialog only offers a group that could reach the minimum."""
+
+    def _fittable(self):
+        groups = self.service.weibull_group_options("A-1")
+        return {group["grouping_level"]: group["fittable"] for group in groups}
+
+    def test_five_failures_with_no_reset_are_four_lives_and_not_offered(self):
+        # The first failure only starts the clock, so the run would refuse it.
+        self._add_all(MONTHLY[:5])
+        self.assertEqual(self._fittable(), {"FAILURE_MODE": False, "FAILURE_MECHANISM": False})
+        with self.assertRaises(WeibullFitError):
+            self._perform()
+
+    def test_six_failures_with_no_reset_are_offered(self):
+        self._add_all(MONTHLY[:6])
+        self.assertTrue(self._fittable()["FAILURE_MECHANISM"])
+        self.assertEqual(self._perform().failure_count, 5)
+
+    def test_five_failures_after_a_reset_are_offered(self):
+        # A PM reset first starts the clock, so all five failures end a life.
+        self._add("PM0", _utc(2024, 12, 2, 9), pm=True)
+        self._add_all(MONTHLY[:5])
+        self.assertTrue(self._fittable()["FAILURE_MECHANISM"])
+        self.assertEqual(self._perform().failure_count, 5)
+
+
 class LifeNoteTests(_Seeded):
     def test_lives_and_events_carry_the_dat_004_notes(self):
         self._add_all(MONTHLY[:3])

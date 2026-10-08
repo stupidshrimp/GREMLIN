@@ -1976,9 +1976,15 @@ class LifeDataService:
                 "failure_count": int(row["failure_count"] or 0),
                 "reset_count": int(row["reset_count"] or 0),
                 "label": label,
-                # Each life ending in a failure ends at one of these failures, so a group
-                # with fewer than the minimum cannot be fitted however its dates fall.
-                "fittable": int(row["failure_count"] or 0) >= MIN_WEIBULL_FAILURE_LIVES,
+                # Each life ending in a failure ends at one of these failures, and the
+                # first event only starts the clock. With no PM reset to be that first
+                # event, a failure is, so the group has one life fewer than failures; a
+                # group short of the minimum either way cannot be fitted however its
+                # dates fall. (With a reset this is the most it could have: a reset that
+                # comes after the first failure leaves one fewer, which the run reports.)
+                "fittable": (
+                    int(row["failure_count"] or 0) - (0 if int(row["reset_count"] or 0) else 1)
+                ) >= MIN_WEIBULL_FAILURE_LIVES,
                 "min_failure_lives": MIN_WEIBULL_FAILURE_LIVES,
             })
         return options
