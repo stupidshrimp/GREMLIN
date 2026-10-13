@@ -2722,7 +2722,7 @@
   }
 
   // The Asset average column: each row averaged across the months shown, every
-  // month counting once -- the Average row's rule turned the other way. It is
+  // month counting once -- the Monthly average row's rule turned the other way. It is
   // derived, so it stays read-only text in the OT editing mode too.
   const ASSET_AVERAGE_TITLE =
     "Each row averaged across the months shown, with every month counting once";
@@ -2811,7 +2811,7 @@
       ))
     );
 
-    const averageRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Average" })].concat(
+    const averageRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Monthly average" })].concat(
       (group.average || []).map((value) =>
         el("td", {
           class: "availability-cell",
@@ -3344,7 +3344,7 @@
       target: ".availability-table-scroll",
       title: "The table under each chart",
       body:
-        "The same numbers as the bars, one row per asset. The Average row is the solid line " +
+        "The same numbers as the bars, one row per asset. The Monthly average row is the solid line " +
         "and Goal % the dashed one" +
         (CAN_EDIT ? "; type in a Goal % cell to change the target for that month" : "") +
         ". Asset average averages each row across the months shown. Hover a cell for what's " +
