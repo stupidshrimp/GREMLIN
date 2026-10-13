@@ -1116,6 +1116,9 @@
     const metric = state.paretoMetric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
+    // The click handler is replaced below with one over the bars just drawn. With
+    // none to draw, drop the last one, whose bars are no longer on screen.
+    canvas.onclick = null;
     if (!rows.length) return;
 
     const left = 64; // room for the left value-axis labels + rotated title

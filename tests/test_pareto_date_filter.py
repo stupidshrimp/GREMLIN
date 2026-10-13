@@ -306,6 +306,14 @@ def test_the_pareto_panel_has_the_date_inputs_and_the_script_wires_them():
     assert 'type="date" id="lda-date-to"' in TEMPLATE
 
 
+def test_an_emptied_pareto_drops_the_old_bars_click_handler():
+    """Dates that leave no bars must not leave the last chart's bars clickable."""
+
+    draw = SCRIPT[SCRIPT.index("function drawPareto"):]
+    draw = draw[: draw.index("\n  }\n")]
+    assert draw.index("canvas.onclick = null;") < draw.index("if (!rows.length) return;")
+
+
 @pytest.mark.parametrize(
     "request_line",
     [
