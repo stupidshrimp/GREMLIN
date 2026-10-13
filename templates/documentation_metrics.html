@@ -541,7 +541,7 @@
         <dt><math><mi>M</mi><mo stretchy="false">(</mo><mi>a</mi><mo stretchy="false">)</mo></math></dt><dd>The months shown in which asset <math><mi>a</mi></math> has a defined availability.</dd>
       </dl>
       <p>
-        The Average and Goal % rows have an Asset average cell too, averaging
+        The Monthly average and Goal % rows have an Asset average cell too, averaging
         those lines across the months shown in the same way.
       </p>
       <div class="std-example">
@@ -785,7 +785,7 @@
         <li><strong>Expanded,</strong> there is one chart per charted asset group, titled "<em>group</em> Availability % by Month", with the group's net scheduled hours per day on the line below the title. The vertical axis is fixed from 0% to 100%, as in the workbook.</li>
         <li><strong>The basis line</strong> under the controls reads "Computed" with the date and time on the server's clock, the plant timezone used to place work orders in months, whether PMs are excluded, and every group's net hours per day, so a screenshot carries the assumptions it was made with.</li>
         <li><strong>Hovering over a bar</strong> shows its availability, scheduled hours (with overtime), downtime (with linked hours), work order counts, the group average, the goal and any notes.</li>
-        <li><strong>The table under each chart</strong> has a row per asset and a column per month, then the Asset average column and the Average and Goal % rows. Editors can type a goal for a month in the Goal % row, and switch the table to Edit OT hours to enter overtime.</li>
+        <li><strong>The table under each chart</strong> has a row per asset and a column per month, then the Asset average column and the Monthly average and Goal % rows. Editors can type a goal for a month in the Goal % row, and switch the table to Edit OT hours to enter overtime.</li>
         <li><strong>Clicking a bar, or View data,</strong> opens the group's data. The Monthly summary lists every asset and month with its scheduled, overtime, direct, linked and total hours, work order counts and notes, and can be cut down to the rows that need attention (flagged, no work orders, or crossing a month). Its "vs group avg" column is in percentage points:</li>
       </ul>
       {% call std.equation("A14", "points from the group average are one hundred times the asset's availability minus the group average") %}
