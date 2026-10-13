@@ -2450,10 +2450,40 @@ def api_summary():
             "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
             "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
             "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
-            "pareto": service.failure_mechanism_pareto(asset_number),
+            "pareto": service.failure_mechanism_pareto(asset_number, **_pareto_window()),
             "trend": service.failure_mode_trend(asset_number),
         }
     )
+
+
+def _pareto_window() -> dict:
+    """The Pareto's From and To days from ``?pareto_from=`` / ``?pareto_to=``, as keyword arguments.
+
+    Either may be blank for no bound on that side. They are days as the analysis
+    page reads its dates, in UTC; see LifeDataService.failure_mechanism_pareto.
+    """
+
+    window = {}
+    for key, name, what in (("start", "pareto_from", "From"), ("end", "pareto_to", "To")):
+        value = (request.values.get(name) or "").strip()
+        if not value:
+            window[key] = None
+            continue
+        try:
+            window[key] = date.fromisoformat(value)
+        except ValueError:
+            raise LifeDataApiError(f"The Pareto's {what} date must be a date in the form YYYY-MM-DD.", status_code=400) from None
+    return window
+
+
+@app.route("/life-data-analysis/api/pareto")
+@life_data_api
+def api_pareto():
+    """The asset's failure mechanism Pareto, narrowed to the From and To dates if given."""
+
+    service = _service_or_api_error()
+    asset_number = _required_asset()
+    return jsonify({"pareto": service.failure_mechanism_pareto(asset_number, **_pareto_window())})
 
 
 def _risk_window_weeks() -> float:

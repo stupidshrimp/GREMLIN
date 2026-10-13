@@ -114,6 +114,21 @@
         <input type="checkbox" id="lda-pareto-toggle">
         Show failure count instead of downtime hours
       </label>
+      <!-- Date filter: charts only the failures whose work order date falls in the
+           range. Blank on either side means no bound there. -->
+      <div class="lda-trend-controls" id="lda-pareto-dates">
+        <div class="lda-field">
+          <label for="lda-pareto-from">From</label>
+          <input type="date" id="lda-pareto-from">
+        </div>
+        <div class="lda-field">
+          <label for="lda-pareto-to">To</label>
+          <input type="date" id="lda-pareto-to">
+        </div>
+        <button type="button" class="btn-secondary" id="lda-pareto-reset">All dates</button>
+      </div>
+      <p class="lda-hint" id="lda-pareto-dates-hint">Leave both dates blank to chart every included failure. With a date
+         set, only failures whose work order date (completed, else start, else created) falls in the range are counted.</p>
       <div class="lda-chart-wrap">
         <canvas id="lda-pareto-chart" class="lda-canvas" height="320"></canvas>
       </div>

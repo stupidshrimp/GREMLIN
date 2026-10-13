@@ -2301,12 +2301,42 @@ class LifeDataService:
             ).fetchone()
         return str(row["asset_number"]) if row else None
 
-    def failure_mechanism_pareto(self, asset_number: str) -> list[dict[str, Any]]:
-        """Return included failure counts and downtime by failure mechanism for the asset summary Pareto chart."""
+    def failure_mechanism_pareto(
+        self, asset_number: str, *, start: date | None = None, end: date | None = None
+    ) -> list[dict[str, Any]]:
+        """Return included failure counts and downtime by failure mechanism for the asset summary Pareto chart.
 
+        ``start`` and ``end`` narrow it to the failures whose work-order date falls
+        on or between those days, either one None for no bound on that side. The
+        date is the one :meth:`failure_mode_trend` buckets by (completed, else
+        start, else created), read in UTC like the rest of the analysis page. With
+        either bound set, a failure with no usable date is left out, since it
+        cannot be placed in the range.
+        """
+
+        if start is not None and end is not None and start > end:
+            raise ValueError("The Pareto's From date can't be later than its To date.")
+        # gremlin_sort_datetime parses the stored text the way the analysis code
+        # does and returns a fixed-width UTC string, so its first ten characters are
+        # the day and compare as one; an unreadable or blank date is NULL and fails
+        # either comparison.
+        wo_day = (
+            "substr(gremlin_sort_datetime(COALESCE("
+            "NULLIF(TRIM(m.completed_date_final), ''), "
+            "NULLIF(TRIM(m.start_date_final), ''), "
+            "NULLIF(TRIM(m.created_date_final), ''))), 1, 10)"
+        )
+        date_filter = ""
+        params: dict[str, Any] = {"asset_number": asset_number}
+        if start is not None:
+            date_filter += f" AND {wo_day} >= :start"
+            params["start"] = start.isoformat()
+        if end is not None:
+            date_filter += f" AND {wo_day} <= :end"
+            params["end"] = end.isoformat()
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH current_disp AS (
                     SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
                 )
@@ -2323,11 +2353,11 @@ class LifeDataService:
                 LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
                 WHERE m.asset_number = :asset_number
                   AND d.disposition_category = 'INCLUDED_FAILURE'
-                  AND d.failure_mechanism_id IS NOT NULL
+                  AND d.failure_mechanism_id IS NOT NULL{date_filter}
                 GROUP BY d.failure_mode_id, d.failure_mechanism_id, fmech.failure_mechanism_name, fm.failure_mode_name
                 ORDER BY downtime_hours DESC, failure_count DESC, failure_mechanism_name
                 """,
-                {"asset_number": asset_number},
+                params,
             ).fetchall()
         total = sum(float(row["downtime_hours"] or 0) for row in rows) or 1.0
         cumulative = 0.0

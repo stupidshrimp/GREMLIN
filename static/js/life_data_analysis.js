@@ -85,6 +85,13 @@
     // saved on this asset, which the tour picks its Weibull example from.
     rankings: [],
     paretoMetric: "downtime_hours",
+    // Inclusive day bounds ("YYYY-MM-DD") for the Pareto, applied server-side by
+    // work order date; null means no bound on that side. Kept across a change of
+    // asset, so several assets can be compared over the same dates. `paretoToken`
+    // is taken by both requests that draw the Pareto (the summary and the pareto
+    // call), so a response for older dates cannot land on top of newer ones.
+    paretoRange: { from: null, to: null },
+    paretoToken: 0,
     // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
     // Trend panel. `trend` is the latest payload returned alongside the summary;
     // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
@@ -835,16 +842,22 @@
     // The summary carries the risk list too, so it takes a risk token: a weeks change
     // made while it is in flight asks again, and the older list must not land last.
     const riskToken = ++state.riskToken;
+    // The same for the Pareto's dates.
+    const paretoToken = ++state.paretoToken;
     try {
-      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
+      const data = await getJson(
+        `${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}${paretoRangeQuery()}`
+      );
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
       state.rankings = data.rankings || [];
       renderRankings(state.rankings);
       if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
-      state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
-      drawPareto();
+      if (paretoToken === state.paretoToken) {
+        state.paretoRows = data.pareto || [];
+        drawPareto();
+      }
       // The trend summary cards and chart share the same filtered dataset as the
       // Pareto, so refresh them here too (this fires on asset selection and after
       // every disposition change, keeping the cards in sync with the filters).
@@ -987,6 +1000,50 @@
   }
 
   // ---- Pareto chart ---------------------------------------------------------
+  // The Pareto's From/To dates as query parameters, only the bounds that are set.
+  function paretoRangeQuery() {
+    const { from, to } = state.paretoRange;
+    return (from ? `&pareto_from=${from}` : "") + (to ? `&pareto_to=${to}` : "");
+  }
+
+  // Apply the From/To date inputs and fetch the Pareto for them. Bounds are kept
+  // ordered (from <= to) by swapping when the user picks an inverted range, as the
+  // trend's month range does.
+  function onParetoRangeChange() {
+    const fromInput = $("lda-pareto-from");
+    const toInput = $("lda-pareto-to");
+    let from = fromInput.value || null;
+    let to = toInput.value || null;
+    if (from && to && from > to) {
+      [from, to] = [to, from];
+      fromInput.value = from;
+      toInput.value = to;
+    }
+    if (from === state.paretoRange.from && to === state.paretoRange.to) return;
+    state.paretoRange = { from, to };
+    refreshPareto();
+  }
+
+  function resetParetoRange() {
+    $("lda-pareto-from").value = "";
+    $("lda-pareto-to").value = "";
+    onParetoRangeChange();
+  }
+
+  async function refreshPareto() {
+    if (!state.selectedAsset) return;
+    const asset = state.selectedAsset;
+    const token = ++state.paretoToken;
+    try {
+      const data = await getJson(`${API}/pareto?asset=${encodeURIComponent(asset)}${paretoRangeQuery()}`);
+      if (token !== state.paretoToken || state.selectedAsset !== asset) return;
+      state.paretoRows = data.pareto || [];
+      drawPareto();
+    } catch (err) {
+      if (token === state.paretoToken) showBanner(err.message, "error");
+    }
+  }
+
   // Sort by the active metric and recompute the cumulative percentage for it, so
   // the "failure count" view is a real count Pareto rather than the downtime
   // ordering/cumulative returned by failure_mechanism_pareto().
@@ -1016,6 +1073,13 @@
     // ones instead of renormalizing to just the displayed subset.
     const rows = allRows.slice(0, PARETO_MAX_BARS);
     empty.hidden = allRows.length > 0;
+    const { from, to } = state.paretoRange;
+    empty.textContent =
+      from || to
+        ? `No included failures with a work order date ${
+            from && to ? `from ${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`
+          }.`
+        : "No included failure mechanisms to chart yet.";
     const metric = state.paretoMetric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
@@ -6636,7 +6700,8 @@
       title: "Failure mechanism Pareto",
       body: () =>
         "Each bar is a failure mechanism, largest first by downtime hours; tick the box to rank by " +
-        "failure count instead. The line is the running share of the total. Click a bar to " +
+        "failure count instead. The line is the running share of the total. From and To narrow it to " +
+        "the failures whose work order date falls between them. Click a bar to " +
         (PARETO_CLICK_TOUR_TEXT[state.analysisType] ||
           (CAN_EDIT ? "run a Weibull fit on it." : "open the Weibull fit last saved for it.")),
     },
@@ -7460,6 +7525,10 @@
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
     });
+    // Pareto date filter.
+    $("lda-pareto-from").addEventListener("change", onParetoRangeChange);
+    $("lda-pareto-to").addEventListener("change", onParetoRangeChange);
+    $("lda-pareto-reset").addEventListener("click", resetParetoRange);
     const riskWeeksBox = $("lda-risk-weeks");
     if (riskWeeksBox) riskWeeksBox.addEventListener("change", onRiskWeeksChange);
     const typeSelect = $("lda-analysis-type");
