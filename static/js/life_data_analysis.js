@@ -92,9 +92,10 @@
     // cutoff. Kept across a change of asset, so assets can be compared over the
     // same dates.
     dateRange: { from: null, to: null },
-    // Today on the plant's calendar, as the summary last reported it: the day a
-    // Weibull run judges a cutoff against, which this browser's own can differ from.
-    plantToday: null,
+    // The zone a Weibull run keeps the plant's calendar in, from the summary: the
+    // plant's today is worked out from it when needed, since this browser's own
+    // day can differ from the plant's and a day stored earlier goes stale.
+    plantTimeZone: null,
     // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
     // Trend panel. `trend` is the latest payload returned alongside the summary;
     // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
@@ -855,7 +856,7 @@
       if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
-      state.plantToday = data.plant_today || null;
+      state.plantTimeZone = data.plant_time_zone || null;
       drawPareto();
       // The trend summary cards and chart share the same filtered dataset as the
       // Pareto, so refresh them here too (this fires on asset selection and after
@@ -1009,10 +1010,10 @@
     return params;
   }
 
-  // Today as a Weibull run counts it: the plant's day from the summary, or this
-  // browser's own before a summary has said.
+  // Today as a Weibull run counts it: the plant's day right now, or this browser's
+  // own before a summary has named the plant's zone.
   function plantToday() {
-    if (state.plantToday) return state.plantToday;
+    if (state.plantTimeZone) return plantTimeText(new Date().toISOString(), state.plantTimeZone).slice(0, 10);
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   }

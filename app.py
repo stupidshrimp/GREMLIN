@@ -2452,9 +2452,9 @@ def api_summary():
             "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
             "pareto": service.failure_mechanism_pareto(asset_number, **_date_window()),
             "trend": service.failure_mode_trend(asset_number, **_date_window()),
-            # What a Weibull run counts as today, which the page needs to decide
-            # whether the To date can go to it as a cutoff.
-            "plant_today": service.plant_today(),
+            # The zone a Weibull run counts days in, from which the page works out
+            # the plant's today to decide whether the To date can go to it as a cutoff.
+            "plant_time_zone": service.plant_time_zone_name(),
         }
     )
 
