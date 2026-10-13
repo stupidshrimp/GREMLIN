@@ -1012,9 +1012,13 @@
   }
 
   // The dates as a Weibull run's window ({ start, cutoff } as YYYY-MM-DD, either
-  // blank), or null when they set neither. A run refuses a cutoff later than
-  // today, so a To date of today or later is left off and the run ends where it
-  // does with no cutoff, at the last import.
+  // blank), or null when they set neither. A To date of today or later is left
+  // off on purpose. A cutoff of today censors the current life at the moment of
+  // the run, crediting it with hours the database has heard nothing about yet;
+  // with no cutoff the run ends at the last completed import, which is never
+  // before the group's latest event, so the fit still holds every failure the
+  // Pareto counts. A later date would be refused, and this browser's calendar can
+  // be a day ahead of the plant's, so only a day before today is sent.
   function weibullDateWindow() {
     const { from, to } = state.dateRange;
     const cutoff = to && to < localToday() ? to : "";
@@ -4596,7 +4600,7 @@
             "Leave both dates blank to use all of the asset's history and censor the current life at the last " +
             "completed Limble import. Dates are days on the plant's clock: the start counts from midnight, and the " +
             "cutoff runs to the end of its day. They start out as the From and To dates on the Pareto; a To date " +
-            "of today or later is left blank, since the cutoff can't be later than today.",
+            "of today or later is left blank, so the current life ends at the last import rather than now.",
         }),
         modalError,
       ],
