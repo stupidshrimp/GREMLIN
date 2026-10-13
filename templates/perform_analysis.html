@@ -114,6 +114,23 @@
         <input type="checkbox" id="lda-pareto-toggle">
         Show failure count instead of downtime hours
       </label>
+      <!-- Date filter for the Pareto and every analysis run from it. Blank on
+           either side means no bound there. -->
+      <div class="lda-trend-controls" id="lda-dates">
+        <div class="lda-field">
+          <label for="lda-date-from">From</label>
+          <input type="date" id="lda-date-from">
+        </div>
+        <div class="lda-field">
+          <label for="lda-date-to">To</label>
+          <input type="date" id="lda-date-to">
+        </div>
+        <button type="button" class="btn-secondary" id="lda-date-reset">All dates</button>
+      </div>
+      <p class="lda-hint" id="lda-dates-hint">Leave both dates blank to use every included failure. With a date set, the
+         Pareto and the analysis below count only failures whose work order date (completed, else start, else created)
+         falls in the range.{% if auth_can_edit %} A Weibull fit is run with them as its start and cutoff dates.{% else %}
+         A saved Weibull fit shows the dates it was run with.{% endif %}</p>
       <div class="lda-chart-wrap">
         <canvas id="lda-pareto-chart" class="lda-canvas" height="320"></canvas>
       </div>

@@ -2450,10 +2450,34 @@ def api_summary():
             "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
             "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
             "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
-            "pareto": service.failure_mechanism_pareto(asset_number),
-            "trend": service.failure_mode_trend(asset_number),
+            "pareto": service.failure_mechanism_pareto(asset_number, **_date_window()),
+            "trend": service.failure_mode_trend(asset_number, **_date_window()),
+            # The zone a Weibull run counts days in, from which the page works out
+            # the plant's today to decide whether the To date can go to it as a cutoff.
+            "plant_time_zone": service.plant_time_zone_name(),
         }
     )
+
+
+def _date_window() -> dict:
+    """Perform an Analysis's From and To days from ``?date_from=`` / ``?date_to=``, as keyword arguments.
+
+    Either may be blank for no bound on that side. The Pareto and the trend,
+    downtime, PM and repeat analyses all take them, as days read in UTC; see
+    LifeDataService._work_order_date_window.
+    """
+
+    window = {}
+    for key, name, what in (("start", "date_from", "From"), ("end", "date_to", "To")):
+        value = (request.values.get(name) or "").strip()
+        if not value:
+            window[key] = None
+            continue
+        try:
+            window[key] = date.fromisoformat(value)
+        except ValueError:
+            raise LifeDataApiError(f"The {what} date must be a date in the form YYYY-MM-DD.", status_code=400) from None
+    return window
 
 
 def _risk_window_weeks() -> float:
@@ -2780,6 +2804,7 @@ def api_pm_effectiveness():
                 asset_number,
                 failure_mechanism_id=failure_mechanism_id,
                 failure_mode_id=failure_mode_id,
+                **_date_window(),
             )
         }
     )
@@ -2802,7 +2827,7 @@ def api_repeat_fixes():
                 f"The repeat window must be more than 0 and at most {REPEAT_FIX_MAX_WINDOW_HOURS:g} scheduled hours.",
                 status_code=400,
             )
-    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours)})
+    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours, **_date_window())})
 
 
 @app.route("/life-data-analysis/api/downtime-drivers")
@@ -2833,6 +2858,7 @@ def api_downtime_drivers():
                 asset_number,
                 failure_mechanism_id=failure_mechanism_id,
                 failure_mode_id=failure_mode_id,
+                **_date_window(),
             )
         }
     )

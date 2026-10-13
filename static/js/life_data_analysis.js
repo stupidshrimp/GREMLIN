@@ -85,6 +85,17 @@
     // saved on this asset, which the tour picks its Weibull example from.
     rankings: [],
     paretoMetric: "downtime_hours",
+    // The From and To days ("YYYY-MM-DD") on the Pareto panel; null means no bound
+    // on that side. The server applies them by work order date to the Pareto and
+    // to the trend, downtime, PM and repeat analyses, so a bar and the analysis it
+    // opens count the same records; a Weibull run takes them as its start and
+    // cutoff. Kept across a change of asset, so assets can be compared over the
+    // same dates.
+    dateRange: { from: null, to: null },
+    // The zone a Weibull run keeps the plant's calendar in, from the summary: the
+    // plant's today is worked out from it when needed, since this browser's own
+    // day can differ from the plant's and a day stored earlier goes stale.
+    plantTimeZone: null,
     // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
     // Trend panel. `trend` is the latest payload returned alongside the summary;
     // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
@@ -836,7 +847,8 @@
     // made while it is in flight asks again, and the older list must not land last.
     const riskToken = ++state.riskToken;
     try {
-      const data = await getJson(`${API}/summary?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
+      const params = withDateRange(new URLSearchParams({ asset, weeks: String(riskWeeks()) }));
+      const data = await getJson(`${API}/summary?${params.toString()}`);
       if (token !== state.summaryToken || state.selectedAsset !== asset) return;
       renderSummary(data.summary || {});
       state.rankings = data.rankings || [];
@@ -844,6 +856,7 @@
       if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
+      state.plantTimeZone = data.plant_time_zone || null;
       drawPareto();
       // The trend summary cards and chart share the same filtered dataset as the
       // Pareto, so refresh them here too (this fires on asset selection and after
@@ -986,6 +999,94 @@
     }
   }
 
+  // ---- From/To dates --------------------------------------------------------
+  // `params` with the bounds of the From/To dates that are set, for every request
+  // that takes them: the summary (Pareto and trend) and the downtime, PM and
+  // repeat analyses.
+  function withDateRange(params) {
+    const { from, to } = state.dateRange;
+    if (from) params.set("date_from", from);
+    if (to) params.set("date_to", to);
+    return params;
+  }
+
+  // Today as a Weibull run counts it: the plant's day right now, or this browser's
+  // own before a summary has named the plant's zone.
+  function plantToday() {
+    if (state.plantTimeZone) return plantTimeText(new Date().toISOString(), state.plantTimeZone).slice(0, 10);
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+
+  // The dates as a Weibull run's window ({ start, cutoff } as YYYY-MM-DD, either
+  // blank), or null when they set neither. A To date of today or later is left
+  // off on purpose. A cutoff of today censors the current life at the moment of
+  // the run, crediting it with hours the database has heard nothing about yet;
+  // with no cutoff the run ends at the last completed import, which is never
+  // before the group's latest event, so the fit still holds every failure the
+  // Pareto counts. A later date would be refused. Today is the plant's, since
+  // this browser's calendar can be a day either side of it.
+  function weibullDateWindow() {
+    const { from, to } = state.dateRange;
+    const cutoff = to && to < plantToday() ? to : "";
+    return from || cutoff ? { start: from || "", cutoff } : null;
+  }
+
+  // A date box reports a change as each part of a date being typed completes one
+  // (a year typed as 2024 passes through 0002, 0020 and 0202), so the page waits
+  // for the typing to settle rather than re-running every analysis on each.
+  let dateRangeDebounce = null;
+  function onDateRangeChange() {
+    if (dateRangeDebounce) clearTimeout(dateRangeDebounce);
+    dateRangeDebounce = setTimeout(applyDateRange, 400);
+  }
+
+  // Apply the From/To date inputs to the Pareto and every analysis. Bounds are kept
+  // ordered (from <= to) by swapping when the user picks an inverted range, as the
+  // trend's month range does.
+  function applyDateRange() {
+    dateRangeDebounce = null;
+    const fromInput = $("lda-date-from");
+    const toInput = $("lda-date-to");
+    let from = fromInput.value || null;
+    let to = toInput.value || null;
+    if (from && to && from > to) {
+      [from, to] = [to, from];
+      fromInput.value = from;
+      toInput.value = to;
+    }
+    if (from === state.dateRange.from && to === state.dateRange.to) return;
+    state.dateRange = { from, to };
+    // The trend's and the PM chart's month ranges were bounded by the data the old
+    // dates gave; open them back out to whatever the new dates give.
+    state.trendRange = { from: null, to: null };
+    state.trendSelectedMonth = null;
+    state.pmRange = { from: null, to: null };
+    // The group last fitted is run over the new dates the next time it runs: now,
+    // if its fit is on screen, as a disposition change re-runs it, or on coming
+    // back to Weibull. A viewer only opens saved fits, each over the dates it was
+    // run with.
+    const rerunWeibull =
+      CAN_EDIT && Boolean(state.selectedAsset) && state.analysisType === ANALYSIS_TYPES.WEIBULL &&
+      Boolean(state.latestResult && state.latestResultGroup);
+    if (CAN_EDIT && state.latestResultGroup) state.latestResultWindow = weibullDateWindow();
+    // The Pareto and trend come with the summary, which also re-reads the downtime,
+    // PM and repeat analyses when one is showing.
+    refreshSummary();
+    if (rerunWeibull) {
+      runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis over the new dates…", {
+        window: state.latestResultWindow,
+      });
+    }
+  }
+
+  function resetDateRange() {
+    if (dateRangeDebounce) clearTimeout(dateRangeDebounce);
+    $("lda-date-from").value = "";
+    $("lda-date-to").value = "";
+    applyDateRange();
+  }
+
   // ---- Pareto chart ---------------------------------------------------------
   // Sort by the active metric and recompute the cumulative percentage for it, so
   // the "failure count" view is a real count Pareto rather than the downtime
@@ -1016,9 +1117,19 @@
     // ones instead of renormalizing to just the displayed subset.
     const rows = allRows.slice(0, PARETO_MAX_BARS);
     empty.hidden = allRows.length > 0;
+    const { from, to } = state.dateRange;
+    empty.textContent =
+      from || to
+        ? `No included failures with a work order date ${
+            from && to ? `from ${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`
+          }.`
+        : "No included failure mechanisms to chart yet.";
     const metric = state.paretoMetric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
+    // The click handler is replaced below with one over the bars just drawn. With
+    // none to draw, drop the last one, whose bars are no longer on screen.
+    canvas.onclick = null;
     if (!rows.length) return;
 
     const left = 64; // room for the left value-axis labels + rotated title
@@ -1200,7 +1311,8 @@
     return undefined;
   }
 
-  // `options` goes on to runAnalysisForGroup.
+  // `options` goes on to runAnalysisForGroup. The fit is run over the From/To dates
+  // the bar was counted over, unless `options` names a window of its own.
   function runParetoMechanism(row, options) {
     if (row.failure_mode_id == null || row.failure_mechanism_id == null) {
       showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
@@ -1214,7 +1326,7 @@
         failure_mechanism_id: row.failure_mechanism_id,
       },
       "Running clicked mechanism Weibull analysis…",
-      options
+      { window: weibullDateWindow(), ...options }
     );
   }
 
@@ -1327,10 +1439,12 @@
         failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
       };
       // Coming back to the group whose fit was last on screen runs it over the
-      // window that fit had, so a fit over entered dates isn't replaced by one over
-      // all history just for looking at another analysis type in between.
+      // window that fit had (or the From/To dates, if they changed since), so a fit
+      // over entered dates isn't replaced by one over all history just for looking
+      // at another analysis type in between. Another group runs over the From/To
+      // dates, as its Pareto bar would.
       runAnalysisForGroup(group, "Recomputing Weibull analysis for the carried-over selection…", {
-        window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null,
+        window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : weibullDateWindow(),
       });
       return true;
     }
@@ -2095,7 +2209,7 @@
       state.pmSelection !== sel;
     beginLoading("Evaluating PM effectiveness…");
     try {
-      const params = new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id });
+      const params = withDateRange(new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id }));
       if (sel.failure_mode_id != null) params.set("failure_mode_id", sel.failure_mode_id);
       const data = await getJson(`${API}/pm-effectiveness?${params.toString()}`);
       if (isStale()) return;
@@ -2436,7 +2550,7 @@
       state.analysisType !== ANALYSIS_TYPES.REPEAT;
     beginLoading("Finding repeat failures…");
     try {
-      const params = new URLSearchParams({ asset, window_hours: String(windowHours) });
+      const params = withDateRange(new URLSearchParams({ asset, window_hours: String(windowHours) }));
       const data = await getJson(`${API}/repeat-fixes?${params.toString()}`);
       if (isStale()) return;
       state.repeatData = data.repeat_fixes || null;
@@ -3925,7 +4039,7 @@
       state.downtimeSelection !== sel;
     beginLoading("Analyzing downtime drivers…");
     try {
-      const params = new URLSearchParams({ asset, failure_mode_id: sel.failure_mode_id });
+      const params = withDateRange(new URLSearchParams({ asset, failure_mode_id: sel.failure_mode_id }));
       if (sel.failure_mechanism_id != null) params.set("failure_mechanism_id", sel.failure_mechanism_id);
       const data = await getJson(`${API}/downtime-drivers?${params.toString()}`);
       if (isStale()) return;
@@ -4463,6 +4577,13 @@
     // start counts from that day's first minute and the cutoff to its last.
     const startInput = el("input", { class: "lda-input", type: "date", id: "lda-window-start" });
     const cutoffInput = el("input", { class: "lda-input", type: "date", id: "lda-window-cutoff" });
+    // Filled in from the From/To dates on the Pareto, which a bar click would run
+    // over, and left editable.
+    const dateWindow = weibullDateWindow();
+    if (dateWindow) {
+      startInput.value = dateWindow.start;
+      cutoffInput.value = dateWindow.cutoff;
+    }
     const windowFields = el("div", { class: "lda-window-fields" }, [
       el("div", { class: "lda-field" }, [el("label", { for: "lda-window-start", text: "Analysis start date (optional)" }), startInput]),
       el("div", { class: "lda-field" }, [el("label", { for: "lda-window-cutoff", text: "Analysis cutoff date (optional)" }), cutoffInput]),
@@ -4485,7 +4606,8 @@
           text:
             "Leave both dates blank to use all of the asset's history and censor the current life at the last " +
             "completed Limble import. Dates are days on the plant's clock: the start counts from midnight, and the " +
-            "cutoff runs to the end of its day.",
+            "cutoff runs to the end of its day. They start out as the From and To dates on the Pareto; a To date " +
+            "of today or later is left blank, so the current life ends at the last import rather than now.",
         }),
         modalError,
       ],
@@ -6636,7 +6758,8 @@
       title: "Failure mechanism Pareto",
       body: () =>
         "Each bar is a failure mechanism, largest first by downtime hours; tick the box to rank by " +
-        "failure count instead. The line is the running share of the total. Click a bar to " +
+        "failure count instead. The line is the running share of the total. From and To narrow it, and " +
+        "the analysis below, to the failures whose work order date falls between them. Click a bar to " +
         (PARETO_CLICK_TOUR_TEXT[state.analysisType] ||
           (CAN_EDIT ? "run a Weibull fit on it." : "open the Weibull fit last saved for it.")),
     },
@@ -7460,6 +7583,10 @@
       state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
       drawPareto();
     });
+    // From/To dates, for the Pareto and every analysis.
+    $("lda-date-from").addEventListener("change", onDateRangeChange);
+    $("lda-date-to").addEventListener("change", onDateRangeChange);
+    $("lda-date-reset").addEventListener("click", resetDateRange);
     const riskWeeksBox = $("lda-risk-weeks");
     if (riskWeeksBox) riskWeeksBox.addEventListener("change", onRiskWeeksChange);
     const typeSelect = $("lda-analysis-type");
