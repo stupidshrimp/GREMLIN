@@ -2450,21 +2450,22 @@ def api_summary():
             "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
             "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
             "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
-            "pareto": service.failure_mechanism_pareto(asset_number, **_pareto_window()),
-            "trend": service.failure_mode_trend(asset_number),
+            "pareto": service.failure_mechanism_pareto(asset_number, **_date_window()),
+            "trend": service.failure_mode_trend(asset_number, **_date_window()),
         }
     )
 
 
-def _pareto_window() -> dict:
-    """The Pareto's From and To days from ``?pareto_from=`` / ``?pareto_to=``, as keyword arguments.
+def _date_window() -> dict:
+    """Perform an Analysis's From and To days from ``?date_from=`` / ``?date_to=``, as keyword arguments.
 
-    Either may be blank for no bound on that side. They are days as the analysis
-    page reads its dates, in UTC; see LifeDataService.failure_mechanism_pareto.
+    Either may be blank for no bound on that side. The Pareto and the trend,
+    downtime, PM and repeat analyses all take them, as days read in UTC; see
+    LifeDataService._work_order_date_window.
     """
 
     window = {}
-    for key, name, what in (("start", "pareto_from", "From"), ("end", "pareto_to", "To")):
+    for key, name, what in (("start", "date_from", "From"), ("end", "date_to", "To")):
         value = (request.values.get(name) or "").strip()
         if not value:
             window[key] = None
@@ -2472,18 +2473,8 @@ def _pareto_window() -> dict:
         try:
             window[key] = date.fromisoformat(value)
         except ValueError:
-            raise LifeDataApiError(f"The Pareto's {what} date must be a date in the form YYYY-MM-DD.", status_code=400) from None
+            raise LifeDataApiError(f"The {what} date must be a date in the form YYYY-MM-DD.", status_code=400) from None
     return window
-
-
-@app.route("/life-data-analysis/api/pareto")
-@life_data_api
-def api_pareto():
-    """The asset's failure mechanism Pareto, narrowed to the From and To dates if given."""
-
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    return jsonify({"pareto": service.failure_mechanism_pareto(asset_number, **_pareto_window())})
 
 
 def _risk_window_weeks() -> float:
@@ -2810,6 +2801,7 @@ def api_pm_effectiveness():
                 asset_number,
                 failure_mechanism_id=failure_mechanism_id,
                 failure_mode_id=failure_mode_id,
+                **_date_window(),
             )
         }
     )
@@ -2832,7 +2824,7 @@ def api_repeat_fixes():
                 f"The repeat window must be more than 0 and at most {REPEAT_FIX_MAX_WINDOW_HOURS:g} scheduled hours.",
                 status_code=400,
             )
-    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours)})
+    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours, **_date_window())})
 
 
 @app.route("/life-data-analysis/api/downtime-drivers")
@@ -2863,6 +2855,7 @@ def api_downtime_drivers():
                 asset_number,
                 failure_mechanism_id=failure_mechanism_id,
                 failure_mode_id=failure_mode_id,
+                **_date_window(),
             )
         }
     )

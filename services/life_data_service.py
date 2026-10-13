@@ -79,6 +79,18 @@ DATE_ONLY_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y")
 REPEAT_FIX_DEFAULT_WINDOW_HOURS = 24.0
 REPEAT_FIX_MAX_WINDOW_HOURS = 720.0
 REPEAT_FIX_MIN_INTERVALS = 5
+# The day of a mapped record (``m``) that Perform an Analysis's From and To dates
+# are compared with: its work-order date -- completed, else start, else created,
+# the date the Pareto, trend and downtime analyses date it by -- read in UTC.
+# gremlin_sort_datetime parses the stored text the way the analysis code does and
+# returns a fixed-width UTC string, so its first ten characters are the day and
+# compare as one; a blank or unreadable date is NULL and fails any comparison.
+WORK_ORDER_DAY_SQL = (
+    "substr(gremlin_sort_datetime(COALESCE("
+    "NULLIF(TRIM(m.completed_date_final), ''), "
+    "NULLIF(TRIM(m.start_date_final), ''), "
+    "NULLIF(TRIM(m.created_date_final), ''))), 1, 10)"
+)
 
 # The interpretation-summary row for the probability plot's R² (REL-WBL-REQ-001
 # VV-070, VV-074), by which a saved summary that predates it is recognised.
@@ -2301,39 +2313,42 @@ class LifeDataService:
             ).fetchone()
         return str(row["asset_number"]) if row else None
 
+    @staticmethod
+    def _work_order_date_window(start: date | None, end: date | None) -> tuple[str, dict[str, str]]:
+        """SQL keeping the records dated on or between ``start`` and ``end``, and its parameters.
+
+        The From and To dates on Perform an Analysis, which the Pareto and the trend,
+        downtime, PM and repeat analyses all take, so a Pareto bar and the analysis
+        it opens count the same records. Either may be None for no bound on that
+        side; with neither, the clause is empty. The clause is ``AND ...`` on ``m``
+        (mapped_cmms_record), to follow a WHERE. A record is dated by
+        WORK_ORDER_DAY_SQL, so with either bound set one with no usable date is left
+        out, since it cannot be placed in the range.
+        """
+
+        if start is not None and end is not None and start > end:
+            raise ValueError("The From date can't be later than the To date.")
+        clause = ""
+        params: dict[str, str] = {}
+        if start is not None:
+            clause += f" AND {WORK_ORDER_DAY_SQL} >= :window_start"
+            params["window_start"] = start.isoformat()
+        if end is not None:
+            clause += f" AND {WORK_ORDER_DAY_SQL} <= :window_end"
+            params["window_end"] = end.isoformat()
+        return clause, params
+
     def failure_mechanism_pareto(
         self, asset_number: str, *, start: date | None = None, end: date | None = None
     ) -> list[dict[str, Any]]:
         """Return included failure counts and downtime by failure mechanism for the asset summary Pareto chart.
 
-        ``start`` and ``end`` narrow it to the failures whose work-order date falls
-        on or between those days, either one None for no bound on that side. The
-        date is the one :meth:`failure_mode_trend` buckets by (completed, else
-        start, else created), read in UTC like the rest of the analysis page. With
-        either bound set, a failure with no usable date is left out, since it
-        cannot be placed in the range.
+        ``start`` and ``end`` narrow it to the failures dated on or between those
+        days; see :meth:`_work_order_date_window`.
         """
 
-        if start is not None and end is not None and start > end:
-            raise ValueError("The Pareto's From date can't be later than its To date.")
-        # gremlin_sort_datetime parses the stored text the way the analysis code
-        # does and returns a fixed-width UTC string, so its first ten characters are
-        # the day and compare as one; an unreadable or blank date is NULL and fails
-        # either comparison.
-        wo_day = (
-            "substr(gremlin_sort_datetime(COALESCE("
-            "NULLIF(TRIM(m.completed_date_final), ''), "
-            "NULLIF(TRIM(m.start_date_final), ''), "
-            "NULLIF(TRIM(m.created_date_final), ''))), 1, 10)"
-        )
-        date_filter = ""
-        params: dict[str, Any] = {"asset_number": asset_number}
-        if start is not None:
-            date_filter += f" AND {wo_day} >= :start"
-            params["start"] = start.isoformat()
-        if end is not None:
-            date_filter += f" AND {wo_day} <= :end"
-            params["end"] = end.isoformat()
+        date_filter, date_params = self._work_order_date_window(start, end)
+        params: dict[str, Any] = {"asset_number": asset_number, **date_params}
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2451,12 +2466,15 @@ class LifeDataService:
                 summary["most_improved"] = self._trend_summary_entry(improved, int(improved["growth"]))
         return summary
 
-    def failure_mode_trend(self, asset_number: str) -> dict[str, Any]:
+    def failure_mode_trend(
+        self, asset_number: str, *, start: date | None = None, end: date | None = None
+    ) -> dict[str, Any]:
         """Monthly failure-mechanism occurrence trend for the Failure Mode Trend panel.
 
         Uses the same included-failure dataset, failure-mechanism field, work-order
         date, and downtime field as :meth:`failure_mechanism_pareto`, so the trend
-        stays consistent with the Pareto chart and any asset filter already applied.
+        stays consistent with the Pareto chart and any asset filter already applied,
+        and takes the same ``start`` and ``end`` dates (:meth:`_work_order_date_window`).
         Records are bucketed by the month of the work-order date (completed, else
         start, else created), and the returned month axis is continuous (zero-filled)
         so the trend line never skips a missing month.
@@ -2465,9 +2483,10 @@ class LifeDataService:
         months and is only computed when at least six months of data exist.
         """
 
+        date_filter, date_params = self._work_order_date_window(start, end)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH current_disp AS (
                     SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
                 )
@@ -2501,9 +2520,9 @@ class LifeDataService:
                 LEFT JOIN failure_mechanism fmech ON fmech.failure_mechanism_id = d.failure_mechanism_id
                 WHERE m.asset_number = :asset_number
                   AND d.disposition_category = 'INCLUDED_FAILURE'
-                  AND d.failure_mechanism_id IS NOT NULL
+                  AND d.failure_mechanism_id IS NOT NULL{date_filter}
                 """,
-                {"asset_number": asset_number},
+                {"asset_number": asset_number, **date_params},
             ).fetchall()
 
         mechanisms: dict[tuple[int, int], dict[str, Any]] = {}
@@ -2632,6 +2651,9 @@ class LifeDataService:
         asset_number: str,
         failure_mechanism_id: int,
         failure_mode_id: int | None = None,
+        *,
+        start: date | None = None,
+        end: date | None = None,
     ) -> dict[str, Any]:
         """Evaluate whether PMs are reducing failures for one failure mechanism.
 
@@ -2650,6 +2672,10 @@ class LifeDataService:
         from the PM record-class filter, failures from the current included-failure
         dispositions for the chosen mechanism, and the work-order date is the
         completed/start/created fallback already used across the dashboard.
+
+        ``start`` and ``end`` limit both the PMs and the failures to those dated on
+        or between them (:meth:`_work_order_date_window`), so a PM late in the range
+        whose next failure falls after it is counted as not followed by one.
         """
 
         # Match the dashboard's PM disposition dataset while respecting explicit
@@ -2677,6 +2703,7 @@ class LifeDataService:
             f"OR (m.is_completed = 1 AND {normalized_status} NOT LIKE '%incomplete%' "
             f"AND {normalized_status} NOT LIKE '%notcomplete%'))"
         )
+        date_filter, date_params = self._work_order_date_window(start, end)
         with self.connect() as conn:
             mechanism_row = conn.execute(
                 "SELECT failure_mechanism_name FROM failure_mechanism WHERE failure_mechanism_id = :id",
@@ -2707,12 +2734,12 @@ class LifeDataService:
                         NULLIF(TRIM(m.completed_date_final), ''),
                         NULLIF(TRIM(m.start_date_final), ''),
                         NULLIF(TRIM(m.created_date_final), '')
-                      ) IS NOT NULL
+                      ) IS NOT NULL{date_filter}
                 """,
-                {"asset_number": asset_number},
+                {"asset_number": asset_number, **date_params},
             ).fetchall()
             failure_rows = conn.execute(
-                """
+                f"""
                 WITH current_disp AS (
                     SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
                 )
@@ -2736,12 +2763,13 @@ class LifeDataService:
                   -- mode (the Pareto emits a row per mode/mechanism pair and the
                   -- client sends both ids); when a mode is given, match it so the
                   -- analysis matches exactly the selected Pareto row.
-                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id)
+                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id){date_filter}
                 """,
                 {
                     "asset_number": asset_number,
                     "failure_mechanism_id": failure_mechanism_id,
                     "failure_mode_id": failure_mode_id,
+                    **date_params,
                 },
             ).fetchall()
 
@@ -2826,7 +2854,14 @@ class LifeDataService:
             "has_pm_history": bool(pms),
         }
 
-    def repeat_fix_rate(self, asset_number: str, window_hours: float = REPEAT_FIX_DEFAULT_WINDOW_HOURS) -> dict[str, Any]:
+    def repeat_fix_rate(
+        self,
+        asset_number: str,
+        window_hours: float = REPEAT_FIX_DEFAULT_WINDOW_HOURS,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> dict[str, Any]:
         """How often a failure comes straight back after it was fixed, per mechanism.
 
         Reads the failures Weibull reads -- current INCLUDED_FAILURE dispositions with
@@ -2840,9 +2875,14 @@ class LifeDataService:
         a mechanism's first. A PM reset does not break the chain, since the question is
         whether the last repair held. This is report-only: nothing here changes which
         lives the Weibull fit uses.
+
+        ``start`` and ``end`` limit it to the failures dated on or between them
+        (:meth:`_work_order_date_window`), so a mechanism's first failure in the range
+        starts its chain there.
         """
 
         window = float(window_hours)
+        date_filter, date_params = self._work_order_date_window(start, end)
         with self.connect() as conn:
             schedule_id = self._schedule_class_id(conn, asset_number)
             schedule = conn.execute(
@@ -2851,7 +2891,7 @@ class LifeDataService:
             ).fetchone()
             zone, zone_name, zone_warning = self._plant_time_zone(conn)
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     d.failure_mode_id,
                     d.failure_mechanism_id,
@@ -2868,10 +2908,10 @@ class LifeDataService:
                 WHERE m.asset_number = :asset_number
                   AND d.disposition_category = 'INCLUDED_FAILURE'
                   AND d.include_in_weibull_candidate = 1
-                  AND d.failure_mechanism_id IS NOT NULL
+                  AND d.failure_mechanism_id IS NOT NULL{date_filter}
                 ORDER BY gremlin_sort_datetime(m.completed_date_final), m.mapped_record_id
                 """,
-                {"asset_number": asset_number},
+                {"asset_number": asset_number, **date_params},
             ).fetchall()
 
         hours_per_day = float(schedule["hours_per_day"])
@@ -3018,13 +3058,17 @@ class LifeDataService:
         asset_number: str,
         failure_mechanism_id: int | None = None,
         failure_mode_id: int | None = None,
+        *,
+        start: date | None = None,
+        end: date | None = None,
     ) -> dict[str, Any]:
         """Explain why a failure mechanism drives downtime, for the Downtime Driver panel.
 
         Uses the same included-failure dataset, failure-mechanism field, work-order
         date, and downtime field as :meth:`failure_mechanism_pareto` /
         :meth:`failure_mode_trend`, so the analysis stays consistent with the Pareto
-        chart and any asset/disposition filter already applied. ``failure_mechanism_id``
+        chart and any asset/disposition filter already applied, and takes the same
+        ``start`` and ``end`` dates (:meth:`_work_order_date_window`). ``failure_mechanism_id``
         may be ``None`` to aggregate every mechanism under ``failure_mode_id`` (the
         mode-level "all mechanisms" selection); otherwise the analysis is restricted to
         the single mechanism (matched within the given mode when one is supplied).
@@ -3050,9 +3094,10 @@ class LifeDataService:
             ("24+ hr", 24.0, None),
         )
 
+        date_filter, date_params = self._work_order_date_window(start, end)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH current_disp AS (
                     SELECT * FROM event_disposition WHERE is_current = 1 AND include_in_weibull_candidate = 1
                 )
@@ -3091,12 +3136,13 @@ class LifeDataService:
                   -- the mode. The same mechanism id can appear under more than one
                   -- mode, so match the mode too when one is supplied.
                   AND (:failure_mechanism_id IS NULL OR d.failure_mechanism_id = :failure_mechanism_id)
-                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id)
+                  AND (:failure_mode_id IS NULL OR d.failure_mode_id = :failure_mode_id){date_filter}
                 """,
                 {
                     "asset_number": asset_number,
                     "failure_mechanism_id": failure_mechanism_id,
                     "failure_mode_id": failure_mode_id,
+                    **date_params,
                 },
             ).fetchall()
 

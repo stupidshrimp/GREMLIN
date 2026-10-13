@@ -432,7 +432,11 @@ def test_a_refused_rerun_keeps_the_fit_unless_the_server_removed_it():
 def test_the_window_survives_a_switch_to_another_analysis_type():
     carried = SCRIPT[SCRIPT.index("function applyCarriedSelection"):SCRIPT.index("function applyAnalysisTypeUI")]
     weibull = carried[carried.index("type === ANALYSIS_TYPES.WEIBULL"):]
-    assert "window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : null" in weibull
+    # Another group runs over the From/To dates, as its Pareto bar would.
+    assert (
+        "window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : weibullDateWindow()"
+        in weibull
+    )
     # It belongs to one asset's fit, so a new asset drops it.
     asset_change = SCRIPT[SCRIPT.index("function evaluateAssetSelection"):SCRIPT.index("function clearWorkspace")]
     assert "state.latestResultGroup = null;" in asset_change
