@@ -92,6 +92,9 @@
     // cutoff. Kept across a change of asset, so assets can be compared over the
     // same dates.
     dateRange: { from: null, to: null },
+    // Today on the plant's calendar, as the summary last reported it: the day a
+    // Weibull run judges a cutoff against, which this browser's own can differ from.
+    plantToday: null,
     // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
     // Trend panel. `trend` is the latest payload returned alongside the summary;
     // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
@@ -852,6 +855,7 @@
       if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
       state.paretoRows = data.pareto || [];
       state.trend = data.trend || null;
+      state.plantToday = data.plant_today || null;
       drawPareto();
       // The trend summary cards and chart share the same filtered dataset as the
       // Pareto, so refresh them here too (this fires on asset selection and after
@@ -1005,8 +1009,10 @@
     return params;
   }
 
-  // Today on this browser's calendar, as YYYY-MM-DD.
-  function localToday() {
+  // Today as a Weibull run counts it: the plant's day from the summary, or this
+  // browser's own before a summary has said.
+  function plantToday() {
+    if (state.plantToday) return state.plantToday;
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   }
@@ -1017,11 +1023,11 @@
   // the run, crediting it with hours the database has heard nothing about yet;
   // with no cutoff the run ends at the last completed import, which is never
   // before the group's latest event, so the fit still holds every failure the
-  // Pareto counts. A later date would be refused, and this browser's calendar can
-  // be a day ahead of the plant's, so only a day before today is sent.
+  // Pareto counts. A later date would be refused. Today is the plant's, since
+  // this browser's calendar can be a day either side of it.
   function weibullDateWindow() {
     const { from, to } = state.dateRange;
-    const cutoff = to && to < localToday() ? to : "";
+    const cutoff = to && to < plantToday() ? to : "";
     return from || cutoff ? { start: from || "", cutoff } : null;
   }
 

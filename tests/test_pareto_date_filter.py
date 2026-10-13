@@ -12,8 +12,9 @@ picks them up.
 """
 
 import importlib
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -223,6 +224,16 @@ def test_repeat_fix_rate_starts_each_chain_inside_the_dates(tmp_path):
     assert wear["failures"] == 3
 
 
+@pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])
+def test_today_is_the_plants_day(service, zone):
+    """UTC+14 and UTC-11: for most of any day one of them is a calendar day off UTC."""
+
+    with service.write_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS availability_settings (id INTEGER PRIMARY KEY, timezone TEXT)")
+        conn.execute("INSERT OR REPLACE INTO availability_settings (id, timezone) VALUES (1, ?)", (zone,))
+    assert service.plant_today() == datetime.now(timezone.utc).astimezone(ZoneInfo(zone)).date().isoformat()
+
+
 # ---- the endpoints ---------------------------------------------------------------
 
 
@@ -246,6 +257,8 @@ def test_the_summary_draws_the_pareto_and_trend_for_the_dates(client_and_ids):
     payload = client.get(f"/life-data-analysis/api/summary?asset={ASSET}&date_from=2024-03-01").get_json()
     assert _by_name(payload["pareto"]) == {"Fatigue": (1, 3.0), "Wear": (1, 1.0)}
     assert payload["trend"]["months"] == ["2024-03"]
+    # What a Weibull run counts as today, for the page to judge the To date by.
+    assert payload["plant_today"] == date.fromisoformat(payload["plant_today"]).isoformat()
 
     # A blank bound is no bound, the same as leaving it off.
     blank = client.get(f"/life-data-analysis/api/summary?asset={ASSET}&date_from=&date_to=2024-01-31").get_json()
@@ -346,9 +359,10 @@ def test_a_date_change_refreshes_every_analysis():
 
 def test_a_weibull_run_takes_the_dates_as_its_window():
     window = SCRIPT[SCRIPT.index("function weibullDateWindow"):SCRIPT.index("let dateRangeDebounce")]
-    # A run refuses a cutoff later than today, so a To date of today or later is
-    # left off rather than sent to be refused.
-    assert "to && to < localToday() ? to : \"\"" in window
+    # A To date of today or later is left off; today is the plant's, from the
+    # summary, since the browser's calendar can be a day either side of it.
+    assert "to && to < plantToday() ? to : \"\"" in window
+    assert "state.plantToday = data.plant_today || null;" in SCRIPT
     bar = SCRIPT[SCRIPT.index("function runParetoMechanism"):SCRIPT.index("// ---- analysis type switching")]
     assert "{ window: weibullDateWindow(), ...options }" in bar
     dialog = SCRIPT[SCRIPT.index("async function performAnalysis"):SCRIPT.index("function sameWeibullGroup")]

@@ -2235,6 +2235,18 @@ class LifeDataService:
         ranked.sort(key=lambda fit: (-fit["probability"], -fit["failure_count"], str(fit["failure_mechanism_name"])))
         return ranked[:limit]
 
+    def plant_today(self) -> str:
+        """Today on the plant's calendar, as YYYY-MM-DD.
+
+        The day a Weibull run judges an entered cutoff against, so a page can tell
+        which dates a run would take as today without trusting its own clock and
+        time zone, which can be a day either side of the plant's.
+        """
+
+        with self.connect() as conn:
+            zone = self._plant_time_zone(conn)[0]
+        return datetime.now(timezone.utc).astimezone(zone).date().isoformat()
+
     def tour_example_asset(self) -> str | None:
         """The asset the Perform an Analysis walk-through picks for somebody who hasn't.
 
