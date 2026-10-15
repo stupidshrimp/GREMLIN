@@ -85,6 +85,14 @@
     // saved on this asset, which the tour picks its Weibull example from.
     rankings: [],
     paretoMetric: "downtime_hours",
+    // What each Pareto bar is: "mechanism", one per failure mode and mechanism pair
+    // as the server sends them, or "mode", one per failure mode with its pairs added
+    // up. Kept across a change of asset, as the measure is.
+    paretoGroupBy: "mechanism",
+    // The failure mode whose mechanisms alone the mechanism Pareto shows, after its
+    // mode bar was opened into them ({ failure_mode_id, failure_mode_name }); null
+    // for every mechanism.
+    paretoModeFocus: null,
     // The From and To days ("YYYY-MM-DD") on the Pareto panel; null means no bound
     // on that side. The server applies them by work order date to the Pareto and
     // to the trend, downtime, PM and repeat analyses, so a bar and the analysis it
@@ -793,6 +801,8 @@
       state.repeatData = null;
       state.repeatFilter = null;
       state.repeatToken += 1;
+      // The new asset may not have the mode a bar was opened into.
+      state.paretoModeFocus = null;
       // Same for a Weibull lookup still in flight: clearWorkspace() below empties the
       // workspace, and a late response for the old asset must not refill it.
       state.analysisToken += 1;
@@ -1088,12 +1098,51 @@
   }
 
   // ---- Pareto chart ---------------------------------------------------------
+  // The bars before ranking. The server sends one row per failure mode and
+  // mechanism pair, which is the mechanism view as it stands, narrowed to one
+  // mode's mechanisms while that mode is opened into them. Grouped by failure mode,
+  // each mode's pairs are added up into one row with no mechanism: the mode-level
+  // selection the analysis pickers offer as "all mechanisms", so clicking it runs
+  // the analysis for the whole mode. Every pair has a mechanism, so a failure
+  // dispositioned with a mode and no mechanism is in neither view, the same as in
+  // the trend, downtime, PM and repeat analyses; only a mode-level Weibull fit
+  // counts it.
+  function paretoGroupedRows(groupBy) {
+    if (groupBy === "mode") {
+      const byMode = new Map();
+      state.paretoRows.forEach((row) => {
+        let mode = byMode.get(row.failure_mode_id);
+        if (!mode) {
+          mode = {
+            failure_mode_id: row.failure_mode_id,
+            failure_mode_name: row.failure_mode_name,
+            failure_mechanism_id: null,
+            failure_mechanism_name: null,
+            failure_count: 0,
+            downtime_hours: 0,
+            mechanism_count: 0,
+          };
+          byMode.set(row.failure_mode_id, mode);
+        }
+        mode.failure_count += Number(row.failure_count) || 0;
+        mode.downtime_hours += Number(row.downtime_hours) || 0;
+        mode.mechanism_count += 1;
+      });
+      return Array.from(byMode.values());
+    }
+    const focus = state.paretoModeFocus;
+    return state.paretoRows
+      .filter((row) => !focus || row.failure_mode_id == focus.failure_mode_id)
+      .map((row) => ({ ...row }));
+  }
+
   // Sort by the active metric and recompute the cumulative percentage for it, so
   // the "failure count" view is a real count Pareto rather than the downtime
-  // ordering/cumulative returned by failure_mechanism_pareto().
-  function paretoDisplayRows() {
+  // ordering/cumulative returned by failure_mechanism_pareto(). `groupBy` is the
+  // grouping on show unless the caller names one.
+  function paretoDisplayRows(groupBy = state.paretoGroupBy) {
     const metric = state.paretoMetric;
-    const rows = state.paretoRows.map((row) => ({ ...row }));
+    const rows = paretoGroupedRows(groupBy);
     rows.sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0));
     const total = rows.reduce((sum, row) => sum + (Number(row[metric]) || 0), 0) || 1;
     let cumulative = 0;
@@ -1108,28 +1157,131 @@
   // Fewer are shown when fewer exist — this is a cap, not a fixed count.
   const PARETO_MAX_BARS = 15;
 
+  // Bring the Pareto's title, switches and opened-mode note into line with the
+  // state, which a bar click can change as well as the switches themselves.
+  function renderParetoControls() {
+    const byMode = state.paretoGroupBy === "mode";
+    const title = $("lda-pareto-title");
+    if (title) title.textContent = byMode ? "Failure mode Pareto" : "Failure mechanism Pareto";
+    const press = (selector, isActive) =>
+      document.querySelectorAll(selector).forEach((button) => {
+        const active = isActive(button);
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    press("#lda-pareto-group [data-group]", (button) => button.dataset.group === state.paretoGroupBy);
+    press("#lda-pareto-metric [data-metric]", (button) => button.dataset.metric === state.paretoMetric);
+    const focus = state.paretoModeFocus;
+    setHidden($("lda-pareto-focus"), !focus);
+    const focusText = $("lda-pareto-focus-text");
+    if (focus && focusText) {
+      focusText.textContent =
+        state.analysisType === ANALYSIS_TYPES.PM
+          ? `Showing the mechanisms under ${focus.failure_mode_name}. PM effectiveness is per mechanism, so pick one.`
+          : `Showing only the mechanisms under ${focus.failure_mode_name}.`;
+    }
+  }
+
+  // The Group by switch. Either choice shows the whole of that grouping, so it also
+  // closes a mode that was opened into its mechanisms.
+  function setParetoGroupBy(groupBy) {
+    if (groupBy !== "mode" && groupBy !== "mechanism") return;
+    if (groupBy === state.paretoGroupBy && !state.paretoModeFocus) return;
+    state.paretoGroupBy = groupBy;
+    state.paretoModeFocus = null;
+    drawPareto();
+  }
+
+  // The Rank by switch.
+  function setParetoMetric(metric) {
+    if (metric !== "downtime_hours" && metric !== "failure_count") return;
+    if (metric === state.paretoMetric) return;
+    state.paretoMetric = metric;
+    drawPareto();
+  }
+
+  // PM effectiveness is worked out per failure mechanism, so a failure mode bar
+  // can't drive it. Clicking one opens the mode into its mechanisms instead, for
+  // one of them to be picked.
+  function openParetoMode(row) {
+    state.paretoGroupBy = "mechanism";
+    state.paretoModeFocus = { failure_mode_id: row.failure_mode_id, failure_mode_name: row.failure_mode_name };
+    drawPareto();
+  }
+
+  // What clicking a bar does under the analysis type showing, finishing "Click
+  // to …". `byMode` is whether the bar is a failure mode; `row`, when given, is the
+  // bar itself, for the repeats list a second click on the same bar opens back out.
+  function paretoClickHint(byMode, row) {
+    switch (state.analysisType) {
+      case ANALYSIS_TYPES.TREND:
+        return "chart its trend below";
+      case ANALYSIS_TYPES.DOWNTIME:
+        return "break its downtime down below";
+      case ANALYSIS_TYPES.PM:
+        return byMode ? "pick from its mechanisms, since PM effectiveness is per mechanism" : "see how soon it follows a PM";
+      case ANALYSIS_TYPES.REPEAT:
+        return row && selectionMatches(state.repeatFilter, row) ? "list every repeat again" : "list only its repeat failures below";
+      default:
+        return CAN_EDIT ? "run a Weibull fit on it" : "open the Weibull fit last saved for it";
+    }
+  }
+
+  // The hover card for a bar: its full name, which the axis label may cut short,
+  // and its numbers.
+  function paretoTooltipRows(row) {
+    const byMode = row.failure_mechanism_id == null;
+    const rows = byMode
+      ? [
+          ["Mode", row.failure_mode_name || "—"],
+          ["Mechanisms", String(row.mechanism_count || 0)],
+        ]
+      : [
+          ["Mechanism", row.failure_mechanism_name || "—"],
+          ["Mode", row.failure_mode_name || "—"],
+        ];
+    rows.push(
+      ["Downtime", `${fmt(row.downtime_hours)} h`],
+      ["Failures", String(row.failure_count || 0)],
+      ["Cumulative", `${fmt(row._cumulative_percent, 3)}%`],
+      ["Click to", paretoClickHint(byMode, row)]
+    );
+    return rows;
+  }
+
   function drawPareto() {
+    renderParetoControls();
     const canvas = $("lda-pareto-chart");
     const empty = $("lda-pareto-empty");
+    const byMode = state.paretoGroupBy === "mode";
     const allRows = paretoDisplayRows();
     // Cap the number of bars. Cumulative % is still computed across every mechanism
-    // (in paretoDisplayRows), so the line reflects the true contribution of the top
-    // ones instead of renormalizing to just the displayed subset.
+    // or mode (in paretoDisplayRows), so the line reflects the true contribution of
+    // the top ones instead of renormalizing to just the displayed subset.
     const rows = allRows.slice(0, PARETO_MAX_BARS);
     empty.hidden = allRows.length > 0;
     const { from, to } = state.dateRange;
-    empty.textContent =
+    const dated =
       from || to
-        ? `No included failures with a work order date ${
-            from && to ? `from ${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`
-          }.`
-        : "No included failure mechanisms to chart yet.";
+        ? ` with a work order date ${from && to ? `from ${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`}`
+        : "";
+    const focus = state.paretoModeFocus;
+    empty.textContent = focus
+      ? `No included failures under ${focus.failure_mode_name}${dated}.`
+      : dated
+      ? `No included failures${dated}.`
+      : "No included failure mechanisms to chart yet.";
     const metric = state.paretoMetric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
     ctx.clearRect(0, 0, W, H);
-    // The click handler is replaced below with one over the bars just drawn. With
-    // none to draw, drop the last one, whose bars are no longer on screen.
+    // The click and hover handlers are replaced below with ones over the bars just
+    // drawn. With none to draw, drop the last ones, whose bars are no longer on
+    // screen, and the hover card of a bar that has just gone.
     canvas.onclick = null;
+    canvas.onmousemove = null;
+    canvas.onmouseleave = null;
+    canvas.style.cursor = "";
+    hidePointTooltip();
     if (!rows.length) return;
 
     const left = 64; // room for the left value-axis labels + rotated title
@@ -1197,8 +1349,10 @@
       ctx.font = "10px Inter, sans-serif";
       ctx.translate(x + barW / 2, bottom + 6);
       ctx.rotate(Math.PI / 5);
-      const label = (row.failure_mechanism_name || "—").slice(0, 18);
-      ctx.fillText(label, 0, 0);
+      // A mode bar has no mechanism, so it is labelled with the mode. A name cut
+      // short says so; the hover card has it in full.
+      const name = row.failure_mechanism_name || row.failure_mode_name || "—";
+      ctx.fillText(name.length > 18 ? `${name.slice(0, 17)}…` : name, 0, 0);
       ctx.restore();
     });
 
@@ -1239,16 +1393,29 @@
 
     // Note when the bar count was capped so the cut-off is explicit.
     if (allRows.length > rows.length) {
-      ctx.fillText(`Top ${rows.length} of ${allRows.length} mechanisms`, (left + right) / 2, 12);
+      ctx.fillText(`Top ${rows.length} of ${allRows.length} ${byMode ? "modes" : "mechanisms"}`, (left + right) / 2, 12);
     }
     ctx.textAlign = "left";
 
-    canvas.onclick = (event) => {
+    const barAt = (event) => {
       const rect = canvas.getBoundingClientRect();
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
-      const hit = hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
+      return hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
+    };
+    canvas.onclick = (event) => {
+      const hit = barAt(event);
       if (hit) onParetoBarSelected(hit.row);
+    };
+    canvas.onmousemove = (event) => {
+      const hit = barAt(event);
+      canvas.style.cursor = hit ? "pointer" : "";
+      if (hit) showTooltipRows(event.clientX, event.clientY, paretoTooltipRows(hit.row));
+      else hidePointTooltip();
+    };
+    canvas.onmouseleave = () => {
+      canvas.style.cursor = "";
+      hidePointTooltip();
     };
   }
 
@@ -1293,13 +1460,16 @@
   }
 
   // A Pareto bar click drives the active analysis: Weibull runs the clicked
-  // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. The
-  // not-yet-implemented types have no secondary action, so the click is ignored.
-  // Resolves once the analysis has drawn, for the tour, which clicks one too.
+  // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. A
+  // failure mode bar does the same for the whole mode, except under PM
+  // effectiveness, which is per mechanism, where it opens the mode into its
+  // mechanisms to pick from. Resolves once the analysis has drawn, for the tour,
+  // which clicks one too.
   function onParetoBarSelected(row) {
     if (state.analysisType === ANALYSIS_TYPES.TREND) {
       return selectTrendMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.PM) {
+      if (row.failure_mechanism_id == null) return openParetoMode(row);
       return selectPmMechanism(row);
     } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
       return selectDowntimeMechanism(row);
@@ -1312,20 +1482,22 @@
   }
 
   // `options` goes on to runAnalysisForGroup. The fit is run over the From/To dates
-  // the bar was counted over, unless `options` names a window of its own.
+  // the bar was counted over, unless `options` names a window of its own. A failure
+  // mode bar has no mechanism and runs the mode-level fit.
   function runParetoMechanism(row, options) {
-    if (row.failure_mode_id == null || row.failure_mechanism_id == null) {
+    if (row.failure_mode_id == null) {
       showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
       return undefined;
     }
+    const byMode = row.failure_mechanism_id == null;
     setActiveMechanism(row);
     return runAnalysisForGroup(
       {
-        grouping_level: "FAILURE_MECHANISM",
+        grouping_level: byMode ? "FAILURE_MODE" : "FAILURE_MECHANISM",
         failure_mode_id: row.failure_mode_id,
-        failure_mechanism_id: row.failure_mechanism_id,
+        failure_mechanism_id: byMode ? null : row.failure_mechanism_id,
       },
-      "Running clicked mechanism Weibull analysis…",
+      byMode ? "Running clicked failure mode Weibull analysis…" : "Running clicked mechanism Weibull analysis…",
       { window: weibullDateWindow(), ...options }
     );
   }
@@ -1418,16 +1590,10 @@
       return true;
     }
     if (type === ANALYSIS_TYPES.REPEAT) {
-      // The repeats load for every mechanism anyway; the carried one only narrows
-      // the list, so the type's own load below still runs.
-      state.repeatFilter =
-        active.failure_mechanism_id != null
-          ? {
-              failure_mode_id: active.failure_mode_id,
-              failure_mechanism_id: active.failure_mechanism_id,
-              label: pmSelectionLabel(active),
-            }
-          : null;
+      // The repeats load for every mechanism anyway; the carried mechanism, or every
+      // mechanism under a carried mode, only narrows the list, so the type's own
+      // load below still runs.
+      state.repeatFilter = active.failure_mode_id != null ? repeatFilterFor(active) : null;
       return false;
     }
     if (type === ANALYSIS_TYPES.WEIBULL) {
@@ -2567,21 +2733,37 @@
     }
   }
 
-  // Narrow the repeats list to one mechanism, or show them all again when it is the
-  // one already shown. Resolves once drawn, for the tour.
+  // The repeats-list filter for a mechanism, or for a failure mode (no mechanism),
+  // which keeps every mechanism under it.
+  function repeatFilterFor(row) {
+    return {
+      failure_mode_id: row.failure_mode_id,
+      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
+      label: pmSelectionLabel(row),
+    };
+  }
+
+  // Whether the filter keeps a repeat or a rate row: one of its mechanism, or of
+  // any mechanism under its mode when it is a failure mode's.
+  function repeatFilterKeeps(filter, row) {
+    return Boolean(
+      filter &&
+        row &&
+        filter.failure_mode_id == row.failure_mode_id &&
+        (filter.failure_mechanism_id == null || filter.failure_mechanism_id == row.failure_mechanism_id)
+    );
+  }
+
+  // Narrow the repeats list to one mechanism, or to every mechanism under a failure
+  // mode bar, or show them all again when it is the one already shown. Resolves
+  // once drawn, for the tour.
   function selectRepeatMechanism(row) {
-    if (row == null || row.failure_mechanism_id == null) {
-      showBanner("Repeat fix rate is per failure mechanism. Pick a mechanism-level Pareto bar.", "error");
+    if (row == null || row.failure_mode_id == null) {
+      showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
       return undefined;
     }
     setActiveMechanism(row);
-    state.repeatFilter = selectionMatches(state.repeatFilter, row)
-      ? null
-      : {
-          failure_mode_id: row.failure_mode_id,
-          failure_mechanism_id: row.failure_mechanism_id,
-          label: pmSelectionLabel(row),
-        };
+    state.repeatFilter = selectionMatches(state.repeatFilter, row) ? null : repeatFilterFor(row);
     if (!state.repeatData) return loadRepeatFixes({ scrollToPanel: true });
     renderRepeat();
     scrollToAnalysisPanel();
@@ -2700,7 +2882,7 @@
       );
     }
     rows.forEach((row) => {
-      const isActive = selectionMatches(state.repeatFilter, row);
+      const isActive = repeatFilterKeeps(state.repeatFilter, row);
       tbody.appendChild(
         el(
           "tr",
@@ -2733,8 +2915,14 @@
     const filterBar = $("lda-repeat-filter");
     const filterText = $("lda-repeat-filter-text");
     setHidden(filterBar, !filter);
-    if (filterText) filterText.textContent = filter ? `Showing ${filter.label} only.` : "";
-    const rows = ((data && data.pairs) || []).filter((pair) => !filter || selectionMatches(filter, pair));
+    if (filterText) {
+      filterText.textContent = !filter
+        ? ""
+        : filter.failure_mechanism_id == null
+        ? `Showing every mechanism under ${filter.label} only.`
+        : `Showing ${filter.label} only.`;
+    }
+    const rows = ((data && data.pairs) || []).filter((pair) => !filter || repeatFilterKeeps(filter, pair));
     const headers = [
       "Failure Mechanism",
       "Previous WO",
@@ -6452,7 +6640,8 @@
 
   // ---- Weibull point hover tooltips ----------------------------------------
   // A single floating tooltip, reused by every Weibull plot, that describes the
-  // observation behind a hovered point or current-life marker.
+  // observation behind a hovered point or current-life marker, and by the Pareto's
+  // bars.
   let pointTooltipEl = null;
   function pointTooltip() {
     if (!pointTooltipEl) {
@@ -6465,20 +6654,12 @@
   function hidePointTooltip() {
     if (pointTooltipEl) pointTooltipEl.hidden = true;
   }
-  function showPointTooltip(clientX, clientY, obs) {
-    if (!obs) { hidePointTooltip(); return; }
-    const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
+  // Fill the tooltip with [label, value] rows and put it beside the pointer, on
+  // the other side of it where it would run off the window. The Pareto's bars use
+  // it too.
+  function showTooltipRows(clientX, clientY, fields) {
     const tip = pointTooltip();
     tip.innerHTML = "";
-    const fields = [
-      ["Task ID", obs.source_task_id != null && obs.source_task_id !== "" ? String(obs.source_task_id) : "—"],
-      ["Life hours", fmtFixed(obs.life_hours_for_weibull) || "—"],
-      ["Start", obs.start_datetime || "—"],
-      ["End / cutoff", obs.end_datetime || obs.analysis_cutoff_datetime || "—"],
-      ["Request", truncate(obs.source_request_description, 220) || "—"],
-      ["Completion notes", truncate(obs.source_completion_notes, 220) || "—"],
-      ["Failure narrative", truncate(narrativeText(obs, "source_"), 260) || "—"],
-    ];
     fields.forEach(([label, value]) => {
       tip.appendChild(
         el("div", { class: "lda-point-tooltip-row" }, [
@@ -6496,6 +6677,19 @@
     if (y + rect.height > window.innerHeight - 8) y = clientY - rect.height - margin;
     tip.style.left = Math.round(Math.max(8, x)) + "px";
     tip.style.top = Math.round(Math.max(8, y)) + "px";
+  }
+  function showPointTooltip(clientX, clientY, obs) {
+    if (!obs) { hidePointTooltip(); return; }
+    const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s);
+    showTooltipRows(clientX, clientY, [
+      ["Task ID", obs.source_task_id != null && obs.source_task_id !== "" ? String(obs.source_task_id) : "—"],
+      ["Life hours", fmtFixed(obs.life_hours_for_weibull) || "—"],
+      ["Start", obs.start_datetime || "—"],
+      ["End / cutoff", obs.end_datetime || obs.analysis_cutoff_datetime || "—"],
+      ["Request", truncate(obs.source_request_description, 220) || "—"],
+      ["Completion notes", truncate(obs.source_completion_notes, 220) || "—"],
+      ["Failure narrative", truncate(narrativeText(obs, "source_"), 260) || "—"],
+    ]);
   }
 
   // Wire hover tooltips on a chart canvas. `locate(mx, my)` returns the
@@ -6600,11 +6794,16 @@
   }
 
   // The mechanism the tour shows: the first bar on the Pareto as it is ranked
-  // now. For Weibull, the first bar with a saved fit, since the tour only opens
-  // fits already saved, or failing that the first Highest-beta mechanism, every
-  // one of which is. Null when there is nothing to show.
+  // now. For PM effectiveness, which a failure mode bar opens rather than shows,
+  // the first mechanism even while the Pareto is grouped by mode. For Weibull, the
+  // first bar with a saved fit, since the tour only opens fits already saved, or
+  // failing that the first Highest-beta mechanism, every one of which is. Null when
+  // there is nothing to show.
   function tourMechanism() {
     const bars = paretoDisplayRows();
+    if (state.analysisType === ANALYSIS_TYPES.PM && state.paretoGroupBy === "mode") {
+      return paretoDisplayRows("mechanism")[0] || null;
+    }
     if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) return bars[0] || null;
     const saved = (bar) => state.rankings.some((fit) => selectionMatches(bar, fit));
     return bars.find(saved) || state.rankings[0] || null;
@@ -6630,9 +6829,12 @@
 
   // Ahead of a step's own text while its button is still to show a mechanism.
   function tourMechanismLead(what) {
-    return TOUR_MECHANISM_ACTION.needed()
-      ? `Show an example ${what} ${tourMechanismName()}, the top bar on the Pareto, as if it had been clicked. `
-      : "";
+    if (!TOUR_MECHANISM_ACTION.needed()) return "";
+    const topBar = selectionMatches(tourMechanism(), paretoDisplayRows()[0]);
+    return (
+      `Show an example ${what} ${tourMechanismName()}, ` +
+      (topBar ? "the top bar on the Pareto, as if it had been clicked. " : "the top failure mechanism. ")
+    );
   }
 
   const ANALYSIS_SETUP_TOUR_STEPS = [
@@ -6673,14 +6875,6 @@
         `The rest of this tour is about ${state.analysisType}; choose another and take the tour again for its panels.`,
     },
   ];
-
-  // What a Pareto bar does when clicked, by Analysis Type.
-  const PARETO_CLICK_TOUR_TEXT = {
-    [ANALYSIS_TYPES.TREND]: "chart its trend below.",
-    [ANALYSIS_TYPES.PM]: "see how soon it follows a PM.",
-    [ANALYSIS_TYPES.DOWNTIME]: "break its downtime down below.",
-    [ANALYSIS_TYPES.REPEAT]: "list only its repeat failures below.",
-  };
 
   const ANALYSIS_RESULTS_TOUR_STEPS = [
     {
@@ -6755,13 +6949,17 @@
     },
     {
       target: "#lda-pareto-panel",
-      title: "Failure mechanism Pareto",
+      title: "Failure Pareto",
       body: () =>
-        "Each bar is a failure mechanism, largest first by downtime hours; tick the box to rank by " +
-        "failure count instead. The line is the running share of the total. From and To narrow it, and " +
-        "the analysis below, to the failures whose work order date falls between them. Click a bar to " +
-        (PARETO_CLICK_TOUR_TEXT[state.analysisType] ||
-          (CAN_EDIT ? "run a Weibull fit on it." : "open the Weibull fit last saved for it.")),
+        (state.paretoGroupBy === "mode"
+          ? "Each bar is a failure mode, with every mechanism under it added up; Group by Failure mechanism " +
+            "splits them out. "
+          : "Each bar is a failure mechanism; Group by Failure mode adds up the mechanisms under each mode. ") +
+        "Bars run largest first by downtime hours or failure count, whichever Rank by is set to, and the " +
+        "line is the running share of the total. From and To narrow it, and the analysis below, to the " +
+        "failures whose work order date falls between them. Hover a bar for its numbers, and click it to " +
+        paretoClickHint(state.paretoGroupBy === "mode") +
+        ".",
     },
     {
       target: "#lda-actions",
@@ -7579,10 +7777,17 @@
       $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
       $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
     }
-    $("lda-pareto-toggle").addEventListener("change", (event) => {
-      state.paretoMetric = event.target.checked ? "failure_count" : "downtime_hours";
-      drawPareto();
+    // The Pareto's Group by and Rank by switches, and the way back out of a mode
+    // opened into its mechanisms.
+    $("lda-pareto-group").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-group]");
+      if (button) setParetoGroupBy(button.dataset.group);
     });
+    $("lda-pareto-metric").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-metric]");
+      if (button) setParetoMetric(button.dataset.metric);
+    });
+    $("lda-pareto-focus-clear").addEventListener("click", () => setParetoGroupBy("mechanism"));
     // From/To dates, for the Pareto and every analysis.
     $("lda-date-from").addEventListener("change", onDateRangeChange);
     $("lda-date-to").addEventListener("change", onDateRangeChange);

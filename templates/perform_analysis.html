@@ -106,14 +106,39 @@
     <ol id="lda-risk-rankings" class="lda-rankings"></ol>
   </div>
 
-  <!-- Failure mechanism Pareto: always visible and full-width, regardless of analysis type. -->
+  <!-- Failure Pareto: always visible and full-width, regardless of analysis type. -->
   <div class="lda-subgrid">
     <div class="lda-panel" id="lda-pareto-panel">
-      <h3>Failure mechanism Pareto</h3>
-      <label class="lda-checkbox">
-        <input type="checkbox" id="lda-pareto-toggle">
-        Show failure count instead of downtime hours
-      </label>
+      <div class="lda-pareto-head">
+        <h3 id="lda-pareto-title">Failure mechanism Pareto</h3>
+        <!-- What each bar is and what it is ranked by. Plain buttons with
+             aria-pressed, the same as the other view switches in the app. -->
+        <div class="lda-pareto-toolbar">
+          <div class="lda-pareto-option">
+            <span class="lda-pareto-option-label" id="lda-pareto-group-label">Group by</span>
+            <div class="lda-segmented" id="lda-pareto-group" role="group" aria-labelledby="lda-pareto-group-label">
+              <button type="button" class="lda-segmented-btn" data-group="mode" aria-pressed="false"
+                      title="One bar per failure mode, with every mechanism under it added up">Failure mode</button>
+              <button type="button" class="lda-segmented-btn is-active" data-group="mechanism" aria-pressed="true"
+                      title="One bar per failure mechanism">Failure mechanism</button>
+            </div>
+          </div>
+          <div class="lda-pareto-option">
+            <span class="lda-pareto-option-label" id="lda-pareto-metric-label">Rank by</span>
+            <div class="lda-segmented" id="lda-pareto-metric" role="group" aria-labelledby="lda-pareto-metric-label">
+              <button type="button" class="lda-segmented-btn is-active" data-metric="downtime_hours" aria-pressed="true"
+                      title="Bar height and order by downtime hours">Downtime hours</button>
+              <button type="button" class="lda-segmented-btn" data-metric="failure_count" aria-pressed="false"
+                      title="Bar height and order by number of included failures">Failure count</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Shown when a failure mode bar was opened into its mechanisms. -->
+      <div class="lda-pareto-focus" id="lda-pareto-focus" hidden>
+        <span class="lda-hint" id="lda-pareto-focus-text"></span>
+        <button type="button" class="btn-secondary" id="lda-pareto-focus-clear">Show every mechanism</button>
+      </div>
       <!-- Date filter for the Pareto and every analysis run from it. Blank on
            either side means no bound there. -->
       <div class="lda-trend-controls" id="lda-dates">
@@ -215,7 +240,7 @@
       <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="0" max="720" step="any" value="24"
              aria-label="Repeat window in scheduled hours"> scheduled hours of the mechanism's last one, counted on the
       asset's Weibull schedule just as a Weibull life is. The rate is repeats over the gaps between failures. Click a
-      Pareto bar or a row to list only that mechanism's repeats below.</p>
+      Pareto bar or a row to list only its repeats below.</p>
     <p class="lda-hint" id="lda-repeat-basis"></p>
     <div class="lda-table-scroll" id="lda-repeat-rate-wrap"></div>
   </div>
