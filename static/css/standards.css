@@ -700,6 +700,382 @@
 .std-figure .fig-type-3 { fill: var(--chart-type-3); }
 .std-figure .fig-type-4 { fill: var(--chart-type-4); }
 
+/* The marks the Weibull card's working figures add, in the colours Perform an
+   Analysis gives the same things: green for the fitted curve, yellow for the
+   curves at the interval ends, white points for Kaplan-Meier estimates, red for
+   PM resets and the current life. The age a reader is looking at is the one
+   thing those charts have no colour for, so it takes the highlight. */
+.std-figure .fig-ci-line { stroke: var(--chart-goal); stroke-width: 1.5; fill: none; }
+.std-figure .fig-censored { fill: var(--chart-danger); stroke: var(--chart-danger-deep); stroke-width: 1.2; }
+.std-figure .fig-area { fill: var(--brand-tint-strong); }
+.std-figure .fig-dashed { stroke-dasharray: 6 5; }
+.std-figure .fig-vote { stroke: var(--chart-ink); stroke-width: 1.6; fill: none; }
+.std-figure .fig-age-line { stroke: var(--chart-highlight); stroke-width: 1.4; stroke-dasharray: 5 4; fill: none; }
+.std-figure .fig-age-dot { fill: var(--chart-highlight); stroke: var(--chart-point-fill); stroke-width: 1.5; }
+.std-figure .fig-ring { fill: none; stroke: var(--chart-highlight); stroke-width: 2.2; }
+.std-figure .fig-text-highlight { fill: var(--chart-highlight); font-weight: 700; }
+
+/* Working figures ------------------------------------------------------------
+   A figure on the Weibull card a reader can move: the drawing, the controls
+   that move it, and what it reads at the current setting. The controls are
+   hidden until weibull_tutorial.js wires them up, so without the script each
+   figure shows its opening state and nothing that would not work. */
+
+.std-figure [hidden] {
+  display: none !important;
+}
+
+/* A working figure is a grid of its drawing, controls and readouts, and a grid
+   item will not shrink below its content: without this a table of lives or a
+   long readout would push the figure wider than a phone's screen, rather than
+   wrap or scroll inside its own box. */
+.std-figure > * {
+  min-width: 0;
+}
+
+.wbl-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.7rem 1.1rem;
+  align-items: end;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil-soft);
+}
+
+.wbl-slider {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.86rem;
+  color: var(--text);
+}
+
+.wbl-slider-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-weight: 600;
+}
+
+.wbl-slider-value {
+  color: var(--forest-900);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wbl-slider input[type="range"] {
+  width: 100%;
+  margin: 0.2rem 0;
+  accent-color: var(--brand-accent);
+}
+
+.wbl-slider input[type="range"]:disabled {
+  opacity: 0.5;
+}
+
+.wbl-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  color: var(--text);
+}
+
+.wbl-check input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--brand-accent);
+}
+
+/* A row of choices: presets, steps, patterns. Pressed reads as chosen. */
+.wbl-chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.wbl-chips-label {
+  margin-right: 0.2rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.wbl-chip {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil-strong);
+  color: var(--forest-800);
+  padding: 0.28rem 0.8rem;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.wbl-chip:hover {
+  border-color: var(--forest-500);
+}
+
+.wbl-chip[aria-pressed="true"] {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
+}
+
+.wbl-chip:focus-visible,
+.wbl-remove:focus-visible,
+.wbl-input:focus-visible {
+  outline: 2px solid var(--forest-700);
+  outline-offset: 2px;
+}
+
+.wbl-chip.is-action {
+  border-style: dashed;
+}
+
+/* What a figure reads at its current setting. */
+.wbl-readout {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--chart-highlight);
+  border-radius: 12px;
+  background: var(--surface-veil-strong);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  min-width: 0;
+}
+
+.wbl-readout p {
+  color: var(--text);
+}
+
+.wbl-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.45rem 0.9rem;
+  margin: 0;
+}
+
+.wbl-stats div {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.wbl-stats dt {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.wbl-stats dd {
+  margin: 0;
+  font-weight: 700;
+  color: var(--forest-900);
+  font-variant-numeric: tabular-nums;
+}
+
+.wbl-table {
+  font-size: 0.85rem;
+}
+
+.wbl-table td,
+.wbl-table th {
+  padding: 0.4rem 0.6rem;
+}
+
+.wbl-table tfoot th,
+.wbl-table tfoot td {
+  border-top: 1px solid var(--border);
+  font-weight: 700;
+  color: var(--forest-900);
+}
+
+.wbl-status {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wbl-status.is-stop {
+  color: var(--warning-ink);
+}
+
+/* The key the chart figures share, in words, beside the drawing. */
+.std-card-body .wbl-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.std-card-body .wbl-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.wbl-swatch {
+  display: inline-block;
+  width: 1.4rem;
+  height: 0;
+  border-top: 3px solid var(--chart-accent);
+}
+
+.wbl-swatch.is-ci { border-top: 2px solid var(--chart-goal); }
+.wbl-swatch.is-current { width: 0; height: 1rem; border-top: 0; border-left: 2px solid var(--chart-danger); }
+.wbl-swatch.is-age { border-top: 2px dashed var(--chart-highlight); }
+
+.wbl-swatch.is-point,
+.wbl-swatch.is-reset {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 1.6px solid var(--chart-ink);
+  border-radius: 50%;
+  background: var(--chart-point-fill);
+}
+
+.wbl-swatch.is-reset {
+  border-color: var(--chart-danger-deep);
+  background: var(--chart-danger);
+}
+
+/* The lab: the lives on one side, what GREMLIN would make of them on the
+   other, under the charts. */
+.wbl-lab-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+/* Two columns only once the script has shown the lives: without it the
+   results are all there is, and they take the width. */
+.std-figure.is-live .wbl-lab-grid {
+  grid-template-columns: minmax(17rem, 22rem) minmax(0, 1fr);
+}
+
+.wbl-lab-data {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-veil-soft);
+}
+
+.wbl-lab-data label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wbl-lab-table-wrap {
+  max-height: 22rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.wbl-lab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.wbl-lab-table th,
+.wbl-lab-table td {
+  padding: 0.25rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.wbl-lab-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-size: 0.8rem;
+}
+
+.wbl-lab-table tbody th {
+  color: var(--muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.wbl-input {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.45rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.wbl-input[aria-invalid="true"] {
+  border-color: var(--chart-danger);
+  box-shadow: 0 0 0 2px var(--warning-tint);
+}
+
+.wbl-remove {
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  width: 1.8rem;
+  height: 1.8rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.wbl-remove:hover {
+  border-color: var(--border);
+  color: var(--chart-danger);
+}
+
+.wbl-lab-results {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  font-size: 0.9rem;
+}
+
+.wbl-lab-results .std-calc li {
+  grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+}
+
+.wbl-lab-table input.wbl-input {
+  width: 6.5rem;
+}
+
+.wbl-lab-table select.wbl-input {
+  width: auto;
+}
+
+.wbl-try {
+  display: grid;
+  gap: 0.35rem;
+}
+
 /* Two-up figures and the panel header fall back to one column on narrow
    screens, and a long equation keeps its own scroll. */
 @media (max-width: 900px) {
@@ -734,6 +1110,14 @@
   .std-toc ol {
     columns: 1;
   }
+
+  .std-figure.is-live .wbl-lab-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wbl-lab-results .std-calc li {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -746,7 +1130,9 @@
 @media print {
   .tab-list,
   .std-expand-all,
-  .std-hero-actions {
+  .std-hero-actions,
+  .wbl-controls,
+  .wbl-lab-data {
     display: none;
   }
 

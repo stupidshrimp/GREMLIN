@@ -55,4 +55,8 @@
 
 {% block scripts %}
   <script src="{{ url_for('static', filename='js/documentation.js') }}"></script>
+  {# The Weibull card's working figures. After documentation.js only so a
+     fragment naming one of them is revealed before they are wired up; neither
+     needs the other. #}
+  <script src="{{ url_for('static', filename='js/weibull_tutorial.js') }}"></script>
 {% endblock %}

@@ -1,10 +1,17 @@
 {% import "documentation_macros.html" as std %}
+{% import "documentation_weibull_drawings.html" as drawn %}
 {#- The Analysis tab: what every analysis on Perform an Analysis reads, then one
     card per analysis type.
 
     The Weibull worked example was run through LifeDataService's own fitting,
     interval, Kaplan-Meier and probability-plot R² code, so its numbers are the
-    ones GREMLIN would show for the same five intervals. -#}
+    ones GREMLIN would show for the same five intervals.
+
+    Figures W4 to W9 on the Weibull card can be worked: static/js/weibull_tutorial.js
+    redraws them with the same arithmetic as LifeDataService. Each is placed here
+    already drawn at its opening state, from documentation_weibull_drawings.html,
+    which tools/prerender_weibull_figures.py writes; the lives they draw are the
+    #weibull-figure-data block on that card. -#}
 <article class="tab-panel" id="analysis" role="tabpanel" aria-labelledby="analysis-tab" hidden>
   <header class="std-panel-head">
     <div>
@@ -319,10 +326,35 @@
         <li><a href="#weibull-charts">The four charts</a></li>
         <li><a href="#weibull-interpretation">Reading the result</a></li>
         <li><a href="#weibull-example">Worked example</a></li>
+        <li><a href="#weibull-lab">Try it yourself: the Weibull lab</a></li>
         <li><a href="#weibull-saving">Adjusting, saving and reporting</a></li>
         <li><a href="#weibull-limits">Limitations</a></li>
       </ol>
     </nav>
+
+    {#- The lives figures W4 to W9 draw, read by weibull_tutorial.js, by
+        tools/prerender_weibull_figures.py and by the tests, which check every
+        number the card quotes from them against LifeDataService. Each preset's
+        lives end in a failure (1) or a PM reset (0); its current life is the one
+        running at the cutoff. The worked example is the one in the text; the
+        others were drawn at random from the Weibull distributions the card
+        names for them, and kept for being typical of their kind. -#}
+    <script type="application/json" id="weibull-figure-data">
+{
+  "presetOrder": ["worked", "wearout", "random", "early", "mixed", "duplicate", "failure_free", "few"],
+  "patterns": ["wearout", "mixed", "duplicate", "failure_free"],
+  "presets": {
+    "worked": {"label": "Worked example", "lives": [[520, 1], [450, 0], [310, 1], [980, 1], [760, 1], [640, 1]], "current": 1050},
+    "wearout": {"label": "Wear-out, 20 failures", "lives": [[455, 1], [915, 1], [628, 1], [983, 1], [655, 1], [727, 1], [471, 1], [1170, 1], [619, 1], [608, 0], [925, 1], [520, 0], [419, 1], [568, 1], [1368, 1], [732, 1], [1455, 1], [758, 1], [881, 1], [1128, 1], [943, 1], [462, 1]], "current": 503},
+    "random": {"label": "Random failures", "lives": [[360, 1], [26, 1], [672, 1], [384, 1], [1285, 1], [254, 1], [120, 0], [412, 1], [1185, 1], [256, 1], [650, 1], [187, 1], [17, 1]], "current": 1214},
+    "early": {"label": "Early-life failures", "lives": [[27, 0], [21, 1], [5, 1], [132, 1], [1843, 1], [886, 1], [742, 1], [40, 1], [258, 1], [61, 1], [25, 1], [10, 1], [37, 1], [1997, 1], [1032, 1], [915, 1]], "current": 280},
+    "mixed": {"label": "Two mechanisms pooled", "lives": [[158, 1], [1635, 1], [126, 1], [1465, 1], [185, 1], [1426, 1], [141, 1], [920, 1], [113, 1], [1218, 1], [186, 1], [981, 1]], "current": 208},
+    "duplicate": {"label": "Duplicate work order", "lives": [[520, 1], [450, 0], [310, 1], [0.5, 1], [980, 1], [760, 1], [640, 1]], "current": 1050},
+    "failure_free": {"label": "Failure-free period", "lives": [[497, 1], [682, 1], [571, 1], [727, 1], [745, 1], [400, 1], [364, 1], [983, 1], [509, 1], [495, 1], [1821, 1], [632, 1]], "current": 281},
+    "few": {"label": "Too few failures", "lives": [[520, 1], [450, 0], [310, 1], [980, 1]], "current": 1050}
+  }
+}
+    </script>
 
     <section class="std-section" id="weibull-purpose">
       <h4>What it answers</h4>
@@ -334,6 +366,28 @@
         a typical life is. Together they give the chance of failing by any age,
         the mean life, and the ages by which 10% and 50% are expected to fail.
       </p>
+      <p>
+        It works from lives rather than from counts of failures. Every stretch
+        of running between two events on the asset is one life. A life that
+        ended in a failure says when this failure arrived; one that ended any
+        other way says only that it had not arrived yet. The sections below
+        follow those lives in order: how they are cut from the work order
+        history, what shape the Weibull distribution gives them, how β and η
+        are fitted to them, and how to read the charts and the summary GREMLIN
+        draws from the fit.
+      </p>
+      <div class="std-note">
+        <p class="std-note-title">Figures you can work</p>
+        <p>
+          Six figures on this card move. <a href="#weibull-explorer">Figure W4</a>
+          shows what β and η do to the curves, <a href="#weibull-likelihood">W5</a>
+          how the fit chooses them, <a href="#weibull-four-charts">W6</a> to
+          <a href="#weibull-patterns">W8</a> take the four charts apart, and
+          <a href="#weibull-lab-figure">W9</a>, the lab, fits lives you type in.
+          They do the arithmetic GREMLIN does, so what they show is what a run on
+          Perform an Analysis would show for the same lives.
+        </p>
+      </div>
     </section>
 
     <section class="std-section" id="weibull-population">
@@ -544,7 +598,11 @@
     <section class="std-section" id="weibull-distribution">
       <h4>The Weibull distribution</h4>
       <p>
-        With shape β and scale η, the chance a life lasts beyond age
+        Lives of one failure behavior are never all the same length: some parts
+        fail early, most somewhere in the middle, a few run long. The Weibull
+        distribution is a family of shapes that spread can take, and two
+        numbers pick one member of the family. With shape β and scale η, the
+        chance a life lasts beyond age
         <math><mi>t</mi></math> (its reliability), the chance it has ended by
         then, the density of failing at <math><mi>t</mi></math>, and the
         instantaneous failure rate of a survivor are:
@@ -577,11 +635,39 @@
       </math>
       {% endcall %}
       <p>
+        The four answer different questions about the same lives, and each has
+        its own place on Perform an Analysis:
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">What each Weibull function answers</caption>
+          <thead>
+            <tr><th scope="col">Function</th><th scope="col">The question it answers</th><th scope="col">Where GREMLIN shows it</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Reliability <math><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>, equation W2</td><td>What share of lives get past age <math><mi>t</mi></math>?</td><td>Reliability at an age, under the charts</td></tr>
+            <tr><td>Unreliability <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>, equation W3</td><td>What share have ended in a failure by age <math><mi>t</mi></math>?</td><td>The CDF chart</td></tr>
+            <tr><td>Density <math><mi>f</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>, equation W4</td><td>Around which ages do failures bunch, and how tightly?</td><td>The Probability Density (PDF) chart</td></tr>
+            <tr><td>Hazard <math><mi>h</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>, equation W5</td><td>For a part that has already lasted to age <math><mi>t</mi></math>, how fast is failure coming at it now?</td><td>The Hazard Rate chart</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
         At <math><mi>t</mi><mo>=</mo><mi>&#x3B7;</mi></math>, whatever β is,
         <math><mi>F</mi><mo stretchy="false">(</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn><mo>&#x2212;</mo><msup><mi>e</mi><mrow><mo>&#x2212;</mo><mn>1</mn></mrow></msup><mo>&#x2248;</mo><mn>0.632</mn></math>:
         η is the age by which 63.2% of the population is expected to have
-        failed. β decides how the hazard rate moves with age.
+        failed. η only sets the scale: double it and every age doubles, η, B10,
+        B50 and MTTF with it, while each curve keeps its shape. β sets the shape
+        itself, and above all how the hazard moves with age:
       </p>
+      <ul>
+        <li><strong>β below 1: the hazard falls.</strong> Parts that are going to fail tend to do it early, from a defect, a poor installation or a poor repair, and the ones that come through are the sound ones. A part that has run a while is safer than a new one.</li>
+        <li><strong>β of 1: the hazard is level</strong>, at 1/η per hour: the exponential distribution. Age tells you nothing. A part that has run 1,000 hours is exactly as likely to fail in the next hour as a new one, because its failures come from outside events rather than from use: a jam, a dropped load, a power spike.</li>
+        <li><strong>β between 1 and 2: the hazard rises, more slowly with every hour.</strong> Wear is setting in, but lives are still widely spread.</li>
+        <li><strong>β of 2: the hazard climbs in a straight line</strong> with age.</li>
+        <li><strong>β around 3.5: the density is close to symmetric</strong>, much like a bell curve, with lives gathered a little below η.</li>
+        <li><strong>β well above 3: steep wear-out.</strong> Lives bunch tightly just below η, and the risk climbs fast once B10 is passed.</li>
+      </ul>
       {% call std.figure("W3", "Hazard rate against age, in multiples of η, for three values of β. Below 1 the risk of failing falls with age, at 1 it stays level, and above 1 it climbs: the three patterns the interpretation rules below are built on.") %}
       <svg viewBox="0 0 640 262" role="img" aria-labelledby="fig-w3-title fig-w3-desc">
         <title id="fig-w3-title">How β shapes the hazard rate</title>
@@ -608,35 +694,170 @@
         <text class="fig-text-small" x="476" y="184">wear-out</text>
       </svg>
       {% endcall %}
+      <p>
+        Over a whole working life the three patterns make the bathtub curve: a
+        falling hazard while early defects work themselves out, a level stretch
+        of random failures, then a rise as wear sets in. One fit describes one
+        failure behavior, so it sees whichever part of the bathtub that behavior
+        sits in. That is one more reason a population is one mechanism, or one
+        mode, at a time.
+      </p>
+
+      <h5>Why β decides whether an age-based PM can help</h5>
+      <p>
+        A PM or replacement on a schedule swaps a part that has run for one that
+        has not. That lowers the chance of a failure only if the fresh part is
+        less likely to fail soon than the one it replaces, and the hazard says
+        which is. With β above 1 the old part is the riskier one, so renewing it
+        helps, and the higher β, the more. With β of 1 the two are equally
+        risky: a scheduled replacement spends the labor and the part and leaves
+        the failure rate where it was. With β below 1 the fresh part is the
+        riskier one, and every renewal starts the risky early hours again.
+        Equation C5 puts a number on it: the chance that a part already
+        <math><mi>t</mi></math> hours old fails within the next
+        <math><mi mathvariant="normal">&#x394;</mi></math> hours. Figure W4 sets
+        that beside a new part's chance at any age.
+      </p>
+
+      {% call std.working_figure("W4", "The Weibull explorer, opening on the worked example's fit: β = 2.74 and η = 847 hours, read at 400 hours. The age axes are fixed, so changing η stretches the curves sideways and changing β reshapes them. In the density pane, the shaded area up to the age is F(t), the height of the green curve in the first pane at that same age. The dashed line in the hazard pane is the level hazard β = 1 would give at the same η.", "weibull-explorer", "explorer") %}
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 760 560" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
+            <title id="fig-w4-title">Weibull explorer</title>
+            <desc id="fig-w4-desc">Four panes for one Weibull distribution: the share of lives failed and still running against age; the probability density, with the area up to the chosen age shaded; the hazard rate, against the level hazard of beta 1; and the straight line the distribution makes on a probability plot. Sliders set beta, eta and the age.</desc>
+            <g data-plot>{{ drawn.explorer_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-controls" data-controls hidden>
+          <div class="wbl-chips" role="group" aria-label="Set β to">
+            <span class="wbl-chips-label">Try β of</span>
+            <button type="button" class="wbl-chip" data-beta-preset="0.5" aria-pressed="false">0.5, early life</button>
+            <button type="button" class="wbl-chip" data-beta-preset="1" aria-pressed="false">1, random</button>
+            <button type="button" class="wbl-chip" data-beta-preset="2" aria-pressed="false">2</button>
+            <button type="button" class="wbl-chip" data-beta-preset="3.5" aria-pressed="false">3.5</button>
+            <button type="button" class="wbl-chip" data-beta-preset="6" aria-pressed="false">6, steep wear-out</button>
+            <button type="button" class="wbl-chip" data-beta-preset="worked" aria-pressed="true">The worked example</button>
+          </div>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Shape β</span><span class="wbl-slider-value" data-value="beta">2.74</span></span>
+            <input type="range" min="0.3" max="6" step="0.01" value="2.74" data-input="beta">
+          </label>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Scale η</span><span class="wbl-slider-value" data-value="eta">847 h</span></span>
+            <input type="range" min="100" max="2000" step="1" value="847" data-input="eta">
+          </label>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Age</span><span class="wbl-slider-value" data-value="age">400 h</span></span>
+            <input type="range" min="0" max="2500" step="10" value="400" data-input="age">
+          </label>
+        </div>
+        <div class="wbl-readout" data-readout>{{ drawn.explorer_readout() }}</div>
+      {% endcall %}
+      <div class="wbl-try">
+        <p><strong>Things to try in figure W4:</strong></p>
+        <ul>
+          <li>Step β from 0.5 to 6 with the buttons. The F curve swings about the point where it crosses 63.2% at η, and never leaves it; the density turns from a spike at zero into a hump that narrows and moves toward η.</li>
+          <li>Move η alone. Every curve stretches or shrinks sideways and keeps its shape, and on the probability plot the line slides sideways without turning.</li>
+          <li>Set β to 1, then move the age. The chance of failing in the next 100 hours is the same at every age, which is why no replacement schedule can lower it.</li>
+          <li>Move the age with β above 1, then below it. Above 1 a part that has run is the riskier one, and the readout says renewing it would lower the risk; below 1 it says the opposite.</li>
+        </ul>
+      </div>
     </section>
 
     <section class="std-section" id="weibull-fit">
       <h4>Fitting β and η by maximum likelihood</h4>
       <p>
-        The fit chooses the β and η that make the observed lives most likely.
-        A complete life contributes the density of failing at that age; a
-        censored life contributes the chance of surviving at least that long.
-        In logarithms, with <math><mi>n</mi></math> lives of which
-        <math><mi>r</mi></math> are complete:
+        Every pair of β and η is a different guess at how this mechanism's lives
+        are spread. The fit scores each guess by how likely it makes the lives
+        that actually happened, and keeps the guess that scores highest. Each
+        life brings its own piece of evidence:
       </p>
-      {% call std.equation("W6", "the log-likelihood is the sum over complete lives of log beta minus beta log eta plus beta minus one times log t, minus the sum over all lives of t over eta to the power beta") %}
+      <ul>
+        <li><strong>A complete life</strong> of <math><msub><mi>t</mi><mi>i</mi></msub></math> hours says a failure arrived at that age. It scores the density there, <math><mi>f</mi><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo stretchy="false">)</mo></math> from equation W4: high when the guess puts many failures around that age, low when it says failures there are rare.</li>
+        <li><strong>A censored life</strong> says only that the part ran at least that long without this failure. It scores the reliability, <math><mi>R</mi><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo stretchy="false">)</mo></math> from equation W2: the chance, under the guess, of lasting that long.</li>
+      </ul>
+      <p>
+        The likelihood is the product of every life's score, so a guess has to
+        suit all the lives at once: one that crowds failures too early is marked
+        down by the long lives, one that spreads them too late by the short ones.
+        Multiplying many small numbers is awkward, so the fit adds their
+        logarithms instead, which peak at the same β and η. With
+        <math><mi>n</mi></math> lives of which <math><mi>r</mi></math> are complete:
+      </p>
+      {% call std.equation("W6", "the likelihood is the product over all lives of the density for a complete life and the reliability for a censored one; its logarithm is the sum over complete lives of log beta minus beta log eta plus beta minus one times log t, minus the sum over all lives of t over eta to the power beta") %}
       <math display="block">
-        <mi>&#x2113;</mi><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>,</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo>
-        <munder><mo>&#x2211;</mo><mrow><mi>i</mi><mo>:</mo><msub><mi>&#x3B4;</mi><mi>i</mi></msub><mo>=</mo><mn>1</mn></mrow></munder>
-        <mrow><mo>[</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mi>&#x3B2;</mi><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi><mo>+</mo><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mn>1</mn><mo stretchy="false">)</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><msub><mi>t</mi><mi>i</mi></msub><mo>]</mo></mrow>
-        <mo>&#x2212;</mo>
-        <munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
-        <msup><mrow><mo>(</mo><mfrac><msub><mi>t</mi><mi>i</mi></msub><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mi>&#x3B2;</mi></msup>
+        <mtable displaystyle="true">
+          <mtr><mtd>
+            <mi>L</mi><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>,</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo>
+            <munderover><mo>&#x220F;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+            <mi>f</mi><msup><mrow><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><msub><mi>&#x3B4;</mi><mi>i</mi></msub></msup>
+            <mspace width="0.15em"></mspace>
+            <mi>R</mi><msup><mrow><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><mrow><mn>1</mn><mo>&#x2212;</mo><msub><mi>&#x3B4;</mi><mi>i</mi></msub></mrow></msup>
+          </mtd></mtr>
+          <mtr><mtd>
+            <mi>&#x2113;</mi><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>,</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo><mo>=</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>L</mi><mo>=</mo>
+            <munder><mo>&#x2211;</mo><mrow><mi>i</mi><mo>:</mo><msub><mi>&#x3B4;</mi><mi>i</mi></msub><mo>=</mo><mn>1</mn></mrow></munder>
+            <mrow><mo>[</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mi>&#x3B2;</mi><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi><mo>+</mo><mo stretchy="false">(</mo><mi>&#x3B2;</mi><mo>&#x2212;</mo><mn>1</mn><mo stretchy="false">)</mo><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><msub><mi>t</mi><mi>i</mi></msub><mo>]</mo></mrow>
+            <mo>&#x2212;</mo>
+            <munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+            <msup><mrow><mo>(</mo><mfrac><msub><mi>t</mi><mi>i</mi></msub><mi>&#x3B7;</mi></mfrac><mo>)</mo></mrow><mi>&#x3B2;</mi></msup>
+          </mtd></mtr>
+        </mtable>
       </math>
       {% endcall %}
-      <p>Setting the derivative with respect to η to zero gives η in terms of β:</p>
+      <dl class="std-where">
+        <dt><math><msub><mi>&#x3B4;</mi><mi>i</mi></msub></math></dt><dd>1 for a complete life, so it brings its density; 0 for a censored one, so it brings its reliability. Every life brings the <math><msup><mrow><mo stretchy="false">(</mo><msub><mi>t</mi><mi>i</mi></msub><mo>/</mo><mi>&#x3B7;</mi><mo stretchy="false">)</mo></mrow><mi>&#x3B2;</mi></msup></math> term, because the density holds a reliability too.</dd>
+      </dl>
+
+      {% call std.working_figure("W5", "Scoring a guess against the worked example. The upper pane is the density for the β and η on the sliders: each complete life scores the curve's height at its age (the stems), each censored life the chance of lasting at least as long as it did (the arrows). The lower pane is the profile log-likelihood: for each β, the best score any η can give. Its peak is the fit, β = 2.739, and the band under it is β's 95% interval. The figure opens on a poor guess, β = 1 and η = 1,200 hours.", "weibull-likelihood", "likelihood") %}
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 760 520" role="img" aria-labelledby="fig-w5-title fig-w5-desc">
+            <title id="fig-w5-title">Scoring a guess at beta and eta</title>
+            <desc id="fig-w5-desc">Above, a Weibull density curve with a stem at each of the five failure ages, 310, 520, 640, 760 and 980 hours, rising to the curve, and arrows pointing right from the two censored lives at 450 and 1,050 hours. Below, the profile log-likelihood against beta, peaking at beta 2.739, with the current guess marked on it.</desc>
+            <g data-plot>{{ drawn.likelihood_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-controls" data-controls hidden>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Shape β</span><span class="wbl-slider-value" data-value="beta">1.00</span></span>
+            <input type="range" min="0.3" max="6" step="0.01" value="1" data-input="beta">
+          </label>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Scale η</span><span class="wbl-slider-value" data-value="eta">1,200 h</span></span>
+            <input type="range" min="100" max="2000" step="1" value="1200" data-input="eta">
+          </label>
+          <div class="wbl-chips">
+            <label class="wbl-check"><input type="checkbox" data-input="lock"> Set η from β, equation W7</label>
+            <button type="button" class="wbl-chip is-action" data-action="best">Jump to the best fit</button>
+            <button type="button" class="wbl-chip is-action" data-action="reset">Start again</button>
+          </div>
+        </div>
+        <div class="wbl-readout" data-readout>{{ drawn.likelihood_readout() }}</div>
+      {% endcall %}
+      <div class="wbl-try">
+        <p><strong>Things to try in figure W5:</strong></p>
+        <ul>
+          <li>Move β and η by hand and watch the sum in the table climb toward −36.69, the most these lives allow. No other pair reaches it.</li>
+          <li>Tick Set η from β and move β alone. η follows equation W7, the marker rides along the lower curve, and the top of the curve is the fitted β.</li>
+          <li>Push β past 5 with η set from β. The density narrows into a spike near 850 hours: the lives close to it score better than at the fit, but the 310-hour life scores far worse, and the sum falls.</li>
+          <li>Drop β toward 0.5 with η set from β. The density piles up near zero, where no failure happened, and every complete life scores worse than at the fit.</li>
+        </ul>
+      </div>
+      <p>
+        Searching both numbers at once is not needed. For any β, the best η has
+        a formula: setting the derivative of equation W6 with respect to η to
+        zero gives
+      </p>
       {% call std.equation("W7", "eta is the r-th part of the sum of t to the power beta, all to the power one over beta") %}
       <math display="block">
         <mover><mi>&#x3B7;</mi><mo>^</mo></mover><mo>=</mo>
         <msup><mrow><mo>(</mo><mfrac><mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msubsup><mi>t</mi><mi>i</mi><mover><mi>&#x3B2;</mi><mo>^</mo></mover></msubsup></mrow><mi>r</mi></mfrac><mo>)</mo></mrow><mrow><mn>1</mn><mo lspace="0" rspace="0">/</mo><mover><mi>&#x3B2;</mi><mo>^</mo></mover></mrow></msup>
       </math>
       {% endcall %}
-      <p>Substituting it back leaves one equation in β alone, which the fitted β makes zero:</p>
+      <p>
+        Substituting it back leaves the profile log-likelihood, the lower curve
+        in figure W5, which depends on β alone. The fitted β is where that curve
+        is flat at its peak: where its slope, divided by <math><mi>r</mi></math>, is zero.
+      </p>
       {% call std.equation("W8", "one over beta, plus the mean log of the complete lives, minus the t to the beta weighted mean log of all lives, equals zero") %}
       <math display="block">
         <mfrac><mn>1</mn><mi>&#x3B2;</mi></mfrac><mo>+</mo>
@@ -654,6 +875,35 @@
         <li><strong>If there is no root between 0.1 and 20,</strong> the fit stops and says it did not converge. There is then no maximum-likelihood β to report, and REL-WBL-MTH-001 §5.5 makes β and η maximum-likelihood estimates, so no estimate of another kind is put in its place. It happens when the lives are all but identical, often because of duplicate work orders.</li>
         <li><strong>The fit needs at least five complete lives</strong>, lives that end in a failure. With fewer, or with no root, the run stops and says why. Over all of the group's history, any result saved for it before is then removed, because the data no longer supports it. Over a window an editor entered, the saved result is kept: a window too narrow to fit says nothing against the whole history.</li>
       </ul>
+
+      <h5 id="weibull-censoring-matters">Why censored lives have to count</h5>
+      <p>
+        It is tempting to fit the failures alone, or to treat every life as if
+        it ended in a failure. Both make a mechanism look shorter-lived than it
+        is. Fitted three ways, the worked example's lives give:
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table" id="weibull-censoring-table">
+          <caption class="visually-hidden">The worked example fitted three ways</caption>
+          <thead>
+            <tr><th scope="col">The two censored lives, 450 h and 1,050 h</th><th scope="col" class="is-numeric">β</th><th scope="col" class="is-numeric">η</th><th scope="col" class="is-numeric">MTTF</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Counted as censored, as GREMLIN counts them</td><td class="is-numeric">2.739</td><td class="is-numeric">847.2 h</td><td class="is-numeric">753.8 h</td></tr>
+            <tr><td>Left out</td><td class="is-numeric">3.197</td><td class="is-numeric">718.9 h</td><td class="is-numeric">643.8 h</td></tr>
+            <tr><td>Counted as failures</td><td class="is-numeric">2.945</td><td class="is-numeric">757.0 h</td><td class="is-numeric">675.5 h</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Leaving them out throws away the evidence that the part ran 450 and
+        1,050 hours without this failure, so η and MTTF come out about 15%
+        short. Counting them as failures invents two failures that never
+        happened, and they come out about 10% short. A PM interval set from
+        either would be too short, so the work would be done too early every
+        time. In the lab, figure W9, delete the PM reset and clear the current
+        life to see the second row.
+      </p>
     </section>
 
     <section class="std-section" id="weibull-ci">
@@ -686,6 +936,18 @@
         <dt><math><mi>&#x2110;</mi></math></dt><dd>The observed information: the negative of the matrix of second derivatives of equation W6 with respect to <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B2;</mi></math> and <math><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi></math>, taken at the fitted values. GREMLIN estimates it by finite differences.</dd>
         <dt><math><mn>1.96</mn></math></dt><dd>The two-sided 95% point of the standard normal distribution.</dd>
       </dl>
+      <p>
+        The lower pane of <a href="#weibull-likelihood">figure W5</a> shows
+        where the width comes from. A sharp peak in the profile log-likelihood
+        means only values of β close to the best explain the lives nearly as
+        well, so the interval is narrow; a flat top means a wide range explains
+        them almost as well, so it is wide. More complete lives sharpen the peak,
+        and the interval narrows roughly with the square root of their number:
+        halving its width takes about four times the failures. The worked
+        example's five failures leave β's interval 154% as wide as β itself; the
+        lab's twenty-failure wear-out preset brings that down to 65%, inside the
+        70% the interpretation summary calls stable.
+      </p>
       <p>
         When the curvature cannot be inverted the intervals are reported as Not
         available. They are approximate either way: with few failures they are
@@ -723,6 +985,15 @@
         <li><strong>AIC and BIC</strong> score the fit against its two parameters; lower is better when comparing fits of the same lives. They are stored with every saved result but not shown.</li>
       </ul>
       <p>
+        <strong>On the charts:</strong> B10, B50 and η are where the CDF crosses
+        10%, 50% and 63.2%, read down to the age axis, and MTTF is the balance
+        point of the PDF; <a href="#weibull-four-charts">figure W6</a> marks all
+        four. With β above 1 the mean life falls short of η, and for β around 3
+        to 4 it sits close to B50. With β below 1 the lives that run long pull
+        the mean past η, while half the lives end well before it, so MTTF says
+        little about a typical life there.
+      </p>
+      <p>
         <strong>Reliability at an age:</strong> under the charts, enter an age in
         life hours, such as a PM interval being considered, and the page gives
         <math><mi>R</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>
@@ -737,11 +1008,56 @@
     <section class="std-section" id="weibull-charts">
       <h4>The four charts</h4>
       <p>
+        Every fit is drawn four ways, side by side: the Weibull Probability
+        Plot, the CDF, the Probability Density (PDF) and the Hazard Rate. They
+        are four views of one fitted curve, so they always agree with each
+        other, and each makes a different question easy to answer. They share
+        one key:
+      </p>
+      <ul>
+        <li><strong>Green:</strong> the fitted curve, at the maximum-likelihood β and η, or at the values an editor is trying.</li>
+        <li><strong>Yellow:</strong> the same curve at the lower ends of both 95% intervals, and again at the upper ends, where the intervals exist; on the probability plot and the CDF only. They show how far the curve could reasonably move on this much data, not an exact band around it.</li>
+        <li><strong>White points</strong> (dark in the dark theme): the Kaplan-Meier estimates, one at each age where a complete life ends. They are what the lives say, not the fit.</li>
+        <li><strong>Red points:</strong> lives that ended in a PM reset, on the CDF only, placed on the fitted curve at their age.</li>
+        <li><strong>The red vertical line</strong> in every pane: the current life, the scheduled hours from the most recent event to the run's analysis cutoff.</li>
+      </ul>
+      {% call std.working_figure("W6", "The four charts for the worked example, drawn as Perform an Analysis draws them and read at an age: 400 hours until the slider moves. The labels for B10, B50, η and MTTF are added here, and so are the tick values; GREMLIN's own panes carry the curves, the points and the lines.", "weibull-four-charts", "charts") %}
+        <ul class="wbl-key" aria-label="Key">
+          <li><span class="wbl-swatch" aria-hidden="true"></span>Fitted curve</li>
+          <li><span class="wbl-swatch is-ci" aria-hidden="true"></span>At the 95% interval ends</li>
+          <li><span class="wbl-swatch is-point" aria-hidden="true"></span>Kaplan-Meier point</li>
+          <li><span class="wbl-swatch is-reset" aria-hidden="true"></span>Life ended by a PM reset</li>
+          <li><span class="wbl-swatch is-current" aria-hidden="true"></span>Current life</li>
+          <li><span class="wbl-swatch is-age" aria-hidden="true"></span>The age read</li>
+        </ul>
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 760 560" role="img" aria-labelledby="fig-w6-title fig-w6-desc">
+            <title id="fig-w6-title">The four Weibull charts for the worked example</title>
+            <desc id="fig-w6-desc">The Weibull probability plot, with five Kaplan-Meier points along a fitted line of slope 2.74 and two interval lines; the CDF, an S-shaped curve through the same points with a red point for the PM reset at 450 hours; the probability density, a hump peaking near 700 hours; and the hazard rate, rising with age. A red line marks the current life at 1,050 hours in every pane, and a dashed line the age being read.</desc>
+            <g data-plot>{{ drawn.charts_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-controls" data-controls hidden>
+          <label class="wbl-slider">
+            <span class="wbl-slider-head"><span>Read the charts at an age</span><span class="wbl-slider-value" data-value="age">400 h</span></span>
+            <input type="range" min="0" max="1200" step="5" value="400" data-input="age">
+          </label>
+        </div>
+        <div class="wbl-readout" data-readout>{{ drawn.charts_readout() }}</div>
+      {% endcall %}
+      <p>
+        Move the age in figure W6 and the dashed line moves through all four
+        panes at once: the CDF gives the share failed by that age, the PDF how
+        thickly failures fall around it, the hazard the risk for a part that has
+        got that far, and the probability plot the CDF's share on its stretched
+        scale.
+      </p>
+
+      <h5 id="weibull-km-points">The points: Kaplan-Meier estimates</h5>
+      <p>
         The points for complete lives are not the fit: they are what the
         lives themselves say, estimated without assuming any distribution by
-        the Kaplan-Meier method. (The red points for lives ended by a PM reset
-        only mark their ages, on the fitted curve.) At each age where a
-        complete life ends:
+        the Kaplan-Meier method. At each age where a complete life ends:
       </p>
       {% call std.equation("W13", "the Kaplan-Meier reliability at a failure age is the product over failure ages up to it of one minus failures over the number at risk") %}
       <math display="block">
@@ -754,6 +1070,18 @@
         <dt><math><msub><mi>d</mi><mi>i</mi></msub></math></dt><dd>Complete lives ending at age <math><msub><mi>t</mi><mi>i</mi></msub></math>.</dd>
         <dt><math><msub><mi>n</mi><mi>i</mi></msub></math></dt><dd>Lives still at risk just before <math><msub><mi>t</mi><mi>i</mi></msub></math>. A censored life counts as at risk up to and including its own age, then leaves.</dd>
       </dl>
+      <p>
+        Why not simply the share of lives that had failed by each age? Because
+        a censored life is only known to have lasted so long. The life ended by
+        a PM reset at 450 hours says nothing about whether it would have reached
+        520, so after 450 hours it leaves the lives at risk, and each later step
+        is taken among the lives still being watched. That is why the steps
+        grow after a censored life: in the worked example the step at 520 hours
+        is 1 in 5, not 1 in 6. The <a href="#weibull-example">worked example</a>
+        takes every point through by hand.
+      </p>
+
+      <h5 id="weibull-probability-plot">Weibull Probability Plot</h5>
       <p>
         The probability plot straightens a Weibull curve. Taking logarithms of
         equation W2 twice turns it into a line whose slope is β and which
@@ -770,14 +1098,38 @@
         <mi>y</mi><mo>=</mo><mi>&#x3B2;</mi><mspace width="0.1em"></mspace><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>t</mi><mo>&#x2212;</mo><mi>&#x3B2;</mi><mspace width="0.1em"></mspace><mi>ln</mi><mo lspace="0" rspace="0.17em">&#x2061;</mo><mi>&#x3B7;</mi>
       </math>
       {% endcall %}
+      {% call std.working_figure("W7", "From the CDF to the probability plot, for the worked example, in three steps. At the last, the fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide. Among themselves the points are very nearly straight: their R², equation W15, is 0.990.", "weibull-straighten", "straighten") %}
+        <div class="wbl-controls" data-controls hidden>
+          <div class="wbl-chips" role="group" aria-label="Step">
+            <button type="button" class="wbl-chip" data-step="1" aria-pressed="false">1. Plain scales</button>
+            <button type="button" class="wbl-chip" data-step="2" aria-pressed="false">2. Age on a log scale</button>
+            <button type="button" class="wbl-chip" data-step="3" aria-pressed="true">3. Share failed on the Weibull scale</button>
+          </div>
+        </div>
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w7-title fig-w7-desc">
+            <title id="fig-w7-title">Straightening the worked example's CDF into a probability plot</title>
+            <desc id="fig-w7-desc">The worked example's five Kaplan-Meier points, at 310, 520, 640, 760 and 980 hours, with the fitted curve. On plain scales the curve is an S; with age on a log scale it is still bent; with the share failed on the Weibull scale it is a straight line of slope 2.74 crossing 63.2 percent at 847 hours, and the points run roughly parallel to it, a little above.</desc>
+            <g data-plot>{{ drawn.straighten_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-readout">
+          <p data-step-note="1" hidden><strong>Plain scales.</strong> The share failed, equation W3, against life hours, with the five Kaplan-Meier points. The fitted curve is an S, and whether five points follow an S is hard to judge by eye.</p>
+          <p data-step-note="2" hidden><strong>Age on a log scale.</strong> Equal distances now stand for equal ratios of age: 250 to 500 hours is as wide as 500 to 1,000. The curve is still bent.</p>
+          <p data-step-note="3"><strong>The share failed on the Weibull scale</strong>, ln(−ln(1 − F)), equation W14. Taking logarithms twice turns the fitted curve into a straight line of slope β, and the points can now be judged against a ruler. This is the Weibull Probability Plot.</p>
+        </div>
+      {% endcall %}
+      <p>How to read it:</p>
       <ul>
-        <li><strong>Weibull Probability Plot:</strong> the Kaplan-Meier points for the complete lives, the fitted line (green) and, where the intervals exist, the lines at the lower and upper ends of both intervals (yellow). Points that lie close to the green line support the Weibull model. A point whose estimate is 0 or 1 cannot be drawn on this scale.</li>
-        <li><strong>CDF:</strong> the fitted <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math> with the Kaplan-Meier points for complete lives (white, or dark in the dark theme) and the lives that ended in a PM reset (red), placed on the fitted curve at their age.</li>
-        <li><strong>Probability Density (PDF)</strong> and <strong>Hazard Rate:</strong> equations W4 and W5 as curves alone, with no points or interval curves, drawn at the fitted values or at the values an editor is trying.</li>
-        <li><strong>The red vertical line</strong> in every pane is the current life: the scheduled hours from the most recent event to the run's analysis cutoff.</li>
-        <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
-        <li><strong>The Weibull data table</strong> under the charts lists each life with its type, its life hours, the raw elapsed hours between its two events and the weekend and non-run hours taken out of them (REL-WBL-DAT-004 §5), its note, and the duplicate check. The <strong>event processing table</strong> under it, closed until opened, lists every event behind those lives, including the ones left out and why.</li>
+        <li><strong>The slope is β.</strong> A steep line is a high β: failures bunched in a narrow band of ages, wear-out. A shallow one is a low β: failures spread from very early to very late. The panes are not drawn to equal scales, so read β from the result rather than from the angle.</li>
+        <li><strong>Where the line crosses 63.2%</strong>, which is ln(−ln R) = 0, is η.</li>
+        <li><strong>The points against the line</strong> are the check on the model. Points scattered on both sides of one straight line support one Weibull population. The first few wander most, because each is one failure among few lives.</li>
+        <li><strong>The two yellow lines</strong> are the line at the lower ends of both intervals and at the upper ends: how far it could swing and slide on this much data. With few failures they splay wide apart.</li>
+        <li><strong>A point the plot cannot draw</strong>, with an estimate of 0 or 1, such as the last failure when no life outlasts it, is left off.</li>
+        <li>On Perform an Analysis the axes are labelled ln(life hours) and ln(−ln R), with no tick values; the figures here label them in hours and in the share failed.</li>
       </ul>
+
+      <h5 id="weibull-r-squared">How straight is straight enough: R²</h5>
       <p>
         How straight the points lie is measured by the probability plot's
         <strong>R²</strong>: the squared correlation of the plotted points,
@@ -829,39 +1181,105 @@
         the interpretation summary and the report, and beside each fit in the
         Highest-beta and Most likely to fail soon lists.
       </p>
-      {% call std.figure("W4", "The worked example on probability paper. The fitted line's slope is β = 2.74 and it crosses the 63.2% line at η = 847 hours. The five Kaplan-Meier points run roughly parallel to it, all a little above it and the first most of all: with five failures each Kaplan-Meier step is a big one, and the sample is small, which is also why the confidence intervals are wide. Among themselves the points are very nearly straight: their R², equation W15, is 0.990.") %}
-      <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w4-title fig-w4-desc">
-        <title id="fig-w4-title">Weibull probability plot of the worked example</title>
-        <desc id="fig-w4-desc">A plot of the Weibull transform of unreliability against log life hours. Five points at 310, 520, 640, 760 and 980 hours run roughly parallel to and a little above a straight fitted line with slope 2.74 that crosses 63.2 percent unreliability at 847 hours.</desc>
-        <path class="fig-grid" d="M80 30 H560 M80 85 H560 M80 140 H560 M80 195 H560 M85.7 30 V250 M270.6 30 V250 M455.4 30 V250 M545.1 30 V250"/>
-        <path class="fig-axis" d="M80 30 V250 H560"/>
-        <text class="fig-text-small" x="74" y="34" text-anchor="end">93.4%</text>
-        <text class="fig-text-small" x="74" y="89" text-anchor="end">63.2%</text>
-        <text class="fig-text-small" x="74" y="144" text-anchor="end">30.8%</text>
-        <text class="fig-text-small" x="74" y="199" text-anchor="end">12.7%</text>
-        <text class="fig-text-small" x="74" y="254" text-anchor="end">4.9%</text>
-        <text class="fig-text-small" x="85.7" y="268" text-anchor="middle">250 h</text>
-        <text class="fig-text-small" x="270.6" y="268" text-anchor="middle">500 h</text>
-        <text class="fig-text-small" x="455.4" y="268" text-anchor="middle">1,000 h</text>
-        <text class="fig-text-small" x="545.1" y="268" text-anchor="middle">1,400 h</text>
-        <text class="fig-text-small" x="320" y="290" text-anchor="middle">Life hours (log scale)</text>
-        <text class="fig-text-small" x="0" y="0" transform="translate(22 140) rotate(-90)" text-anchor="middle">Unreliability F(t), Weibull scale</text>
-        <path class="fig-guide" d="M411.3 250 V85 H80"/>
-        <path class="fig-accent-line" d="M119.1 250 L508.7 30"/>
-        <circle class="fig-point" cx="143.1" cy="187.8" r="5"/>
-        <circle class="fig-point" cx="281.1" cy="138.6" r="5"/>
-        <circle class="fig-point" cx="336.5" cy="107.4" r="5"/>
-        <circle class="fig-point" cx="382.3" cy="81.3" r="5"/>
-        <circle class="fig-point" cx="450.1" cy="53.8" r="5"/>
-        <text class="fig-text-small" x="131" y="178" text-anchor="end">310 h</text>
-        <text class="fig-text-small" x="269" y="129" text-anchor="end">520 h</text>
-        <text class="fig-text-small" x="324" y="98" text-anchor="end">640 h</text>
-        <text class="fig-text-small" x="370" y="72" text-anchor="end">760 h</text>
-        <text class="fig-text-small" x="438" y="45" text-anchor="end">980 h</text>
-        <text class="fig-text-accent" x="300" y="176">slope β = 2.74</text>
-        <text class="fig-text-small" x="419" y="236">η = 847 h</text>
-      </svg>
+
+      <h5 id="weibull-plot-patterns">Shapes to look for</h5>
+      <p>
+        R² gives one number; the shape the points make says why a fit is off.
+        Figure W8 shows four populations from the lab's presets. The lab, figure
+        W9, will take any of them for a closer look.
+      </p>
+      {% call std.working_figure("W8", "Four probability plots, each from one of the lab's presets, with the fitted line in green. The dashed lines are drawn here to show the shape the points make; GREMLIN draws only the points and the fit.", "weibull-patterns", "patterns") %}
+        <div class="wbl-controls" data-controls hidden>
+          <div class="wbl-chips" role="group" aria-label="Pattern">
+            <button type="button" class="wbl-chip" data-pattern="wearout" aria-pressed="true">One population</button>
+            <button type="button" class="wbl-chip" data-pattern="mixed" aria-pressed="false">Two mechanisms pooled</button>
+            <button type="button" class="wbl-chip" data-pattern="duplicate" aria-pressed="false">Duplicate work order</button>
+            <button type="button" class="wbl-chip" data-pattern="failure_free" aria-pressed="false">Failure-free period</button>
+            <button type="button" class="wbl-chip is-action" data-open-in-lab>Open this one in the lab</button>
+          </div>
+        </div>
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-w8-title fig-w8-desc">
+            <title id="fig-w8-title">Shapes a Weibull probability plot can take</title>
+            <desc id="fig-w8-desc">A probability plot of one of four populations: twenty wear-out failures lying along one straight line; two groups of failures on two steep lines with a jump between them; the worked example with one extra point far to the left, a duplicate work order; or points that bend over, steep at the left and flatter to the right, from a failure-free period.</desc>
+            <g data-plot>{{ drawn.patterns_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-readout">
+          <p data-pattern-numbers>{{ drawn.patterns_numbers() }}</p>
+          <p data-pattern-note="wearout"><strong>One population.</strong> Twenty failures from one wear-out mechanism. The points scatter evenly about a straight line, a little more at the ends, and R² is well clear of its threshold. Read β and η from the result.</p>
+          <p data-pattern-note="mixed"><strong>Two mechanisms pooled.</strong> Six short lives and six long ones, each group from its own wear-out mechanism with β = 4. Each group lies on a steep line of its own, with a jump between them, and the one line fitted through both is far shallower: β comes out at 1.12, near random failures, which describes neither mechanism. Fit each mechanism on its own.</p>
+          <p data-pattern-note="duplicate"><strong>Duplicate work order.</strong> The worked example with one more life of half an hour: a second work order raised for the same breakdown. That one point sits far to the left and drags the line flat. β falls from 2.74 to 0.75, and the reading turns from wear-out to early life. GREMLIN flags such a life Check for duplicate in the data table.</p>
+          <p data-pattern-note="failure_free"><strong>Failure-free period.</strong> Lives that all begin with 350 hours of no risk at all, then follow a Weibull with β = 1.3. The points bend over, steep at the left and flatter to the right, and the two-parameter fit overstates β at 2.04. R² still passes its threshold: only the plot shows the bend, and GREMLIN has no third parameter for it (see <a href="#weibull-limits">Limitations</a>).</p>
+        </div>
       {% endcall %}
+
+      <h5 id="weibull-cdf">CDF</h5>
+      <p>
+        The CDF plots <math><mi>F</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>,
+        equation W3: the share of lives expected to have ended in a failure by
+        each age, rising from 0 toward 1. Read up from an age to the green curve
+        and across: in figure W6, about 12% by 400 hours. Read the other way,
+        across from a share and down, it gives the B lives: 10% gives B10, 50%
+        gives B50, and 63.2% gives η.
+      </p>
+      <ul>
+        <li><strong>The white points</strong> are the Kaplan-Meier share failed at each failure age, one minus equation W13. They climb one step at each failure, and the green curve should run through the middle of them. They are the probability plot's points on plain scales, where how far the curve misses one reads directly as a share of lives.</li>
+        <li><strong>The red points</strong> mark the lives that ended in a PM reset, placed on the green curve at their age to show where in the distribution those renewals came. They are not estimates of anything: a PM reset is not a failure.</li>
+        <li><strong>The yellow curves</strong> are the CDF at the lower ends of both intervals and at the upper ends.</li>
+        <li><strong>The red line</strong> is the current life. The height of the green curve where it crosses that line is the share of lives that would have failed by the age the current one has reached; equation C5 turns that into the chance of a failure in the next few weeks, and figure W6's readout gives both.</li>
+      </ul>
+
+      <h5 id="weibull-pdf">Probability Density (PDF)</h5>
+      <p>
+        The PDF plots <math><mi>f</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>,
+        equation W4: how thickly failures fall at each age. The area under it
+        between two ages is the share of lives that end in a failure between
+        them, and the whole area is 1; its peak is the commonest age at failure.
+        Its shape is β's signature:
+      </p>
+      <ul>
+        <li><strong>β below 1:</strong> highest at age 0 and falling steeply, with a long tail of lives that run long.</li>
+        <li><strong>β of 1:</strong> highest at 0 too, falling away exponentially.</li>
+        <li><strong>β above 1:</strong> a hump, starting at 0, rising to a peak and falling again. The higher β, the narrower the hump and the closer its peak to η.</li>
+      </ul>
+      <p>
+        A narrow hump means lives are predictable: most fail within a narrow
+        band of ages, which is what makes a fixed PM interval worth setting. A
+        wide one means the age at failure varies a lot, so any fixed interval
+        either renews many parts long before they would fail or lets many fail
+        first. The PDF is drawn from the fit alone, with no points and no
+        interval curves, at the fitted values or the values an editor is trying.
+      </p>
+
+      <h5 id="weibull-hazard">Hazard Rate</h5>
+      <p>
+        The Hazard Rate plots <math><mi>h</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></math>,
+        equation W5: for a part that has run <math><mi>t</mi></math> hours
+        without failing, how fast failure is coming at it now. It is the chart
+        that answers the PM question directly (see <a href="#weibull-distribution">The
+        Weibull distribution</a>):
+      </p>
+      <ul>
+        <li><strong>Falling</strong>, β below 1: the longer a part has run, the safer it is. Renewing it on a schedule restarts the risky early hours; removing the defects behind them is the better aim.</li>
+        <li><strong>Level</strong>, β of 1: the same risk at every age, 1/η per hour. A schedule cannot lower it; inspection or condition monitoring that catches a failure as it starts can.</li>
+        <li><strong>Rising</strong>, β above 1: the risk climbs with age. Renewing the part before it climbs too far lowers it, and where the curve starts to climb steeply is where an interval is worth weighing against downtime and cost.</li>
+      </ul>
+      <p>
+        Over a short span, the hazard times the span is close to the chance of
+        failing in it: a hazard of 2 per 1,000 hours is about a 1% chance in the
+        next 5 hours. Over a longer span the hazard changes as the part ages, so
+        use equation C5, as the <a href="#common-risk">Most likely to fail
+        soon</a> list does. Like the PDF, the hazard is drawn from the fit alone.
+        Its height depends on η as well as β, so compare its shape, not its
+        scale, between fits.
+      </p>
+
+      <h5 id="weibull-chart-links">From a point to its work order</h5>
+      <ul>
+        <li>Hovering over a point shows its work order; clicking it jumps to its row in the Weibull data table, and clicking a row rings its point on the chart.</li>
+        <li><strong>The Weibull data table</strong> under the charts lists each life with its type, its life hours, the raw elapsed hours between its two events and the weekend and non-run hours taken out of them (REL-WBL-DAT-004 §5), its note, and the duplicate check. The <strong>event processing table</strong> under it, closed until opened, lists every event behind those lives, including the ones left out and why.</li>
+      </ul>
     </section>
 
     <section class="std-section" id="weibull-interpretation">
@@ -895,6 +1313,18 @@
         MTTF is for budgeting, manpower and spares, not for timing a PM on its
         own: in a population that is not wearing out, replacing at the average
         life adds work without removing failures.
+      </p>
+      <h5 id="weibull-five-questions">Reading a result in five questions</h5>
+      <ol>
+        <li><strong>Do the points look like one population?</strong> R² against its threshold, and the shape of the probability plot (<a href="#weibull-patterns">figure W8</a>). If not, fix the population, by fitting a mechanism or reviewing a duplicate, before reading anything else.</li>
+        <li><strong>Which side of 1 is β, and does its interval stay there?</strong> That chooses the strategy: removing defects below 1, detection at 1, renewal by age above it.</li>
+        <li><strong>How wide are the intervals?</strong> Wide ones make the reading a direction rather than a decision. More failures, or a cleaner population, narrow them.</li>
+        <li><strong>Where does the current life sit?</strong> Against B10 and η on the CDF: a wear-out mechanism whose current life is past B10 is already where its hazard climbs.</li>
+        <li><strong>How likely is a failure in the next few weeks?</strong> Equation C5 puts the hazard and the current life together, and the <a href="#common-risk">Most likely to fail soon</a> list ranks the asset's mechanisms by it.</li>
+      </ol>
+      <p>
+        The lab, <a href="#weibull-lab-figure">figure W9</a>, answers all five for
+        any lives you give it, with the readings this table would give.
       </p>
     </section>
 
@@ -959,6 +1389,85 @@
         under GREMLIN's minimum of five, and the β interval of that fit,
         0.84 to 5.35, crossed 1.0.
       </p>
+    </section>
+
+    <section class="std-section" id="weibull-lab">
+      <h4>Try it yourself: the Weibull lab</h4>
+      <p>
+        Figure W9 fits whatever lives you give it with GREMLIN's own method: the
+        same root search for β (equation W8), the same intervals (W9),
+        Kaplan-Meier points (W13), R² and review threshold (W15), the same
+        minimum of five lives ending in a failure, and the readings of the
+        interpretation summary. It opens on the worked example. Change a life's
+        hours, switch it between a failure and a PM reset, add or remove lives,
+        or start from a preset, and every chart, number and reading follows.
+      </p>
+      {% call std.working_figure("W9", "The Weibull lab, opening on the worked example. The lives are fitted as GREMLIN fits them, the charts drawn as Perform an Analysis draws them, and the summary reads them by the rules under Reading the result. Lives are in life hours, as the fit takes them; nothing in the lab is saved.", "weibull-lab-figure", "lab") %}
+        <div class="std-figure-frame">
+          <svg viewBox="0 0 760 560" role="img" aria-labelledby="fig-w9-title fig-w9-desc">
+            <title id="fig-w9-title">The Weibull lab's four charts</title>
+            <desc id="fig-w9-desc">The four charts GREMLIN draws for a fit, for the lives in the lab: the Weibull probability plot, the CDF, the probability density and the hazard rate, with the current life marked in red.</desc>
+            <g data-plot>{{ drawn.lab_plot() }}</g>
+          </svg>
+        </div>
+        <div class="wbl-lab-grid">
+          <div class="wbl-lab-data" data-controls hidden>
+            <label>Start from
+              <select class="wbl-input" data-lab-preset></select>
+            </label>
+            <div class="wbl-lab-table-wrap">
+              <table class="wbl-lab-table">
+                <caption class="visually-hidden">The lives in the lab</caption>
+                <thead>
+                  <tr><th scope="col">Life</th><th scope="col">Life hours</th><th scope="col">Ends in</th><th scope="col"><span class="visually-hidden">Remove</span></th></tr>
+                </thead>
+                <tbody data-lab-rows></tbody>
+              </table>
+            </div>
+            <div class="wbl-chips">
+              <button type="button" class="wbl-chip is-action" data-lab-add>Add a life</button>
+            </div>
+            <label>Current life, hours since the last event
+              <input class="wbl-input" type="number" min="0" step="any" inputmode="decimal" data-lab-current>
+            </label>
+            <label>Read the charts at an age, in life hours
+              <input class="wbl-input" type="number" min="0" step="any" inputmode="decimal" data-lab-age>
+            </label>
+          </div>
+          <div class="wbl-lab-results" data-results>{{ drawn.lab_results() }}</div>
+        </div>
+        <div class="wbl-lab-readings" data-readings>{{ drawn.lab_readings() }}</div>
+      {% endcall %}
+      <div class="wbl-try">
+        <p><strong>Things to try in the lab:</strong></p>
+        <ul>
+          <li>Switch the worked example's PM reset to a failure. Six lives now end in a failure, the Kaplan-Meier steps change size, and β and η move.</li>
+          <li>Delete failures until four are left: GREMLIN stops and says why, and only the points remain.</li>
+          <li>Add a life of 0.5 hours, or start from Duplicate work order: β falls from 2.74 to 0.75, R² drops below its threshold, and the reading turns from wear-out to early life.</li>
+          <li>Start from Wear-out, 20 failures and compare its intervals with the worked example's: four times the failures, and both readings turn from Treat with caution and Directional only to Stable.</li>
+          <li>Start from Two mechanisms pooled and find the jump in the probability plot that pulls R² below its threshold.</li>
+          <li>Move the current life of any preset further out and watch the chance of a failure in the next four weeks: with β above 1 it climbs, with β below 1 it falls.</li>
+        </ul>
+      </div>
+      <p>The presets, and where their lives came from:</p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">The lab's presets</caption>
+          <thead>
+            <tr><th scope="col">Preset</th><th scope="col">Lives</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Worked example</td><td>The seven lives of figure W1 and the <a href="#weibull-example">worked example</a>.</td></tr>
+            <tr><td>Wear-out, 20 failures</td><td>Drawn at random from a Weibull with β = 3.2 and η = 900 hours, with two PM resets and a current life.</td></tr>
+            <tr><td>Random failures</td><td>Drawn from β = 1 and η = 600 hours: twelve failures, a PM reset and a current life.</td></tr>
+            <tr><td>Early-life failures</td><td>Drawn from β = 0.6 and η = 400 hours: fifteen failures, a PM reset and a current life.</td></tr>
+            <tr><td>Two mechanisms pooled</td><td>Six failures drawn from β = 4 and η = 220 hours and six from β = 4 and η = 1,300 hours, fitted as one population.</td></tr>
+            <tr><td>Duplicate work order</td><td>The worked example with one more life of 0.5 hours.</td></tr>
+            <tr><td>Failure-free period</td><td>Twelve failures, each 350 hours plus a life drawn from β = 1.3 and η = 400 hours.</td></tr>
+            <tr><td>Too few failures</td><td>The worked example cut off 1,050 hours after its third complete life, as described under it.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="std-section" id="weibull-saving">

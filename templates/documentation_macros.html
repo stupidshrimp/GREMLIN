@@ -60,3 +60,15 @@
   <figcaption><span class="std-figure-label">Figure {{ number }}.</span> {{ caption }}</figcaption>
 </figure>
 {%- endmacro %}
+
+{#- A figure a reader can work, numbered and captioned like any other. The
+    caller lays out the inside itself, since the drawing shares it with the
+    controls that move it and the readout of what it shows: the drawing in its
+    own .std-figure-frame, still one inline SVG with a title and description.
+    `kind` is the name weibull_tutorial.js knows the figure by. -#}
+{% macro working_figure(number, caption, id, kind) -%}
+<figure class="std-figure" id="{{ id }}" data-weibull-figure="{{ kind }}">
+  {{ caller() }}
+  <figcaption><span class="std-figure-label">Figure {{ number }}.</span> {{ caption }}</figcaption>
+</figure>
+{%- endmacro %}
