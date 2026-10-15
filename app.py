@@ -1610,6 +1610,16 @@ SEARCH_ENTRIES = [
         ],
     },
     {
+        "label": "Weibull lab",
+        "url": "/standards-and-documentation/documentation#weibull-lab",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": [
+            "try it yourself", "interactive", "weibull explorer", "weibull tutorial", "probability plot",
+            "hazard rate", "pdf", "cdf", "bathtub curve", "likelihood", "plot patterns", "learn weibull",
+        ],
+    },
+    {
         "label": "Failure Mode Trend Analysis method",
         "url": "/standards-and-documentation/documentation#analysis-trend",
         "kind": "function",

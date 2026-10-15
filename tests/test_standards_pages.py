@@ -12,9 +12,13 @@ quietly making the page wrong.
 """
 
 import importlib
+import importlib.util
+import json
 import math
 import pathlib
 import re
+import shutil
+import subprocess
 from datetime import date, datetime
 
 import pytest
@@ -410,3 +414,386 @@ def test_the_pm_and_downtime_examples_match_the_service(documentation):
     assert LifeDataService._median(downtimes) == 2
     assert f"{sum(downtimes):.1f} h" in documentation
     assert f"{sum(downtimes) / len(downtimes):.1f} h" in documentation
+
+
+# --- the Weibull card's working figures ------------------------------------------
+
+SCRIPT = TEMPLATES.parent / "static" / "js" / "weibull_tutorial.js"
+DRAWINGS = TEMPLATES / "documentation_weibull_drawings.html"
+WORKED_LIVES = [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (760.0, 1), (640.0, 1), (1050.0, 0)]
+
+
+def _prerender_tool():
+    spec = importlib.util.spec_from_file_location(
+        "prerender_weibull_figures", TEMPLATES.parent / "tools" / "prerender_weibull_figures.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _figure_data(documentation: str) -> dict:
+    block = re.search(r'<script type="application/json" id="weibull-figure-data">(.*?)</script>', documentation, re.S)
+    assert block, "the Weibull card has no figure data"
+    return json.loads(block.group(1))
+
+
+def _preset_lives(preset: dict) -> list[tuple[float, int]]:
+    """A preset's lives as the service takes them: the current life last, censored."""
+    lives = [(float(t), int(failed)) for t, failed in preset["lives"]]
+    if preset.get("current"):
+        lives.append((float(preset["current"]), 0))
+    return lives
+
+
+def _fit(lives):
+    from services.life_data_service import LifeDataService
+
+    service = LifeDataService.__new__(LifeDataService)
+    beta, eta, log_likelihood = service._fit_weibull_2p(lives)
+    intervals = service._weibull_confidence_intervals(lives, beta, eta)
+    km = LifeDataService._kaplan_meier_points(lives)
+    failures = sum(failed for _, failed in lives)
+    return {
+        "beta": beta,
+        "eta": eta,
+        "ll": log_likelihood,
+        "ci": intervals,
+        "km": km,
+        "r2": LifeDataService._probability_plot_r_squared(km),
+        "threshold": LifeDataService.r_squared_review_threshold(failures),
+        "failures": failures,
+    }
+
+
+def _node():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is not installed, so the figure script cannot be run here")
+    return node
+
+
+def test_the_censoring_comparison_is_what_gremlin_fits(documentation):
+    """The table under Why censored lives have to count: the worked example fitted
+    with its two censored lives counted as GREMLIN counts them, left out, and
+    counted as failures."""
+    table = re.search(r'id="weibull-censoring-table">(.*?)</table>', documentation, re.S).group(1)
+    rows = re.findall(r"<tr><td>[^<]+</td>((?:<td class=\"is-numeric\">[^<]+</td>){3})</tr>", table)
+    shown = [re.findall(r">([^<]+)<", row) for row in rows]
+    ways = [
+        WORKED_LIVES,
+        [(t, 1) for t, failed in WORKED_LIVES if failed],
+        [(t, 1) for t, _ in WORKED_LIVES],
+    ]
+    expected = []
+    for lives in ways:
+        fit = _fit(lives)
+        mttf = fit["eta"] * math.gamma(1 + 1 / fit["beta"])
+        expected.append([f"{fit['beta']:.3f}", f"{fit['eta']:.1f} h", f"{mttf:.1f} h"])
+    assert shown == expected
+
+    # "about 15% short" when left out, "about 10% short" when counted as failures.
+    kept, left_out, as_failures = (_fit(lives) for lives in ways)
+    assert round(100 * (1 - left_out["eta"] / kept["eta"])) == 15
+    assert round(100 * (1 - as_failures["eta"] / kept["eta"]), -1) == 10
+
+
+def test_the_figure_presets_are_what_the_card_says_they_are(documentation):
+    """Every number the Weibull card quotes from the figures' presets, recomputed by
+    the service from the lives the figures draw."""
+    data = _figure_data(documentation)
+    presets = data["presets"]
+    # The prose wraps where the template's lines do.
+    text = re.sub(r"\s+", " ", documentation)
+    assert set(data["presetOrder"]) == set(presets)
+    assert set(data["patterns"]) <= set(presets)
+
+    # The worked example is the one in the text, and Too few failures the text's
+    # example cut off after its third complete life.
+    assert _preset_lives(presets["worked"]) == WORKED_LIVES
+    assert _preset_lives(presets["few"]) == [(520.0, 1), (450.0, 0), (310.0, 1), (980.0, 1), (1050.0, 0)]
+    assert sorted(_preset_lives(presets["duplicate"])) == sorted(WORKED_LIVES + [(0.5, 1)])
+
+    # The presets table: failures and PM resets in each.
+    counts = {key: (sum(f for _, f in p["lives"]), sum(1 - f for _, f in p["lives"])) for key, p in presets.items()}
+    assert counts["wearout"] == (20, 2)
+    assert counts["random"] == (12, 1)
+    assert counts["early"] == (15, 1)
+    assert counts["mixed"] == (12, 0)
+    assert counts["failure_free"] == (12, 0)
+    from services.life_data_service import MIN_WEIBULL_FAILURE_LIVES
+    assert counts["few"][0] < MIN_WEIBULL_FAILURE_LIVES
+
+    worked = _fit(_preset_lives(presets["worked"]))
+
+    # A duplicate work order: beta from 2.74 to 0.75, R² under its threshold.
+    duplicate = _fit(_preset_lives(presets["duplicate"]))
+    assert duplicate["beta"] < 0.9 < 1.1 < worked["beta"]
+    assert f"β falls from {worked['beta']:.2f} to {duplicate['beta']:.2f}" in text
+    assert duplicate["r2"] < duplicate["threshold"]
+
+    # Two mechanisms pooled: beta near 1, R² under its threshold.
+    mixed = _fit(_preset_lives(presets["mixed"]))
+    assert f"β comes out at {mixed['beta']:.2f}" in text
+    assert mixed["r2"] < mixed["threshold"]
+
+    # A failure-free period: beta overstated, and R² still passes.
+    free = _fit(_preset_lives(presets["failure_free"]))
+    assert f"overstates β at {free['beta']:.2f}" in text
+    assert free["r2"] >= free["threshold"]
+
+    # One population: R² clear of its threshold.
+    wearout = _fit(_preset_lives(presets["wearout"]))
+    assert wearout["r2"] >= wearout["threshold"]
+
+    # The intervals: 154% of beta for the worked example, 65% for twenty
+    # failures, where both readings turn stable.
+    def beta_width(fit):
+        low, high, _, _ = fit["ci"]
+        return (high - low) / fit["beta"]
+
+    def eta_width(fit):
+        _, _, low, high = fit["ci"]
+        return (high - low) / fit["eta"]
+
+    assert f"leave β's interval {round(100 * beta_width(worked))}% as wide as β itself" in text
+    assert f"brings that down to {round(100 * beta_width(wearout))}%, inside the 70%" in text
+    assert beta_width(worked) > 0.7 and eta_width(worked) > 0.4
+    assert beta_width(wearout) <= 0.7 and eta_width(wearout) <= 0.4
+    assert wearout["ci"][0] > 1
+
+
+def test_the_lab_reads_a_fit_in_the_interpretation_tables_words(documentation):
+    """The lab's readings are the Reading and Suggested direction columns of the
+    table under Reading the result, word for word."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    readings = re.findall(r'\{ label: "([^"]+)", direction: "([^"]+)" \}', script)
+    assert len(readings) == 10
+    for label, direction in readings:
+        assert f"<td>{label}</td><td>{direction}</td>" in documentation, label
+
+
+def test_every_drawing_has_its_place_in_a_figure(documentation):
+    """documentation_weibull_drawings.html holds one macro per piece of a working
+    figure; each is placed once, and none is left over."""
+    tool = _prerender_tool()
+    drawn = tool.read_drawings(DRAWINGS.read_text(encoding="utf-8"))
+    template = (TEMPLATES / "documentation_analysis.html").read_text(encoding="utf-8")
+    placed = re.findall(r"\{\{ drawn\.([a-z_]+)\(\) \}\}", template)
+    assert sorted(placed) == sorted(drawn)
+    assert len(placed) == len(set(placed))
+    # Every working figure has a drawing for the script to replace.
+    kinds = re.findall(r'data-weibull-figure="([a-z]+)"', documentation)
+    assert sorted(kinds) == ["charts", "explorer", "lab", "likelihood", "patterns", "straighten"]
+    for kind in kinds:
+        assert f"{kind}_plot" in drawn, kind
+
+
+def test_the_drawn_figures_are_what_the_script_draws():
+    """The copy of each working figure in the template is what the script draws at
+    its opening state, so the page without a script shows the same thing. If this
+    fails, run tools/prerender_weibull_figures.py."""
+    _node()
+    tool = _prerender_tool()
+    data = tool.figure_data((TEMPLATES / "documentation_analysis.html").read_text(encoding="utf-8"))
+    assert tool.render(data) == tool.read_drawings(DRAWINGS.read_text(encoding="utf-8"))
+
+
+# The interpretation summary's recommendation for each reading, by how it opens:
+# the categories the script's readings name.
+_SERVICE_READINGS = [
+    ("This pattern does not support", "early"),
+    ("This result is more consistent with a random", "random"),
+    ("This result supports wear-out", "wearOut"),
+    ("The interval crossing 1.0", "betaUncertain"),
+    ("The interval is no wider than 70%", "betaStable"),
+    ("The interval is wider than 70%", "betaCaution"),
+    ("The interval is reasonably tight", "etaStable"),
+    ("The interval is wide", "etaDirectional"),
+    ("Below ", "rSquaredLow"),
+    ("At or above ", "rSquaredOk"),
+]
+
+
+def test_the_figure_script_does_gremlins_arithmetic(documentation):
+    """weibull_tutorial.js fits, bounds, plots and reads lives as LifeDataService
+    does, for every set of lives the figures offer and a few that stop the fit."""
+    node = _node()
+    from services.life_data_service import (
+        BETA_INTERVAL_STABLE_FRACTION,
+        ETA_INTERVAL_STABLE_FRACTION,
+        MIN_WEIBULL_FAILURE_LIVES,
+        R_SQUARED_REVIEW_THRESHOLDS,
+        LifeDataService,
+        WeibullFitError,
+    )
+
+    presets = _figure_data(documentation)["presets"]
+    sets = {key: {"lives": p["lives"], "current": p.get("current")} for key, p in presets.items()}
+    sets["identical"] = {"lives": [[500, 1]] * 6, "current": None}
+    sets["no current life"] = {"lives": [[t, f] for t, f in WORKED_LIVES[:-1]], "current": None}
+    program = (
+        "const api = require(process.argv[1]); let input = '';"
+        "process.stdin.on('data', (c) => { input += c; });"
+        "process.stdin.on('end', () => {"
+        "  const m = api.method; const sets = JSON.parse(input); const out = {};"
+        "  for (const [key, set] of Object.entries(sets)) {"
+        "    const r = m.analyse(set);"
+        "    out[key] = { problem: r.problem, fit: r.fit, ci: r.ci, km: r.km.map((p) => p.survival),"
+        "      r2: r.rSquared, threshold: r.threshold, mttf: r.mttf || null,"
+        "      readings: (r.readings || []).map((row) => row.key || null) };"
+        "  }"
+        "  out.constants = { min: m.MIN_FAILURE_LIVES, beta: m.BETA_INTERVAL_STABLE_FRACTION,"
+        "    eta: m.ETA_INTERVAL_STABLE_FRACTION, table: m.R_SQUARED_REVIEW_THRESHOLDS };"
+        "  process.stdout.write(JSON.stringify(out));"
+        "});"
+    )
+    completed = subprocess.run(
+        [node, "-e", program, str(SCRIPT)],
+        input=json.dumps(sets),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    script = json.loads(completed.stdout)
+
+    constants = script.pop("constants")
+    assert constants["min"] == MIN_WEIBULL_FAILURE_LIVES
+    assert constants["beta"] == BETA_INTERVAL_STABLE_FRACTION
+    assert constants["eta"] == ETA_INTERVAL_STABLE_FRACTION
+    assert [tuple(row) for row in constants["table"]] == list(R_SQUARED_REVIEW_THRESHOLDS)
+
+    service = LifeDataService.__new__(LifeDataService)
+    close = lambda a, b: a == pytest.approx(b, rel=1e-9, abs=1e-12)  # noqa: E731
+    for key, set_ in sets.items():
+        lives = [(float(t), int(f)) for t, f in set_["lives"]]
+        if set_["current"]:
+            lives.append((float(set_["current"]), 0))
+        shown = script[key]
+        km = LifeDataService._kaplan_meier_points(lives)
+        assert all(close(a, b["survival_estimate"]) for a, b in zip(shown["km"], km, strict=True)), key
+        r2 = LifeDataService._probability_plot_r_squared(km)
+        assert (shown["r2"] is None) == (r2 is None) and (r2 is None or close(shown["r2"], r2)), key
+        failures = sum(f for _, f in lives)
+        assert close(shown["threshold"], LifeDataService.r_squared_review_threshold(failures)), key
+
+        if failures < MIN_WEIBULL_FAILURE_LIVES:
+            assert shown["problem"] == "few", key
+            continue
+        try:
+            beta, eta, log_likelihood = service._fit_weibull_2p(lives)
+        except WeibullFitError:
+            assert shown["problem"] == "no-root", key
+            continue
+        assert shown["problem"] is None, key
+        assert close(shown["fit"]["beta"], beta) and close(shown["fit"]["eta"], eta), key
+        assert close(shown["fit"]["logLikelihood"], log_likelihood), key
+        assert close(shown["mttf"], eta * math.gamma(1 + 1 / beta)), key
+        intervals = service._weibull_confidence_intervals(lives, beta, eta)
+        if intervals[0] is None:
+            assert shown["ci"] is None, key
+        else:
+            ci = shown["ci"]
+            assert [ci["betaLo"], ci["betaHi"], ci["etaLo"], ci["etaHi"]] == pytest.approx(list(intervals), rel=1e-6), key
+
+        summary = service._weibull_interpretation_summary(
+            beta, eta, eta * math.gamma(1 + 1 / beta), *intervals, r_squared=r2, failure_count=failures
+        )
+        expected = []
+        for row in summary:
+            if row["metric"] == "Eta":
+                continue
+            if row["metric"] == "MTTF":
+                continue
+            if row["value"] == "Not available":
+                expected.append(None)
+                continue
+            expected.append(next(name for opening, name in _SERVICE_READINGS if row["recommendation"].startswith(opening)))
+        if intervals[0] is None:
+            # The script gives the two missing intervals one row between them.
+            expected = [expected[0], None, expected[-1]]
+        assert shown["readings"] == expected, key
+    # The sets above include one that stops for want of failures and one with no root.
+    assert script["few"]["problem"] == "few"
+    assert script["identical"]["problem"] == "no-root"
+
+
+def test_an_age_off_a_charts_scale_is_named_at_its_edge(documentation):
+    """The lab and figure W6 read all four charts at an age. One past a chart's
+    scale is named at the edge it lies beyond, on the probability plot's log
+    scale and the other three's alike, and no scale is stretched to take it in:
+    stretched to a million hours, the fitted curves would vanish between the
+    points they are drawn through."""
+    node = _node()
+    worked = _figure_data(documentation)["presets"]["worked"]
+    program = (
+        "const api = require(process.argv[1]); let input = '';"
+        "process.stdin.on('data', (c) => { input += c; });"
+        "process.stdin.on('end', () => {"
+        "  const set = JSON.parse(input); const result = api.method.analyse(set);"
+        "  const out = {};"
+        "  for (const age of [100, 400, 5000, 1000000]) out[age] = api.draw.charts(result, { id: 't', age });"
+        "  out.none = api.draw.charts(result, { id: 't', age: null });"
+        "  process.stdout.write(JSON.stringify(out));"
+        "});"
+    )
+    completed = subprocess.run(
+        [node, "-e", program, str(SCRIPT)],
+        input=json.dumps(worked),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    drawn = json.loads(completed.stdout)
+    # 100 h is on the linear scales and off the log one; 5,000 h off all four.
+    assert drawn["100"].count("off this scale") == 1
+    assert "\u25c0 100 h, off this scale" in drawn["100"]
+    assert drawn["5000"].count("5,000 h, off this scale \u25b6") == 4
+    assert drawn["1000000"].count("1,000,000 h, off this scale \u25b6") == 4
+    assert "off this scale" not in drawn["400"]
+    # However far off the age, the fitted curves are drawn on their own scales,
+    # exactly as with no age at all.
+    curves = lambda markup: re.findall(r'<path class="fig-accent-line" d="([^"]+)"', markup)  # noqa: E731
+    assert curves(drawn["1000000"]) == curves(drawn["5000"]) == curves(drawn["none"])
+
+
+def test_each_lifes_score_in_figure_w5_adds_up_to_the_total(documentation):
+    """Figure W5's table gives each life's ln score and calls the total their sum.
+    At a guess the sliders allow that makes the lives all but impossible (β 6 and
+    η 100 h), the scores themselves round to zero, so the logs are worked out
+    directly and every row still has one."""
+    node = _node()
+    worked = _figure_data(documentation)["presets"]["worked"]
+    program = (
+        "const api = require(process.argv[1]); let input = '';"
+        "process.stdin.on('data', (c) => { input += c; });"
+        "process.stdin.on('end', () => {"
+        "  const m = api.method; const result = m.analyse(JSON.parse(input));"
+        "  const model = { lives: result.lives, current: result.current, best: result.fit };"
+        "  const out = {};"
+        "  for (const [beta, eta] of [[1, 1200], [2.5, 800], [6, 100]]) {"
+        "    out[beta + '/' + eta] = {"
+        "      scores: result.lives.map(([t, f]) => m.lifeLogScore(t, f, beta, eta)),"
+        "      total: m.logLikelihood(result.lives, beta, eta),"
+        "      readout: api.draw.likelihoodReadout({ beta, eta }, model),"
+        "    };"
+        "  }"
+        "  process.stdout.write(JSON.stringify(out));"
+        "});"
+    )
+    completed = subprocess.run(
+        [node, "-e", program, str(SCRIPT)],
+        input=json.dumps(worked),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for guess, shown in json.loads(completed.stdout).items():
+        assert sum(shown["scores"]) == pytest.approx(shown["total"], rel=1e-12), guess
+        assert "n/a" not in shown["readout"], guess
+    impossible = json.loads(completed.stdout)["6/100"]
+    assert "under 0.00001" in impossible["readout"]
+    assert "over a billion times less likely" in impossible["readout"]
