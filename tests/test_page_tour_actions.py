@@ -9,7 +9,8 @@ whole tour, Next runs the action and shows the same step again with what it
 drew, an action is only offered once, and onEnd hears only the steps reached.
 Also what the Disposition tour's column-by-column cards need of it: a list, a
 source line and a label on the card, and a table column lit as one box after
-being scrolled into the view of the box the table scrolls in.
+being scrolled into the view of the box the table scrolls in; and the links to
+the documentation the analysis tour's Weibull cards carry.
 """
 
 import json
@@ -68,8 +69,8 @@ class FakeElement {
 const byId = {};
 [
   "page-tour", "page-tour-spotlight", "page-tour-card", "page-tour-step", "page-tour-title",
-  "page-tour-content", "page-tour-body", "page-tour-points", "page-tour-cite", "page-tour-back",
-  "page-tour-next", "page-tour-skip",
+  "page-tour-content", "page-tour-body", "page-tour-points", "page-tour-cite", "page-tour-more",
+  "page-tour-back", "page-tour-next", "page-tour-skip",
 ].forEach((id) => { byId[id] = new FakeElement(id); });
 const targets = {};
 
@@ -137,6 +138,14 @@ const card = () => ({
           : item.textContent
       ),
   cite: byId["page-tour-cite"].hidden ? null : byId["page-tour-cite"].textContent,
+  // Each link as [text, href, target, rel], the words between them as they are.
+  more: byId["page-tour-more"].hidden
+    ? null
+    : byId["page-tour-more"].children.map((node) =>
+        node.href === undefined
+          ? node.textContent
+          : [node.textContent, node.href, node.target, node.rel, node.children.map((note) => [note.className, note.textContent])]
+      ),
   wide: byId["page-tour-card"].classes.has("has-points"),
 });
 const next = () => byId["page-tour-next"].click();
@@ -306,6 +315,30 @@ _SCENARIOS = {
       return seen;
     }
     """,
+    # Links to read more: one, then a list of two, then a step with none.
+    "more_links": r"""
+    async () => {
+      target("#a", true);
+      const steps = [
+        { target: "#a", title: "One", body: "One link.", more: { href: "/docs#one", text: "The first" } },
+        {
+          target: "#a", title: "Two", body: "Two links.",
+          more: () => [{ href: "/docs#one", text: "The first" }, { href: "/docs#two", text: "The second" }],
+        },
+        { target: "#a", title: "None", body: "No links.", more: () => null },
+      ];
+      tour.start(steps, {});
+      const seen = { one: card() };
+      next();
+      await settle();
+      seen.two = card();
+      next();
+      await settle();
+      seen.none = card();
+      tour.end();
+      return seen;
+    }
+    """,
     # A table column: its cells, off to the right of the box the table scrolls
     # in, and running on below that box's bottom edge.
     "column_in_scrolling_box": r"""
@@ -363,6 +396,33 @@ _SCENARIOS = {
       seen.fitsDown = [press("ArrowDown"), content.scrollTop];
       tour.end();
       seen.closedDown = press("ArrowDown");
+      return seen;
+    }
+    """,
+    # A line of figures as wide as the page, just under a sticky top bar, and a
+    # card too tall to go above or below it whole: once with room below the line
+    # for a cut-down card, once with the line too near the bottom for one there;
+    # then a block as wide, too tall to leave room for one either side.
+    "short_cards": r"""
+    async () => {
+      const topbar = target(".topbar", true);
+      topbar.position = "sticky";
+      topbar.box = { top: 0, left: 0, width: 1280, height: 74 };
+      const line = target("#line", true);
+      document.getElementById("page-tour-card").box = { top: 0, left: 0, width: 448, height: 700 };
+      const seen = {};
+      const look = async (top, height) => {
+        line.box = { top, left: 40, width: 1200, height: height || 30 };
+        tour.start([{ target: "#line", title: "Line", body: "A line of figures." }], {});
+        await settle();
+        const style = document.getElementById("page-tour-card").style;
+        const shown = { top: parseFloat(style.top), maxHeight: style.maxHeight || null };
+        tour.end();
+        return shown;
+      };
+      seen.below = await look(90);
+      seen.above = await look(700);
+      seen.neither = await look(150, 400);
       return seen;
     }
     """,
@@ -481,6 +541,23 @@ def test_a_step_can_carry_a_list_a_source_and_a_label(tmp_path):
     assert after["step"] == "Step 3 of 3"
 
 
+def test_a_step_can_link_to_where_its_subject_is_explained(tmp_path):
+    """The analysis tour's Weibull cards link to the documentation, in a new tab
+    so the tour and the fit it opened are still there to come back to."""
+    seen = _run(tmp_path, "more_links")
+    # Each link's text, and the note a screen reader hears after it.
+    note =[["visually-hidden", " (opens in a new tab)"]]
+    assert seen["one"]["more"] == ["Read more: ", ["The first", "/docs#one", "_blank", "noopener", note]]
+    assert seen["two"]["more"] == [
+        "Read more: ",
+        ["The first", "/docs#one", "_blank", "noopener", note],
+        " · ",
+        ["The second", "/docs#two", "_blank", "noopener", note],
+    ]
+    # Nothing is left over from the step before.
+    assert seen["none"]["more"] is None
+
+
 def test_a_column_is_scrolled_into_its_box_and_lit_where_the_box_shows_it(tmp_path):
     seen = _run(tmp_path, "column_in_scrolling_box")
     # Centred across the box: the column's middle (950) on the box's (300).
@@ -501,6 +578,21 @@ def test_a_card_as_tall_as_the_screen_allows_keeps_its_buttons_on_screen(tmp_pat
     for shown in seen["seen"]:
         assert shown["top"] >= 0, shown
         assert shown["top"] + seen["height"] <= seen["screen"], shown
+
+
+def test_a_card_too_tall_to_go_beside_a_line_is_cut_down_rather_than_cover_it(tmp_path):
+    """A line of figures as wide as the page, under a sticky bar, leaves no room
+    to its sides and less above or below it than a card with a list takes. The
+    card goes below it, or above it when that has more room, cut down to fit
+    with its text scrolling, rather than over the figures it is about."""
+    seen = _run(tmp_path, "short_cards")
+    # Below the line (90 to 120), 16 under it, down to 8 off the screen's foot.
+    assert seen["below"] == {"top": 136, "maxHeight": "656px"}
+    # Above the line (700 to 730), from 8 under the bar to 16 over the line.
+    assert seen["above"] == {"top": 82, "maxHeight": "602px"}
+    # Under 240 either side (52 above the block, 226 below): the card keeps its
+    # height and covers what it must.
+    assert seen["neither"]["maxHeight"] is None
 
 
 def test_the_scrolling_keys_scroll_a_long_card_rather_than_the_page(tmp_path):

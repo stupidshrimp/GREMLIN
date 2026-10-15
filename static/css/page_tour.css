@@ -145,6 +145,30 @@
   color: var(--muted);
 }
 
+/* Where to read more: under the text rather than in it, so it doesn't scroll
+   away with a long step, with its links styled as the documentation's own
+   cross references are. The rule keeps it apart from text cut off above it. */
+.page-tour-more {
+  flex: none;
+  margin: 0 0 0.9rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.page-tour-more a {
+  color: var(--forest-800);
+  font-weight: 600;
+}
+.page-tour-more a:hover {
+  color: var(--forest-900);
+}
+.page-tour-more a:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
 .page-tour-actions {
   flex: none;
   display: flex;

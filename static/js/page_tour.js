@@ -22,6 +22,11 @@
 // after the step count, for a run of steps that are one part of the tour (the
 // columns of a table, say). Each may be a function, as `body` may.
 //
+// `more` is where to read about the step's subject at length: { href, text }, or
+// a list of them, shown as links between the card's text and its buttons. They
+// open in a new tab, so the tour and whatever it has drawn are still there to
+// come back to. It may be a function too.
+//
 // A step whose target isn't drawn when the tour starts is left out too, rather
 // than shown with a ring round nothing: a button the account can't use, a
 // control that narrow screens hide.
@@ -231,6 +236,23 @@
     return null;
   }
 
+  // When the card is too tall for any of those: below the lit box, or above it
+  // when there's more room there, cut down to the room it has, with its text
+  // scrolling inside it. Better that than a card over the very thing it is
+  // about: a line of figures under a sticky bar leaves less room than a card
+  // with a list takes. Null when neither side has room for a useful part of it.
+  const SHORT_CARD_MIN = 240;
+
+  function shortSpotFor(box, size, ceiling) {
+    const left = Math.min(Math.max(PAD, box.left), Math.max(PAD, window.innerWidth - size.width - PAD));
+    const below = box.bottom + PAD * 2;
+    const roomBelow = window.innerHeight - PAD - below;
+    const roomAbove = box.top - PAD * 2 - (ceiling + PAD);
+    if (roomBelow >= SHORT_CARD_MIN && roomBelow >= roomAbove) return { top: below, left, maxHeight: roomBelow };
+    if (roomAbove >= SHORT_CARD_MIN) return { top: ceiling + PAD, left, maxHeight: roomAbove };
+    return null;
+  }
+
   // When nothing beside the lit box has room: the top or the bottom of the
   // screen, whichever covers less of what's lit. The bottom when they tie, as
   // they do for something taller than the screen, since a card pinned to the
@@ -262,6 +284,9 @@
     if (!tour) return;
     const card = $("page-tour-card");
     const spotlight = $("page-tour-spotlight");
+    // Its full height again before it is measured, since the step before, or
+    // this one before the page moved, may have cut it down.
+    card.style.maxHeight = "";
     const target = targetOf(tour.steps[tour.index]);
     // A target its scrolling box has none of on show is as good as not drawn.
     const box = target && boxOf(target, true);
@@ -293,8 +318,9 @@
     spotlight.style.height = `${Math.max(0, box.bottom + PAD - litTop)}px`;
 
     const size = card.getBoundingClientRect();
-    const spot = spotFor(box, size, ceiling) || fallbackSpot(box, size, ceiling);
-    card.style.top = `${onScreen(spot.top, size)}px`;
+    const spot = spotFor(box, size, ceiling) || shortSpotFor(box, size, ceiling) || fallbackSpot(box, size, ceiling);
+    if (spot.maxHeight) card.style.maxHeight = `${spot.maxHeight}px`;
+    card.style.top = `${onScreen(spot.top, { height: Math.min(size.height, spot.maxHeight || Infinity) })}px`;
     card.style.left = `${spot.left}px`;
   }
 
@@ -341,12 +367,39 @@
     return item;
   }
 
+  // One of a step's `more` links. `rel` is not optional with a new tab: without
+  // `noopener` the page it opens gets a handle on this one through
+  // window.opener.
+  function moreLink(link) {
+    const anchor = document.createElement("a");
+    anchor.href = link.href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener";
+    anchor.textContent = link.text;
+    const note = document.createElement("span");
+    note.className = "visually-hidden";
+    note.textContent = " (opens in a new tab)";
+    anchor.appendChild(note);
+    return anchor;
+  }
+
+  // "Read more: " and the links, a dot between each.
+  function moreLinks(links) {
+    const nodes = [document.createTextNode("Read more: ")];
+    links.forEach((link, index) => {
+      if (index) nodes.push(document.createTextNode(" · "));
+      nodes.push(moreLink(link));
+    });
+    return nodes;
+  }
+
   function show() {
     const steps = tour.steps;
     const step = steps[tour.index];
     const label = valueOf(step.label);
     const points = valueOf(step.points) || [];
     const cite = valueOf(step.cite) || "";
+    const more = [].concat(valueOf(step.more) || []);
 
     $("page-tour-step").textContent = `Step ${tour.index + 1} of ${steps.length}` + (label ? ` · ${label}` : "");
     $("page-tour-title").textContent = step.title;
@@ -355,11 +408,15 @@
     $("page-tour-points").hidden = !points.length;
     $("page-tour-cite").textContent = cite;
     $("page-tour-cite").hidden = !cite;
+    $("page-tour-more").replaceChildren(...(more.length ? moreLinks(more) : []));
+    $("page-tour-more").hidden = !more.length;
     // A card with a list is wider, so the list reads in fewer, longer lines.
     $("page-tour-card").classList.toggle("has-points", points.length > 0);
     // A step long enough to scroll on a short screen starts from its top, not
-    // from wherever the one before it had been scrolled to.
+    // from wherever the one before it had been scrolled to, and at its full
+    // height, not the one before's cut-down one, for scrollTo to measure.
     $("page-tour-content").scrollTop = 0;
+    $("page-tour-card").style.maxHeight = "";
     $("page-tour-back").disabled = tour.index === 0;
     $("page-tour-next").disabled = false;
     $("page-tour-next").textContent = actionDue(step)
@@ -406,8 +463,9 @@
   }
 
   // Escape leaves, the same as the site's dialogs. Tab stays on the card's
-  // buttons: the overlay stops the page behind it being clicked, and without
-  // this a keyboard could still walk into it and drive controls it can't see.
+  // buttons, and its links when the step has any: the overlay stops the page
+  // behind it being clicked, and without this a keyboard could still walk into
+  // it and drive controls it can't see.
   // The search box's shortcuts are held back for the same reason -- they would
   // put focus in the box behind the overlay. The arrows, Page Up and Down, Home
   // and End scroll the card's text when there is more of it than shows. This
@@ -434,7 +492,7 @@
       return;
     }
     if (event.key !== "Tab") return;
-    const buttons = Array.from($("page-tour-card").querySelectorAll("button:not([disabled])"));
+    const buttons = Array.from($("page-tour-card").querySelectorAll("a[href], button:not([disabled])"));
     if (!buttons.length) return;
     const index = buttons.indexOf(document.activeElement);
     if (event.shiftKey && index <= 0) {

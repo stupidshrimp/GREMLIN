@@ -5199,7 +5199,7 @@
     }
     input.addEventListener("input", render);
     render();
-    const node = el("div", { class: "lda-panel lda-age-panel" }, [
+    const node = el("div", { class: "lda-panel lda-age-panel", id: "lda-age-panel" }, [
       el("h3", { text: "Reliability at an age" }),
       el("div", { class: "lda-field" }, [el("label", { for: "lda-target-age", text: "Age (life hours)" }), input]),
       output,
@@ -5263,7 +5263,7 @@
       onclick: () => saveAdjustedParameters(result.result_id, Number(betaInput.value), Number(etaInput.value), reasonInput.value),
     });
 
-    const adjustRow = el("div", { class: "lda-adjust-row" }, [
+    const adjustRow = el("div", { class: "lda-adjust-row", id: "lda-adjust-row" }, [
       field("Adjusted beta (±0.2)", betaInput),
       field("Adjusted eta (±100 h)", etaInput),
       field("Adjustment reason", reasonInput),
@@ -5276,13 +5276,17 @@
       el("h2", { text: "Weibull Analysis Results" }),
       el("div", { class: "lda-result-headline" }, [
         el("strong", { text: result.analysis_label || "Selected failure group" }),
-        el("span", { class: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
-        el("span", { class: "lda-hint", text: confidenceIntervalText(result) }),
-        metrics ? el("span", { class: "lda-hint", text: metrics }) : null,
-        el("span", { class: "lda-hint", text: fitCheckText(result) }),
+        el("span", { class: "lda-result-params", id: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
+        el("span", { class: "lda-hint", id: "lda-result-ci", text: confidenceIntervalText(result) }),
+        metrics ? el("span", { class: "lda-hint", id: "lda-result-life", text: metrics }) : null,
+        el("span", { class: "lda-hint", id: "lda-result-fit-check", text: fitCheckText(result) }),
       ]),
-      el("div", { class: "lda-result-context" }, resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
-      ...notices.map((notice) => el("p", { class: "lda-banner is-warning", role: "note", text: notice })),
+      el(
+        "div",
+        { class: "lda-result-context", id: "lda-result-context" },
+        resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))
+      ),
+      ...notices.map((notice) => el("p", { class: "lda-banner is-warning lda-result-notice", role: "note", text: notice })),
       // Adjusting beta/eta and saving the adjustment are writes, so the whole row is
       // left out for a viewer or a signed-out visitor rather than shown inert. They
       // still get the full read-only view at the fitted MLE parameters.
@@ -5298,7 +5302,8 @@
       }),
       agePanel.node,
       panel("Results Interpretation Summary", buildInterpretationTable(result),
-        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals for the fitted Weibull parameters, and the probability plot R²."),
+        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals for the fitted Weibull parameters, and the probability plot R².",
+        "lda-interpretation-panel"),
       panel("Weibull Data Used for Graphs", dataTable.node,
 
         "Rows are the lives included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
@@ -5308,7 +5313,8 @@
         (CAN_EDIT
           ? "Click a Task ID to review or change that work order's disposition; the analysis re-runs when you save it. "
           : "") +
-        "Use the ▾ menu in any column header to sort or filter the rows."),
+        "Use the ▾ menu in any column header to sort or filter the rows.",
+        "lda-weibull-data-panel"),
       eventTable.node,
       // Generating the report reserves a REL report number, which is a write, so the
       // whole section is editor-only.
@@ -5362,7 +5368,7 @@
     const summaryText =
       `Event processing table: ${events.length} ${events.length === 1 ? "event" : "events"}` +
       (excluded ? `, ${excluded} left out of the timeline` : "");
-    const details = el("details", { class: "lda-panel lda-events" }, [
+    const details = el("details", { class: "lda-panel lda-events", id: "lda-event-table" }, [
       el("summary", { text: summaryText }),
       events.length
         ? el("div", { class: "lda-data-scroll" }, [table])
@@ -5412,7 +5418,7 @@
       disabled: Boolean(blocked),
     });
     button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
-    return el("div", { class: "lda-report-bar" }, [
+    return el("div", { class: "lda-report-bar", id: "lda-report-bar" }, [
       button,
       el("p", {
         class: "lda-hint",
@@ -5534,11 +5540,11 @@
   function field(labelText, input) {
     return el("div", { class: "lda-field" }, [el("label", { text: labelText }), input]);
   }
-  function panel(title, body, footer) {
-    return el("div", { class: "lda-panel" }, [el("h3", { text: title }), body, footer ? el("p", { class: "lda-hint", text: footer }) : null]);
+  function panel(title, body, footer, id) {
+    return el("div", { class: "lda-panel", id: id || null }, [el("h3", { text: title }), body, footer ? el("p", { class: "lda-hint", text: footer }) : null]);
   }
   function legend() {
-    return el("div", { class: "lda-legend" }, [
+    return el("div", { class: "lda-legend", id: "lda-result-legend" }, [
       el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#2f8f5b" }), document.createTextNode("MLE fit")]),
       el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#d6a700" }), document.createTextNode("95% CI fit")]),
       el("span", {}, [el("span", { class: "lda-dot", style: "background:#ffffff" }), document.createTextNode("Completed failure")]),
@@ -5779,16 +5785,20 @@
       return best;
     };
 
+    // Each pane's card has an id for the tour, which takes them one at a time.
     const panes = [
-      { key: "prob", title: "Weibull Probability Plot", height: 300 },
-      { key: "cdf", title: "CDF", height: 300 },
-      { key: "pdf", title: "Probability Density (PDF)", height: 300 },
-      { key: "hazard", title: "Hazard Rate", height: 300 },
+      { key: "prob", id: "lda-chart-prob", title: "Weibull Probability Plot", height: 300 },
+      { key: "cdf", id: "lda-chart-cdf", title: "CDF", height: 300 },
+      { key: "pdf", id: "lda-chart-pdf", title: "Probability Density (PDF)", height: 300 },
+      { key: "hazard", id: "lda-chart-hazard", title: "Hazard Rate", height: 300 },
     ];
     const canvases = {};
     panes.forEach((pane) => {
       const canvas = el("canvas", { class: "lda-canvas" });
-      const card = el("div", { class: "lda-chart-card" }, [el("h4", { text: pane.title }), el("div", { class: "lda-chart-wrap" }, [canvas])]);
+      const card = el("div", { class: "lda-chart-card", id: pane.id }, [
+        el("h4", { text: pane.title }),
+        el("div", { class: "lda-chart-wrap" }, [canvas]),
+      ]);
       container.appendChild(card);
       // The card, not just the canvas, is what focus() scrolls to, so the pane's title
       // comes along with its plot.
@@ -6876,6 +6886,363 @@
     },
   ];
 
+  // The Documentation page. Its Analysis tab explains every part of the Weibull
+  // results at length, and a fragment naming anything on it opens it there, so
+  // each card about a part links to the section about it.
+  const DOCS_URL = "/standards-and-documentation/documentation";
+  const docsLink = (fragment, text) => ({ href: `${DOCS_URL}#${fragment}`, text });
+
+  // The Weibull fit on screen, for the cards about it to quote. Null while there
+  // is none -- there was no saved fit to show -- when they describe the parts
+  // instead.
+  function tourFit() {
+    return state.analysisType === ANALYSIS_TYPES.WEIBULL ? state.latestResult : null;
+  }
+
+  const countOf = (count, one, many) => `${count} ${Number(count) === 1 ? one : many}`;
+
+  // A beta in the interpretation summary's words, by its bands.
+  function betaReading(beta) {
+    if (beta < 0.9) return "early-life or defect-driven failures";
+    if (beta <= 1.1) return "random failures";
+    return "wear-out";
+  }
+
+  // The fit's intervals read by the interpretation summary's rules: beta's is
+  // stable no wider than 70% of beta and not crossing 1, eta's no wider than 40%
+  // of eta. Empty when the fit has neither.
+  function intervalReading(fit) {
+    const beta = Number(fit.beta_mle);
+    const eta = Number(fit.eta_mle);
+    const parts = [];
+    if (fit.beta_lower_ci != null && fit.beta_upper_ci != null && beta > 0) {
+      const lower = Number(fit.beta_lower_ci);
+      const upper = Number(fit.beta_upper_ci);
+      const share = Math.round(((upper - lower) / beta) * 100);
+      const reading =
+        lower < 1 && upper > 1
+          ? "it crosses 1, so the pattern is still uncertain"
+          : share <= 70
+            ? "no wider than 70% of beta, so the reading is stable"
+            : "wider than 70% of beta, so the reading is to be treated with caution";
+      parts.push(`beta's interval runs from ${fmt(lower)} to ${fmt(upper)}, ${share}% as wide as beta itself: ${reading}`);
+    }
+    if (fit.eta_lower_ci != null && fit.eta_upper_ci != null && eta > 0) {
+      const share = Math.round(((Number(fit.eta_upper_ci) - Number(fit.eta_lower_ci)) / eta) * 100);
+      parts.push(
+        `eta's is ${share}% as wide as eta, ` +
+          (share <= 40 ? "tight enough to plan with" : "so eta is a direction rather than a decision point")
+      );
+    }
+    return parts.length ? `Here ${parts.join("; ")}.` : "";
+  }
+
+  // The card about each part of the Weibull results, in the order they are on
+  // the page, for the tour to take one at a time once it has shown a fit. Their
+  // targets are drawn by renderAnalysisResult, so none is on the page until a fit
+  // is; `editorOnly` marks the parts a viewer doesn't get.
+  const WEIBULL_RESULT_PARTS = [
+    {
+      target: "#lda-result-params",
+      title: "Beta and eta",
+      body: () => {
+        const fit = tourFit();
+        const what =
+          "The two numbers the fit is made of. Both are maximum-likelihood estimates: the pair that makes the " +
+          "lives this population actually had the likeliest, counting a life a PM reset or the cutoff ended as " +
+          "having lasted at least that long. ";
+        if (!fit) return what + "Beta is the shape and eta the scale:";
+        return (
+          what +
+          `Here beta is ${fmt(fit.beta_mle)}, which the interpretation summary reads as ` +
+          `${betaReading(Number(fit.beta_mle))}, and eta is ${fmt(fit.eta_mle)} life hours.`
+        );
+      },
+      points: [
+        ["Beta below 1", "The risk falls with age: failures come early, from defects, setup or a poor repair. A part that has run a while is safer than a new one, so renewing it on a schedule doesn't help."],
+        ["Beta around 1", "The risk is the same at every age, so failures come at random. A fixed replacement age can't lower it; inspections or condition checks can catch a failure starting."],
+        ["Beta above 1", "Wear-out: the risk climbs with age, which an age-based PM or planned replacement can get ahead of. The higher beta, the more tightly lives bunch just below eta."],
+        ["Eta", "The age by which 63.2% of lives are expected to have ended in a failure, whatever beta is. It sets the scale: double it and every age doubles, while the curves keep their shape."],
+      ],
+      more: [
+        docsLink("weibull-distribution", "The Weibull distribution"),
+        docsLink("weibull-fit", "Fitting by maximum likelihood"),
+      ],
+    },
+    {
+      target: "#lda-result-ci",
+      title: "How far to trust them",
+      body: () => {
+        const fit = tourFit();
+        const what =
+          "Approximate 95% confidence intervals: how far beta and eta could reasonably be from the fitted values " +
+          "on this many lives. They come from how sharply the likelihood falls away from its best, so more " +
+          "failures narrow them. ";
+        return what + ((fit && intervalReading(fit)) || "What to read in them:");
+      },
+      points: [
+        ["Does beta's cross 1?", "Then the lives fit a falling risk and a rising one alike, and the pattern isn't settled. Check whether the population mixes mechanisms, or wait for more failures, before choosing a strategy."],
+        ["How wide are they?", "Beta's is stable when it is no wider than 70% of beta, eta's when it is no wider than 40% of eta. Wider makes the reading a direction rather than a decision."],
+        ["What narrows them", "More failures. The width falls roughly with the square root of their number, so halving it takes about four times as many; about 20 make beta's stable at any beta."],
+        ["Not available", "The likelihood's curvature couldn't be worked out. Read beta and eta as directions only."],
+      ],
+      more: docsLink("weibull-ci", "Confidence intervals"),
+    },
+    {
+      target: "#lda-result-life",
+      title: "B10, B50 and MTTF",
+      body:
+        "Ages read off the fitted curve, each in life hours and in the calendar weeks they take on the asset's " +
+        "schedule. A week holds five scheduled days: 100 life hours on 20 hours Monday-Friday, 120 on 24 hours " +
+        "Monday-Friday, and 168 on continuous.",
+      points: [
+        ["B10 life", "The age by which 10% are expected to have failed. For a mechanism that is wearing out, past it is where the risk climbs."],
+        ["B50 (median) life", "The age by which half are expected to have failed."],
+        ["MTTF", "The mean life, for budgeting, manpower and spares rather than for timing a PM on its own: replacing at the average life of a mechanism that isn't wearing out adds work without removing failures."],
+      ],
+      more: docsLink("weibull-metrics", "MTTF, B10, B50 and fit statistics"),
+    },
+    {
+      target: "#lda-result-fit-check",
+      title: "One population, or several?",
+      body: () => {
+        const fit = tourFit();
+        const what =
+          "The probability plot's R²: how straight the failure points lie on it, 1 when they sit exactly on a " +
+          "line. It checks the model rather than being part of the fit" +
+          (CAN_EDIT ? ", so trying other values of beta and eta leaves it where it is." : ".");
+        if (!fit || fit.probability_plot_r_squared == null || fit.probability_plot_r_squared_threshold == null) return what;
+        const r2 = Number(fit.probability_plot_r_squared);
+        const threshold = Number(fit.probability_plot_r_squared_threshold);
+        if (!isFinite(r2) || !isFinite(threshold)) return what;
+        return (
+          what +
+          ` Here it is ${r2.toFixed(3)}, ${fit.probability_plot_review ? "below" : "meeting"} the ` +
+          `${threshold.toFixed(3)} threshold for ${countOf(fit.failure_count, "failure", "failures")}.`
+        );
+      },
+      points: [
+        ["The review threshold", "The R² that 90% of genuine Weibull samples with as many failures reach. Few points lie less straight by chance alone, so it rises with the failure count: 0.806 at 5 failures, 0.893 at 20, 0.938 at 50."],
+        ["Below it", "Less straight than chance explains, and the result carries a notice saying so. Review the population before acting on beta: mixed mechanisms, a life missing its real start point, or a duplicate work order are the usual causes."],
+        ["At or above it", "No sign of a mixed population, but read the plot as well: a bend, or two different slopes, matters even then."],
+      ],
+      more: [
+        docsLink("weibull-r-squared", "How straight is straight enough: R²"),
+        docsLink("weibull-plot-patterns", "Shapes to look for"),
+      ],
+    },
+    {
+      // With the notes under the lines, when the fit has any.
+      target: "#lda-result-context, .lda-result-notice",
+      title: "What the lives are",
+      body: () => {
+        const fit = tourFit();
+        let text = "What the fit counted, over which dates, and how each life ended.";
+        if (fit) {
+          text +=
+            ` Here there are ${countOf(fit.total_observation_count, "life", "lives")}: ` +
+            `${countOf(fit.failure_count, "ends", "end")} in a failure and ` +
+            `${countOf(fit.censored_count, "is", "are")} right-censored.`;
+        }
+        if (fit && document.querySelector(".lda-result-notice")) {
+          text += " The notes under them say what to check before relying on this fit, and why.";
+        }
+        return text;
+      },
+      points: () => {
+        const fit = tourFit();
+        const points = [
+          ["Life basis", "Schedule-adjusted hours on the asset's Weibull schedule, an exposure proxy rather than run-meter hours. A weekend adds nothing on a weekday schedule, and each weekday counts at its scheduled hours, with days split at the plant's midnight."],
+          ["Window", "All history, or the start and cutoff dates the run was given, and where the cutoff came from: the last completed Limble import, the date entered, or the time of the run."],
+          ["Lives", "Each stretch between two events is one life, and the first event only starts the clock. A life that ends in a failure is complete. One a PM reset ended, and the current life still running at the cutoff, are right-censored: known only to have lasted at least that long, which the fit counts rather than drops."],
+        ];
+        if (!fit || fit.grouping_level === "FAILURE_MODE") {
+          points.push(["Grouping", "Shown for a failure mode, the fallback when the records can't support one mechanism. It pools every mechanism under the mode, which can blur beta."]);
+        }
+        return points;
+      },
+      more: [
+        docsLink("weibull-intervals", "Events, life intervals and censoring"),
+        docsLink("weibull-life-hours", "Schedule-adjusted life hours"),
+        docsLink("weibull-window", "The analysis window"),
+      ],
+    },
+    {
+      target: "#lda-adjust-row",
+      title: "Try other values",
+      editorOnly: true,
+      body:
+        "Type another beta or eta and the charts and the reliability at an age redraw as you type; the arrows " +
+        "step beta by 0.2 and eta by 100 hours. Save Adjusted Parameters keeps the pair, with the reason you " +
+        "give, beside the fitted result, never in its place. A saved pair lasts until the group is run again, " +
+        "these boxes always open on the fitted values, and the report is always at the fitted values too.",
+      more: docsLink("weibull-saving", "Adjusting, saving and reporting"),
+    },
+    {
+      target: "#lda-result-legend",
+      title: "Four views of one fit",
+      body:
+        "The four charts under this key, the probability plot, the CDF, the probability density and the " +
+        "hazard rate, are the same fitted curve drawn four ways, so they always agree; each makes a different " +
+        "question easy to answer. The key holds for all four:",
+      points: [
+        ["Green", "The fitted curve, at the maximum-likelihood beta and eta" + (CAN_EDIT ? ", or at the values you are trying." : ".")],
+        ["Yellow", "The curve at the low ends of both 95% intervals, and again at the high ends: how far it could reasonably move on this much data. On the probability plot and the CDF only."],
+        ["White points", "Kaplan-Meier estimates, one where each complete life ends: what the lives themselves say, not the fit."],
+        ["Red points", "Lives a PM reset ended, on the CDF only, placed on the curve at their age."],
+        ["Red line", "The current life: the scheduled hours from the last event to the analysis cutoff."],
+        ["Hover and click", "Hover a point or the red line for its work order, and click it to jump to its row in the data table further down."],
+      ],
+      more: docsLink("weibull-charts", "The four charts"),
+    },
+    {
+      target: "#lda-chart-prob",
+      title: "Weibull Probability Plot",
+      body:
+        "The fitted curve straightened: ln(−ln R) against ln(life hours), on which any Weibull is a straight " +
+        "line. It is where to judge whether one Weibull describes these lives at all.",
+      points: [
+        ["The slope is beta", "Steep means failures bunched in a narrow band of ages, shallow means spread from very early to very late. The axes aren't drawn to equal scales, so read beta from the result rather than the angle."],
+        ["Eta", "Where the line crosses zero, which is 63.2% failed."],
+        ["The points", "The check on the model. Points scattered either side of one straight line support one population; the first few wander most, each being one failure among few lives."],
+        ["Shapes to look for", "Two steep lines with a jump between them: two mechanisms pooled. One point far to the left dragging the line flat: a duplicate work order. Points bending over, steep then flatter: a failure-free period the two-parameter fit can't describe."],
+      ],
+      more: [
+        docsLink("weibull-probability-plot", "Weibull Probability Plot"),
+        docsLink("weibull-plot-patterns", "Shapes to look for"),
+      ],
+    },
+    {
+      target: "#lda-chart-cdf",
+      title: "CDF",
+      body:
+        "The share of lives expected to have ended in a failure by each age, rising from 0 toward 1. Read up " +
+        "from an age to the green curve and across for that share; read across from a share and down for an " +
+        "age: 10% gives B10, 50% gives B50, and 63.2% gives eta.",
+      points: [
+        ["White points", "The Kaplan-Meier share failed at each failure age, a step up at each failure. The green curve should run through the middle of them."],
+        ["Red points", "Where in the distribution the PM resets came. They estimate nothing: a PM reset is not a failure."],
+        ["Red line", "The green curve's height where it crosses is the share that would have failed by the age the current life has reached. Most likely to fail soon turns that into the chance of a failure in the next few weeks."],
+      ],
+      more: [
+        docsLink("weibull-cdf", "CDF"),
+        docsLink("weibull-km-points", "The points: Kaplan-Meier estimates"),
+      ],
+    },
+    {
+      target: "#lda-chart-pdf",
+      title: "Probability Density (PDF)",
+      body:
+        "How thickly failures fall at each age. The area under it between two ages is the share of lives that " +
+        "end in a failure between them, and its peak is the commonest age at failure. It is drawn from the fit " +
+        "alone, with no points and no interval curves.",
+      points: [
+        ["Beta below 1", "Highest at age 0 and falling steeply, with a long tail of lives that run long."],
+        ["Beta of 1", "Highest at 0 too, falling away exponentially."],
+        ["Beta above 1", "A hump. The higher beta, the narrower it is and the closer its peak comes to eta."],
+        ["Narrow or wide", "A narrow hump means most lives end within a narrow band of ages, which is what makes a fixed PM interval worth setting. A wide one means any fixed interval either renews many parts long before they would fail or lets many fail first."],
+      ],
+      more: docsLink("weibull-pdf", "Probability Density (PDF)"),
+    },
+    {
+      target: "#lda-chart-hazard",
+      title: "Hazard Rate",
+      body:
+        "For a part that has run so many hours without failing, how fast failure is coming at it now. It is " +
+        "the chart that answers the PM question directly:",
+      points: [
+        ["Falling", "Beta below 1: the longer a part has run, the safer it is. Renewing it on a schedule restarts the risky early hours; removing the defects behind them is the better aim."],
+        ["Level", "Beta of 1: the same risk at every age. A schedule can't lower it; inspection or condition monitoring that catches a failure starting can."],
+        ["Rising", "Beta above 1: renewing the part before the risk climbs too far lowers it, and where the curve starts to climb steeply is where an interval is worth weighing against downtime and cost."],
+        ["Compare shapes", "Its height depends on eta as well as beta, so between two fits compare its shape, not its scale."],
+      ],
+      more: docsLink("weibull-hazard", "Hazard Rate"),
+    },
+    {
+      target: "#lda-age-panel",
+      title: "Reliability at an age",
+      body:
+        "Enter an age in life hours, such as a PM interval you're weighing, for R, the share expected to " +
+        "survive to it, and F, the share expected to fail by it: with a PM at that interval, F is the share " +
+        "expected to fail before the PM comes round." +
+        (CAN_EDIT ? " It uses the fitted values, or the beta and eta you are trying, and says which." : ""),
+      more: docsLink("weibull-metrics", "Reliability at an age"),
+    },
+    {
+      target: "#lda-interpretation-panel",
+      title: "What it means",
+      body:
+        "Beta, eta, MTTF, the two intervals and R², each turned into a reading and a suggested direction by " +
+        "fixed rules: beta below 0.9 is early-life, 0.9 to 1.1 random, above 1.1 wear-out. It reads each " +
+        "number on its own, so put them together by asking, in order:",
+      points: [
+        ["Is it one population?", "R² against its threshold, and the shape of the probability plot. If not, fix the population, by fitting a mechanism or reviewing a duplicate, before reading anything else."],
+        ["Which side of 1 is beta?", "And does its interval stay there? That chooses the strategy: removing defects below 1, detection at 1, renewal by age above it."],
+        ["How wide are the intervals?", "Wide ones make the reading a direction rather than a decision."],
+        ["Where is the current life?", "Against B10 and eta on the CDF: a wear-out mechanism whose current life is past B10 is already where its risk climbs."],
+        ["How soon is a failure likely?", "Most likely to fail soon ranks this asset's mechanisms by the chance of one in the next few weeks."],
+      ],
+      more: [
+        docsLink("weibull-interpretation", "Reading the result"),
+        docsLink("weibull-lab", "Try it in the Weibull lab"),
+      ],
+    },
+    {
+      target: "#lda-weibull-data-panel",
+      title: "The lives behind it",
+      body: () => {
+        const fit = tourFit();
+        const flagged = fit ? (fit.observations || []).filter((obs) => obs.data_quality_assumption_flag).length : 0;
+        return (
+          "One row per life in the fit: what ended it, its life hours, the raw elapsed hours between its two " +
+          "events and the weekend and non-run hours taken out of them, and the work order that closed it." +
+          (flagged ? ` Here ${countOf(flagged, "life is", "lives are")} flagged in the Check column.` : "")
+        );
+      },
+      points: () => [
+        ["Check", "Flags a life that ends within an hour of the event before it, which is what two work orders for one breakdown look like. A near-zero life pulls beta below 1, so look at each one: it is flagged, not removed."],
+        ["Rows and points", "Click a row to ring its point on the chart that plots it, and a point to come back to its row."],
+        ...(CAN_EDIT
+          ? [["Task ID", "Opens that work order's disposition. Saving a change runs the analysis again with it."]]
+          : []),
+        ["▾", "Every column header sorts or filters the rows."],
+      ],
+      more: docsLink("weibull-chart-links", "From a point to its work order"),
+    },
+    {
+      target: "#lda-event-table",
+      title: "Every event, used or not",
+      body:
+        "Closed until opened: every event this group's dispositions put forward, in date order, with a note " +
+        "saying how it was used. The first only starts the clock, and each later one ends a life and starts " +
+        "the next. One with no completed date, a date that can't be read, or a date outside the analysis " +
+        "window is listed but left out, and its note says which.",
+      more: docsLink("weibull-intervals", "Events, life intervals and censoring"),
+    },
+    {
+      target: "#lda-report-bar",
+      title: "Generate Weibull Report",
+      editorOnly: true,
+      body:
+        "A Word report numbered REL-WBL-RPT, the asset number and a running number, at the fitted values: the " +
+        "population, the life basis and window, beta, eta, MTTF, B10 and B50 with their intervals and the " +
+        "reliability at the age entered above, the four charts, the interpretation summary, the limitations, " +
+        "and every life it rests on. A fit saved under an earlier method or schedule, or resting on fewer than " +
+        "five lives that end in a failure, has to be run again first, and the bar says so.",
+      more: docsLink("weibull-saving", "Adjusting, saving and reporting"),
+    },
+  ];
+
+  // The parts this account gets, numbered among themselves on each card. Each
+  // is for Weibull Analysis, being part of its results.
+  const WEIBULL_RESULT_TOUR_STEPS = WEIBULL_RESULT_PARTS.filter((part) => CAN_EDIT || !part.editorOnly).map(
+    (part, index, parts) => ({
+      ...part,
+      label: `Reading the fit, ${index + 1} of ${parts.length}`,
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+    })
+  );
+
   const ANALYSIS_RESULTS_TOUR_STEPS = [
     {
       target: "#lda-weibull-summary",
@@ -6886,6 +7253,7 @@
         "how many are still to be dispositioned. A record is only usable once it has been " +
         "dispositioned as an included failure or an approved PM reset, and a fit needs at least five " +
         "lives that end in a failure.",
+      more: docsLink("common-readiness", "The Weibull readiness summary"),
     },
     {
       target: "#lda-trend-summary",
@@ -6937,6 +7305,7 @@
         "Where an age-based PM is most likely to pay off: the five mechanisms with the highest beta in their " +
         "last saved Weibull fit, counting only fits with at least five failure lives. A beta above 1 means " +
         "failures get likelier with age, which a PM can get ahead of; below 1 points to early-life failures.",
+      more: docsLink("common-beta", "Highest-beta mechanisms"),
     },
     {
       target: "#lda-risk-panel",
@@ -6946,6 +7315,7 @@
         "What needs attention before the next planning cycle: the same saved fits, ranked by the chance the " +
         "current life ends in a failure within the weeks in the box (four unless you change it), given how " +
         "long it has already run.",
+      more: docsLink("common-risk", "Most likely to fail soon"),
     },
     {
       target: "#lda-pareto-panel",
@@ -6989,21 +7359,19 @@
             (CAN_EDIT ? "runs a Weibull fit on it" : "opens the fit last saved for it") +
             ", and the results appear under the chart: beta and eta with their confidence bounds, the " +
             "fitted curves, what they mean, and the data behind them. A fit needs at least five lives " +
-            "that end in a failure."
+            "that end in a failure. The next cards describe each part of them."
           );
         }
         return (
-          "Beta and eta with their confidence bounds, B10 and B50, the life basis and window the lives " +
-          "were built in, the fitted curves, the reliability at an age you enter, what it all means, and " +
-          "the data behind it, down to every event left out and why. Hover a plotted point for its work " +
-          "order, and click it to find its row in the table." +
-          (CAN_EDIT
-            ? " Change beta or eta to see the curves move, save the adjustment with a reason, or " +
-              "generate a Weibull report."
-            : "")
+          `The fit for ${state.latestResult.analysis_label || tourMechanismName()}: what was fitted and how ` +
+          "well, the four charts, what it all means, and the data behind it, down to every event left out " +
+          "and why. The next cards take each part in turn, and each links to where the Weibull " +
+          "documentation explains it in full."
         );
       },
+      more: docsLink("analysis-weibull", "Weibull life data analysis"),
     },
+    ...WEIBULL_RESULT_TOUR_STEPS,
     {
       target: "#lda-trend-chart-panel",
       title: "The trend",
@@ -7055,12 +7423,20 @@
       title: "Come back any time",
       body: () => {
         const again = "The tour only opens by itself once. Press Show me around to take it again.";
+        const docs =
+          state.analysisType === ANALYSIS_TYPES.WEIBULL
+            ? " The Weibull documentation goes through every number on these cards, and its lab fits lives you type in."
+            : "";
         if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
-          return `${tourExampleAsset} stays selected from the tour; pick your own in the Asset Number box whenever you like. ${again}`;
+          return `${tourExampleAsset} stays selected from the tour; pick your own in the Asset Number box whenever you like. ${again}${docs}`;
         }
-        if (state.selectedAsset) return again;
-        return "Pick an asset and press Show me around again to see each of those parts on the page.";
+        if (state.selectedAsset) return again + docs;
+        return "Pick an asset and press Show me around again to see each of those parts on the page." + docs;
       },
+      more: () =>
+        state.analysisType === ANALYSIS_TYPES.WEIBULL
+          ? [docsLink("analysis-weibull", "Weibull life data analysis"), docsLink("weibull-lab", "The Weibull lab")]
+          : null,
     },
   ];
 
