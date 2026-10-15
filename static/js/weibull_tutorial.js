@@ -914,11 +914,16 @@
     points.forEach((p) => {
       inner += dot(p1.sx(p.x), p1.sy(p.y), "fig-point");
     });
-    if (opts.ring != null) {
-      const ringed = points.find((p) => p.t === opts.ring);
-      if (ringed) inner += dot(p1.sx(ringed.x), p1.sy(ringed.y), "fig-ring", 10);
-    }
     parts.push(p1.frame, p1.clipped(inner));
+    // An age off this plot's scale is still the age the other three panes are
+    // read at, so it is named at the edge it lies beyond. Widening the scale to
+    // take it in would instead slide the points about as a slider moves.
+    if (age && fitted && !p1.inX(Math.log(age))) {
+      const before = Math.log(age) < xMin;
+      const text = before ? `\u25C0 ${hours(age, 0)}, off this scale` : `${hours(age, 0)}, off this scale \u25B6`;
+      // In the corner the fitted line, rising to the right, leaves clear.
+      parts.push(label(before ? p1.left + 6 : p1.right - 6, before ? p1.top + 30 : p1.bottom - 8, text, "fig-text-highlight", before ? "start" : "end"));
+    }
     if (fitted && opts.annotate) {
       parts.push(label(p1.sx(Math.log(eta)) + 4, p1.bottom - 6, "η", "fig-text-small"));
       parts.push(label(p1.left + 8, p1.top + 14, `slope = β = ${fmt(beta, 2)}`, "fig-text-accent"));
@@ -1636,6 +1641,7 @@
       bLife,
       analyse,
     },
+    draw: { charts: drawCharts },
     prerender,
     mount,
   };

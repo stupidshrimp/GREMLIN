@@ -717,3 +717,33 @@ def test_the_figure_script_does_gremlins_arithmetic(documentation):
     # The sets above include one that stops for want of failures and one with no root.
     assert script["few"]["problem"] == "few"
     assert script["identical"]["problem"] == "no-root"
+
+
+def test_an_age_off_the_probability_plot_is_named_at_its_edge(documentation):
+    """The CDF, PDF and hazard panes are read at any age the lab or figure W6's
+    slider gives; the probability plot's log scale stops short of some, so it
+    names those at the edge they lie beyond rather than dropping them."""
+    node = _node()
+    worked = _figure_data(documentation)["presets"]["worked"]
+    program = (
+        "const api = require(process.argv[1]); let input = '';"
+        "process.stdin.on('data', (c) => { input += c; });"
+        "process.stdin.on('end', () => {"
+        "  const set = JSON.parse(input); const result = api.method.analyse(set);"
+        "  const out = {};"
+        "  for (const age of [100, 400, 5000]) out[age] = api.draw.charts(result, { id: 't', age });"
+        "  process.stdout.write(JSON.stringify(out));"
+        "});"
+    )
+    completed = subprocess.run(
+        [node, "-e", program, str(SCRIPT)],
+        input=json.dumps(worked),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    drawn = json.loads(completed.stdout)
+    assert "\u25c0 100 h, off this scale" in drawn["100"]
+    assert "5,000 h, off this scale \u25b6" in drawn["5000"]
+    assert "off this scale" not in drawn["400"]
