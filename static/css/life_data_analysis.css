@@ -243,6 +243,66 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-checkbox { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.88rem; color: var(--forest-800); cursor: pointer; }
 .lda-checkbox input { width: 16px; height: 16px; }
 
+/* Pareto header: the title on the left and its Group by / Rank by switches on
+   the right, wrapping under the title when the panel is too narrow for both. */
+.lda-pareto-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+}
+.lda-pareto-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1.25rem; }
+.lda-pareto-option { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.lda-pareto-option-label { font-size: 0.82rem; font-weight: 600; color: var(--muted); }
+/* The note over a mode opened into its mechanisms: a tinted strip, so the chart
+   changing under a click reads as a state with a way back out. */
+.lda-pareto-focus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.85rem;
+  padding: 0.5rem 0.6rem 0.5rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--forest-100);
+}
+.lda-pareto-focus .lda-hint { margin: 0; color: var(--forest-800); font-weight: 600; }
+.lda-pareto-focus .btn-secondary { padding: 0.35rem 0.85rem; font-size: 0.85rem; }
+
+/* Two or more buttons in one pill, the chosen one filled: the same segmented
+   control as the PM calendar's Month / Week switch. */
+.lda-segmented {
+  display: inline-flex;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+}
+.lda-segmented-btn {
+  padding: 0.32rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.lda-segmented-btn:hover { background: var(--forest-100); }
+.lda-segmented-btn:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.lda-segmented-btn.is-active {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--accent-solid-ink);
+  cursor: default;
+}
+
 .lda-chart-wrap { width: 100%; position: relative; }
 .lda-canvas { width: 100%; display: block; }
 

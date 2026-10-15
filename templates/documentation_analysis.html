@@ -29,7 +29,7 @@
   {% call std.doc_card(
       "analysis-common",
       "What every analysis reads",
-      "Dispositions, the Include in Weibull Candidate flag, work order dates and downtime, the readiness summary and the failure mechanism Pareto.",
+      "Dispositions, the Include in Weibull Candidate flag, work order dates and downtime, the readiness summary and the failure Pareto.",
       eyebrow="Before any analysis") %}
 
     <section class="std-section" id="common-dispositions">
@@ -159,9 +159,10 @@
     </section>
 
     <section class="std-section" id="common-pareto">
-      <h4>The failure mechanism Pareto</h4>
+      <h4>The failure Pareto</h4>
       <p>
-        Shown for every analysis type, under the summary. Each bar is one
+        Shown for every analysis type, under the summary. Group by picks what
+        each bar is. Grouped by Failure mechanism, as it opens, each bar is one
         failure mode and mechanism pair on the asset, with its included
         failures counted and their downtime added up:
       </p>
@@ -173,9 +174,16 @@
       </math>
       {% endcall %}
       <p>
-        Bars are sorted by the measure on show, downtime hours unless "Show
-        failure count instead of downtime hours" is ticked. The line is the
-        running share of the total for that same measure:
+        Grouped by Failure mode, each bar is one failure mode, and its count and
+        downtime are those of every mechanism bar under it added together. The
+        bars count the same failures either way, so the totals match. A failure
+        dispositioned with a mode but no mechanism is in neither grouping, as
+        it is in none of the analyses but a mode-level Weibull fit.
+      </p>
+      <p>
+        Bars are sorted by the measure Rank by is set to, downtime hours unless
+        it is switched to failure count. The line is the running share of the
+        total for that same measure:
       </p>
       {% call std.equation("C4", "the cumulative percent at a bar is one hundred times the running total up to that bar over the grand total") %}
       <math display="block">
@@ -187,19 +195,21 @@
       </math>
       {% endcall %}
       <dl class="std-where">
-        <dt><math><mi>k</mi></math></dt><dd>One failure mode and mechanism pair, and the included failures dispositioned to it.</dd>
+        <dt><math><mi>k</mi></math></dt><dd>One failure mode and mechanism pair, and the included failures dispositioned to it; grouped by failure mode, one mode and the included failures of every mechanism under it.</dd>
         <dt><math><msub><mi>x</mi><mi>i</mi></msub></math></dt><dd>The measure on show for the bar in position <math><mi>i</mi></math>: downtime hours or failure count.</dd>
       </dl>
       <ul>
-        <li>At most 15 bars are drawn, but the line counts every mechanism, so it can stop short of 100% at the last bar on screen. The chart then says "Top 15 of" how many there are.</li>
+        <li>At most 15 bars are drawn, but the line counts every mechanism or mode, so it can stop short of 100% at the last bar on screen. The chart then says "Top 15 of" how many there are.</li>
+        <li>Hovering a bar shows its full name, which the label under it may cut short, its mode (or, for a mode, how many mechanisms it adds up), its downtime, failure count and cumulative percent, and what clicking it does.</li>
         <li>When the total is 0, as in the downtime view when no downtime was logged against the included failures, every bar is empty and the line stays at 0%.</li>
         <li><strong>From and To narrow it by date, and the analysis with it.</strong> Only the included failures whose work order date (completed, else start, else created) falls on or between those days are counted, and the line is their running share. Either can be left blank for no bound on that side; All dates clears both. A failure with no usable date is left out while either is set, since it cannot be placed in the range. The dates stay set when you pick another asset.</li>
         <li>The trend, downtime driver, PM effectiveness and repeat fix rate analyses take the same dates in the same way, so a bar and the analysis it opens count the same work orders. PM effectiveness limits the PMs as well as the failures, so a PM late in the range whose next failure falls after it counts as not followed by one; repeat fix rate starts each mechanism's chain at its first failure in the range. The trend's and PM chart's own month ranges then pick from within these dates. A Weibull fit takes them as its <a href="#weibull-window">analysis window</a> instead.</li>
-        <li>Clicking a bar picks that mechanism. With Weibull Analysis selected it runs the fit for that mechanism (a viewer sees its saved result); with the other three it fills their charts for that mechanism.</li>
+        <li>Clicking a bar picks that mechanism. With Weibull Analysis selected it runs the fit for that mechanism (a viewer sees its saved result); with the others it fills their charts for that mechanism.</li>
+        <li>Clicking a failure mode bar picks the whole mode, the same as its "all mechanisms" choice in the Perform Analysis lists: Weibull runs the mode-level fit, the trend and downtime driver add up every mechanism under it, and repeat fix rate lists the repeats of all of them. PM effectiveness is worked out per mechanism, so there the click opens the mode into its mechanisms instead, for one of them to be picked; Show every mechanism, or either Group by button, goes back to the whole chart.</li>
       </ul>
       {% call std.figure("C1", "Four mechanisms with 120, 60, 15 and 5 hours of downtime. The first bar alone is 60% of the 200 hours; the first two together are 90%.") %}
       <svg viewBox="0 0 640 280" role="img" aria-labelledby="fig-c1-title fig-c1-desc">
-        <title id="fig-c1-title">Reading a failure mechanism Pareto</title>
+        <title id="fig-c1-title">Reading a failure Pareto</title>
         <desc id="fig-c1-desc">Bars for Bearing wear at 120 hours, Seal leak at 60, Sensor fault at 15 and Belt slip at 5, sorted from highest to lowest, with a cumulative line rising through 60, 90, 97.5 and 100 percent.</desc>
         <path class="fig-grid" d="M70 70 H570 M70 150 H570"/>
         <path class="fig-axis" d="M70 30 V230 H570"/>
@@ -1468,7 +1478,7 @@
       <h4>Tables and the window</h4>
       <ul>
         <li><strong>Repeat fix rate by mechanism</strong> lists every mechanism with its failures, gaps, repeats and rate, the most repeats first. The line under it names the schedule and time zone the hours were counted on.</li>
-        <li><strong>Repeat failures</strong> lists each repeat with the failure before it: both work order numbers and completed dates, and the gap in scheduled and in calendar hours. Editors can click either number to review its disposition. Clicking a Pareto bar or a row in the table above lists only that mechanism's repeats; clicking it again, or Show every mechanism, lists them all.</li>
+        <li><strong>Repeat failures</strong> lists each repeat with the failure before it: both work order numbers and completed dates, and the gap in scheduled and in calendar hours. Editors can click either number to review its disposition. Clicking a Pareto bar or a row in the table above lists only that mechanism's repeats, or, for a failure mode bar, those of every mechanism under it; clicking it again, or Show every mechanism, lists them all.</li>
         <li><strong>The window</strong> box changes <math><mi>w</mi></math> and counts again. Perform Analysis counts again too, with whatever is in the box.</li>
       </ul>
       <p>
