@@ -44,8 +44,10 @@
     expanded: null, // currently expanded card key or null
     dropdownOpen: false,
     assetQuery: "",
-    // Availability is fetched separately and shares none of the filter state:
-    // the card always shows every configured group over whole months.
+    // Availability is fetched separately. Its group charts share none of the
+    // filter state -- they always show every configured group over whole
+    // months -- but an asset added to the filter that no group holds gets a
+    // chart of its own on the card.
     availability: null,
     availabilityWindow: 5,
     availabilityStacked: false,
@@ -54,6 +56,9 @@
     // them and flipping it refetches.
     availabilityExcludePms: false,
     availabilityFetchToken: 0,
+    // The added assets the card was last asked for, so a filter change that
+    // leaves them alone does not recompute the whole card.
+    availabilityAssetsKey: "",
     availabilityError: "",
     // A misconfiguration the page can compute around but must not hide -- kept
     // separate from availabilityError so a warning never reads as a failure,
@@ -925,7 +930,8 @@
       : assets.map((asset, index) => ({
         color: C.series[index % C.series.length], text: asset.display_name,
       })))
-      .concat([{ color: C.average, text: "Average" }, { color: C.goal, text: "Goal %" }]);
+      .concat(group.kind === "asset" ? [] : [{ color: C.average, text: "Average" }])
+      .concat([{ color: C.goal, text: "Goal %" }]);
 
     ctx.font = "10px Inter, sans-serif";
     let legendRows = 1;
@@ -1188,10 +1194,13 @@
       notes.push(`${fmtNum(row.excluded_pm_count, 0)} PM work order(s) excluded.`);
     }
 
+    const monthLabel = (group.month_labels || [])[hit.monthIndex] || "";
     return {
       title: asset.display_name || asset.asset_number,
       color: C.series[hit.assetIndex % C.series.length],
-      subtitle: `${group.asset_group} · ${(group.month_labels || [])[hit.monthIndex] || ""}`,
+      // An asset's own chart has one bar per month, and the title already
+      // names the asset.
+      subtitle: group.kind === "asset" ? monthLabel : `${group.asset_group} · ${monthLabel}`,
       rows,
       notes,
     };
@@ -1294,7 +1303,7 @@
       // anything that lands in an open card's body, and this chart only exists
       // while the card is open. Stopping it here would instead swallow the
       // document-level click that closes the asset dropdown.
-      openAvailabilityDetail(group.asset_group, { asset_number: asset.asset_number, month });
+      openAvailabilityDetail(chartKey(group), { asset_number: asset.asset_number, month });
     });
   }
 
@@ -1425,9 +1434,39 @@
       el("td", { class: "availability-cell", text: fmtNum(item.row[column.field], column.digits) });
   });
 
-  function availabilityGroup(name) {
-    const groups = (state.availability && state.availability.groups) || [];
-    return groups.find((group) => group.asset_group === name) || null;
+  // Every chart on the card: one per group, then one for each asset added from
+  // the filter that no group holds. Both have the same shape, and everything
+  // below draws them alike except where an asset's own chart has no group to
+  // speak of.
+  function availabilityCharts(data) {
+    if (!data) return [];
+    return (data.groups || []).concat(data.asset_charts || []);
+  }
+
+  // What the card keys a chart by -- its table mode, its drill-down, the button
+  // that opened it. A group's name, or the asset number for an asset's own
+  // chart, marked so that an asset number can never be read as a group's name.
+  function chartKey(chart) {
+    return chart.kind === "asset" ? `asset:${chart.asset_number}` : chart.asset_group;
+  }
+
+  function chartTitle(chart) {
+    if (chart.kind !== "asset") return chart.asset_group;
+    const known = state.assets.find((asset) => asset.asset_number === chart.asset_number);
+    const name = known && known.asset_name;
+    return name && name !== chart.asset_number
+      ? `${chart.asset_number} · ${name}`
+      : `Asset ${chart.asset_number}`;
+  }
+
+  // The work-orders API's name for the chart a bar came from: blank asks for an
+  // asset outside every group, on the schedule its own chart was drawn with.
+  function chartGroupParam(chart) {
+    return chart.kind === "asset" ? "" : chart.asset_group;
+  }
+
+  function availabilityGroup(key) {
+    return availabilityCharts(state.availability).find((chart) => chartKey(chart) === key) || null;
   }
 
   // The flags a bar cannot show. Each one is a case where the number alone reads
@@ -2195,7 +2234,7 @@
       // underneath the dialog.
       const excludePms = Boolean(data.exclude_pms);
       const key = `${target.assetNumber}|${target.month}|${data.generated_at || ""}|${excludePms}`;
-      if (wo.key !== key) loadWorkOrders(detail.assetGroup, target, key, excludePms);
+      if (wo.key !== key) loadWorkOrders(chartGroupParam(group), target, key, excludePms);
     }
 
     if (wo.error) {
@@ -2347,7 +2386,16 @@
   }
 
   // The group's asset-months, one row each -- the view the dialog opens on.
+  // An asset's own chart has no group to be measured against, so its table
+  // leaves out the comparison it could only make with itself.
+  function detailColumns(group) {
+    return group.kind === "asset"
+      ? DETAIL_COLUMNS.filter((column) => column.key !== "delta")
+      : DETAIL_COLUMNS;
+  }
+
   function renderSummaryBody(group, detail, items, focusKey, rerender) {
+    const columns = detailColumns(group);
     const shown = sortDetailRows(detail.attentionOnly ? items.filter((i) => i.attention) : items, detail.sort);
     const attentionCount = items.filter((item) => item.attention).length;
 
@@ -2378,7 +2426,7 @@
       rerender();
     });
 
-    const head = el("tr", {}, DETAIL_COLUMNS.map((column) => detailHeadCell(column, detail.sort, onSort)));
+    const head = el("tr", {}, columns.map((column) => detailHeadCell(column, detail.sort, onSort)));
     const body = shown.length
       ? shown.map((item) => {
           const row = el(
@@ -2389,7 +2437,7 @@
                 (item.key === focusKey ? " is-focused" : "") +
                 (item.attention ? " is-attention" : ""),
             },
-            DETAIL_COLUMNS.map((column) => column.cell(item))
+            columns.map((column) => column.cell(item))
           );
           if (item.key === focusKey) row.setAttribute("aria-current", "true");
           return row;
@@ -2398,7 +2446,7 @@
           el("tr", {}, [
             el("td", {
               class: "metrics-empty-row",
-              colspan: String(DETAIL_COLUMNS.length),
+              colspan: String(columns.length),
               text: "No rows match the current filter.",
             }),
           ]),
@@ -2454,7 +2502,7 @@
       ? renderWorkOrderBody(group, data, detail)
       : renderSummaryBody(group, detail, items, focusKey, rerender);
 
-    const title = `${group.asset_group}: the rows behind the chart`;
+    const title = `${chartTitle(group)}: the rows behind the chart`;
     const closeButton = el("button", {
       type: "button",
       class: "metrics-modal-close",
@@ -2560,8 +2608,8 @@
       markScrollRegion(
         scroll,
         workOrders
-          ? `${group.asset_group} work orders`
-          : `${group.asset_group} availability data`
+          ? `${chartTitle(group)} work orders`
+          : `${chartTitle(group)} availability data`
       );
     }
 
@@ -2600,20 +2648,35 @@
     }
   }
 
+  // The filter's assets that no availability group holds, in the order they
+  // were added. The equipment default is exactly the groups' membership, so
+  // anything selected outside it is one of these.
+  function availabilityAddedAssets() {
+    const grouped = new Set(state.defaultAssets);
+    return Array.from(state.selected).filter((number) => !grouped.has(number));
+  }
+
   async function loadAvailability() {
     const token = ++state.availabilityFetchToken;
     const params = new URLSearchParams({ months: String(state.availabilityWindow) });
     if (state.availabilityExcludePms) params.set("exclude_pms", "1");
+    // Only the added assets go: the server charts each one on its own, and the
+    // group charts don't follow the filter, so sending the rest changes nothing.
+    const added = availabilityAddedAssets();
+    added.forEach((number) => params.append("assets", number));
+    state.availabilityAssetsKey = added.join(",");
     try {
       const data = await getJson(`${AVAILABILITY_API}?${params.toString()}`);
-      // The equipment list is the same whatever the window or the PM switch,
-      // so even a response that has been overtaken can still supply it.
+      // The equipment list is the same whatever the window, the PM switch or
+      // the added assets, so even a response that has been overtaken can still
+      // supply it.
       if (Array.isArray(data.all_asset_numbers) && data.all_asset_numbers.length) {
         state.defaultAssets = data.all_asset_numbers.slice();
       }
-      // A newer request -- the window or the PM switch changed again while
-      // this one was in flight -- owns the card now. Landing this one late
-      // would put back numbers for a setting the reader has already left.
+      // A newer request -- the window, the PM switch or the added assets
+      // changed again while this one was in flight -- owns the card now.
+      // Landing this one late would put back numbers for a setting the reader
+      // has already left.
       if (token !== state.availabilityFetchToken) return null;
       state.availability = data;
       state.availabilityError = "";
@@ -2639,23 +2702,35 @@
     // changes apply to every month, so a number is only meaningful alongside
     // the schedule it was computed with.
     const schedules = groups
-      .map((g) => `${g.asset_group} ${Number(g.net_scheduled_hours_per_day).toFixed(1)} net h/day`)
-      .join(" · ");
+      .map((g) => `${g.asset_group} ${Number(g.net_scheduled_hours_per_day).toFixed(1)} net h/day`);
+    const added = data.asset_charts || [];
+    if (added.length) {
+      schedules.push(
+        `assets outside a group ${Number(added[0].net_scheduled_hours_per_day).toFixed(1)} net h/day`
+      );
+    }
     const stamp = (data.generated_at || "").replace("T", " ");
     const pms = data.exclude_pms ? " · PMs excluded" : "";
-    return `Computed ${stamp} · ${data.timezone || "local"}${pms} · ${schedules}`;
+    return `Computed ${stamp} · ${data.timezone || "local"}${pms} · ${schedules.join(" · ")}`;
   }
 
   // The card header says what the numbers count, and with PMs excluded that is
   // no longer all downtime. Read from the data on screen rather than from the
   // checkbox, which runs ahead of it while a refetch is in flight.
+  // Kept in step with the same sentence in metrics.html, which shows until the
+  // first response lands.
+  const AVAILABILITY_FILTER_NOTE =
+    "The filters above don't change the group charts; an asset added there that isn't in a " +
+    "group gets a chart of its own below them.";
+
   function renderAvailabilityScope() {
     const scope = $("availability-scope");
     if (!scope) return;
     const counted = state.availability && state.availability.exclude_pms
       ? "all downtime except PMs"
       : "all downtime";
-    scope.textContent = `All asset groups · ${counted} · monthly. Not affected by the filters above.`;
+    scope.textContent =
+      `All asset groups · ${counted} · monthly. ${AVAILABILITY_FILTER_NOTE}`;
   }
 
   function renderAvailabilityPreview() {
@@ -2760,7 +2835,8 @@
   function renderAvailabilityTable(group, data) {
     const months = data.months || [];
     const labels = group.month_labels || [];
-    const mode = state.availabilityTableMode[group.asset_group] || "availability";
+    const mode = state.availabilityTableMode[chartKey(group)] || "availability";
+    const ownChart = group.kind === "asset";
     const byKey = {};
     (group.rows || []).forEach((row) => {
       byKey[`${row.asset_number}|${row.month}`] = row;
@@ -2823,9 +2899,12 @@
 
     const goalRow = el("tr", { class: "availability-summary-row" }, [el("td", { text: "Goal %" })].concat(
       months.map((month, index) => {
-        if (!CAN_EDIT) {
+        // Goals are stored per group, so an asset outside every group reads the
+        // default and has nowhere to save another.
+        if (!CAN_EDIT || ownChart) {
           return el("td", {
             class: "availability-cell",
+            title: ownChart ? "Assets outside a group are measured against the default goal" : null,
             text: `${(((group.goal || [])[index] ?? 0.95) * 100).toFixed(2)}%`,
           });
         }
@@ -2852,14 +2931,15 @@
     return el("div", { class: "metrics-table-scroll availability-table-scroll" }, [
       el("table", { class: "metrics-table availability-table" }, [
         el("thead", {}, [head]),
-        el("tbody", {}, body.concat([averageRow, goalRow])),
+        // One asset has no group average: the row would only repeat the one above.
+        el("tbody", {}, body.concat(ownChart ? [goalRow] : [averageRow, goalRow])),
       ]),
     ]);
   }
 
   function availabilityTypeNames(data) {
     const totals = {};
-    (data.groups || []).forEach((group) => (group.rows || []).forEach((row) => {
+    availabilityCharts(data).forEach((group) => (group.rows || []).forEach((row) => {
       Object.entries(row.work_order_type_hours || {}).forEach(([name, hours]) => {
         totals[name] = (totals[name] || 0) + (Number(hours) || 0);
       });
@@ -2882,7 +2962,8 @@
     const excludeControl = $("availability-exclude-pms");
     if (excludeControl) excludeControl.checked = state.availabilityExcludePms;
 
-    if (!data || !(data.groups || []).length) {
+    const charts = availabilityCharts(data);
+    if (!charts.length) {
       setEmpty(
         "availability",
         state.availabilityError || (data && data.empty_reason) || "No availability data is available yet."
@@ -2891,67 +2972,105 @@
     }
     setEmpty("availability", "");
 
-    data.groups.forEach((group) => {
-      const canvas = el("canvas", { height: "300" });
-      const byKey = {};
-      (group.rows || []).forEach((row) => { byKey[`${row.asset_number}|${row.month}`] = row; });
-      const typeNames = availabilityTypeNames(data);
-      const mode = state.availabilityTableMode[group.asset_group] || "availability";
-      const toggle = el("button", {
-        type: "button",
-        class: "btn-secondary availability-mode-toggle availability-ot-toggle",
-        text: mode === "ot" ? "Show availability %" : "Edit OT hours",
-      });
-      toggle.addEventListener("click", () => {
-        state.availabilityTableMode[group.asset_group] = mode === "ot" ? "availability" : "ot";
-        renderAvailabilityExpanded();
-      });
-
-      // The same drill-down the bars open. A canvas cannot hold focus, so
-      // without this the whole table would be mouse-only -- and it is also the
-      // way in when the question is about the group rather than one bad month.
-      const detailButton = el("button", {
-        type: "button",
-        class: "btn-secondary availability-mode-toggle availability-view-data",
-        // Named so the dialog can find it again on close. This button is
-        // rebuilt on every availability render, so it cannot be held by
-        // reference across one.
-        "data-availability-group": group.asset_group,
-        text: "View data",
-        title: AVAILABILITY_BREAKDOWN_TOOLTIP,
-      });
-      detailButton.addEventListener("click", () => {
-        openAvailabilityDetail(group.asset_group, null);
-      });
-
+    const typeNames = availabilityTypeNames(data);
+    (data.groups || []).forEach((group) => appendAvailabilityChart(host, group, data, typeNames));
+    const added = data.asset_charts || [];
+    if (added.length) {
+      const goal = ((added[0].goal || [])[0] ?? 0.95) * 100;
       host.appendChild(
-        el("div", { class: "metrics-panel availability-group" }, [
-          el("div", { class: "availability-group-head" }, [
-            el("h3", { text: `${group.asset_group} Availability % by Month` }),
-            el("div", { class: "availability-group-actions" }, CAN_EDIT ? [detailButton, toggle] : [detailButton]),
-          ]),
+        el("div", { class: "availability-added-head" }, [
+          el("h3", { text: "Assets added from the filter" }),
           el("p", {
             class: "metrics-hint",
             text:
-              `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day · ` +
-              (data.exclude_pms ? "PMs excluded · " : "") +
-              "click a bar to open the rows behind it, and the work orders behind those",
+              "These aren't in any asset group, so each is measured on the schedule for assets " +
+              `outside a group (${Number(added[0].net_scheduled_hours_per_day).toFixed(1)} net ` +
+              `hours/day, set on the Configuration page) against the default ${goal.toFixed(0)}% ` +
+              "goal. Remove one from the filter to take its chart away.",
           }),
-          el("div", { class: "metrics-chart-wrap availability-chart" }, [canvas]),
-          renderAvailabilityTable(group, data),
         ])
       );
-      drawAvailabilityChart(canvas, group, {
-        height: 300,
-        stacked: state.availabilityStacked,
-        rowsByKey: byKey,
-        typeNames,
-        months: data.months || [],
-      });
-      wireAvailabilityChart(canvas, group, data);
-    });
+      added.forEach((chart) => appendAvailabilityChart(host, chart, data, typeNames));
+    }
 
     syncScrollRegions();
+  }
+
+  // One chart, its table and its buttons. Groups and added assets alike: an
+  // asset's own chart is a group of one, keyed by chartKey so the two can never
+  // be mistaken for each other.
+  function appendAvailabilityChart(host, group, data, typeNames) {
+    const key = chartKey(group);
+    const canvas = el("canvas", { height: "300" });
+    const byKey = {};
+    (group.rows || []).forEach((row) => { byKey[`${row.asset_number}|${row.month}`] = row; });
+    const mode = state.availabilityTableMode[key] || "availability";
+    const toggle = el("button", {
+      type: "button",
+      class: "btn-secondary availability-mode-toggle availability-ot-toggle",
+      text: mode === "ot" ? "Show availability %" : "Edit OT hours",
+    });
+    toggle.addEventListener("click", () => {
+      state.availabilityTableMode[key] = mode === "ot" ? "availability" : "ot";
+      renderAvailabilityExpanded();
+    });
+
+    // The same drill-down the bars open. A canvas cannot hold focus, so
+    // without this the whole table would be mouse-only -- and it is also the
+    // way in when the question is about the group rather than one bad month.
+    const detailButton = el("button", {
+      type: "button",
+      class: "btn-secondary availability-mode-toggle availability-view-data",
+      // Named so the dialog can find it again on close. This button is
+      // rebuilt on every availability render, so it cannot be held by
+      // reference across one.
+      "data-availability-group": key,
+      text: "View data",
+      title: AVAILABILITY_BREAKDOWN_TOOLTIP,
+    });
+    detailButton.addEventListener("click", () => {
+      openAvailabilityDetail(key, null);
+    });
+
+    const actions = CAN_EDIT ? [detailButton, toggle] : [detailButton];
+    if (group.kind === "asset") {
+      // Taking the asset out of the filter is what takes its chart off the
+      // card, so the chart offers that itself rather than sending the reader
+      // back up the page to find its chip.
+      actions.push(el("button", {
+        type: "button",
+        class: "btn-secondary availability-mode-toggle",
+        text: "Remove",
+        title: `Remove ${group.asset_number} from the filter`,
+        onclick: () => toggleAsset(group.asset_number, false),
+      }));
+    }
+
+    host.appendChild(
+      el("div", { class: "metrics-panel availability-group" }, [
+        el("div", { class: "availability-group-head" }, [
+          el("h3", { text: `${chartTitle(group)} Availability % by Month` }),
+          el("div", { class: "availability-group-actions" }, actions),
+        ]),
+        el("p", {
+          class: "metrics-hint",
+          text:
+            `${Number(group.net_scheduled_hours_per_day).toFixed(1)} net scheduled hours/day · ` +
+            (data.exclude_pms ? "PMs excluded · " : "") +
+            "click a bar to open the rows behind it, and the work orders behind those",
+        }),
+        el("div", { class: "metrics-chart-wrap availability-chart" }, [canvas]),
+        renderAvailabilityTable(group, data),
+      ])
+    );
+    drawAvailabilityChart(canvas, group, {
+      height: 300,
+      stacked: state.availabilityStacked,
+      rowsByKey: byKey,
+      typeNames,
+      months: data.months || [],
+    });
+    wireAvailabilityChart(canvas, group, data);
   }
 
   // Draws whichever availability views are currently on screen. Both the first
@@ -3070,7 +3189,17 @@
   let reloadDebounce = null;
   function scheduleReload() {
     clearTimeout(reloadDebounce);
-    reloadDebounce = setTimeout(loadMetrics, 220);
+    reloadDebounce = setTimeout(() => {
+      loadMetrics();
+      syncAvailabilityAssets();
+    }, 220);
+  }
+
+  // Refetch the Availability card when the filter's assets outside every group
+  // change -- and only then. The group charts don't follow the filter, so any
+  // other change to it would only recompute the same card.
+  function syncAvailabilityAssets() {
+    if (availabilityAddedAssets().join(",") !== state.availabilityAssetsKey) refreshAvailability();
   }
 
   function wireFilters() {
@@ -3118,6 +3247,7 @@
       renderSelectedChips();
       renderAssetMenu();
       loadMetrics();
+      syncAvailabilityAssets();
     });
 
     $("metrics-clear").addEventListener("click", () => {
@@ -3132,6 +3262,7 @@
       renderAssetMenu();
       renderScopeHint();
       loadMetrics();
+      syncAvailabilityAssets();
     });
   }
 
@@ -3246,8 +3377,9 @@
       title: "Availability, month by month",
       body:
         "How much of its scheduled time each asset was able to run, for every asset group over " +
-        "completed months. The filters above don't apply here. The card's own Walk me through " +
-        "this card button goes through its charts and tables one at a time.",
+        "completed months. The filters above don't change the group charts, but an asset you " +
+        "add there that isn't in a group gets a chart of its own. The card's own Walk me " +
+        "through this card button goes through its charts and tables one at a time.",
     },
     {
       target: "#availability-info-open",
@@ -3281,8 +3413,9 @@
       title: "Asset availability by month",
       body:
         "How much of its scheduled time each asset was able to run, month by month. There is " +
-        "one chart for every asset group, only completed months are shown, and the asset and " +
-        "date filters at the top of the page don't apply here.",
+        "one chart for every asset group and only completed months are shown. The filters at " +
+        "the top of the page don't change the group charts; an asset added there that isn't " +
+        "in a group gets a chart of its own at the bottom of the card.",
     },
     {
       target: "#availability-info-open",

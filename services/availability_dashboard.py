@@ -12,8 +12,9 @@ Every call recomputes. There is no cache and no recalculate button -- see
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Iterable
 
 # The storage layer's error type, imported for its HTTP meaning rather than for
 # any storage: app.py already maps it to a 400, which is what a request naming a
@@ -25,6 +26,7 @@ from services.availability_service import (
     MONTH_LABELS,
     build_series,
     compute_rows,
+    format_month_labels,
     resolve_window,
     work_order_contributions,
 )
@@ -185,12 +187,36 @@ def _row_note(row, hidden: list) -> str:
     return row.note
 
 
+def _ungrouped_charts(repository, selected: Iterable[str] | None, charted: list[str]) -> list:
+    """One single-asset group per selected asset that no included group charts.
+
+    Each is a copy of the ungrouped schedule named after its asset, so the
+    calculator treats it like any other group. They keep the order they were
+    selected in, so an asset added to the filter lands below the ones before it.
+    """
+
+    grouped = set(charted)
+    wanted: list[str] = []
+    for value in selected or ():
+        asset = str(value).strip()
+        if asset and asset not in grouped and asset not in wanted:
+            wanted.append(asset)
+    if not wanted:
+        return []
+    base = repository.load_ungrouped_schedule()
+    return [
+        replace(base, asset_group=asset, asset_numbers=(asset,), sort_order=order)
+        for order, asset in enumerate(wanted)
+    ]
+
+
 def build_dashboard(
     repository,
     *,
     months: int = DEFAULT_WINDOW_MONTHS,
     today: date | None = None,
     exclude_pms: bool = False,
+    selected_assets: Iterable[str] | None = None,
 ) -> dict:
     """Compute every group's chart series for the requested month window.
 
@@ -201,6 +227,12 @@ def build_dashboard(
     shows -- bars, both lines, counts, notes and stacked segments -- describes
     the same work orders. The month window is still chosen from all of them,
     so flipping the switch never changes which months are on screen.
+
+    ``selected_assets`` is the Metrics page's asset filter. The group charts
+    ignore it -- they are the workbook's report and always show every member
+    (design doc §2.3) -- but a selected asset that no included group charts
+    gets a chart of its own under ``asset_charts``, measured against the
+    ungrouped schedule and the default goal.
     """
 
     exclude_pms = bool(exclude_pms)
@@ -218,6 +250,8 @@ def build_dashboard(
     groups = repository.load_groups()
     included = [group for group in groups if group.include]
     charted = sorted({asset for group in included for asset in group.asset_numbers})
+    ungrouped = _ungrouped_charts(repository, selected_assets, charted)
+    ungrouped_assets = [group.asset_group for group in ungrouped]
     linked_rules = repository.load_linked_rules()
 
     # Work orders must be loaded for a wider set than the charts draw. A linked
@@ -225,14 +259,15 @@ def build_dashboard(
     # after it is removed from a group's membership, or after a group is
     # excluded -- and if its downtime is never loaded, the still-active rule
     # silently contributes zero instead of the parent's real linked hours.
-    scope = sorted(set(charted) | {
+    scope = sorted(set(charted) | set(ungrouped_assets) | {
         rule.linked_asset_number for rule in linked_rules if rule.impact_factor > 0
     })
     work_orders = repository.load_work_orders(scope)
 
-    # The window follows the assets that are actually charted, so a stale rule
-    # pointing at a decommissioned asset cannot stretch the axis into months
-    # nothing on screen has data for.
+    # The window follows the assets the groups chart, so a stale rule pointing
+    # at a decommissioned asset cannot stretch the axis into months nothing on
+    # screen has data for -- and so adding an asset to the filter never moves
+    # the months the group charts show.
     charted_months = sorted({
         date(order.created_local.year, order.created_local.month, 1)
         for order in work_orders
@@ -255,6 +290,7 @@ def build_dashboard(
             "month_labels": [],
             "window_months": months,
             "groups": [],
+            "asset_charts": [],
             "all_asset_numbers": charted,
             "timezone": timezone_name,
             "timezone_warning": timezone_warning,
@@ -276,15 +312,29 @@ def build_dashboard(
         # outside the window, so this is its whole input.
         work_orders = [item.order for item in details]
 
+    display_names = repository.load_display_names()
+    manual_ot = repository.load_manual_ot()
     rows = compute_rows(
         included,
         window,
         work_orders,
         linked_rules=linked_rules,
-        display_names=repository.load_display_names(),
-        manual_ot=repository.load_manual_ot(),
+        display_names=display_names,
+        manual_ot=manual_ot,
     )
     series = build_series(rows, included, window, goals=repository.load_goals())
+    # Computed apart from the groups: each is named after its asset, and an
+    # asset number can be a group's name too. Goals are stored per group, so
+    # these take the default rather than one that only shares their name.
+    ungrouped_rows = compute_rows(
+        ungrouped,
+        window,
+        work_orders,
+        linked_rules=linked_rules,
+        display_names=display_names,
+        manual_ot=manual_ot,
+    )
+    ungrouped_series = build_series(ungrouped_rows, ungrouped, window)
 
     details_by_month: dict[date, list] = {}
     for item in details:
@@ -295,8 +345,7 @@ def build_dashboard(
         created = item.order.created_local
         excluded_by_month.setdefault(date(created.year, created.month, 1), []).append(item)
 
-    detail: dict[str, list[dict]] = {}
-    for row in rows:
+    def row_json(row) -> dict:
         contributions = work_order_contributions(
             row.asset_number,
             row.month,
@@ -315,35 +364,40 @@ def build_dashboard(
             excluded_by_month.get(row.month, []),
             linked_rules=linked_rules,
         )
-        detail.setdefault(row.asset_group, []).append(
-            {
-                "asset_number": row.asset_number,
-                "display_name": row.display_name,
-                "month": row.month.isoformat(),
-                "month_label": row.month_label,
-                "scheduled_hours": round(row.scheduled_hours, 2),
-                "manual_ot_hours": round(row.manual_ot_hours, 2),
-                "adjusted_scheduled_hours": round(row.adjusted_scheduled_hours, 2),
-                # Unrounded -- see the rounding rule at the top of this module.
-                "direct_downtime_hours": row.direct_downtime_hours,
-                "linked_downtime_hours": row.linked_downtime_hours,
-                "adjusted_downtime_hours": row.adjusted_downtime_hours,
-                "availability": row.availability,
-                "flagged": row.flagged,
-                "overlap_count": row.overlap_count,
-                "total_wo_count": row.total_wo_count,
-                "zero_downtime_wo_count": row.zero_downtime_wo_count,
-                "no_wo_entries": row.no_wo_entries,
-                "note": _row_note(row, hidden),
-                "excluded_pm_count": len(hidden),
-                "downtime_logic": row.downtime_logic,
-                "work_order_type_hours": type_hours,
-            }
-        )
+        return {
+            "asset_number": row.asset_number,
+            "display_name": row.display_name,
+            "month": row.month.isoformat(),
+            "month_label": row.month_label,
+            "scheduled_hours": round(row.scheduled_hours, 2),
+            "manual_ot_hours": round(row.manual_ot_hours, 2),
+            "adjusted_scheduled_hours": round(row.adjusted_scheduled_hours, 2),
+            # Unrounded -- see the rounding rule at the top of this module.
+            "direct_downtime_hours": row.direct_downtime_hours,
+            "linked_downtime_hours": row.linked_downtime_hours,
+            "adjusted_downtime_hours": row.adjusted_downtime_hours,
+            "availability": row.availability,
+            "flagged": row.flagged,
+            "overlap_count": row.overlap_count,
+            "total_wo_count": row.total_wo_count,
+            "zero_downtime_wo_count": row.zero_downtime_wo_count,
+            "no_wo_entries": row.no_wo_entries,
+            "note": _row_note(row, hidden),
+            "excluded_pm_count": len(hidden),
+            "downtime_logic": row.downtime_logic,
+            "work_order_type_hours": type_hours,
+        }
+
+    detail: dict[str, list[dict]] = {}
+    for row in rows:
+        detail.setdefault(row.asset_group, []).append(row_json(row))
+    ungrouped_detail: dict[str, list[dict]] = {}
+    for row in ungrouped_rows:
+        ungrouped_detail.setdefault(row.asset_number, []).append(row_json(row))
 
     return {
         "months": [m.isoformat() for m in window],
-        "month_labels": [s.month_labels for s in series][0] if series else [],
+        "month_labels": format_month_labels(window),
         "window_months": months,
         "timezone": timezone_name,
         "timezone_warning": timezone_warning,
@@ -354,6 +408,7 @@ def build_dashboard(
         "all_asset_numbers": charted,
         "groups": [
             {
+                "kind": "group",
                 "asset_group": chart.asset_group,
                 "net_scheduled_hours_per_day": chart.net_scheduled_hours_per_day,
                 "month_labels": chart.month_labels,
@@ -365,6 +420,25 @@ def build_dashboard(
                 "rows": detail.get(chart.asset_group, []),
             }
             for chart in series
+        ],
+        # The same shape as a group, so the card draws both the same way. There
+        # is no group, so no group average: with one asset it would only repeat
+        # the bars, and the drill-down would compare the asset with itself.
+        "asset_charts": [
+            {
+                "kind": "asset",
+                "asset_group": None,
+                "asset_number": chart.asset_group,
+                "net_scheduled_hours_per_day": chart.net_scheduled_hours_per_day,
+                "month_labels": chart.month_labels,
+                "assets": chart.assets,
+                "average": [None] * len(window),
+                "goal": chart.goal,
+                "overall_average": None,
+                "goal_average": chart.goal_average,
+                "rows": ungrouped_detail.get(chart.asset_group, []),
+            }
+            for chart in ungrouped_series
         ],
     }
 
@@ -449,6 +523,10 @@ def build_work_order_detail(
     leave the totals and the list together -- a row may only be missing from
     the list when it is missing from the total too -- and
     ``excluded_pm_count`` says how many rows that took out.
+
+    A blank ``asset_group`` asks for a bar from one of the dashboard's
+    ``asset_charts``: an asset outside every included group, measured against
+    the ungrouped schedule and the default goal exactly as that chart was.
     """
 
     month = month if isinstance(month, date) else parse_month(month)
@@ -456,13 +534,26 @@ def build_work_order_detail(
     if not asset:
         raise AvailabilityConfigError("An 'asset_number' is required.")
 
-    group = next(
-        (g for g in repository.load_groups() if g.asset_group == asset_group and g.include), None
-    )
-    if group is None:
-        raise AvailabilityConfigError(f"'{asset_group}' is not an included asset group.")
-    if asset not in {str(a).strip() for a in group.asset_numbers}:
-        raise AvailabilityConfigError(f"Asset {asset} is not in {group.asset_group}.")
+    asset_group = str(asset_group or "").strip()
+    included = [g for g in repository.load_groups() if g.include]
+    if asset_group:
+        group = next((g for g in included if g.asset_group == asset_group), None)
+        if group is None:
+            raise AvailabilityConfigError(f"'{asset_group}' is not an included asset group.")
+        if asset not in {str(a).strip() for a in group.asset_numbers}:
+            raise AvailabilityConfigError(f"Asset {asset} is not in {group.asset_group}.")
+        goal = repository.load_goals().get((group.asset_group, month), DEFAULT_GOAL_PERCENT)
+    else:
+        # An asset a group charts has no chart of its own, so there is no such
+        # bar to explain -- and answering anyway would describe it on a schedule
+        # its group's chart does not use.
+        holder = next(
+            (g for g in included if asset in {str(a).strip() for a in g.asset_numbers}), None
+        )
+        if holder is not None:
+            raise AvailabilityConfigError(f"Asset {asset} is in {holder.asset_group}.")
+        group = replace(repository.load_ungrouped_schedule(), asset_group=asset, asset_numbers=(asset,))
+        goal = DEFAULT_GOAL_PERCENT
 
     # Only this asset's own rules matter, but its linked assets' work orders do:
     # a rule can point outside the group, or at an asset no group holds any more
@@ -496,7 +587,7 @@ def build_work_order_detail(
     linked_assets = sorted({str(rule.linked_asset_number).strip() for rule in rules})
 
     return {
-        "asset_group": group.asset_group,
+        "asset_group": asset_group or None,
         "asset_number": asset,
         "display_name": row.display_name,
         "month": month.isoformat(),
@@ -514,7 +605,7 @@ def build_work_order_detail(
         "adjusted_downtime_hours": row.adjusted_downtime_hours,
         "availability": row.availability,
         "flagged": row.flagged,
-        "goal": repository.load_goals().get((group.asset_group, month), DEFAULT_GOAL_PERCENT),
+        "goal": goal,
         "net_scheduled_hours_per_day": group.net_scheduled_hours_per_day,
         "total_wo_count": row.total_wo_count,
         "zero_downtime_wo_count": row.zero_downtime_wo_count,
@@ -545,8 +636,16 @@ def build_config(repository) -> dict:
 
     groups = repository.load_groups()
     display_names = repository.load_display_names()
+    ungrouped = repository.load_ungrouped_schedule()
     return {
         "timezone": repository.load_timezone(),
+        "ungrouped_schedule": {
+            "schedule_hours_per_day": ungrouped.schedule_hours_per_day,
+            "break_hours_per_day": ungrouped.break_hours_per_day,
+            "lunch_hours_per_day": ungrouped.lunch_hours_per_day,
+            "setup_hours_per_day": ungrouped.setup_hours_per_day,
+            "net_scheduled_hours_per_day": ungrouped.net_scheduled_hours_per_day,
+        },
         "groups": [
             {
                 "asset_group": group.asset_group,

@@ -1,8 +1,8 @@
 /* Availability configuration editor on the Configuration page.
  *
  * Holds the structural configuration behind the Metrics page's Availability
- * card: each asset group's shift schedule and membership, and the linked
- * downtime rules. These live there rather than on the card because they are
+ * card: each asset group's shift schedule and membership, the schedule for
+ * assets outside every group, and the linked downtime rules. These live there rather than on the card because they are
  * rare edits with a wide blast radius -- availability is always recomputed from
  * the current schedule, so changing one of these values moves every month that
  * has data, including months already reported. The page keeps them behind
@@ -73,9 +73,12 @@
     return Math.max(0, values.schedule - (values.brk + values.lunch + values.setup));
   }
 
-  function renderGroup(group) {
+  // A shift schedule's four parts and the net hours they leave, shared by every
+  // group and by the schedule for assets outside one. ``refreshNet`` returns
+  // false while the deductions exceed the schedule.
+  function scheduleEditor(schedule) {
     const inputs = {};
-    const netLabel = el("strong", { text: `${group.net_scheduled_hours_per_day.toFixed(1)} h` });
+    const netLabel = el("strong", { text: `${schedule.net_scheduled_hours_per_day.toFixed(1)} h` });
 
     function readValues() {
       return {
@@ -108,6 +111,31 @@
       ]);
     }
 
+    const row = el("div", { class: "availability-config-row" }, [
+      field("schedule", "Schedule h/day", schedule.schedule_hours_per_day),
+      field("brk", "Break h/day", schedule.break_hours_per_day),
+      field("lunch", "Lunch h/day", schedule.lunch_hours_per_day),
+      field("setup", "Setup h/day", schedule.setup_hours_per_day),
+      el("div", { class: "availability-config-field" }, [
+        el("span", { text: "Net h/day (derived)" }),
+        netLabel,
+      ]),
+    ]);
+    return { row, readValues, refreshNet };
+  }
+
+  function scheduleBody(values) {
+    return {
+      schedule_hours_per_day: values.schedule,
+      break_hours_per_day: values.brk,
+      lunch_hours_per_day: values.lunch,
+      setup_hours_per_day: values.setup,
+    };
+  }
+
+  function renderGroup(group) {
+    const { row: scheduleRow, readValues, refreshNet } = scheduleEditor(group);
+
     const includeBox = el("input", { type: "checkbox", checked: group.include });
     const assetsInput = el("input", {
       type: "text",
@@ -136,10 +164,7 @@
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            schedule_hours_per_day: values.schedule,
-            break_hours_per_day: values.brk,
-            lunch_hours_per_day: values.lunch,
-            setup_hours_per_day: values.setup,
+            ...scheduleBody(values),
             include: includeBox.checked,
             asset_numbers: assetsInput.value.split(",").map((s) => s.trim()).filter(Boolean),
           }),
@@ -221,16 +246,7 @@
         }),
       ]),
       el("div", { class: "availability-config-body" }, [
-        el("div", { class: "availability-config-row" }, [
-          field("schedule", "Schedule h/day", group.schedule_hours_per_day),
-          field("brk", "Break h/day", group.break_hours_per_day),
-          field("lunch", "Lunch h/day", group.lunch_hours_per_day),
-          field("setup", "Setup h/day", group.setup_hours_per_day),
-          el("div", { class: "availability-config-field" }, [
-            el("span", { text: "Net h/day (derived)" }),
-            netLabel,
-          ]),
-        ]),
+        scheduleRow,
         el("label", { class: "availability-config-field availability-config-wide" }, [
           el("span", { text: "Asset numbers (comma separated)" }),
           assetsInput,
@@ -251,13 +267,75 @@
     ]);
   }
 
+  // The schedule an asset outside every group is charted on. The Metrics page
+  // charts any asset added to its filter, and one that no group holds has no
+  // group schedule to be measured against -- this is the one it gets instead.
+  function renderUngrouped(schedule) {
+    const { row: scheduleRow, readValues, refreshNet } = scheduleEditor(schedule);
+
+    const save = el("button", { type: "button", class: "btn-secondary", text: "Save" });
+    save.addEventListener("click", async () => {
+      const values = readValues();
+      if (!refreshNet()) {
+        show("config-availability-status",
+          "Assets outside a group: break, lunch and setup exceed the scheduled hours; net would be negative.",
+          "error");
+        return;
+      }
+      const proceed = window.confirm(
+        "Save the schedule for assets outside a group?\n\n" +
+        "This changes availability for every month of every asset charted without a group."
+      );
+      if (!proceed) return;
+      save.disabled = true;
+      try {
+        config = await request(`${CONFIG_API}/ungrouped`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(scheduleBody(values)),
+        });
+        show("config-availability-status", "Saved the schedule for assets outside a group.", "success");
+        renderGroups();
+      } catch (err) {
+        show("config-availability-status", err.message || "Could not save.", "error");
+      } finally {
+        save.disabled = false;
+      }
+    });
+
+    return el("details", { class: "availability-config-group" }, [
+      el("summary", {}, [
+        el("span", { text: "Assets outside a group" }),
+        el("span", {
+          class: "availability-config-summary",
+          text: `${schedule.net_scheduled_hours_per_day.toFixed(1)} net h/day · added from the Metrics filter`,
+        }),
+      ]),
+      el("div", { class: "availability-config-body" }, [
+        el("p", {
+          class: "metrics-hint",
+          text:
+            "An asset added to the Metrics page's filter that isn't in any group above gets an " +
+            "availability chart of its own, measured on this schedule against the default goal.",
+        }),
+        scheduleRow,
+        el("div", { class: "lda-row-actions", style: "justify-content:flex-start" }, [save]),
+      ]),
+    ]);
+  }
+
   function renderGroups() {
     groupsHost.innerHTML = "";
-    if (!config || !config.groups.length) {
+    if (!config) {
       groupsHost.appendChild(el("p", { class: "metrics-hint", text: "No asset groups are configured." }));
       return;
     }
-    config.groups.forEach((group) => groupsHost.appendChild(renderGroup(group)));
+    if (config.groups.length) {
+      config.groups.forEach((group) => groupsHost.appendChild(renderGroup(group)));
+    } else {
+      groupsHost.appendChild(el("p", { class: "metrics-hint", text: "No asset groups are configured." }));
+    }
+    if (config.ungrouped_schedule) groupsHost.appendChild(renderUngrouped(config.ungrouped_schedule));
     renderRules();
   }
 

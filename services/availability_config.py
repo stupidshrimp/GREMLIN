@@ -45,6 +45,13 @@ DEFAULT_ASSET_GROUPS: tuple[tuple, ...] = (
      20, 0, 0, 0, False, "TBD; Limble asset list to be corrected"),
 )
 
+# The schedule for an asset no group holds, as (schedule_h, break_h, lunch_h,
+# setup_h). The Metrics page charts any asset added to its filter, and one
+# outside every group has no group schedule to be measured against. Not from the
+# workbook, which only ever charted its groups: the plant's default 20-hour
+# shift less the break, lunch and setup most of the groups above carry.
+DEFAULT_UNGROUPED_SCHEDULE: tuple[float, float, float, float] = (20, 1, 1, 2)
+
 # Configurator!F32:G71 -- the short names the charts label their bars with.
 DEFAULT_DISPLAY_NAMES: dict[str, str] = {
     "3101": "MV", "3102": "PA", "3103": "L3", "3104": "ADL",

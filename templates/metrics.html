@@ -198,10 +198,12 @@
   </article>
 
   <!-- ============================ Availability ============================ -->
-  <!-- This card is deliberately independent of the filter bar above: it always
-       shows every configured asset group over whole calendar months. The Average
-       line is a group-level statistic, and linked downtime makes an asset's
-       number depend on assets an filter could hide. -->
+  <!-- The group charts are deliberately independent of the filter bar above:
+       they always show every configured asset group over whole calendar months.
+       The Average line is a group-level statistic, and linked downtime makes an
+       asset's number depend on assets a filter could hide. The filter only adds:
+       a selected asset no group holds gets a chart of its own, drawn under the
+       group charts. -->
   <article class="glass-card metrics-card" id="card-availability" data-card="availability">
     <header class="metrics-card-head" id="availability-card-head">
       <div>
@@ -216,7 +218,7 @@
           </button>
         </div>
         <p class="metrics-card-desc">Open the card and click any bar to see the rows it was computed from.</p>
-        <p class="metrics-card-scope" id="availability-scope">All asset groups · all downtime · monthly. Not affected by the filters above.</p>
+        <p class="metrics-card-scope" id="availability-scope">All asset groups · all downtime · monthly. The filters above don't change the group charts; an asset added there that isn't in a group gets a chart of its own below them.</p>
         {# This card's own walk-through, separate from the page's Show me around:
            it opens the card and goes through the charts and tables inside it. #}
         <div>

@@ -33,6 +33,7 @@ from services.availability_config import (
     DEFAULT_DISPLAY_NAMES,
     DEFAULT_LINKED_RULES,
     DEFAULT_TIMEZONE,
+    DEFAULT_UNGROUPED_SCHEDULE,
 )
 from services.availability_service import AssetGroup, LinkedRule, WorkOrder, WorkOrderDetail
 from services.life_data_service import database_write_error
@@ -44,12 +45,18 @@ DB_WRITE_TIMEOUT_SECONDS = 30
 # the same definition can both create a table and rebuild a legacy one (see
 # _migrate_legacy_tables).
 _TABLES: dict[str, str] = {
+    # The ungrouped_* columns are the schedule for an asset no group holds --
+    # see DEFAULT_UNGROUPED_SCHEDULE. One row, so one schedule for all of them.
     "availability_settings": """
         id INTEGER PRIMARY KEY CHECK (id = 1),
         timezone TEXT NOT NULL DEFAULT 'America/Chicago',
         seeded_defaults INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT
-    """,
+        updated_at TEXT,
+        ungrouped_schedule_hours_per_day REAL NOT NULL DEFAULT {0},
+        ungrouped_break_hours_per_day REAL NOT NULL DEFAULT {1},
+        ungrouped_lunch_hours_per_day REAL NOT NULL DEFAULT {2},
+        ungrouped_setup_hours_per_day REAL NOT NULL DEFAULT {3}
+    """.format(*DEFAULT_UNGROUPED_SCHEDULE),
     "availability_asset_groups": """
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         asset_group TEXT NOT NULL UNIQUE,
@@ -103,7 +110,11 @@ _TABLES: dict[str, str] = {
 }
 
 _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "availability_settings": ("id", "timezone", "seeded_defaults", "updated_at"),
+    "availability_settings": (
+        "id", "timezone", "seeded_defaults", "updated_at",
+        "ungrouped_schedule_hours_per_day", "ungrouped_break_hours_per_day",
+        "ungrouped_lunch_hours_per_day", "ungrouped_setup_hours_per_day",
+    ),
     "availability_asset_groups": (
         "id", "asset_group", "schedule_hours_per_day", "break_hours_per_day",
         "lunch_hours_per_day", "setup_hours_per_day", "include_flag", "notes",
@@ -140,6 +151,33 @@ class AvailabilityConfigError(ValueError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _check_schedule(
+    schedule_hours_per_day: float,
+    break_hours_per_day: float,
+    lunch_hours_per_day: float,
+    setup_hours_per_day: float,
+) -> None:
+    """Refuse a shift schedule whose parts cannot describe a real day."""
+
+    parts = {
+        "schedule hours": schedule_hours_per_day,
+        "break hours": break_hours_per_day,
+        "lunch hours": lunch_hours_per_day,
+        "setup hours": setup_hours_per_day,
+    }
+    for label, value in parts.items():
+        if value < 0:
+            raise AvailabilityConfigError(f"{label.capitalize()} cannot be negative.")
+        if value > 24:
+            raise AvailabilityConfigError(f"{label.capitalize()} cannot exceed 24 per day.")
+    deductions = break_hours_per_day + lunch_hours_per_day + setup_hours_per_day
+    if deductions > schedule_hours_per_day:
+        raise AvailabilityConfigError(
+            f"Break, lunch and setup total {deductions:g} h, which is more than the "
+            f"{schedule_hours_per_day:g} h scheduled; net hours would be negative."
+        )
 
 
 def _month_text(value: date | str) -> str:
@@ -371,6 +409,32 @@ class AvailabilityRepository:
             )
             for row in groups
         ]
+
+    def load_ungrouped_schedule(self) -> AssetGroup:
+        """The schedule an asset outside every group is charted on.
+
+        Returned as a group with no name and no members: the dashboard gives
+        each such asset a chart of its own, and a copy of this per asset is what
+        lets the calculator treat that chart like any other.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT ungrouped_schedule_hours_per_day, ungrouped_break_hours_per_day,"
+                " ungrouped_lunch_hours_per_day, ungrouped_setup_hours_per_day"
+                " FROM availability_settings WHERE id = 1"
+            ).fetchone()
+        schedule, brk, lunch, setup = (
+            tuple(float(value) for value in row) if row else DEFAULT_UNGROUPED_SCHEDULE
+        )
+        return AssetGroup(
+            asset_group="",
+            asset_numbers=(),
+            schedule_hours_per_day=schedule,
+            break_hours_per_day=brk,
+            lunch_hours_per_day=lunch,
+            setup_hours_per_day=setup,
+        )
 
     def load_display_names(self) -> dict[str, str]:
         with self.connect() as conn:
@@ -811,23 +875,9 @@ class AvailabilityRepository:
         every time it is read, so a stored net cannot drift from them.
         """
 
-        parts = {
-            "schedule hours": schedule_hours_per_day,
-            "break hours": break_hours_per_day,
-            "lunch hours": lunch_hours_per_day,
-            "setup hours": setup_hours_per_day,
-        }
-        for label, value in parts.items():
-            if value < 0:
-                raise AvailabilityConfigError(f"{label.capitalize()} cannot be negative.")
-            if value > 24:
-                raise AvailabilityConfigError(f"{label.capitalize()} cannot exceed 24 per day.")
-        deductions = break_hours_per_day + lunch_hours_per_day + setup_hours_per_day
-        if deductions > schedule_hours_per_day:
-            raise AvailabilityConfigError(
-                f"Break, lunch and setup total {deductions:g} h, which is more than the "
-                f"{schedule_hours_per_day:g} h scheduled; net hours would be negative."
-            )
+        _check_schedule(
+            schedule_hours_per_day, break_hours_per_day, lunch_hours_per_day, setup_hours_per_day
+        )
 
         with self.write_connection() as conn:
             row = conn.execute(
@@ -862,6 +912,32 @@ class AvailabilityRepository:
                         "(asset_group_id, asset_number, sort_order) VALUES (?, ?, ?)",
                         (row["id"], asset, order),
                     )
+
+    def save_ungrouped_schedule(
+        self,
+        *,
+        schedule_hours_per_day: float,
+        break_hours_per_day: float,
+        lunch_hours_per_day: float,
+        setup_hours_per_day: float,
+    ) -> None:
+        """Update the schedule every asset outside a group is charted on."""
+
+        _check_schedule(
+            schedule_hours_per_day, break_hours_per_day, lunch_hours_per_day, setup_hours_per_day
+        )
+        with self.write_connection() as conn:
+            conn.execute(
+                """
+                UPDATE availability_settings
+                   SET ungrouped_schedule_hours_per_day = ?, ungrouped_break_hours_per_day = ?,
+                       ungrouped_lunch_hours_per_day = ?, ungrouped_setup_hours_per_day = ?,
+                       updated_at = ?
+                 WHERE id = 1
+                """,
+                (schedule_hours_per_day, break_hours_per_day, lunch_hours_per_day,
+                 setup_hours_per_day, _now()),
+            )
 
     def save_goal(self, asset_group: str, month: date | str, goal_percent: float) -> None:
         if not 0 <= goal_percent <= 1:

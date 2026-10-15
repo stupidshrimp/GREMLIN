@@ -1909,6 +1909,15 @@ def metrics():
     )
 
 
+def _asset_numbers_param() -> list[str]:
+    """The ``assets`` request parameter, repeatable or comma-separated."""
+
+    asset_numbers: list[str] = []
+    for value in request.values.getlist("assets"):
+        asset_numbers.extend(part.strip() for part in str(value).split(",") if part.strip())
+    return asset_numbers
+
+
 @app.route("/metrics/api/reliability")
 @life_data_api
 def api_metrics_reliability():
@@ -1921,10 +1930,7 @@ def api_metrics_reliability():
     """
 
     service = _service_or_api_error()
-    raw_assets = request.values.getlist("assets")
-    asset_numbers: list[str] = []
-    for value in raw_assets:
-        asset_numbers.extend(part.strip() for part in str(value).split(",") if part.strip())
+    asset_numbers = _asset_numbers_param()
     start = (request.values.get("start") or "").strip() or None
     end = (request.values.get("end") or "").strip() or None
     return jsonify(
@@ -1939,10 +1945,12 @@ def api_metrics_reliability():
 # ---------------------------------------------------------------------------
 # Availability Dashboard JSON API
 #
-# The Availability card is deliberately independent of the Metrics page's shared
-# asset and date filters: it always renders every configured group over whole
-# calendar months, because the Average line is a group-level statistic and
-# linked downtime makes an asset's number depend on assets a filter could hide.
+# The Availability card's group charts are deliberately independent of the
+# Metrics page's shared asset and date filters: they always render every
+# configured group over whole calendar months, because the Average line is a
+# group-level statistic and linked downtime makes an asset's number depend on
+# assets a filter could hide. The asset filter only *adds*: a selected asset no
+# group holds gets a chart of its own, on the ungrouped schedule.
 # See docs/availability-dashboard-design.md §2.2-2.3.
 #
 # Nothing derived is stored, so every request recomputes against the current
@@ -2035,13 +2043,22 @@ def api_availability():
     ``months`` sets the window length and defaults to the five most recent
     complete months, clamped to the months that hold work-order data.
     ``exclude_pms=1`` leaves preventive maintenance work orders out.
+    ``assets`` (repeatable or comma-separated) is the page's asset filter: any
+    of them outside every included group is charted on its own.
     """
 
     repository = get_availability_repository()
     _bootstrap_mapped_records()
     months = clamp_window_months(request.values.get("months"))
     exclude_pms = parse_flag(request.values.get("exclude_pms"))
-    return jsonify(build_dashboard(repository, months=months, exclude_pms=exclude_pms))
+    return jsonify(
+        build_dashboard(
+            repository,
+            months=months,
+            exclude_pms=exclude_pms,
+            selected_assets=_asset_numbers_param(),
+        )
+    )
 
 
 @app.route("/metrics/api/availability/work-orders")
@@ -2053,6 +2070,7 @@ def api_availability_work_orders():
     the card draws several hundred asset-months and each one's work orders carry
     names, descriptions and completion notes. ``exclude_pms`` must match the
     chart the bar came from, so the list adds up to the bar that was clicked.
+    A blank ``asset_group`` names a bar on an ungrouped asset's own chart.
     """
 
     repository = get_availability_repository()
@@ -2098,6 +2116,23 @@ def api_availability_save_group(asset_group: str):
         setup_hours_per_day=_required_number(body, "setup_hours_per_day"),
         include=bool(body.get("include", True)),
         asset_numbers=assets,
+    )
+    return jsonify(build_config(repository))
+
+
+@app.route("/metrics/api/availability/config/ungrouped", methods=["PUT"])
+@availability_api
+@requires_role("editor")
+def api_availability_save_ungrouped_schedule():
+    """Update the schedule assets outside every group are charted on."""
+
+    body = _json_body()
+    repository = get_availability_repository()
+    repository.save_ungrouped_schedule(
+        schedule_hours_per_day=_required_number(body, "schedule_hours_per_day"),
+        break_hours_per_day=_required_number(body, "break_hours_per_day"),
+        lunch_hours_per_day=_required_number(body, "lunch_hours_per_day"),
+        setup_hours_per_day=_required_number(body, "setup_hours_per_day"),
     )
     return jsonify(build_config(repository))
 
