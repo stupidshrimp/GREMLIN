@@ -501,6 +501,37 @@ class LegacySchemaMigrationTests(unittest.TestCase):
         self.assertEqual(self.repo.load_display_names()["3101"], "MV")
 
 
+class UngroupedScheduleMigrationTests(AvailabilityTestCase):
+    """A database from before the ungrouped schedule existed gains it, and
+    keeps everything it had -- above all its seeded flag, or the restart
+    would put back defaults its users had deliberately removed."""
+
+    def setUp(self):
+        super().setUp()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DROP TABLE availability_settings")
+            conn.execute(
+                "CREATE TABLE availability_settings ("
+                " id INTEGER PRIMARY KEY CHECK (id = 1),"
+                " timezone TEXT NOT NULL DEFAULT 'America/Chicago',"
+                " seeded_defaults INTEGER NOT NULL DEFAULT 0,"
+                " updated_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO availability_settings(id, timezone, seeded_defaults)"
+                " VALUES (1, 'America/Denver', 1)"
+            )
+            conn.execute("DELETE FROM availability_linked_downtime_rules")
+        self.repo.ensure_schema()
+
+    def test_the_ungrouped_schedule_starts_at_its_default(self):
+        self.assertEqual(self.repo.load_ungrouped_schedule().net_scheduled_hours_per_day, 16.0)
+
+    def test_the_existing_settings_survive(self):
+        self.assertEqual(self.repo.load_timezone(), "America/Denver")
+        self.assertEqual(self.repo.load_linked_rules(), [])
+
+
 class SeedOnceTests(AvailabilityTestCase):
     """An empty configuration is a configuration, not an uninitialised database."""
 
@@ -779,6 +810,28 @@ class ConfigWriteTests(AvailabilityTestCase):
         )
         group = next(g for g in self.repo.load_groups() if g.asset_group == "Building 6 Finishing")
         self.assertEqual(group.asset_numbers, ("4001", "4002", "9999"))
+
+    def test_the_ungrouped_schedule_defaults_and_persists(self):
+        default = self.repo.load_ungrouped_schedule()
+        self.assertEqual(default.net_scheduled_hours_per_day, 16.0)
+        self.repo.save_ungrouped_schedule(
+            schedule_hours_per_day=24, break_hours_per_day=1,
+            lunch_hours_per_day=2, setup_hours_per_day=3,
+        )
+        saved = self.repo.load_ungrouped_schedule()
+        self.assertEqual(saved.schedule_hours_per_day, 24.0)
+        self.assertEqual(saved.net_scheduled_hours_per_day, 18.0)
+        self.assertEqual(build_config(self.repo)["ungrouped_schedule"]["net_scheduled_hours_per_day"], 18.0)
+
+    def test_an_impossible_ungrouped_schedule_is_rejected(self):
+        for kwargs in (
+            dict(schedule_hours_per_day=4, break_hours_per_day=2, lunch_hours_per_day=2, setup_hours_per_day=1),
+            dict(schedule_hours_per_day=25, break_hours_per_day=0, lunch_hours_per_day=0, setup_hours_per_day=0),
+            dict(schedule_hours_per_day=20, break_hours_per_day=-1, lunch_hours_per_day=0, setup_hours_per_day=0),
+        ):
+            with self.subTest(**kwargs), self.assertRaises(AvailabilityConfigError):
+                self.repo.save_ungrouped_schedule(**kwargs)
+        self.assertEqual(self.repo.load_ungrouped_schedule().net_scheduled_hours_per_day, 16.0)
 
     def test_goals_and_overtime_are_keyed_by_month(self):
         self.repo.save_goal("Salvagnini", "2026-01-01", 0.97)
@@ -1280,6 +1333,165 @@ class WorkOrderDrillDownTests(AvailabilityTestCase):
         self.assertEqual(parse_month("2026-03-17"), date(2026, 3, 1))
 
 
+class AddedAssetTests(AvailabilityTestCase):
+    """Assets added to the Metrics filter that no group holds.
+
+    Each gets a chart of its own, on the ungrouped schedule and the default
+    goal. The group charts are the workbook's report and must not move.
+    """
+
+    # January 2026 has 22 weekdays; the ungrouped default is 20 - (1 + 1 + 2).
+    JANUARY_UNGROUPED_HOURS = 22 * 16.0
+
+    def dashboard(self, selected=None, **kwargs):
+        return build_dashboard(
+            self.repo, months=1, today=date(2026, 2, 15), selected_assets=selected, **kwargs
+        )
+
+    def test_an_asset_outside_every_group_gets_a_chart_of_its_own(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        data = self.dashboard(["5555"])
+        self.assertEqual(len(data["asset_charts"]), 1)
+        chart = data["asset_charts"][0]
+        self.assertEqual(chart["kind"], "asset")
+        self.assertIsNone(chart["asset_group"])
+        self.assertEqual(chart["asset_number"], "5555")
+        self.assertEqual(chart["net_scheduled_hours_per_day"], 16.0)
+        self.assertEqual([a["asset_number"] for a in chart["assets"]], ["5555"])
+        expected = (self.JANUARY_UNGROUPED_HOURS - 4.0) / self.JANUARY_UNGROUPED_HOURS
+        self.assertAlmostEqual(chart["assets"][0]["values"][0], expected, places=12)
+        self.assertAlmostEqual(chart["rows"][0]["availability"], expected, places=12)
+        self.assertEqual(chart["rows"][0]["scheduled_hours"], self.JANUARY_UNGROUPED_HOURS)
+        self.assertEqual(chart["goal"], [0.95])
+
+    def test_an_asset_chart_has_no_group_average(self):
+        """With one asset the average would only repeat its bars."""
+
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        chart = self.dashboard(["5555"])["asset_charts"][0]
+        self.assertEqual(chart["average"], [None])
+        self.assertIsNone(chart["overall_average"])
+
+    def test_the_group_charts_do_not_move_when_assets_are_added(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        before = self.dashboard()
+        after = self.dashboard(["5555"])
+        self.assertEqual(before["asset_charts"], [])
+        self.assertEqual(after["groups"], before["groups"])
+        self.assertEqual(after["months"], before["months"])
+        self.assertEqual(after["all_asset_numbers"], before["all_asset_numbers"])
+
+    def test_an_added_asset_does_not_stretch_the_window(self):
+        """The groups' data sets the months, whatever else is selected."""
+
+        self.add_work_order("3101", "2026-06-15 15:00:00", 4.0)
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        data = build_dashboard(
+            self.repo, months=12, today=date(2026, 8, 6), selected_assets=["5555"]
+        )
+        self.assertEqual(data["months"], ["2026-06-01"])
+        self.assertEqual(data["asset_charts"][0]["rows"][0]["month"], "2026-06-01")
+        self.assertTrue(data["asset_charts"][0]["rows"][0]["no_wo_entries"])
+
+    def test_grouped_assets_in_the_selection_add_nothing(self):
+        self.seed_salvagnini_january()
+        data = self.dashboard(["3101", "4001", " ", ""])
+        self.assertEqual(data["asset_charts"], [])
+
+    def test_added_assets_keep_their_order_and_appear_once(self):
+        self.seed_salvagnini_january()
+        data = self.dashboard(["7777", "5555", "3101", "7777"])
+        self.assertEqual([c["asset_number"] for c in data["asset_charts"]], ["7777", "5555"])
+
+    def test_an_asset_in_an_excluded_group_is_charted_as_added(self):
+        """An excluded group is off the dashboard, so its members have no chart."""
+
+        self.seed_salvagnini_january()
+        self.repo.save_group_schedule(
+            "Dilo & Enervac",
+            schedule_hours_per_day=20, break_hours_per_day=0,
+            lunch_hours_per_day=0, setup_hours_per_day=0, include=False,
+            asset_numbers=["5555"],
+        )
+        chart = self.dashboard(["5555"])["asset_charts"][0]
+        self.assertEqual(chart["net_scheduled_hours_per_day"], 16.0)
+
+    def test_the_ungrouped_schedule_is_what_an_added_asset_is_measured_on(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        self.repo.save_ungrouped_schedule(
+            schedule_hours_per_day=24, break_hours_per_day=1,
+            lunch_hours_per_day=2, setup_hours_per_day=3,
+        )
+        chart = self.dashboard(["5555"])["asset_charts"][0]
+        self.assertEqual(chart["net_scheduled_hours_per_day"], 18.0)
+        self.assertAlmostEqual(chart["assets"][0]["values"][0], (396 - 4.0) / 396, places=12)
+
+    def test_a_goal_saved_under_a_group_named_like_the_asset_is_not_used(self):
+        self.seed_salvagnini_january()
+        self.repo.save_goal("5555", "2026-01-01", 0.5)
+        chart = self.dashboard(["5555"])["asset_charts"][0]
+        self.assertEqual(chart["goal"], [0.95])
+
+    def test_overtime_and_linked_rules_apply_to_an_added_asset(self):
+        """Both are stored per asset, so neither needs a group."""
+
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        self.repo.save_manual_ot("5555", "2026-01-01", 8.0)
+        self.repo.replace_linked_rules([
+            {"rule_group": "", "parent_asset_number": "5555",
+             "linked_asset_number": "3101", "impact_factor": 0.5},
+        ])
+        row = self.dashboard(["5555"])["asset_charts"][0]["rows"][0]
+        self.assertEqual(row["adjusted_scheduled_hours"], self.JANUARY_UNGROUPED_HOURS + 8.0)
+        self.assertEqual(row["linked_downtime_hours"], 5.0)  # 3101's 10.0 h x 0.5
+        self.assertAlmostEqual(row["adjusted_downtime_hours"], 9.0, places=12)
+
+    def test_the_pm_switch_reaches_an_added_asset(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-12 15:00:00", 4.0, type="1")
+        self.add_work_order("5555", "2026-01-15 15:00:00", 10.0, type="6")
+        row = self.dashboard(["5555"], exclude_pms=True)["asset_charts"][0]["rows"][0]
+        self.assertEqual(row["direct_downtime_hours"], 10.0)
+        self.assertEqual(row["excluded_pm_count"], 1)
+
+    def test_an_empty_card_still_carries_the_key(self):
+        data = build_dashboard(
+            self.repo, months=5, today=date(2026, 8, 6), selected_assets=["5555"]
+        )
+        self.assertEqual(data["asset_charts"], [])
+
+    def test_the_drill_down_behind_an_added_assets_bar_matches_it(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        bar = self.dashboard(["5555"])["asset_charts"][0]["rows"][0]
+        detail = build_work_order_detail(
+            self.repo, asset_group="", asset_number="5555", month="2026-01-01"
+        )
+        self.assertIsNone(detail["asset_group"])
+        self.assertEqual(detail["net_scheduled_hours_per_day"], 16.0)
+        self.assertEqual(detail["goal"], 0.95)
+        self.assertEqual(detail["scheduled_hours"], bar["scheduled_hours"])
+        self.assertEqual(detail["availability"], bar["availability"])
+        self.assertEqual(
+            sum(o["counted_hours"] for o in detail["work_orders"]), bar["adjusted_downtime_hours"]
+        )
+
+    def test_a_grouped_asset_has_no_drill_down_of_its_own(self):
+        """It has no chart of its own, so there is no such bar to explain."""
+
+        self.seed_salvagnini_january()
+        with self.assertRaises(AvailabilityConfigError) as raised:
+            build_work_order_detail(
+                self.repo, asset_group="", asset_number="3101", month="2026-01-01"
+            )
+        self.assertIn("Salvagnini", str(raised.exception))
+
+
 class ExcludePmsTests(AvailabilityTestCase):
     """The reader's Exclude PMs switch: off by default, and never fooled by a clock.
 
@@ -1630,6 +1842,45 @@ class ApiTests(AvailabilityTestCase):
                 response = self.client.get(f"/metrics/api/availability/work-orders?{query}")
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(expected, response.get_json()["error"])
+
+    def test_the_asset_filter_adds_charts_through_the_endpoint(self):
+        self.seed_salvagnini_january()
+        self.add_work_order("5555", "2026-01-15 15:00:00", 4.0)
+        data = self.client.get(
+            "/metrics/api/availability?months=1&assets=5555&assets=3101,7777"
+        ).get_json()
+        self.assertEqual([c["asset_number"] for c in data["asset_charts"]], ["5555", "7777"])
+        self.assertEqual(len(data["groups"]), 9)
+
+        response = self.client.get(
+            "/metrics/api/availability/work-orders?asset_group=&asset_number=5555&month=2026-01-01"
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()["adjusted_downtime_hours"], 4.0)
+
+    def test_the_ungrouped_schedule_can_be_saved_through_the_api(self):
+        body = {
+            "schedule_hours_per_day": 24, "break_hours_per_day": 1,
+            "lunch_hours_per_day": 2, "setup_hours_per_day": 3,
+        }
+        response = self.client.put("/metrics/api/availability/config/ungrouped", json=body)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()["ungrouped_schedule"]["net_scheduled_hours_per_day"], 18.0)
+
+        bad = self.client.put(
+            "/metrics/api/availability/config/ungrouped", json={**body, "setup_hours_per_day": 30}
+        )
+        self.assertEqual(bad.status_code, 400)
+
+    def test_saving_the_ungrouped_schedule_needs_an_editor(self):
+        signed_out = self.app_module.app.test_client()
+        response = signed_out.put(
+            "/metrics/api/availability/config/ungrouped",
+            json={"schedule_hours_per_day": 24, "break_hours_per_day": 0,
+                  "lunch_hours_per_day": 0, "setup_hours_per_day": 0},
+        )
+        self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(self.repo.load_ungrouped_schedule().net_scheduled_hours_per_day, 16.0)
 
     def test_the_config_endpoint_serves_the_configuration_editor(self):
         response = self.client.get("/metrics/api/availability/config")

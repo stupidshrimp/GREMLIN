@@ -87,7 +87,7 @@
         <li><strong>Every work order with downtime counts</strong>, whatever its type or classification, unless the reader switches on Exclude PMs. Only one with no asset number or no readable created date is left out.</li>
         <li><strong>Downtime belongs to the month the work order was created</strong>, read on the plant's clock.</li>
         <li><strong>Only weekdays are scheduled.</strong> Saturdays and Sundays never add scheduled hours.</li>
-        <li><strong>The card ignores the Metrics page's asset and date filters.</strong> It always shows every included asset group that has assets, over whole months.</li>
+        <li><strong>The group charts ignore the Metrics page's asset and date filters.</strong> They always show every included asset group that has assets, over whole months. An asset added to the filter that isn't in an included group gets a chart of its own below them, measured on the schedule for assets outside a group against the default 95% goal.</li>
       </ul>
     </section>
 
@@ -162,9 +162,10 @@
             <tr><td>Disposition class</td><td>A person's record class for a work order. Read only by Exclude PMs and the stacked bars.</td><td><code>record_<wbr>class_<wbr>final</code></td><td>Disposition page (editors)</td></tr>
             <tr><td>Asset groups</td><td>Group names, the asset numbers in each, whether the group is charted, its order</td><td><code>availability_<wbr>asset_<wbr>groups</code>, <code>availability_<wbr>asset_<wbr>group_<wbr>assets</code></td><td>Configuration, Asset group schedules (editors): the assets in each group and whether it is charted. Group names and their order are set when the database is first filled.</td></tr>
             <tr><td>Shift schedule</td><td>Schedule, break, lunch and setup hours per day for each group</td><td><code>availability_<wbr>asset_<wbr>groups</code></td><td>Configuration, Asset group schedules</td></tr>
+            <tr><td>Schedule for assets outside a group</td><td>The same four parts, for an asset added to the Metrics filter that no included group holds (20 hours less 1 break, 1 lunch and 2 setup unless changed)</td><td><code>availability_<wbr>settings</code></td><td>Configuration, Asset group schedules, Assets outside a group (editors)</td></tr>
             <tr><td>Display names</td><td>The short label each asset's bars are drawn with</td><td><code>availability_<wbr>asset_<wbr>display_<wbr>names</code></td><td>Configuration, Asset group schedules</td></tr>
             <tr><td>Linked downtime rules</td><td>Parent asset, linked asset and impact factor</td><td><code>availability_<wbr>linked_<wbr>downtime_<wbr>rules</code></td><td>Configuration, Linked downtime rules</td></tr>
-            <tr><td>Goal %</td><td>The target for each group and month (95% unless changed)</td><td><code>availability_<wbr>goal_<wbr>percent</code></td><td>The Goal % row under each chart (editors)</td></tr>
+            <tr><td>Goal %</td><td>The target for each group and month (95% unless changed). An asset outside every group is always measured against 95%.</td><td><code>availability_<wbr>goal_<wbr>percent</code></td><td>The Goal % row under each group chart (editors)</td></tr>
             <tr><td>Overtime</td><td>Extra scheduled hours for one asset in one month</td><td><code>availability_<wbr>manual_<wbr>ot</code></td><td>Edit OT hours at the top right of each chart, then the table under it (editors)</td></tr>
             <tr><td>Plant timezone</td><td>The clock months are judged on: America/Chicago. The Weibull fit splits its <a href="#weibull-life-hours">life-hour days</a> on it too, so changing it changes every Weibull result run afterwards.</td><td><code>availability_<wbr>settings</code></td><td>Set in the database</td></tr>
           </tbody>

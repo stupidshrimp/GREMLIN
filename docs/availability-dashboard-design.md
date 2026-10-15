@@ -129,6 +129,27 @@ bar, and it counts all downtime while the KPI card above counts corrective-only.
 The card header must state its own scope ("All asset groups · all downtime ·
 monthly"), and the filter bar must note that Availability is excluded.
 
+**The filter only adds.** The groups are the workbook's level of detail, and
+the asset filter works at the level of single asset numbers, so an asset the
+workbook never grouped would otherwise have no availability anywhere. A
+selected asset that no *included* group holds therefore gets a chart of its
+own, below the group charts:
+
+- **Schedule.** It has no group schedule, so it is measured on one schedule
+  shared by every such asset: 20 h less 1 break, 1 lunch and 2 setup (16 net),
+  editable on the Configuration page. Stored in `availability_settings`.
+- **Goal.** Goals are stored per group, so it reads the default 95% and the
+  card offers no goal to edit.
+- **No Average line.** With one asset it would only repeat the bars, and the
+  drill-down would compare the asset with itself.
+- **Overtime and linked rules apply** as for any asset: both are stored per
+  asset, not per group.
+- **The groups set the window.** The added assets never move the months the
+  group charts show, and a selected asset already in a group adds nothing.
+
+An asset in an *excluded* group is off the dashboard, so it is charted as an
+added asset on the ungrouped schedule rather than on its group's.
+
 ### 2.4 Linked downtime is one-level and non-recursive
 
 Salvagnini assets are mechanically coupled. A parent's adjusted downtime is its
@@ -326,7 +347,7 @@ rather than merely created — see §4.1.
 | `availability_linked_downtime_rules` | parent, linked, impact factor |
 | `availability_goal_percent` | per group, per month |
 | `availability_manual_ot` | per asset, per month |
-| `availability_settings` | timezone; `selected_year` dropped (now UI state) |
+| `availability_settings` | timezone; the schedule for assets outside a group (§2.3); `selected_year` dropped (now UI state) |
 
 Changes from the earlier attempt's schema:
 
@@ -394,11 +415,15 @@ Group ids are copied, so those references survive.
 ## 5. Interfaces
 
 ```
-GET  /metrics/api/availability                  → groups, months, series, goals, flags, basis
+GET  /metrics/api/availability                  → groups, months, series, goals, flags, basis;
+                                                  ?assets adds asset_charts for any outside
+                                                  every included group (§2.3)
 GET  /metrics/api/availability/work-orders      → ?asset_group&asset_number&month; the records
-                                                  behind one bar, and the totals they sum to
+                                                  behind one bar, and the totals they sum to.
+                                                  A blank asset_group names an added asset's bar
 GET  /metrics/api/availability/config           → schedule, membership, names, rules
 PUT  /metrics/api/availability/config/group/<g> → schedule edit
+PUT  /metrics/api/availability/config/ungrouped → the schedule for assets outside a group
 PUT  /metrics/api/availability/goal             → {group, month, percent}
 PUT  /metrics/api/availability/ot               → {asset, month, hours}
 ```
