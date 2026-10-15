@@ -688,7 +688,7 @@
     inner = guide(p4, p4.sx(lnEta), p4.sy(0));
     inner += curve([[lnMin, beta * (lnMin - lnEta)], [lnMax, beta * (lnMax - lnEta)]], p4.sx, p4.sy, "fig-accent-line");
     if (age >= 10) {
-      const y = Math.log(-Math.log(reliability(age, beta, eta)));
+      const y = beta * (Math.log(age) - lnEta);
       inner += vertical(p4, p4.sx(Math.log(age)), "fig-age-line") + dot(p4.sx(Math.log(age)), p4.sy(y), "fig-age-dot");
     }
     parts.push(p4.frame, p4.clipped(inner));
@@ -1025,7 +1025,7 @@
     if (age > 0) {
       const f = unreliability(age, beta, eta);
       html.push(
-        `<p><strong>At ${esc(hours(age, 0))}</strong>, on the fitted curve: <strong>CDF</strong> ${pct(f)} of lives have failed by then; <strong>PDF</strong> ${fmt(density(age, beta, eta) * PER_THOUSAND, 2)} per 1,000 h, how thickly failures fall at that age; <strong>Hazard Rate</strong> ${fmt(hazard(age, beta, eta) * PER_THOUSAND, 2)} per 1,000 h, the risk for a part that has got that far; <strong>Probability Plot</strong> ln(−ln R) = ${fmt(Math.log(-Math.log(1 - f)), 2)}, the same ${pct(f)} on the stretched scale.</p>`
+        `<p><strong>At ${esc(hours(age, 0))}</strong>, on the fitted curve: <strong>CDF</strong> ${pct(f)} of lives have failed by then; <strong>PDF</strong> ${fmt(density(age, beta, eta) * PER_THOUSAND, 2)} per 1,000 h, how thickly failures fall at that age; <strong>Hazard Rate</strong> ${fmt(hazard(age, beta, eta) * PER_THOUSAND, 2)} per 1,000 h, the risk for a part that has got that far; <strong>Probability Plot</strong> ln(−ln R) = ${fmt(beta * (Math.log(age) - Math.log(eta)), 2)}, the same ${pct(f)} on the stretched scale.</p>`
       );
     }
     if (result.current) {
