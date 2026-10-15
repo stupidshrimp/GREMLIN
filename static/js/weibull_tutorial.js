@@ -102,6 +102,15 @@
     );
   }
 
+  // One life's term of equation W6: the log of its density if it ended in a
+  // failure, of its reliability if it did not. Worked from the logs, so a guess
+  // that makes a life all but impossible still gives its (very negative) score
+  // where the density itself would round to zero.
+  function lifeLogScore(t, failed, beta, eta) {
+    const exposure = Math.pow(t / eta, beta);
+    return failed ? Math.log(beta) - beta * Math.log(eta) + (beta - 1) * Math.log(t) - exposure : -exposure;
+  }
+
   function logLikelihoodFromLogParams(lives, logBeta, logEta) {
     const beta = Math.exp(logBeta);
     const eta = Math.exp(logEta);
@@ -823,9 +832,13 @@
     const rows = lives
       .map((life, index) => {
         const [t, failed] = life;
-        const score = failed ? density(t, beta, eta) : reliability(t, beta, eta);
+        const logScore = lifeLogScore(t, failed, beta, eta);
+        // A score too small for the digits shown says so, rather than reading 0.
+        const digits = failed ? 5 : 3;
+        const score = Math.exp(logScore);
+        const shownScore = score < 0.5 * Math.pow(10, -digits) ? `under ${fmt(Math.pow(10, -digits), digits)}` : fmt(score, digits);
         const scoredBy = failed ? `f(${fmt(t, 0)}), the density` : `R(${fmt(t, 0)}), surviving`;
-        return `<tr><td>${index + 1}</td><td>${lifeKind(life, index, lives, model.current)}</td><td class="is-numeric">${fmt(t, 0)}</td><td>${scoredBy}</td><td class="is-numeric">${fmt(score, failed ? 5 : 3)}</td><td class="is-numeric">${fmt(Math.log(score), 2)}</td></tr>`;
+        return `<tr><td>${index + 1}</td><td>${lifeKind(life, index, lives, model.current)}</td><td class="is-numeric">${fmt(t, 0)}</td><td>${scoredBy}</td><td class="is-numeric">${shownScore}</td><td class="is-numeric">${fmt(logScore, 2)}</td></tr>`;
       })
       .join("");
     const total = logLikelihood(lives, beta, eta);
@@ -837,10 +850,13 @@
       `<tbody>${rows}</tbody>` +
       `<tfoot><tr><th scope="row" colspan="5">Log-likelihood ℓ, the sum of the ln scores</th><td class="is-numeric">${fmt(total, 2)}</td></tr></tfoot>` +
       "</table></div>";
+    // How many times less likely the lives were under the guess: e to the gap,
+    // which past a billion is a number nobody reads.
+    const times = gap > Math.log(1e9) ? "over a billion" : `about ${fmt(Math.exp(gap), Math.exp(gap) < 10 ? 1 : 0)}`;
     const verdict =
       gap < 0.005
         ? "That is the maximum: no other β and η make these lives more likely."
-        : `That is ${fmt(gap, 2)} below the best these lives allow, ${fmt(best.logLikelihood, 2)} at β ${fmt(best.beta, 3)} and η ${hours(best.eta)}: the fitted values. A gap of ${fmt(gap, 2)} in ℓ means the lives were about ${fmt(Math.exp(Math.min(gap, 50)), Math.exp(gap) < 10 ? 1 : 0)} times less likely under your guess.`;
+        : `That is ${fmt(gap, 2)} below the best these lives allow, ${fmt(best.logLikelihood, 2)} at β ${fmt(best.beta, 3)} and η ${hours(best.eta)}: the fitted values. A gap of ${fmt(gap, 2)} in ℓ means the lives were ${times} times less likely under your guess.`;
     return `${table}<p>${verdict}</p>`;
   }
 
@@ -1630,6 +1646,7 @@
       hazard,
       failureWithin,
       logLikelihood,
+      lifeLogScore,
       etaForBeta,
       fit,
       confidenceIntervals,
@@ -1641,7 +1658,7 @@
       bLife,
       analyse,
     },
-    draw: { charts: drawCharts },
+    draw: { charts: drawCharts, likelihoodReadout },
     prerender,
     mount,
   };

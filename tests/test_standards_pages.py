@@ -747,3 +747,43 @@ def test_an_age_off_the_probability_plot_is_named_at_its_edge(documentation):
     assert "\u25c0 100 h, off this scale" in drawn["100"]
     assert "5,000 h, off this scale \u25b6" in drawn["5000"]
     assert "off this scale" not in drawn["400"]
+
+
+def test_each_lifes_score_in_figure_w5_adds_up_to_the_total(documentation):
+    """Figure W5's table gives each life's ln score and calls the total their sum.
+    At a guess the sliders allow that makes the lives all but impossible (β 6 and
+    η 100 h), the scores themselves round to zero, so the logs are worked out
+    directly and every row still has one."""
+    node = _node()
+    worked = _figure_data(documentation)["presets"]["worked"]
+    program = (
+        "const api = require(process.argv[1]); let input = '';"
+        "process.stdin.on('data', (c) => { input += c; });"
+        "process.stdin.on('end', () => {"
+        "  const m = api.method; const result = m.analyse(JSON.parse(input));"
+        "  const model = { lives: result.lives, current: result.current, best: result.fit };"
+        "  const out = {};"
+        "  for (const [beta, eta] of [[1, 1200], [2.5, 800], [6, 100]]) {"
+        "    out[beta + '/' + eta] = {"
+        "      scores: result.lives.map(([t, f]) => m.lifeLogScore(t, f, beta, eta)),"
+        "      total: m.logLikelihood(result.lives, beta, eta),"
+        "      readout: api.draw.likelihoodReadout({ beta, eta }, model),"
+        "    };"
+        "  }"
+        "  process.stdout.write(JSON.stringify(out));"
+        "});"
+    )
+    completed = subprocess.run(
+        [node, "-e", program, str(SCRIPT)],
+        input=json.dumps(worked),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for guess, shown in json.loads(completed.stdout).items():
+        assert sum(shown["scores"]) == pytest.approx(shown["total"], rel=1e-12), guess
+        assert "n/a" not in shown["readout"], guess
+    impossible = json.loads(completed.stdout)["6/100"]
+    assert "under 0.00001" in impossible["readout"]
+    assert "over a billion times less likely" in impossible["readout"]
