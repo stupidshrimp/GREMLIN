@@ -867,6 +867,15 @@
     return result.fit ? Math.max(maxLife * 1.15, result.fit.eta * 1.25, 1) : maxLife * 1.15;
   }
 
+  // An age past a pane's scale, named at the edge it lies beyond. The scales
+  // stay where the lives and the fit put them: widened to take in any age typed,
+  // the curves would slide about as a slider moves, and stretched far enough the
+  // fitted peak would fall between the points a curve is drawn through.
+  function offScale(p, age, before, corner) {
+    const text = before ? `\u25C0 ${hours(age, 0)}, off this scale` : `${hours(age, 0)}, off this scale \u25B6`;
+    return label(before ? p.left + 6 : p.right - 6, corner === "top" ? p.top + 30 : p.bottom - 8, text, "fig-text-highlight", before ? "start" : "end");
+  }
+
   function noFit(p, text) {
     return label((p.left + p.right) / 2, (p.top + p.bottom) / 2, text, "fig-text-small", "middle");
   }
@@ -879,8 +888,7 @@
     const eta = fitted && fitted.eta;
     const ci = result.ci;
     const ciPairs = ci ? [[ci.betaLo, ci.etaLo], [ci.betaHi, ci.etaHi]] : [];
-    let upper = chartDomain(result);
-    if (age && age > upper) upper = age * 1.05;
+    const upper = chartDomain(result);
     const steps = 120;
     const parts = [];
 
@@ -931,14 +939,10 @@
       inner += dot(p1.sx(p.x), p1.sy(p.y), "fig-point");
     });
     parts.push(p1.frame, p1.clipped(inner));
-    // An age off this plot's scale is still the age the other three panes are
-    // read at, so it is named at the edge it lies beyond. Widening the scale to
-    // take it in would instead slide the points about as a slider moves.
+    // In the corner the fitted line, rising to the right, leaves clear.
     if (age && fitted && !p1.inX(Math.log(age))) {
       const before = Math.log(age) < xMin;
-      const text = before ? `\u25C0 ${hours(age, 0)}, off this scale` : `${hours(age, 0)}, off this scale \u25B6`;
-      // In the corner the fitted line, rising to the right, leaves clear.
-      parts.push(label(before ? p1.left + 6 : p1.right - 6, before ? p1.top + 30 : p1.bottom - 8, text, "fig-text-highlight", before ? "start" : "end"));
+      parts.push(offScale(p1, age, before, before ? "top" : "bottom"));
     }
     if (fitted && opts.annotate) {
       parts.push(label(p1.sx(Math.log(eta)) + 4, p1.bottom - 6, "η", "fig-text-small"));
@@ -956,7 +960,7 @@
       inner += curve(sample((t) => unreliability(t, beta, eta), 0, upper, steps), p2.sx, p2.sy, "fig-accent-line");
     }
     if (result.current) inner += vertical(p2, p2.sx(result.current), "fig-danger-line");
-    if (age && fitted) inner += vertical(p2, p2.sx(age), "fig-age-line") + dot(p2.sx(age), p2.sy(unreliability(age, beta, eta)), "fig-age-dot");
+    if (age && fitted && age <= upper) inner += vertical(p2, p2.sx(age), "fig-age-line") + dot(p2.sx(age), p2.sy(unreliability(age, beta, eta)), "fig-age-dot");
     if (fitted && opts.annotate) {
       [result.b10, result.b50, eta].forEach((t) => {
         const y = p2.sy(unreliability(t, beta, eta));
@@ -973,6 +977,8 @@
       });
     }
     parts.push(p2.frame, p2.clipped(inner));
+    // The CDF has climbed to the top by the right edge, leaving its foot clear.
+    if (age && fitted && age > upper) parts.push(offScale(p2, age, false, "bottom"));
     if (fitted && opts.annotate) {
       [
         [result.b10, "B10"],
@@ -1002,8 +1008,11 @@
       if (spec.n === 3 && opts.annotate && result.mttf <= upper) body += vertical(p, p.sx(result.mttf), "fig-guide");
       body += curve([[0, spec.fn(0, beta, eta) * PER_THOUSAND]].concat(values), p.sx, p.sy, "fig-accent-line");
       if (result.current) body += vertical(p, p.sx(result.current), "fig-danger-line");
-      if (age) body += vertical(p, p.sx(age), "fig-age-line") + dot(p.sx(age), p.sy(spec.fn(age, beta, eta) * PER_THOUSAND), "fig-age-dot");
+      if (age && age <= upper) body += vertical(p, p.sx(age), "fig-age-line") + dot(p.sx(age), p.sy(spec.fn(age, beta, eta) * PER_THOUSAND), "fig-age-dot");
       parts.push(p.frame, p.clipped(body));
+      // Clear of the curve's right-hand end: the density's tail lies low, and so
+      // does a hazard that falls; one that rises ends high.
+      if (age && age > upper) parts.push(offScale(p, age, false, spec.n === 4 && beta > 1 ? "bottom" : "top"));
       if (spec.n === 3 && opts.annotate && result.mttf <= upper) parts.push(label(p.sx(result.mttf) + 4, p.top + 12, "MTTF", "fig-text-small"));
     });
     return parts.join("");

@@ -719,10 +719,12 @@ def test_the_figure_script_does_gremlins_arithmetic(documentation):
     assert script["identical"]["problem"] == "no-root"
 
 
-def test_an_age_off_the_probability_plot_is_named_at_its_edge(documentation):
-    """The CDF, PDF and hazard panes are read at any age the lab or figure W6's
-    slider gives; the probability plot's log scale stops short of some, so it
-    names those at the edge they lie beyond rather than dropping them."""
+def test_an_age_off_a_charts_scale_is_named_at_its_edge(documentation):
+    """The lab and figure W6 read all four charts at an age. One past a chart's
+    scale is named at the edge it lies beyond, on the probability plot's log
+    scale and the other three's alike, and no scale is stretched to take it in:
+    stretched to a million hours, the fitted curves would vanish between the
+    points they are drawn through."""
     node = _node()
     worked = _figure_data(documentation)["presets"]["worked"]
     program = (
@@ -731,7 +733,8 @@ def test_an_age_off_the_probability_plot_is_named_at_its_edge(documentation):
         "process.stdin.on('end', () => {"
         "  const set = JSON.parse(input); const result = api.method.analyse(set);"
         "  const out = {};"
-        "  for (const age of [100, 400, 5000]) out[age] = api.draw.charts(result, { id: 't', age });"
+        "  for (const age of [100, 400, 5000, 1000000]) out[age] = api.draw.charts(result, { id: 't', age });"
+        "  out.none = api.draw.charts(result, { id: 't', age: null });"
         "  process.stdout.write(JSON.stringify(out));"
         "});"
     )
@@ -744,9 +747,16 @@ def test_an_age_off_the_probability_plot_is_named_at_its_edge(documentation):
         check=True,
     )
     drawn = json.loads(completed.stdout)
+    # 100 h is on the linear scales and off the log one; 5,000 h off all four.
+    assert drawn["100"].count("off this scale") == 1
     assert "\u25c0 100 h, off this scale" in drawn["100"]
-    assert "5,000 h, off this scale \u25b6" in drawn["5000"]
+    assert drawn["5000"].count("5,000 h, off this scale \u25b6") == 4
+    assert drawn["1000000"].count("1,000,000 h, off this scale \u25b6") == 4
     assert "off this scale" not in drawn["400"]
+    # However far off the age, the fitted curves are drawn on their own scales,
+    # exactly as with no age at all.
+    curves = lambda markup: re.findall(r'<path class="fig-accent-line" d="([^"]+)"', markup)  # noqa: E731
+    assert curves(drawn["1000000"]) == curves(drawn["5000"]) == curves(drawn["none"])
 
 
 def test_each_lifes_score_in_figure_w5_adds_up_to_the_total(documentation):
