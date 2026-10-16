@@ -174,6 +174,75 @@ def test_no_analysis_step_describes_a_mechanism_before_the_tour_shows_one():
             assert shows and shows[0] <= describes[0], analysis_type
 
 
+def _weibull_result_targets():
+    """Each selector the Weibull result cards light, a selector list split up."""
+    return [
+        part.strip()
+        for selector in _targets(ANALYSIS_JS, "const WEIBULL_RESULT_PARTS")
+        for part in selector.split(",")
+    ]
+
+
+def test_the_weibull_results_are_taken_part_by_part():
+    assert len(_weibull_result_targets()) >= 12
+
+
+@pytest.mark.parametrize("selector", _weibull_result_targets())
+def test_every_weibull_result_step_points_at_something_the_results_draw(selector):
+    """The results card is built by the script once a fit is shown, so its
+    targets aren't in the served page: they are what renderAnalysisResult and
+    the builders it calls give their parts."""
+    source = "\n".join(
+        _function_body(name)
+        for name in (
+            "renderAnalysisResult",
+            "legend",
+            "buildTargetAgePanel",
+            "buildAnalysisCharts",
+            "buildEventProcessingTable",
+            "buildReportBar",
+        )
+    )
+    match = re.fullmatch(r"([#.])([\w-]+)", selector)
+    assert match, f"{selector!r} is not a single id or class; this test can't check it"
+    kind, name = match.groups()
+    if kind == "#":
+        # Given as an attribute, or as the id argument that ends a panel() call.
+        assert f'id: "{name}"' in source or f'"{name}"),' in source, selector
+    else:
+        assert re.search(rf'class: "[^"]*(?<![\w-]){re.escape(name)}(?![\w-])', source), selector
+
+
+def test_the_weibull_result_steps_follow_the_one_that_shows_a_fit():
+    """None of them has anything to light until the tour has opened a fit, so
+    they go straight after the step whose Next opens one, and only in a
+    Weibull tour."""
+    [results_step] = [
+        step for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS") if '"#lda-workspace"' in step
+    ]
+    assert "action: TOUR_MECHANISM_ACTION" in results_step
+    assert results_step.rstrip().endswith("...WEIBULL_RESULT_TOUR_STEPS,")
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    steps = re.search(r"const WEIBULL_RESULT_TOUR_STEPS = (.*?);\n", source, re.S)
+    assert steps, "WEIBULL_RESULT_TOUR_STEPS was not found"
+    assert "when: forType(ANALYSIS_TYPES.WEIBULL)" in steps.group(1)
+
+
+def test_every_documentation_link_in_the_analysis_tour_opens_a_part_of_it(client):
+    """A fragment that names nothing opens the Documentation page at its top,
+    so a renamed section would quietly send a card's link nowhere in particular."""
+    source = ANALYSIS_JS.read_text(encoding="utf-8")
+    url = re.search(r'const DOCS_URL = "([^"]+)";', source)
+    assert url, "DOCS_URL was not found"
+    response = client.get(url.group(1))
+    assert response.status_code == 200
+    page = response.get_data(as_text=True)
+    fragments = sorted(set(re.findall(r'docsLink\("([\w-]+)"', source)))
+    assert len(fragments) >= 15
+    for fragment in fragments:
+        assert f'id="{fragment}"' in page, f"#{fragment} isn't on the Documentation page"
+
+
 def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
     """An editor's Pareto click runs and stores a fit; the tour's must not."""
     source = ANALYSIS_JS.read_text(encoding="utf-8")

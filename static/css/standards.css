@@ -305,6 +305,12 @@
   scroll-margin-top: 6.5rem;
 }
 
+/* A heading within a section, which the Perform an Analysis tour links to,
+   clears the top bar the same way. */
+.std-section h5[id] {
+  scroll-margin-top: 6.5rem;
+}
+
 .std-section + .std-section {
   border-top: 1px dashed var(--border);
   padding-top: 1.1rem;
@@ -1085,7 +1091,8 @@
 
   .std-tabs,
   .std-card,
-  .std-section {
+  .std-section,
+  .std-section h5[id] {
     scroll-margin-top: 9.5rem;
   }
 
