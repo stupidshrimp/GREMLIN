@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import xml.etree.ElementTree as ET
 
 from services.availability_config import DEFAULT_TIMEZONE
+from services.standard_disposition_schema import ensure_standard_disposition_schema, sync_migrated_dispositions
 from services.wo_narrative import NARRATIVE_FIELDS, NARRATIVE_KEYS, extract_narrative
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -1310,6 +1311,9 @@ class LifeDataService:
             )
             self._migrate_rel_disposition_schema(conn)
             self._seed_schedule_register(conn)
+            # The work-order disposition standard's tables, after the REL ones it
+            # migrates from (services/standard_disposition_schema.py).
+            ensure_standard_disposition_schema(conn)
 
     def _migrate_rel_disposition_schema(self, conn: sqlite3.Connection) -> None:
         """Safely add REL disposition columns/tables to existing GREMLIN.db files."""
@@ -5878,6 +5882,9 @@ class LifeDataService:
         if kind == "wo" and failure_mechanism_id is not None:
             self._touch_asset_failure_mechanism(conn, asset_number, failure_mechanism_id, failure_mode_id, event_disposition_id)
         conn.execute("UPDATE mapped_cmms_record SET record_class_final = ? WHERE mapped_record_id = ?", (record_class_final, mapped_record_id))
+        # Until an engineer dispositions the record under the work-order standard,
+        # its standard disposition is the migration of this one, so it follows it.
+        sync_migrated_dispositions(conn, [mapped_record_id])
 
 
     def perform_weibull_analysis(

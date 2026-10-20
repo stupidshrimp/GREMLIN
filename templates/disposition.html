@@ -15,6 +15,10 @@
   <button type="button" class="page-tour-btn" id="disposition-tour-btn">Show me around</button>
   <div class="lda-row-actions" style="justify-content:flex-start; margin-top:0.9rem">
     <a class="btn-secondary" href="{{ url_for('perform_analysis') }}">← Back to Perform an Analysis</a>
+    {# The work-order disposition standard: component, sub-asset and the ISO 14224
+       trio, with every Weibull life built on one physical item. Records not yet
+       dispositioned there carry their REL disposition over, flagged to confirm. #}
+    <a class="btn-secondary" href="{{ url_for('standard_disposition') }}">Work-order standard (ISO 14224) →</a>
   </div>
 </section>
 

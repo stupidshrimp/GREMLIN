@@ -12,6 +12,9 @@
   <p>Select an Asset Number from mapped CMMS data, disposition corrective work orders and PM reset
      events, then run a REL-style Weibull analysis using only valid observations.</p>
   <button type="button" class="page-tour-btn" id="analysis-tour-btn">Show me around</button>
+  <div class="lda-row-actions" style="justify-content:flex-start; margin-top:0.9rem">
+    <a class="btn-secondary" href="{{ url_for('population_analysis') }}">Analysis Population (work-order standard) →</a>
+  </div>
 </section>
 
 <div id="lda-status" class="lda-banner" role="status" hidden></div>

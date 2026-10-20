@@ -38,6 +38,7 @@ from services.life_data_service import (
     LifeDataService,
     WeibullFitError,
 )
+from services.standard_disposition_service import StandardDispositionService
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
     LIST_LIMIT,
@@ -426,6 +427,9 @@ PAGES = [
         # which is the difference between the page being hidden and being shut.
         "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "section": ("/life-data-analysis",),
+        # Analysis Population is the same kind of page as Perform an Analysis, read
+        # from the work-order disposition standard, so it needs an account too.
+        "covers": ("/life-data-analysis/population-analysis",),
     },
     {
         "route": "/metrics",
@@ -712,6 +716,12 @@ def _service_or_api_error() -> LifeDataService:
             f"Set GREMLIN_DB_PATH to a reachable GREMLIN.db file. Details: {exc}",
             status_code=503,
         ) from exc
+
+
+def _standard_service() -> StandardDispositionService:
+    """The work-order disposition standard, over the shared LifeDataService."""
+
+    return StandardDispositionService(_service_or_api_error())
 
 
 def _required_asset() -> str:
@@ -1902,6 +1912,31 @@ def disposition():
     )
 
 
+@app.route("/life-data-analysis/disposition/standard")
+def standard_disposition():
+    # The work-order disposition standard's editor. An editor like the Disposition
+    # page it sits under, and refused the same way to anybody who is not one.
+    _user, error = _authorised_user("editor")
+    if error:
+        return (
+            render_template(
+                "not_authorized.html",
+                page_title="Work-Order Disposition",
+                page_heading="Work-order disposition is for editors.",
+                required_role="editor",
+                back_url=url_for("population_analysis"),
+            ),
+            403,
+        )
+    return render_template("wo_disposition.html", page_title="Work-Order Disposition")
+
+
+@app.route("/life-data-analysis/population-analysis")
+def population_analysis():
+    # Needs an account like Perform an Analysis, which its PAGES entry "covers".
+    return render_template("population_analysis.html", page_title="Analysis Population")
+
+
 @app.route("/life-data-analysis/failure-classification")
 def failure_classification():
     classification_data = reliability_service.get_failure_classification_data()
@@ -3056,6 +3091,172 @@ def api_weibull_report():
         download_name=f"{report_number}.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+# --------------------------------------------------------------------------- #
+# The work-order disposition standard (services/disposition_standard.py)
+#
+# Reads are open to whoever may see Life Data Analysis, as the rest of its API
+# is; every write needs the editor role and is recorded against the account.
+# --------------------------------------------------------------------------- #
+
+
+def _username() -> str | None:
+    return (current_user() or {}).get("username")
+
+
+@app.route("/life-data-analysis/api/standard/code-lists")
+@life_data_api
+def api_standard_code_lists():
+    return jsonify({"code_lists": _standard_service().code_lists()})
+
+
+@app.route("/life-data-analysis/api/standard/code-lists", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_standard_save_code():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise LifeDataApiError("Send the code as JSON.", status_code=400)
+    return jsonify({"code_lists": _standard_service().save_code(payload, updated_by=_username())})
+
+
+@app.route("/life-data-analysis/api/standard/dispositions")
+@life_data_api
+def api_standard_dispositions():
+    service = _standard_service()
+    asset_number = _required_asset()
+    try:
+        page_index = max(0, int(request.values.get("page", 0)))
+    except (TypeError, ValueError):
+        page_index = 0
+    page = service.disposition_page(
+        asset_number,
+        scope=(request.values.get("scope") or "all").strip().lower(),
+        search=(request.values.get("search") or "").strip() or None,
+        page=page_index,
+    )
+    return jsonify({**page, "options": service.editor_options(asset_number)})
+
+
+@app.route("/life-data-analysis/api/standard/dispositions/record")
+@life_data_api
+def api_standard_disposition_record():
+    try:
+        mapped_record_id = int(request.values.get("mapped_record_id") or "")
+    except (TypeError, ValueError):
+        raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400)
+    service = _standard_service()
+    # An id SQLite cannot hold names no record, rather than a server error.
+    record = service.disposition_record(mapped_record_id) if -(2**63) <= mapped_record_id < 2**63 else None
+    if record is None:
+        raise LifeDataApiError("That record was not found.", status_code=404)
+    return jsonify({
+        "record": record,
+        "history": service.disposition_history(mapped_record_id),
+        "options": service.editor_options(record["asset_number"] or ""),
+    })
+
+
+@app.route("/life-data-analysis/api/standard/dispositions/save", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_standard_save_dispositions():
+    payload = request.get_json(silent=True) or {}
+    dispositions = payload.get("dispositions")
+    if not isinstance(dispositions, list) or not dispositions:
+        raise LifeDataApiError("No dispositions were provided to save.", status_code=400)
+    if not all(isinstance(item, dict) for item in dispositions):
+        raise LifeDataApiError("Each disposition must be an object.", status_code=400)
+    saved = _standard_service().save_dispositions(dispositions, decided_by=_username())
+    return jsonify({"saved": saved})
+
+
+@app.route("/life-data-analysis/api/standard/population-options")
+@life_data_api
+def api_standard_population_options():
+    assets = [value.strip() for value in request.values.getlist("asset") if value.strip()]
+    if not assets:
+        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
+    return jsonify(_standard_service().population_options(assets))
+
+
+def _population_payload() -> dict:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise LifeDataApiError("Send the analysis population as JSON.", status_code=400)
+    selection = payload.get("selection")
+    if not isinstance(selection, dict):
+        raise LifeDataApiError("The analysis population is missing.", status_code=400)
+    return payload
+
+
+@app.route("/life-data-analysis/api/standard/patterns", methods=["POST"])
+@life_data_api
+def api_standard_patterns():
+    """The triage views for a population. A read: POST only to carry the selection as JSON."""
+
+    payload = _population_payload()
+    try:
+        top_n = int(payload.get("top_n") or 5)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("Top N must be a whole number.", status_code=400) from None
+    return jsonify(
+        _standard_service().patterns(
+            payload["selection"],
+            start=_optional_plant_date(payload.get("date_from"), "From date"),
+            end=_optional_plant_date(payload.get("date_to"), "To date"),
+            group_by=str(payload.get("group_by") or "location"),
+            period=str(payload.get("period") or "month"),
+            top_n=top_n,
+        )
+    )
+
+
+def _standard_weibull(save: bool):
+    payload = _population_payload()
+    result = _standard_service().run_weibull(
+        payload["selection"],
+        analysis_start=_optional_plant_date(payload.get("analysis_start"), "analysis start date"),
+        analysis_cutoff=_optional_plant_date(payload.get("analysis_cutoff"), "analysis cutoff date"),
+        save=save,
+        run_by=_username() if save else None,
+    )
+    return jsonify({"result": result})
+
+
+@app.route("/life-data-analysis/api/standard/weibull", methods=["POST"])
+@life_data_api
+def api_standard_weibull_preview():
+    """Build and fit a population's lives without saving anything: open to every reader."""
+
+    return _standard_weibull(save=False)
+
+
+@app.route("/life-data-analysis/api/standard/weibull/save", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_standard_weibull_save():
+    """Build, fit and save a population's lives, with the population definition string."""
+
+    return _standard_weibull(save=True)
+
+
+@app.route("/life-data-analysis/api/standard/weibull/saved")
+@life_data_api
+def api_standard_saved_weibull():
+    asset_number = (request.values.get("asset") or "").strip() or None
+    return jsonify({"analyses": _standard_service().saved_analyses(asset_number=asset_number)})
+
+
+@app.route("/life-data-analysis/api/standard/weibull/saved/<int:analysis_id>")
+@life_data_api
+def api_standard_saved_weibull_result(analysis_id: int):
+    result = _standard_service().load_saved_analysis(analysis_id)
+    if result is None:
+        raise LifeDataApiError("That saved analysis was not found.", status_code=404)
+    return jsonify({"result": result})
+
 
 @app.route("/reliability-links")
 def reliability_links():
