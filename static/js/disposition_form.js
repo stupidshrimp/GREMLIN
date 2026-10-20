@@ -24,9 +24,9 @@
 
   const NARRATIVE = [
     ["area_affected", "Area affected"],
-    ["condition_found", "Condition"],
+    ["condition_found", "Condition found"],
     ["cause", "Cause"],
-    ["action_taken", "Action"],
+    ["action_taken", "Action taken"],
   ];
   const CATEGORY_CHIP = {
     FAILURE: "is-failure",
@@ -119,28 +119,61 @@
       };
     }
 
+    // The work order as the CMMS has it, read-only above the fields, each part
+    // under its own label: when it happened and how long it stopped the line,
+    // what was asked for, the technician's failure narrative, and their notes.
+    // A part left empty says so rather than disappearing, so a missing
+    // narrative is noticed instead of overlooked.
     function recordText() {
       const d = row.disposition;
+      const times = row.plant_times || {};
+      const blank = (text) => text === null || text === undefined || String(text).trim() === "";
+      const missing = (text) => el("span", { class: "std-missing", text });
+      const shown = (text, emptyText) => (blank(text) ? missing(emptyText || "Not recorded") : String(text));
+      const fact = (label, content, wide) =>
+        el("div", { class: "std-fact" + (wide ? " std-fact-wide" : "") }, [el("dt", { text: label }), el("dd", {}, [content])]);
+      const facts = el("dl", { class: "std-facts", id: id("facts") }, [
+        fact("Asset", shown(row.asset_label || [row.asset_number, row.asset_name].filter(Boolean).join(" · ")), true),
+        fact("Created", shown(times.created || day(row.created_date))),
+        fact("Started", shown(times.started || day(row.start_date))),
+        fact("Completed", shown(times.completed || day(row.completed_date))),
+        fact("Downtime", blank(row.downtime_hours) ? missing("Not recorded") : `${fmt(row.downtime_hours)} h`),
+        fact("Record class", shown(row.record_class)),
+        fact("Category", el("span", {}, categoryChip(d.disposition_category, d.source))),
+      ]);
+      const section = (title, fields, options = {}) =>
+        el("section", { class: options.class || "std-record-section", id: options.id || null }, [
+          el("h4", { text: title }),
+          options.note ? el("p", { class: "lda-hint", text: options.note }) : null,
+          el("dl", { class: "std-record-fields" }, fields.map(([label, text, emptyText]) =>
+            el("div", { class: "std-record-field" }, [
+              label ? el("dt", { text: label }) : null,
+              el("dd", {}, [shown(text, emptyText)]),
+            ])
+          )),
+        ]);
+      const narrativeEmpty = NARRATIVE.every(([key]) => blank(row[key]));
       const blocks = [
-        el("h3", { id: id("title"), text: `${row.task_id ?? ""} · ${row.task_name || row.request_title || "(no title)"}` }),
-        el("p", {
-          class: "std-record-meta",
-          text: [
-            `Asset ${row.asset_number}${row.asset_name ? " (" + row.asset_name + ")" : ""}`,
-            `found ${day(row.created_date) || "—"}`,
-            `completed ${day(row.completed_date) || "—"}`,
-            `downtime ${fmt(row.downtime_hours)} h`,
-          ].join(" · "),
+        el("div", { class: "std-record-head" }, [
+          el("p", { class: "std-record-task", text: `Task ${row.task_id ?? "—"}` }),
+          el("h3", { id: id("title"), text: row.task_name || row.request_title || "(no title)" }),
+        ]),
+        facts,
+        section("Request", [
+          ["Request title", row.request_title, "No request title"],
+          ["Request description", row.requestor_description, "No description"],
+        ], { id: id("request") }),
+        section("Failure narrative", NARRATIVE.map(([key, label]) => [label, row[key], "Not filled in"]), {
+          class: "std-record-section std-narrative",
+          id: id("narrative"),
+          note: narrativeEmpty ? "The technician left the failure narrative empty; the completion notes may say what happened." : null,
         }),
+        section("Completion notes", [[null, row.completion_notes, "No completion notes"]], { id: id("notes") }),
       ];
-      const text = (label, value) => value && el("p", { class: "std-record-block" }, [el("strong", { text: label }), value]);
-      blocks.push(text("Request", [row.request_title, row.requestor_description].filter(Boolean).join(" — ")));
-      blocks.push(text("Completion notes", row.completion_notes));
-      NARRATIVE.forEach(([key, label]) => blocks.push(text(label, row[key])));
       if (d.legacy_disposition_category || d.legacy_failure_mode || d.legacy_failure_mechanism) {
-        blocks.push(text("REL disposition (legacy)", [
+        blocks.push(section("REL disposition (legacy)", [[null, [
           d.legacy_disposition_category, d.legacy_failure_mode, d.legacy_failure_mechanism,
-        ].filter(Boolean).join(" · ")));
+        ].filter(Boolean).join(" · ")]]));
       }
       if (d.review_flag) blocks.push(el("div", { class: "std-flag", text: d.review_flag }));
       return el("div", { class: "std-record-text", id: id("record") }, blocks);
@@ -230,11 +263,14 @@
       } else {
         const subAssets = (options && options.sub_assets) || [];
         if (subAssets.length) {
+          // Every asset under this one in Limble's hierarchy, each level indented
+          // under its parent.
           const select = el("select", { id: id("sub-asset"), class: "lda-select" }, [
-            el("option", { value: "", text: `${row.asset_number} (whole asset)` }),
+            el("option", { value: "", text: `${row.asset_label || row.asset_number} (whole asset)` }),
             ...subAssets.map((option) => el("option", {
               value: option.asset_number,
-              text: option.asset_name ? `${option.asset_number} · ${option.asset_name}` : option.asset_number,
+              text: `${"\u00a0\u00a0\u00a0".repeat(Math.max(0, (option.depth || 1) - 1))}${(option.depth || 1) > 1 ? "└ " : ""}` +
+                (option.label || option.asset_number),
             })),
           ]);
           select.value = draft.sub_asset || "";

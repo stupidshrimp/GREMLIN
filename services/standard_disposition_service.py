@@ -14,16 +14,17 @@ connection rules, search and spreadsheet writer.
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from services import disposition_standard as std
 from services.standard_disposition_schema import (
+    AssetTree,
     insert_wo_disposition,
     load_codebook,
     renewed_items_from_json,
-    sub_asset_options,
 )
 from services.wo_narrative import NARRATIVE_KEYS
 
@@ -32,6 +33,43 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 DISPOSITION_PAGE_SIZE = 50
 DISPOSITION_SCOPES = ("all", "not_reviewed", "migrated")
+
+_FOUND_SQL = "COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)"
+_LOCATION_SQL = "COALESCE(NULLIF(TRIM(w.sub_asset), ''), TRIM(m.asset_number))"
+# The Disposition list's columns, as it sorts and filters them: the value a
+# column filter matches (the text its cell shows) and the order a sort puts the
+# rows in. Blanks sort last whichever way. The sub-asset sorts by the name the
+# cell shows, through gremlin_asset_label, which each query registers from the
+# asset tree.
+LIST_COLUMNS: dict[str, tuple[str, str]] = {
+    "task_id": ("CAST(m.task_id AS TEXT)", "CAST(m.task_id AS INTEGER)"),
+    "found": (
+        f"CASE WHEN {_FOUND_SQL} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' "
+        f"THEN substr({_FOUND_SQL}, 1, 10) ELSE {_FOUND_SQL} END",
+        f"gremlin_sort_datetime({_FOUND_SQL})",
+    ),
+    "title": (
+        "COALESCE(NULLIF(m.task_name, ''), m.request_title)",
+        "COALESCE(NULLIF(m.task_name, ''), m.request_title) COLLATE NOCASE",
+    ),
+    "category": ("COALESCE(w.disposition_category, 'NOT_REVIEWED')", "COALESCE(w.disposition_category, 'NOT_REVIEWED')"),
+    "sub_asset": (_LOCATION_SQL, f"gremlin_asset_label({_LOCATION_SQL}) COLLATE NOCASE"),
+    "component": ("w.component_code", "w.component_code COLLATE NOCASE"),
+    "mechanism": ("w.failure_mechanism_code", "w.failure_mechanism_code COLLATE NOCASE"),
+    "mode": ("w.failure_mode_code", "w.failure_mode_code COLLATE NOCASE"),
+}
+# The code list behind each coded column, for the names its filter lists.
+LIST_COLUMN_CODE_LISTS = {
+    "component": std.COMPONENT,
+    "mechanism": std.FAILURE_MECHANISM,
+    "mode": std.FAILURE_MODE,
+}
+LIST_DEFAULT_ORDER = (
+    f"gremlin_sort_datetime({_FOUND_SQL}) IS NULL, gremlin_sort_datetime({_FOUND_SQL}) DESC, m.mapped_record_id DESC"
+)
+# Most values one column filter may name, and most a column's filter lists.
+LIST_FILTER_LIMIT = 1000
+LIST_VALUES_LIMIT = 1000
 
 # The workbook an asset's work orders are dispositioned in offline. The record
 # columns are there to read and are never written back; the disposition columns
@@ -88,8 +126,29 @@ def _clean(value: Any) -> str | None:
 class StandardDispositionService:
     """The disposition standard's reads and writes, over one ``LifeDataService``."""
 
-    def __init__(self, life: "LifeDataService") -> None:
+    def __init__(
+        self,
+        life: "LifeDataService",
+        asset_hierarchy: Callable[[], Iterable[Mapping[str, Any]] | None] | None = None,
+    ) -> None:
+        """``asset_hierarchy`` hands back Limble's asset hierarchy as the PM calendar
+        keeps it (``asset_id``, ``asset_name``, ``parent_asset_id``), or None when
+        there is none; see ``AssetTree``. Without it the work orders' own record
+        of their parents is all there is."""
+
         self.life = life
+        self.asset_hierarchy = asset_hierarchy
+
+    def asset_tree(self, conn: sqlite3.Connection) -> AssetTree:
+        """Who hangs under whom, by asset number, read fresh for one request."""
+
+        hierarchy = None
+        if self.asset_hierarchy is not None:
+            try:
+                hierarchy = self.asset_hierarchy()
+            except Exception:  # noqa: BLE001 - the PM calendar's database is optional here
+                hierarchy = None
+        return AssetTree.load(conn, hierarchy)
 
     # ------------------------------------------------------------------ #
     # Code lists
@@ -218,7 +277,7 @@ class StandardDispositionService:
 
         with self.life.connect() as conn:
             codebook = load_codebook(conn)
-            sub_assets = sub_asset_options(conn, asset_number)
+            sub_assets = self.asset_tree(conn).descendants(asset_number)
         return {
             "asset_number": asset_number,
             "categories": [
@@ -269,6 +328,74 @@ class StandardDispositionService:
         if scope == "migrated":
             return " AND w.source = 'MIGRATION'"
         return ""
+
+    @staticmethod
+    def clean_list_filters(filters: Any) -> dict[str, list[str]]:
+        """The column filters a request names, keyed by column; anything else is dropped.
+
+        Each is the cell values to keep, "" standing for a blank cell, so a
+        filter that names none keeps no row.
+        """
+
+        cleaned: dict[str, list[str]] = {}
+        if not isinstance(filters, Mapping):
+            return cleaned
+        for key, values in filters.items():
+            if key not in LIST_COLUMNS or not isinstance(values, (list, tuple)):
+                continue
+            kept = []
+            for value in values:
+                text = "" if value is None else str(value).strip()
+                if text not in kept:
+                    kept.append(text)
+            cleaned[key] = kept[:LIST_FILTER_LIMIT]
+        return cleaned
+
+    @staticmethod
+    def _filter_clause(filters: Mapping[str, list[str]], *, skip: str | None = None) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for key, values in filters.items():
+            if key == skip:
+                continue
+            value_sql = LIST_COLUMNS[key][0]
+            named = [value for value in values if value]
+            matches = []
+            if named:
+                matches.append(f"{value_sql} IN ({', '.join('?' * len(named))})")
+                params.extend(named)
+            if "" in values:
+                matches.append(f"NULLIF(TRIM({value_sql}), '') IS NULL")
+            clauses.append(f" AND ({' OR '.join(matches) or '0'})")
+        return "".join(clauses), params
+
+    def _list_where(
+        self,
+        asset_number: str,
+        scope: str,
+        search: str | None,
+        filters: Mapping[str, list[str]],
+        *,
+        skip: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """The WHERE the list reads: the asset, the Show setting, the search and the column filters."""
+
+        search_clause, search_params = self.life._disposition_search_clause(search)
+        filter_clause, filter_params = self._filter_clause(filters, skip=skip)
+        where = f"WHERE TRIM(m.asset_number) = ?{self._scope_clause(scope)}{search_clause}{filter_clause}"
+        return where, [asset_number, *search_params, *filter_params]
+
+    @staticmethod
+    def _list_order(sort: str | None, direction: str | None) -> str:
+        if sort not in LIST_COLUMNS:
+            return LIST_DEFAULT_ORDER
+        value_sql, order_sql = LIST_COLUMNS[sort]
+        way = "DESC" if (direction or "").lower() == "desc" else "ASC"
+        return f"NULLIF(TRIM({value_sql}), '') IS NULL, {order_sql} {way}, {LIST_DEFAULT_ORDER}"
+
+    @staticmethod
+    def _register_labels(conn: sqlite3.Connection, tree: AssetTree) -> None:
+        conn.create_function("gremlin_asset_label", 1, lambda number: tree.label(number) if number else number)
 
     def _disposition_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         if row["wo_disposition_id"] is None:
@@ -330,6 +457,7 @@ class StandardDispositionService:
             "completion_notes": row["completion_notes"],
             **{key: row[key] for key in NARRATIVE_KEYS},
             "created_date": row["created_date_final"],
+            "start_date": row["start_date_final"],
             "completed_date": row["completed_date_final"],
             "downtime_hours": row["downtime_hours"],
             "asset_number": row["asset_number"],
@@ -348,18 +476,29 @@ class StandardDispositionService:
         *,
         scope: str = "all",
         search: str | None = None,
+        filters: Mapping[str, Any] | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
         page: int = 0,
         page_size: int = DISPOSITION_PAGE_SIZE,
     ) -> dict[str, Any]:
-        """One page of an asset's work orders with their standard dispositions, newest first."""
+        """One page of an asset's work orders with their standard dispositions.
+
+        Newest first, unless ``sort`` names one of LIST_COLUMNS; ``filters`` keeps
+        the rows whose column shows one of the values named for it. Both apply to
+        every row in the selection, not only the page on screen.
+        """
 
         if scope not in DISPOSITION_SCOPES:
             scope = "all"
-        search_clause, search_params = self.life._disposition_search_clause(search)
-        where = f"WHERE TRIM(m.asset_number) = ?{self._scope_clause(scope)}{search_clause}"
-        params = [asset_number, *search_params]
+        filters = self.clean_list_filters(filters)
+        sort = sort if sort in LIST_COLUMNS else None
+        direction = "desc" if (direction or "").lower() == "desc" else "asc"
+        where, params = self._list_where(asset_number, scope, search, filters)
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
+            tree = self.asset_tree(conn)
+            self._register_labels(conn, tree)
             total = int(conn.execute(f"SELECT COUNT(*) {self.RECORD_FROM} {where}", params).fetchone()[0])
             counts = conn.execute(
                 f"""
@@ -376,18 +515,22 @@ class StandardDispositionService:
             rows = conn.execute(
                 f"""
                 SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where}
-                ORDER BY gremlin_sort_datetime(COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)) IS NULL,
-                         gremlin_sort_datetime(COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)) DESC,
-                         m.mapped_record_id DESC
+                ORDER BY {self._list_order(sort, direction)}
                 LIMIT ? OFFSET ?
                 """,
                 [*params, page_size, page * page_size],
             ).fetchall()
             records = [self.record_dict(row, codebook) for row in rows]
+            self._add_plant_times(conn, records)
+        for record in records:
+            self._add_labels(record, tree)
         return {
             "asset_number": asset_number,
+            "asset_label": tree.label(asset_number),
             "scope": scope,
             "search": search or "",
+            "filters": filters,
+            "sort": {"key": sort, "dir": direction} if sort else None,
             "rows": records,
             "page_index": page,
             "max_page_index": max_page,
@@ -400,6 +543,70 @@ class StandardDispositionService:
             },
         }
 
+    def list_column_values(
+        self,
+        asset_number: str,
+        column: str,
+        *,
+        scope: str = "all",
+        search: str | None = None,
+        filters: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The values one list column shows, for its filter menu, with how many rows show each.
+
+        Read under the Show setting, the search and every other column's filter,
+        as a spreadsheet's filter lists them, so a value this column's own filter
+        hides can always be ticked back.
+        """
+
+        if column not in LIST_COLUMNS:
+            raise ValueError(f"The list has no column {column!r}.")
+        if scope not in DISPOSITION_SCOPES:
+            scope = "all"
+        where, params = self._list_where(asset_number, scope, search, self.clean_list_filters(filters), skip=column)
+        value_sql = LIST_COLUMNS[column][0]
+        with self.life.read_transaction() as conn:
+            codebook = load_codebook(conn)
+            tree = self.asset_tree(conn)
+            rows = conn.execute(
+                f"""
+                SELECT COALESCE(NULLIF(TRIM({value_sql}), ''), '') AS value, COUNT(*) AS n
+                {self.RECORD_FROM} {where}
+                GROUP BY 1
+                """,
+                params,
+            ).fetchall()
+        values = []
+        for row in rows:
+            value = row["value"]
+            if not value:
+                label = "(Blanks)"
+            elif column == "sub_asset":
+                label = tree.label(value)
+            elif column in LIST_COLUMN_CODE_LISTS:
+                name = codebook.name(LIST_COLUMN_CODE_LISTS[column], value)
+                label = f"{value} — {name}" if name and name != value else value
+            else:
+                label = value
+            values.append({"value": value, "label": label, "count": int(row["n"])})
+
+        def order(item: Mapping[str, Any]) -> tuple:
+            value = item["value"]
+            if column == "task_id":
+                return (not value, int(value) if value.isdigit() else math.inf, value)
+            return (not value, str(item["label"]).casefold())
+
+        values.sort(key=order)
+        if column == "found":
+            # Newest day first, as the list opens; blanks stay last.
+            dated = [item for item in values if item["value"]]
+            values = dated[::-1] + [item for item in values if not item["value"]]
+        return {
+            "column": column,
+            "values": values[:LIST_VALUES_LIMIT],
+            "truncated": len(values) > LIST_VALUES_LIMIT,
+        }
+
     def disposition_record(self, mapped_record_id: int) -> dict[str, Any] | None:
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
@@ -407,7 +614,46 @@ class StandardDispositionService:
                 f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
                 (int(mapped_record_id),),
             ).fetchone()
-            return self.record_dict(row, codebook) if row else None
+            if row is None:
+                return None
+            record = self.record_dict(row, codebook)
+            self._add_plant_times(conn, [record])
+            self._add_labels(record, self.asset_tree(conn))
+            return record
+
+    @staticmethod
+    def _add_labels(record: dict[str, Any], tree: AssetTree) -> None:
+        """The record's asset and sub-asset by name, as the record card and the list show them."""
+
+        record["asset_label"] = tree.label(record["asset_number"])
+        record["location_label"] = tree.label(record["derived"]["location"])
+
+    def _add_plant_times(self, conn: sqlite3.Connection, records: Iterable[dict[str, Any]]) -> None:
+        """Each record's created, started and completed times on the plant's clock, for its card.
+
+        The CMMS dates are stored in UTC; the card reads them as the plant does,
+        with the zone's abbreviation. A date stored without a clock time stays a
+        date, and one that is not a date at all is shown as it was stored.
+        """
+
+        zone, zone_name, _ = self.life._plant_time_zone(conn)
+        for record in records:
+            record["plant_times"] = {
+                key: self._plant_time(record.get(field), zone)
+                for key, field in (("created", "created_date"), ("started", "start_date"), ("completed", "completed_date"))
+            }
+            record["plant_time_zone"] = zone_name
+
+    def _plant_time(self, value: Any, zone: Any) -> str | None:
+        text = "" if value is None else str(value).strip()
+        if not text:
+            return None
+        parsed = self.life._parse_datetime(text)
+        if parsed is None:
+            return text
+        if not re.search(r"\d{1,2}:\d{2}", text):
+            return parsed.date().isoformat()
+        return parsed.astimezone(zone).strftime("%Y-%m-%d %H:%M %Z").strip()
 
     def disposition_history(self, mapped_record_id: int) -> list[dict[str, Any]]:
         """Every disposition the record has had under the standard, newest first."""
@@ -464,6 +710,7 @@ class StandardDispositionService:
         record_classes = self._record_classes()
         with self.life.write_connection() as conn:
             codebook = load_codebook(conn)
+            tree = self.asset_tree(conn)
             children: dict[str, tuple[str, ...]] = {}
             for item in items:
                 try:
@@ -480,7 +727,7 @@ class StandardDispositionService:
                 if not asset_number:
                     raise ValueError(f"Task {record['task_id']} has no asset number, so it cannot be dispositioned.")
                 if asset_number not in children:
-                    children[asset_number] = tuple(option["asset_number"] for option in sub_asset_options(conn, asset_number))
+                    children[asset_number] = tuple(option["asset_number"] for option in tree.descendants(asset_number))
                 values = dict(item)
                 try:
                     record_class = record["record_class"]
@@ -533,20 +780,25 @@ class StandardDispositionService:
     # ------------------------------------------------------------------ #
     # Excel workbook
     # ------------------------------------------------------------------ #
-    def _excel_records(self, asset_number: str, scope: str) -> list[dict[str, Any]]:
+    def _excel_records(
+        self,
+        asset_number: str,
+        scope: str,
+        *,
+        search: str | None = None,
+        filters: Mapping[str, Any] | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+    ) -> list[dict[str, Any]]:
         if scope not in DISPOSITION_SCOPES:
             scope = "all"
+        where, params = self._list_where(asset_number, scope, search, self.clean_list_filters(filters))
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
+            self._register_labels(conn, self.asset_tree(conn))
             rows = conn.execute(
-                f"""
-                SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM}
-                WHERE TRIM(m.asset_number) = ?{self._scope_clause(scope)}
-                ORDER BY gremlin_sort_datetime(COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)) IS NULL,
-                         gremlin_sort_datetime(COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)) DESC,
-                         m.mapped_record_id DESC
-                """,
-                (asset_number,),
+                f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where} ORDER BY {self._list_order(sort, direction)}",
+                params,
             ).fetchall()
             return [self.record_dict(row, codebook) for row in rows]
 
@@ -572,18 +824,31 @@ class StandardDispositionService:
             "disposition_note": disposition["disposition_note"],
         }
 
-    def export_excel(self, asset_number: str, output_path: str | Path, *, scope: str = "all") -> int:
+    def export_excel(
+        self,
+        asset_number: str,
+        output_path: str | Path,
+        *,
+        scope: str = "all",
+        search: str | None = None,
+        filters: Mapping[str, Any] | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+    ) -> int:
         """Write an asset's work orders and their dispositions to a workbook, and return how many.
 
         ``scope`` is the page's Show setting (every record, not reviewed, or
-        migrated to confirm), so a workbook for working through a backlog holds
-        only that backlog. Each coded column has a dropdown of the active codes,
+        migrated to confirm), and ``search``, ``filters`` and ``sort`` the list's,
+        so the workbook holds the rows the list shows, in its order: a workbook
+        for working through a backlog holds only that backlog. Each coded column has a dropdown of the active codes,
         drawn from a second sheet that also says what each code means.
         """
 
         from services.life_data_service import COLUMN_TYPE_DATETIME, COLUMN_TYPE_NUMBER, COLUMN_TYPE_TEXT, ExcelValidation
 
-        records = self._excel_records(asset_number, scope)
+        records = self._excel_records(
+            asset_number, scope, search=search, filters=filters, sort=sort, direction=direction
+        )
         options = self.editor_options(asset_number)
         sheet_rows: list[list[Any]] = [list(EXCEL_COLUMNS)]
         for record in records:

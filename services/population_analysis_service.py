@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from services import disposition_standard as std
-from services.standard_disposition_schema import load_codebook, parent_asset_numbers, sub_asset_options
+from services.standard_disposition_schema import AssetTree, load_codebook
 from services.standard_disposition_service import StandardDispositionService
 from services.wo_narrative import NARRATIVE_KEYS
 
@@ -43,8 +43,9 @@ RENEWAL_METHOD_VERSION = "renewal-stream-v1"
 # The dimensions a Pareto bar or a matrix axis can be: the record field, the code
 # list its values come from (for their names), and what the page calls it.
 GROUP_BY_DIMENSIONS = {
-    "asset": ("asset_number", None, "Asset"),
-    "location": ("location", None, "Location"),
+    # Where on the asset: the sub-asset a work order was dispositioned to, or the
+    # asset itself when it names none.
+    "sub_asset": ("location", None, "Sub-asset"),
     "component": ("component_code", std.COMPONENT, "Component"),
     "failure_mode": ("failure_mode_code", std.FAILURE_MODE, "Failure mode"),
     "failure_mechanism": ("failure_mechanism_code", std.FAILURE_MECHANISM, "Failure mechanism"),
@@ -56,8 +57,7 @@ GROUP_BY_DIMENSIONS = {
 # What a click on a bar of each dimension narrows the population by, so the page
 # can drill down: the selection key it adds the bar's value to.
 GROUP_BY_SELECTION = {
-    "asset": "assets",
-    "location": "locations",
+    "sub_asset": "locations",
     "component": "components",
     "failure_mode": "failure_modes",
     "failure_mechanism": "failure_mechanisms",
@@ -66,7 +66,7 @@ GROUP_BY_SELECTION = {
     "category": "categories",
 }
 # The drill-down a Pareto click steps through (spec section 7.2).
-DRILL_DOWN = ("location", "component", "failure_mechanism")
+DRILL_DOWN = ("sub_asset", "component", "failure_mechanism")
 RECORDS_LIMIT = 500
 NOT_CODED = "Not coded"
 
@@ -130,7 +130,7 @@ class PopulationAnalysisService:
     # ------------------------------------------------------------------ #
     # The population's records
     # ------------------------------------------------------------------ #
-    def _scope_rows(self, conn: sqlite3.Connection, population: std.Population) -> list[sqlite3.Row]:
+    def _scope_rows(self, conn: sqlite3.Connection, population: std.Population, tree: AssetTree) -> list[sqlite3.Row]:
         """Every record the population could reach: its assets, their sub-assets, and its locations.
 
         A record is in reach when the asset it was logged against, or the location
@@ -142,7 +142,7 @@ class PopulationAnalysisService:
         columns, source = self.records.RECORD_COLUMNS, self.records.RECORD_FROM
         reach = set(population.assets) | set(population.locations)
         for asset in population.assets:
-            reach.update(option["asset_number"] for option in sub_asset_options(conn, asset))
+            reach.update(option["asset_number"] for option in tree.descendants(asset))
         if not reach:
             return conn.execute(
                 f"SELECT {columns} {source} WHERE m.asset_number IS NOT NULL AND TRIM(m.asset_number) <> ''"
@@ -175,7 +175,12 @@ class PopulationAnalysisService:
         return completions
 
     def _population_records(
-        self, conn: sqlite3.Connection, population: std.Population, zone: tzinfo, codebook: std.CodeBook
+        self,
+        conn: sqlite3.Connection,
+        population: std.Population,
+        zone: tzinfo,
+        codebook: std.CodeBook,
+        tree: AssetTree,
     ) -> list[dict[str, Any]]:
         """The records in reach, each with its derived fields and the dates the analyses use.
 
@@ -184,7 +189,7 @@ class PopulationAnalysisService:
         completion, or that of the last repair work order linked to it).
         """
 
-        rows = self._scope_rows(conn, population)
+        rows = self._scope_rows(conn, population, tree)
         linked = self._linked_completions(conn, [int(row["mapped_record_id"]) for row in rows])
         records = []
         for row in rows:
@@ -205,6 +210,7 @@ class PopulationAnalysisService:
             record.update({
                 "category": disposition["disposition_category"],
                 "location": record["derived"]["location"],
+                "location_label": self._place_label(tree, population, record["derived"]["location"]),
                 "event_date": event_date,
                 "renewal_date": renewal_date,
                 "event_day": event_date.astimezone(zone).date() if event_date else None,
@@ -212,10 +218,22 @@ class PopulationAnalysisService:
             records.append(record)
         return records
 
+    @staticmethod
+    def _place_label(tree: AssetTree, population: std.Population, number: str | None) -> str:
+        """Where a work order is, as the page names it: a sub-asset by its name, or
+        the selected asset itself, for one placed on no sub-asset."""
+
+        if not number:
+            return "Not coded"
+        if number in population.assets:
+            return f"{tree.label(number)}, no sub-asset"
+        return tree.label(number)
+
     def _load(self, conn: sqlite3.Connection, population: std.Population) -> dict[str, Any]:
         codebook = load_codebook(conn)
         zone, zone_name, zone_warning = self.life._plant_time_zone(conn)
-        records = self._population_records(conn, population, zone, codebook)
+        tree = self.records.asset_tree(conn)
+        records = self._population_records(conn, population, zone, codebook, tree)
         for record in records:
             record["induced"] = codebook.has_semantic(
                 std.FAILURE_CAUSE, record["derived"]["failure_cause_effective"], std.SEMANTIC_INDUCED
@@ -226,6 +244,8 @@ class PopulationAnalysisService:
             "zone_name": zone_name,
             "zone_warning": zone_warning,
             "records": records,
+            "tree": tree,
+            "places": {record["location"]: record["location_label"] for record in records},
         }
 
     @staticmethod
@@ -299,10 +319,11 @@ class PopulationAnalysisService:
         return str(value)
 
     @staticmethod
-    def _population_label(population: std.Population) -> str:
-        """The population in a few words, for headings and the report: "4002-S09 · Filter · CONT"."""
+    def _population_label(population: std.Population, tree: AssetTree) -> str:
+        """The population in a few words, for headings and the report: "4002-S09 Dry-off oven · Filter · CONT"."""
 
-        parts = [", ".join(sorted(population.locations or population.assets))] if (population.locations or population.assets) else []
+        places = population.locations or population.assets
+        parts = [", ".join(tree.label(number) for number in sorted(places))] if places else []
         for attribute in ("components", "failure_mechanisms", "failure_modes", "failure_causes", "actions"):
             values = getattr(population, attribute)
             if values:
@@ -325,8 +346,9 @@ class PopulationAnalysisService:
         population = std.Population(assets=frozenset(text for asset in assets if (text := _clean(asset))))
         with self.life.read_transaction() as conn:
             loaded = self._load(conn, population)
-            sub_assets = {asset: sub_asset_options(conn, asset) for asset in sorted(population.assets)}
-        codebook, records = loaded["codebook"], loaded["records"]
+        codebook, records, tree = loaded["codebook"], loaded["records"], loaded["tree"]
+        sub_assets = {asset: tree.descendants(asset) for asset in sorted(population.assets)}
+        places = dict(loaded["places"])
         dimensions: dict[str, list[dict[str, Any]]] = {}
         for attribute, field, _ in std.POPULATION_DIMENSIONS:
             if attribute == "assets":
@@ -344,12 +366,21 @@ class PopulationAnalysisService:
                 values |= set(population.assets)
                 for options in sub_assets.values():
                     values |= {option["asset_number"] for option in options}
+            if attribute == "locations":
+                for value in values:
+                    places.setdefault(value, self._place_label(tree, population, value))
             dimensions[attribute] = [
-                {"value": value, "label": self._label(codebook, code_list, value), "count": counts.get(value, 0)}
+                {
+                    "value": value,
+                    "label": places[value] if attribute == "locations" else self._label(codebook, code_list, value),
+                    "count": counts.get(value, 0),
+                }
                 for value in sorted(values, key=lambda value: (-counts.get(value, 0), str(value)))
             ]
         return {
             "assets": sorted(population.assets),
+            "asset_labels": {asset: tree.label(asset) for asset in population.assets},
+            "sub_assets": [option for options in sub_assets.values() for option in options],
             "dimensions": dimensions,
             "categories": [
                 {"value": code, "label": std.CATEGORY_GUIDE[code]["label"], "default": code == std.FAILURE}
@@ -371,7 +402,7 @@ class PopulationAnalysisService:
         *,
         start: date | None = None,
         end: date | None = None,
-        group_by: str = "location",
+        group_by: str = "sub_asset",
         weeks: float = 4,
     ) -> dict[str, Any]:
         """What the page draws for a population before any one analysis is opened."""
@@ -389,7 +420,7 @@ class PopulationAnalysisService:
         window_end = end or datetime.now(loaded["zone"]).date()
         return {
             "selection": population.to_mapping(),
-            "population_label": self._population_label(population),
+            "population_label": self._population_label(population, loaded["tree"]),
             "population_definition": std.population_definition(population, window_start, window_end),
             "readiness": self._readiness(records, population, start, end, codebook),
             "record_count": len(selected),
@@ -428,11 +459,20 @@ class PopulationAnalysisService:
             "uncoded": uncoded,
         }
 
+    def _value_label(self, record: Mapping[str, Any], field: str, code_list: str | None, codebook: std.CodeBook) -> str:
+        """A record's value on one dimension, named: a sub-asset by its name, a code with its name."""
+
+        if field == "location":
+            return record["location_label"]
+        return self._label(codebook, code_list, self._pattern_value(record, field))
+
     def _pareto(self, records: list[dict[str, Any]], group_by: str, codebook: std.CodeBook) -> dict[str, Any]:
         field, code_list, label = GROUP_BY_DIMENSIONS[group_by]
         groups: dict[Any, dict[str, Any]] = {}
+        labels: dict[Any, str] = {}
         for record in records:
             key = self._pattern_value(record, field)
+            labels.setdefault(key, self._value_label(record, field, code_list, codebook))
             cause = self._pattern_value(record, "failure_cause_effective")
             downtime = float(record["downtime_hours"] or 0)
             group = groups.setdefault(key, {"count": 0, "downtime_hours": 0.0, "causes": {}})
@@ -444,7 +484,7 @@ class PopulationAnalysisService:
         rows = [
             {
                 "key": key,
-                "label": self._label(codebook, code_list, key),
+                "label": labels[key],
                 "count": group["count"],
                 "downtime_hours": round(group["downtime_hours"], 4),
                 "causes": [
@@ -472,23 +512,25 @@ class PopulationAnalysisService:
         }
 
     def _matrix(self, records: list[dict[str, Any]], codebook: std.CodeBook) -> dict[str, Any]:
-        """Event counts by location (rows) and component (columns)."""
+        """Event counts by sub-asset (rows) and component (columns)."""
 
         cells: dict[tuple[Any, Any], dict[str, float]] = {}
         locations: dict[Any, int] = {}
+        location_labels: dict[Any, str] = {}
         components: dict[Any, int] = {}
         for record in records:
             location = record["location"]
+            location_labels.setdefault(location, record["location_label"])
             component = self._pattern_value(record, "component_code")
             cell = cells.setdefault((location, component), {"count": 0, "downtime_hours": 0.0})
             cell["count"] += 1
             cell["downtime_hours"] += float(record["downtime_hours"] or 0)
             locations[location] = locations.get(location, 0) + 1
             components[component] = components.get(component, 0) + 1
-        location_keys = sorted(locations, key=lambda key: self.life._natural_key(str(key)))
+        location_keys = sorted(locations, key=lambda key: self.life._natural_key(location_labels[key]))
         component_keys = sorted(components, key=lambda key: (-components[key], str(key)))
         return {
-            "rows": [{"key": key, "label": str(key), "total": locations[key]} for key in location_keys],
+            "rows": [{"key": key, "label": location_labels[key], "total": locations[key]} for key in location_keys],
             "columns": [
                 {"key": key, "label": self._label(codebook, std.COMPONENT, key), "total": components[key]}
                 for key in component_keys
@@ -529,7 +571,7 @@ class PopulationAnalysisService:
             key = self._pattern_value(record, field)
             group = groups.setdefault(key, {
                 "key": key,
-                "label": self._label(codebook, code_list, key),
+                "label": self._value_label(record, field, code_list, codebook),
                 "monthly_counts": [0] * len(months),
                 "total_count": 0,
                 "total_downtime_hours": 0.0,
@@ -595,6 +637,7 @@ class PopulationAnalysisService:
             "month": _month(record["event_day"]) if record["event_day"] else None,
             "category": record["category"],
             "location": record["location"],
+            "location_label": record["location_label"],
             "component": self._label(codebook, std.COMPONENT, disposition["component_code"]),
             "failure_mode": self._label(codebook, std.FAILURE_MODE, disposition["failure_mode_code"]),
             "failure_mechanism": self._label(codebook, std.FAILURE_MECHANISM, disposition["failure_mechanism_code"]),
@@ -629,9 +672,7 @@ class PopulationAnalysisService:
                 if hours >= lower and (upper is None or hours < upper):
                     bins[position] += 1
                     break
-            by_location[record["location"] or record["asset_number"] or "Unspecified"] = (
-                by_location.get(record["location"] or record["asset_number"] or "Unspecified", 0.0) + hours
-            )
+            by_location[record["location_label"]] = by_location.get(record["location_label"], 0.0) + hours
             if record["event_day"] is not None:
                 key = _month(record["event_day"])
                 monthly[key] = monthly.get(key, 0.0) + hours
@@ -748,6 +789,7 @@ class PopulationAnalysisService:
                 "pm_kind": "Reset" if pm["category"] == std.PM_RESET else "Planned work",
                 "renewed_items": list(pm["disposition"]["renewed_items"]),
                 "location": pm["location"],
+                "location_label": pm["location_label"],
                 "next_failure_date": following["event_day"].isoformat(),
                 "days_to_failure": round(days, 1),
                 "failure": " · ".join(
@@ -814,8 +856,8 @@ class PopulationAnalysisService:
             loaded = self._load(conn, population)
             failures = self._pattern_records(loaded["records"], population, start, end, categories=[std.FAILURE])
             coded = [record for record in failures if record["disposition"]["component_code"]]
-            schedules = self._stream_schedules(conn, loaded["records"], {record["location"] for record in coded})
-        codebook, zone = loaded["codebook"], loaded["zone"]
+            schedules = self._stream_schedules(conn, loaded["records"], {record["location"] for record in coded}, loaded["tree"])
+        codebook, zone, places = loaded["codebook"], loaded["zone"], loaded["places"]
         now = datetime.now(timezone.utc)
         streams: dict[tuple[str, str], list[dict[str, Any]]] = {}
         undated = future = 0
@@ -833,7 +875,7 @@ class PopulationAnalysisService:
         for (location, component), events in sorted(streams.items()):
             events.sort(key=lambda record: (record["event_date"], record["mapped_record_id"]))
             schedule = schedules[location]
-            label = f"{location} · {component}"
+            label = f"{places.get(location, location)} · {component}"
             repeats = 0
             for prior, repeat in zip(events, events[1:]):
                 fixed = prior["renewal_date"] or prior["event_date"]
@@ -872,6 +914,7 @@ class PopulationAnalysisService:
                 "key": f"{location}|{component}",
                 "label": label,
                 "location": location,
+                "location_label": places.get(location, location),
                 "component": component,
                 "schedule_name": schedule["schedule_name"],
                 "failures": len(events),
@@ -909,21 +952,26 @@ class PopulationAnalysisService:
     # Renewal-stream Weibull (spec section 5)
     # ------------------------------------------------------------------ #
     def _stream_schedules(
-        self, conn: sqlite3.Connection, records: list[dict[str, Any]], locations: Iterable[str]
+        self,
+        conn: sqlite3.Connection,
+        records: list[dict[str, Any]],
+        locations: Iterable[str],
+        tree: AssetTree,
     ) -> dict[str, dict[str, Any]]:
         """The schedule each location's life hours are counted on.
 
-        A sub-asset runs when its parent runs, so a location with no entry of its own
-        in the Weibull schedule register takes its parent's; with neither, the plant
-        default (REL-WBL-DAT-003 §7).
+        A sub-asset runs when the asset above it runs, so a location with no entry
+        of its own in the Weibull schedule register takes its nearest ancestor's;
+        with none, the plant default (REL-WBL-DAT-003 §7).
         """
 
         locations = sorted(set(locations))
-        parents = parent_asset_numbers(conn, locations)
+        # A work order placed on a sub-asset also says which asset that is under.
+        logged_under: dict[str, str] = {}
         for record in records:
             sub_asset = record["disposition"]["sub_asset"]
             if sub_asset and record["asset_number"]:
-                parents.setdefault(sub_asset, record["asset_number"])
+                logged_under.setdefault(sub_asset, record["asset_number"])
         registered = {
             str(row[0]).strip(): int(row[1])
             for row in conn.execute("SELECT asset_number, schedule_class_id FROM asset_schedule_assignment")
@@ -938,7 +986,10 @@ class PopulationAnalysisService:
         default_id = self.life._schedule_class_id(conn, "")
         schedules = {}
         for location in locations:
-            class_id = registered.get(location) or registered.get(parents.get(location, "")) or default_id
+            lineage = [location, *tree.ancestors(location)]
+            if location in logged_under and logged_under[location] not in lineage:
+                lineage.append(logged_under[location])
+            class_id = next((registered[number] for number in lineage if number in registered), default_id)
             row = classes[class_id]
             schedules[location] = {
                 "location": location,
@@ -1080,7 +1131,7 @@ class PopulationAnalysisService:
         schedules: Mapping[str, Mapping[str, Any]],
         zone: tzinfo,
         cutoff: datetime,
-        codebook: std.CodeBook,
+        places: Mapping[str, str],
     ) -> list[dict[str, Any]]:
         """Each life as a row of the Weibull data table, with the work orders that started and ended it."""
 
@@ -1106,7 +1157,7 @@ class PopulationAnalysisService:
                 "ordered_index": index,
                 "location": interval.location,
                 "component": interval.component,
-                "stream": f"{interval.location} · {interval.component}",
+                "stream": f"{places.get(interval.location, interval.location)} · {interval.component}",
                 "observation_type": observation_type,
                 "failure_indicator": int(interval.end_type == std.FAILURE_END),
                 "is_right_censored": int(interval.end_type != std.FAILURE_END),
@@ -1134,7 +1185,9 @@ class PopulationAnalysisService:
             rows.append(row)
         return rows
 
-    def _events(self, analysis: std.RenewalAnalysis, by_id: Mapping[int, Mapping[str, Any]], codebook: std.CodeBook) -> list[dict[str, Any]]:
+    def _events(
+        self, analysis: std.RenewalAnalysis, by_id: Mapping[int, Mapping[str, Any]], places: Mapping[str, str]
+    ) -> list[dict[str, Any]]:
         """Every event the pooled streams saw and what it did there: the audit trail behind the lives."""
 
         rows = []
@@ -1147,7 +1200,7 @@ class PopulationAnalysisService:
                 "sequence": sequence,
                 "location": note.location,
                 "component": note.component,
-                "stream": f"{note.location} · {note.component}",
+                "stream": f"{places.get(note.location, note.location)} · {note.component}",
                 "record_id": note.record_id,
                 "mapped_record_id": note.record_id,
                 "task_id": record.get("task_id", note.task_id),
@@ -1226,7 +1279,8 @@ class PopulationAnalysisService:
                     continue
                 events.append(event)
             start, cutoff, cutoff_source = self._resolve_window(conn, events, zone, analysis_start, analysis_cutoff)
-            schedules = self._stream_schedules(conn, records, {event.location for event in events})
+            schedules = self._stream_schedules(conn, records, {event.location for event in events}, loaded["tree"])
+            places = loaded["places"]
 
             def life_hours(stream: std.StreamKey, begin: datetime, end: datetime) -> float:
                 schedule = schedules[stream[0]]
@@ -1264,6 +1318,7 @@ class PopulationAnalysisService:
                 stream_intervals = [i for i in main.intervals if i.stream == (location, component)]
                 stream_rows.append({
                     "location": location,
+                    "location_label": places.get(location, location),
                     "component": component,
                     "component_name": codebook.name(std.COMPONENT, component),
                     "failures": sum(1 for i in stream_intervals if i.end_type == std.FAILURE_END),
@@ -1272,11 +1327,11 @@ class PopulationAnalysisService:
                     "schedule_name": schedules[location]["schedule_name"],
                 })
             fit = self._fit(main, "Unknown mechanisms as suspensions" if sensitivity else "Fit")
-            observations = self._observations(main, by_id, schedules, zone, cutoff, codebook)
+            observations = self._observations(main, by_id, schedules, zone, cutoff, places)
             payload: dict[str, Any] = {
                 "analysis_id": None,
                 "result_id": None,
-                "analysis_label": self._population_label(population),
+                "analysis_label": self._population_label(population, loaded["tree"]),
                 "population_definition": definition,
                 "selection": population.to_mapping(),
                 "method_version": RENEWAL_METHOD_VERSION,
@@ -1292,9 +1347,9 @@ class PopulationAnalysisService:
                 "sensitivity_fit": self._fit(sensitivity, "Unknown mechanisms as failures"),
                 "warnings": warnings,
                 "observations": observations,
-                "events": self._events(main, by_id, codebook),
+                "events": self._events(main, by_id, places),
                 "sensitivity_observations": (
-                    self._observations(sensitivity, by_id, schedules, zone, cutoff, codebook) if sensitivity else []
+                    self._observations(sensitivity, by_id, schedules, zone, cutoff, places) if sensitivity else []
                 ),
                 "total_observation_count": len(observations),
                 "failure_count": sum(1 for row in observations if row["failure_indicator"]),
@@ -1372,7 +1427,8 @@ class PopulationAnalysisService:
 
         basis = payload.get("life_basis") or {}
         counted_on = basis.get("schedules") or {}
-        current = self._stream_schedules(conn, [], counted_on)
+        tree = self.records.asset_tree(conn)
+        current = self._stream_schedules(conn, [], counted_on, tree)
         changed = sorted(
             location for location, schedule in counted_on.items()
             if current[location]["schedule_code"] != schedule.get("schedule_code")
@@ -1382,7 +1438,12 @@ class PopulationAnalysisService:
             "method_current": payload.get("method_version") == RENEWAL_METHOD_VERSION,
             "schedule_current": not changed,
             "schedules_changed": [
-                {"location": location, "counted_on": counted_on[location].get("schedule_name"), "now_on": current[location]["schedule_name"]}
+                {
+                    "location": location,
+                    "location_label": tree.label(location),
+                    "counted_on": counted_on[location].get("schedule_name"),
+                    "now_on": current[location]["schedule_name"],
+                }
                 for location in changed
             ],
             "current_schedule_name": ", ".join(current[location]["schedule_name"] for location in changed) or None,
@@ -1539,9 +1600,10 @@ class PopulationAnalysisService:
 
         from services.life_data_service import MIN_WEIBULL_FAILURE_LIVES
 
+        tree = self.records.asset_tree(conn)
         reach = set(population.assets) | set(population.locations)
         for asset in population.assets:
-            reach.update(option["asset_number"] for option in sub_asset_options(conn, asset))
+            reach.update(option["asset_number"] for option in tree.descendants(asset))
         seen: set[str] = set()
         fits = []
         for row in conn.execute(

@@ -306,6 +306,64 @@ class DispositionEditorTests(StandardDispositionFixture):
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, scope="not_reviewed")["rows"]], [2])
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, search="belt")["rows"]], [2])
 
+    def test_the_list_sorts_and_filters_every_row_not_just_the_page(self):
+        self.add_record(1, PFS, "Oven filter clogged", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")
+        self.add_record(3, PFS, "Activator pump", "2024-01-03", "2024-01-03")
+        self.add_record(10, PFS, "Riser clogged", "2023-12-01", "2023-12-01")
+        self.std.save_dispositions([
+            {"mapped_record_id": 1, **coded(sub_asset=S09)},
+            {"mapped_record_id": 3, **coded(component="Pump", mechanism="ELEC", action="REPLACE", sub_asset=None)},
+        ])
+
+        def ids(**view):
+            return [row["mapped_record_id"] for row in self.std.disposition_page(PFS, page_size=2, **view)["rows"]]
+
+        # Task IDs sort as numbers, across pages: 10 is last, not second.
+        self.assertEqual(ids(sort="task_id"), [1, 2])
+        self.assertEqual(ids(sort="task_id", direction="desc"), [10, 3])
+        self.assertEqual(ids(sort="title"), [3, 2])
+        # A blank sorts last whichever way.
+        self.assertEqual(
+            [row["mapped_record_id"] for row in self.std.disposition_page(PFS, sort="component", direction="desc")["rows"]][:2],
+            [3, 1],
+        )
+        # A filter keeps the values named for it, "" standing for a blank cell.
+        self.assertEqual(ids(filters={"category": ["NOT_REVIEWED"]}), [2, 10])
+        self.assertEqual(ids(filters={"component": ["", "Pump"]}), [3, 2])
+        self.assertEqual(ids(filters={"sub_asset": [S09]}), [1])
+        self.assertEqual(ids(filters={"category": []}), [])
+        # A column or a sort it does not know is ignored, not an error.
+        page = self.std.disposition_page(PFS, sort="bogus", filters={"bogus": ["x"], "found": "2024"})
+        self.assertEqual((page["sort"], page["filters"], page["displayed_count"]), (None, {}, 4))
+        self.assertEqual(self.std.disposition_page(PFS, filters={"found": ["2024-01-02"]})["displayed_count"], 1)
+        # The sub-asset reads by its name.
+        self.assertEqual(self.std.disposition_page(PFS, filters={"sub_asset": [S09]})["rows"][0]["location_label"], f"Asset {S09}")
+
+    def test_a_columns_filter_lists_its_values_under_the_other_filters(self):
+        self.add_record(1, PFS, "Oven filter clogged", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")
+        self.add_record(3, PFS, "Activator pump", "2024-01-03", "2024-01-03")
+        self.std.save_dispositions([
+            {"mapped_record_id": 1, **coded(sub_asset=S09)},
+            {"mapped_record_id": 3, **coded(component="Pump", mechanism="ELEC", action="REPLACE", sub_asset=None)},
+        ])
+        values = self.std.list_column_values(PFS, "component")["values"]
+        self.assertEqual([(item["value"], item["count"]) for item in values], [("Filter", 1), ("Pump", 1), ("", 1)])
+        self.assertEqual(values[-1]["label"], "(Blanks)")
+        # Its own filter does not hide its values; another column's does.
+        same = self.std.list_column_values(PFS, "component", filters={"component": ["Pump"]})["values"]
+        self.assertEqual(len(same), 3)
+        other = self.std.list_column_values(PFS, "component", filters={"category": ["NOT_REVIEWED"]})["values"]
+        self.assertEqual([item["value"] for item in other], [""])
+        places = self.std.list_column_values(PFS, "sub_asset")["values"]
+        self.assertEqual({item["value"]: item["label"] for item in places}, {PFS: f"Asset {PFS}", S09: f"Asset {S09}"})
+        self.assertEqual([item["value"] for item in self.std.list_column_values(PFS, "found")["values"]],
+                         ["2024-01-03", "2024-01-02", "2024-01-01"])
+        self.assertEqual([item["value"] for item in self.std.list_column_values(PFS, "task_id")["values"]], ["1", "2", "3"])
+        with self.assertRaises(ValueError):
+            self.std.list_column_values(PFS, "bogus")
+
     def test_a_duplicate_link_must_name_a_real_work_order(self):
         self.add_record(1, PFS, "One", "2024-01-01", "2024-01-01")
         with self.assertRaisesRegex(ValueError, "No work order with task ID 999"):
@@ -442,15 +500,28 @@ class PatternViewTests(StandardDispositionFixture):
         return self.analysis.summary({"assets": [PFS], **selection}, **options)
 
     def test_the_pareto_counts_and_sums_downtime_with_cause_underneath(self):
-        summary = self.summary({"categories": ["FAILURE"]}, group_by="location")
+        summary = self.summary({"categories": ["FAILURE"]}, group_by="sub_asset")
         rows = {row["key"]: row for row in summary["pareto"]["rows"]}
+        self.assertEqual(rows[S09]["label"], "Asset 4002-S09")
         self.assertEqual(rows[S09]["count"], 5)
         self.assertEqual(rows[S09]["downtime_hours"], 3.0 + 2.0 + 6.0 + 1.5 + 2.5)
         self.assertEqual({cause["key"]: cause["count"] for cause in rows[S09]["causes"]}, {"EXP-WEAR": 4, "UNK": 1})
         self.assertEqual(summary["pareto"]["next_group_by"], "component")
         self.assertEqual(summary["pareto"]["selection_key"], "locations")
 
-    def test_drilling_into_a_location_then_a_component(self):
+    def test_the_pareto_offers_sub_assets_not_locations_or_assets(self):
+        summary = self.summary({"categories": ["FAILURE"]})
+        self.assertEqual(summary["pareto"]["group_by"], "sub_asset")
+        options = self.analysis.options([PFS])
+        self.assertNotIn("location", [option["value"] for option in options["group_by"]])
+        self.assertNotIn("asset", [option["value"] for option in options["group_by"]])
+        # A work order placed on no sub-asset is the asset itself, said as such.
+        self.add_record(2, PFS, "PFS line stop", "2024-08-01", "2024-08-01")
+        self.std.save_dispositions([{"mapped_record_id": 2, **coded(sub_asset=None)}])
+        rows = {row["key"]: row["label"] for row in self.summary({"categories": ["FAILURE"]})["pareto"]["rows"]}
+        self.assertEqual(rows[PFS], "Asset 4002, no sub-asset")
+
+    def test_drilling_into_a_sub_asset_then_a_component(self):
         summary = self.summary(
             {"locations": [S09], "components": ["Filter"], "categories": ["FAILURE"]}, group_by="failure_mechanism"
         )

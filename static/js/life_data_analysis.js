@@ -1,8 +1,8 @@
 /* Perform an Analysis: every analysis of one population of work orders.
  *
- * Pick an asset, and narrow it to the population to understand -- a location, a
- * component, a failure mechanism -- in the selector, or by clicking a Pareto bar
- * or a matrix cell, which drills down a level at a time. Every view on the page
+ * Pick an asset, and narrow it to the population to understand -- a sub-asset,
+ * a component, a failure mechanism -- in the selector, or by clicking a Pareto
+ * bar or a matrix cell, which drills down a level at a time. Every view on the page
  * reads that same population from the work-order dispositions
  * (services/population_analysis_service.py), so the Pareto, the trend, the
  * downtime, PM effectiveness, repeat fixes and the Weibull fit always count the
@@ -29,9 +29,12 @@
     PM: "PM Effectiveness Analysis",
     REPEAT: "Repeat Fix Rate Analysis",
   };
-  // The selector's lists, in the order a population is narrowed: where, what, how.
+  // What a population can be narrowed by, in the order it is narrowed: where on
+  // the asset, what, how. The sub-asset has no list of its own on the card -- the
+  // asset is already chosen above it -- and is narrowed to from the Pareto or the
+  // matrix; it still shows as a chip once it is.
   const DIMENSIONS = [
-    ["locations", "Location"],
+    ["locations", "Sub-asset"],
     ["components", "Component"],
     ["failure_mechanisms", "Failure mechanism"],
     ["failure_modes", "Failure mode"],
@@ -68,7 +71,7 @@
     drillHistory: [],
     options: null,
     optionsToken: 0,
-    groupBy: "location",
+    groupBy: "sub_asset",
     metric: "count",
     summary: null,
     summaryToken: 0,
@@ -493,8 +496,8 @@
     state.asset = asset;
     state.selection = emptySelection();
     state.drillHistory = [];
-    state.groupBy = "location";
-    $("lda-pareto-group").value = "location";
+    state.groupBy = "sub_asset";
+    $("lda-pareto-group").value = "sub_asset";
     state.summary = null;
     state.options = null;
     resetAnalyses();
@@ -542,7 +545,7 @@
     const wrap = $("lda-population-selector");
     wrap.innerHTML = "";
     const dimensions = (state.options && state.options.dimensions) || {};
-    DIMENSIONS.forEach(([key, label]) => {
+    DIMENSIONS.filter(([key]) => key !== "locations").forEach(([key, label]) => {
       const values = (dimensions[key] || []).slice();
       const chosen = state.selection[key];
       chosen.forEach((value) => {
@@ -600,6 +603,14 @@
     renderDrill();
   }
 
+  // A selected value as the selector lists it: a sub-asset by its name, a code
+  // with its name.
+  function valueLabel(key, value) {
+    const options = (state.options && state.options.dimensions && state.options.dimensions[key]) || [];
+    const option = options.find((item) => item.value === value);
+    return option ? option.label : value;
+  }
+
   // The narrowing in force, as chips that each take one value back out, with a
   // step back out of the last drill and a way to start over.
   function renderDrill() {
@@ -608,11 +619,12 @@
     const chips = [];
     DIMENSIONS.forEach(([key, label]) => {
       state.selection[key].forEach((value) => {
+        const named = valueLabel(key, value);
         chips.push(el("button", {
           type: "button",
           class: "std-chip lda-drill-chip",
-          title: `Take ${value} out of the population`,
-          text: `${label}: ${value} ×`,
+          title: `Take ${named} out of the population`,
+          text: `${label}: ${named} ×`,
           onclick: () => {
             state.selection[key] = state.selection[key].filter((item) => item !== value);
             state.drillHistory = [];
@@ -621,7 +633,11 @@
         }));
       });
     });
-    wrap.appendChild(el("span", { class: "lda-hint", text: chips.length ? "Narrowed to:" : `Every work order in reach of ${state.asset || "the asset"}.` }));
+    const assetLabel = (state.options && state.options.asset_labels && state.options.asset_labels[state.asset]) || state.asset || "the asset";
+    wrap.appendChild(el("span", {
+      class: "lda-hint",
+      text: chips.length ? "Narrowed to:" : `Every work order on ${assetLabel} and its sub-assets.`,
+    }));
     chips.forEach((chip) => wrap.appendChild(chip));
     if (state.drillHistory.length) {
       wrap.appendChild(el("button", { type: "button", class: "btn-secondary", text: "← Back", onclick: drillBack }));
@@ -630,8 +646,8 @@
       wrap.appendChild(el("button", { type: "button", class: "btn-secondary", text: "Start over", onclick: () => {
         state.selection = emptySelection();
         state.drillHistory = [];
-        state.groupBy = "location";
-        $("lda-pareto-group").value = "location";
+        state.groupBy = "sub_asset";
+        $("lda-pareto-group").value = "sub_asset";
         onPopulationChange();
       } }));
     }
@@ -878,7 +894,7 @@
   // ---- Pareto ---------------------------------------------------------------------
   // One bar per value of the dimension chosen, ranked by count or downtime, each
   // split by failure cause; a click narrows the population to the bar and steps
-  // the dimension down (location, then component, then mechanism).
+  // the dimension down (sub-asset, then component, then mechanism).
   function paretoRows() {
     const pareto = state.summary && state.summary.pareto;
     if (!pareto) return [];
@@ -1082,7 +1098,7 @@
     };
   }
 
-  // ---- location x component matrix ---------------------------------------------
+  // ---- sub-asset x component matrix --------------------------------------------
   function renderMatrix() {
     const wrap = $("lda-matrix-wrap");
     wrap.innerHTML = "";
@@ -1093,7 +1109,7 @@
     }
     const table = el("table", { class: "std-matrix" });
     table.appendChild(el("thead", {}, [el("tr", {}, [
-      el("th", { scope: "col", text: "Location \\ component" }),
+      el("th", { scope: "col", text: "Sub-asset \\ component" }),
       ...matrix.columns.map((column) => el("th", { scope: "col", text: column.label, title: `${column.total} work orders` })),
     ])]));
     const body = el("tbody");
@@ -1289,7 +1305,7 @@
       { label: "Found", type: "datetime", get: (r) => r.event_date || "" },
       { label: "Work order", cls: "lda-wo-text", get: (r) => r.task_name || "" },
       { label: "Category", get: (r) => r.category || "" },
-      { label: "Location", get: (r) => r.location || "" },
+      { label: "Sub-asset", get: (r) => r.location_label || r.location || "" },
       { label: "Component", get: (r) => r.component || "" },
       { label: "Mechanism", get: (r) => r.failure_mechanism || "" },
       { label: "Mode", get: (r) => r.failure_mode || "" },
@@ -1370,7 +1386,7 @@
     });
     const message = $("lda-pm-message");
     message.hidden = data.has_pm_history;
-    message.textContent = data.has_pm_history ? "" : "No completed PM is on record at the population's locations for its items.";
+    message.textContent = data.has_pm_history ? "" : "No completed PM is on record on the asset or its sub-assets for the population's items.";
     const canvas = $("lda-pm-chart");
     const hint = $("lda-pm-selection");
     if (data.months.length) {
@@ -1388,7 +1404,7 @@
       { label: "PM completed", type: "datetime", get: (r) => r.pm_completion_date },
       { label: "PM", cls: "lda-wo-text", get: (r) => r.pm_task_name || "" },
       { label: "Kind", get: (r) => r.pm_kind + (r.renewed_items.length ? ` (${r.renewed_items.join(", ")})` : "") },
-      { label: "Location", get: (r) => r.location },
+      { label: "Sub-asset", get: (r) => r.location_label || r.location },
       { label: "Next failure", type: "datetime", get: (r) => r.next_failure_date },
       { label: "Days to failure", type: "number", get: (r) => fmt(r.days_to_failure), cls: null },
       { label: "Failure", get: (r) => r.failure },
@@ -1411,8 +1427,9 @@
     if (data.rows.length) enableTableColumnTools(table, { columns });
     wrap.appendChild(table);
     $("lda-pm-table-hint").textContent =
-      "Each completed PM at a location of the population -- a reset that renewed one of its items, or planned work there " +
-      "that renewed nothing -- paired with the next failure of the population found at that location." + RECORD_EDIT_HINT;
+      "Each completed PM on the asset or one of its sub-assets -- a reset that renewed one of the population's items, or " +
+      "planned work there that renewed nothing -- paired with the next failure of the population found on that same " +
+      "sub-asset." + RECORD_EDIT_HINT;
   }
 
   // ---- repeat fixes ----------------------------------------------------------------
@@ -1476,7 +1493,7 @@
     message.hidden = !notes.length;
     message.textContent = notes.join(" ");
     $("lda-repeat-basis").textContent =
-      `Counted on ${data.schedules.length ? data.schedules.join(", ") : "each location's Weibull schedule"}, days split at midnight ${data.time_zone}.` +
+      `Counted on ${data.schedules.length ? data.schedules.join(", ") : "each sub-asset's Weibull schedule"}, days split at midnight ${data.time_zone}.` +
       (data.time_zone_warning ? ` ${data.time_zone_warning}` : "");
 
     const rates = $("lda-repeat-rate-wrap");
@@ -1695,7 +1712,7 @@
       notices.push(`Saved by an earlier version of the method (${result.method_version || "unrecorded"}). ${rerun}it can't be reported until then.`);
     }
     if (result.method_current !== false && result.schedule_current === false) {
-      const changed = (result.schedules_changed || []).map((row) => `${row.location} from ${row.counted_on} to ${row.now_on}`).join("; ");
+      const changed = (result.schedules_changed || []).map((row) => `${row.location_label || row.location} from ${row.counted_on} to ${row.now_on}`).join("; ");
       notices.push(`Counted on schedules since changed (${changed}), so its life hours have changed. ${rerun}it can't be reported until then.`);
     }
     if (result.method_current !== false && result.schedule_current !== false && result.time_zone_current === false) {
@@ -1738,12 +1755,12 @@
   function streamsTable(result) {
     const streams = result.streams || [];
     const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, ["Location", "Component", "Failures", "Suspensions", "Schedule", ""].map((h) => el("th", { text: h })))]));
+    table.appendChild(el("thead", {}, [el("tr", {}, ["Sub-asset", "Component", "Failures", "Suspensions", "Schedule", ""].map((h) => el("th", { text: h })))]));
     const body = el("tbody");
     if (!streams.length) body.appendChild(el("tr", {}, [el("td", { colspan: "6", class: "lda-readonly lda-empty-row", text: "No item in this population has a renewal on record." })]));
     streams.forEach((stream) => {
       body.appendChild(el("tr", {}, [
-        el("td", { text: stream.location }),
+        el("td", { text: stream.location_label || stream.location }),
         el("td", { text: stream.component_name && stream.component_name !== stream.component ? `${stream.component} · ${stream.component_name}` : stream.component }),
         el("td", { class: "std-failure", text: String(stream.failures) }),
         el("td", { class: "std-suspension", text: String(stream.suspensions) }),
@@ -1801,7 +1818,7 @@
           resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
         ...notices.map((notice) => el("p", { class: "lda-banner is-warning lda-result-notice", role: "note", text: notice })),
         warningsList(result),
-        panel("Items pooled", streamsTable(result), "Each renewal stream: one physical item at one location.", "lda-streams-panel"),
+        panel("Items pooled", streamsTable(result), "Each renewal stream: one physical item on one sub-asset.", "lda-streams-panel"),
         panel("Lives", dataTable.node, "The lives there are, listed so they can be checked.", "lda-weibull-data-panel"),
         eventTable.node,
       ]);
@@ -1871,7 +1888,7 @@
         "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals and the probability plot R².",
         "lda-interpretation-panel"),
       panel("Items pooled", streamsTable(result),
-        "Each renewal stream is one physical item at one location; its lives run from one renewal to the next event in that stream.",
+        "Each renewal stream is one physical item on one sub-asset; its lives run from one renewal to the next event in that stream.",
         "lda-streams-panel"),
       panel("Weibull Data Used for Graphs", dataTable.node,
         "Rows are the lives the fit rests on. Raw elapsed hours are calendar hours; weekend and non-run hours are taken out " +
@@ -1937,7 +1954,7 @@
     let blocked = "";
     if (!result.saved || result.analysis_id == null) blocked = "Only a saved run can be reported: Perform Analysis saves one.";
     else if (result.method_current === false) blocked = "Run the analysis again to report it: it was saved by an earlier version of the method.";
-    else if (result.schedule_current === false) blocked = "Run the analysis again to report it: a location has moved to another schedule since.";
+    else if (result.schedule_current === false) blocked = "Run the analysis again to report it: a sub-asset has moved to another schedule since.";
     else if (result.time_zone_current === false) blocked = "Run the analysis again to report it: the plant's time zone has changed since.";
     const button = el("button", { class: "btn-primary", type: "button", text: "Generate Weibull Report", disabled: Boolean(blocked) });
     button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
@@ -2611,7 +2628,7 @@
   }
 
   // Generic vertical bar chart used by the Downtime Distribution (binned counts)
-  // and Downtime by Asset/Location (per-asset hours) panels. Short bin labels are
+  // and Downtime by Sub-asset (per-sub-asset hours) panels. Short bin labels are
   // drawn horizontally; long asset labels are rotated (opts.rotateLabels).
   function drawBarChart(canvas, labels, values, options) {
     const opts = options || {};
@@ -3786,7 +3803,7 @@
       target: "#lda-population-selector",
       title: "The population",
       body:
-        "Tick values to narrow it; leave a list unticked for no restriction. Location and component choose which items' " +
+        "Tick values to narrow it; leave a list unticked for no restriction. Sub-asset (from the Pareto) and component choose which items' " +
         "lives are pooled -- a Weibull life is measured on one kind of item -- and mechanism, mode, cause and action choose " +
         "which of their failures count.",
     },
@@ -3836,12 +3853,12 @@
       title: "Pareto",
       body:
         "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a bar to " +
-        "narrow the population to it: a location opens into its components, a component into its mechanisms.",
+        "narrow the population to it: a sub-asset opens into its components, a component into its mechanisms.",
     },
     {
       target: "#lda-matrix-panel",
       title: "Where it happens",
-      body: "The population by location and component. Click a cell to narrow to that item at that location.",
+      body: "The population by sub-asset and component. Click a cell to narrow to that item on that sub-asset.",
     },
     {
       target: "#lda-trend-chart-panel",
@@ -3858,7 +3875,7 @@
     {
       target: "#lda-pm-chart-panel",
       title: "Failures following a PM",
-      body: "Each completed PM at the population's locations paired with the next failure found there. Short gaps mean the PM is not preventing that failure.",
+      body: "Each completed PM on the asset or a sub-asset paired with the next failure found there. Short gaps mean the PM is not preventing that failure.",
       when: forType(ANALYSIS_TYPES.PM),
     },
     {
@@ -4062,7 +4079,7 @@
     });
     group.innerHTML = "";
     [
-      ["location", "Location"],
+      ["sub_asset", "Sub-asset"],
       ["component", "Component"],
       ["failure_mechanism", "Failure mechanism"],
       ["failure_mode", "Failure mode"],
@@ -4070,7 +4087,6 @@
       ["action", "Action"],
       ["category", "Disposition category"],
       ["detection_method", "Detection method"],
-      ["asset", "Asset"],
     ].forEach(([value, label]) => group.appendChild(el("option", { value, text: label })));
     group.value = state.groupBy;
   }

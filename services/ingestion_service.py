@@ -694,11 +694,34 @@ class AssetIndex:
 
 
 def _asset_parent_id(asset: dict[str, Any]) -> str | None:
-    for key in ("parentAssetID", "parentID", "parent_asset_id"):
-        value = asset.get(key)
-        if value not in (None, "", 0, "0"):
-            return str(value)
-    return None
+    """The asset this one hangs under in Limble's hierarchy, or None.
+
+    Only `parentAssetID` (or a snake-case spelling of it), never `parentID`:
+    on this account's /assets payload `parentID` is not the parent asset.
+    Assets at the top of the hierarchy carry a `parentID` of their own, and
+    reading it as a parent hung unrelated machines under whichever asset's ID
+    happened to match -- so a work order's "Immediate Parent Asset ID" named a
+    top-level asset's neighbour as its parent, and the Disposition page offered
+    whole other machines as an asset's sub-assets. The PM calendar learned the
+    same lesson (see pm_calendar_service._parent_asset_id); this is that rule.
+    """
+
+    value = None
+    for key, candidate in asset.items():
+        if str(key).lower() in ("parentassetid", "parent_asset_id"):
+            value = candidate
+            break
+    if isinstance(value, dict):
+        value = value.get("assetID", value.get("id"))
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value in (None, "", 0, "0") or isinstance(value, bool):
+        return None
+    parent = str(value).strip()
+    own = asset.get("assetID")
+    if isinstance(own, float) and own.is_integer():
+        own = int(own)
+    return None if not parent or parent == str(own).strip() else parent
 
 
 def _utc_now() -> float:

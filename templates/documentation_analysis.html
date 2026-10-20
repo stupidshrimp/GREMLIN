@@ -51,6 +51,18 @@
         record is (evidence). Saving again replaces the current disposition;
         earlier ones are kept as history, but no analysis reads them.
       </p>
+      <p>
+        On the Disposition page the asset's work orders are listed on the left;
+        the ▾ on each column header sorts the list by that column or keeps only
+        the values ticked, across every page of it, and Download Excel takes the
+        rows the list shows, in its order. The work order picked opens on the
+        right with each part of it under its own label: its created, started and
+        completed times on the plant's clock, its downtime and record class, the
+        request title and description, the failure narrative (area affected,
+        condition found, cause and action taken) and the completion notes. A
+        part the record left empty says so. The sub-asset dropdown offers every
+        asset under the one picked in Limble's hierarchy, at every level.
+      </p>
       <div class="std-table-scroll">
         <table class="std-table">
           <caption class="visually-hidden">Disposition categories and how the analyses use them</caption>
@@ -69,8 +81,9 @@
         </table>
       </div>
       <p>
-        Location is the sub-asset, or the work order's own asset when it has
-        none, and the location and component together are the
+        Where a work order happened is its sub-asset, or the work order's own
+        asset when it names none (the POP string calls this its location), and
+        the sub-asset and component together are the
         <strong>renewal stream</strong>: one physical item, whose lives the
         Weibull measures. The effective cause is the mechanism's default cause
         unless the disposition overrides it, and the detection method follows
@@ -85,10 +98,10 @@
       <p>
         Every analysis on Perform an Analysis reads one population. Picking an
         asset puts in reach its own work orders, those of its sub-assets, and
-        those dispositioned to a location under it. The selector then narrows it:
+        those dispositioned to a sub-asset under it. The selector then narrows it:
       </p>
       <ul>
-        <li><strong>Location and component</strong> choose which items' lives are pooled in the Weibull, and which work orders the pattern views count.</li>
+        <li><strong>Sub-asset and component</strong> choose which items' lives are pooled in the Weibull, and which work orders the pattern views count. The asset is already chosen, so its sub-assets have no list of their own: a Pareto bar or matrix cell narrows to one.</li>
         <li><strong>Failure mechanism, mode, cause and action</strong> choose which failures count. In the Weibull, a failure of the pooled items that does not match is a competing failure: it ends the life as a suspension when it renewed the item.</li>
         <li><strong>Disposition categories</strong> narrow the pattern views only (Failure, unless more are ticked); the Weibull has its own rule for each category.</li>
         <li><strong>Induced failures</strong> (installation or maintenance errors) can be counted as suspensions instead.</li>
@@ -97,7 +110,7 @@
       <p>
         Leaving a list unticked puts no restriction on it. Clicking a Pareto bar
         or a matrix cell narrows the population to it and steps down a level
-        (location, then component, then mechanism); each narrowing shows as a
+        (sub-asset, then component, then mechanism); each narrowing shows as a
         chip that takes it back out. The population is also written as one line,
         its definition, which every saved Weibull run keeps, for example
         <code>POP: asset=4002; location=4002-S09; component=Filter; failure_mech=CONT; suspensions=other renewals; window=2024-01-02..2025-09-30</code>.
@@ -166,8 +179,9 @@
       <h4>The Pareto</h4>
       <p>
         Shown for every analysis type, under the readiness counts. Group by picks
-        what each bar is: location, component, failure mechanism, mode, cause,
-        action, disposition category, detection method or asset. Each bar counts
+        what each bar is: sub-asset (the default: the asset's own work orders
+        are one bar, each sub-asset another), component, failure mechanism,
+        mode, cause, action, disposition category or detection method. Each bar counts
         the population's work orders with that value and adds up their downtime,
         and is split by failure cause:
       </p>
@@ -199,8 +213,8 @@
       <ul>
         <li>At most 15 bars are drawn, but the line counts every value, so it can stop short of 100% at the last bar on screen.</li>
         <li>Hovering a bar shows its full name, count, downtime, cumulative percent and its largest causes.</li>
-        <li><strong>Clicking a bar narrows the population to it</strong> and steps down a level: a location bar shows that location by component, a component bar by failure mechanism. Every analysis below then reads the narrower population. A bar of work orders not coded on that dimension can't be narrowed to.</li>
-        <li>Under it, <strong>Where it happens</strong> crosses location with component; clicking a cell narrows to that item at that location.</li>
+        <li><strong>Clicking a bar narrows the population to it</strong> and steps down a level: a sub-asset bar shows that sub-asset by component, a component bar by failure mechanism. Every analysis below then reads the narrower population. A bar of work orders not coded on that dimension can't be narrowed to.</li>
+        <li>Under it, <strong>Where it happens</strong> crosses sub-asset with component; clicking a cell narrows to that item on that sub-asset.</li>
       </ul>
       {% call std.figure("C1", "Four mechanisms with 120, 60, 15 and 5 hours of downtime. The first bar alone is 60% of the 200 hours; the first two together are 90%.") %}
       <svg viewBox="0 0 640 280" role="img" aria-labelledby="fig-c1-title fig-c1-desc">
@@ -258,7 +272,7 @@
         marks the items most clearly wearing out (see
         <a href="#analysis-weibull">Weibull life data analysis</a>). Clicking one
         opens its population and its fit. A fit saved under an earlier method,
-        counted on a schedule one of its locations has since left, or with days
+        counted on a schedule one of its sub-assets has since left, or with days
         split in another time zone than the plant's now, is listed with a note
         to run it again.
       </p>
@@ -287,7 +301,7 @@
       {% endcall %}
       <dl class="std-where">
         <dt><math><mi>t</mi></math></dt><dd>The item's current life at the saved run's cutoff: the scheduled hours since it was last renewed. The list says which cutoff each fit is measured from.</dd>
-        <dt><math><mi mathvariant="normal">&#x394;</mi></math></dt><dd>The window in the same hours: the weeks times the hours a week adds on that location's schedule, 100 on 20 hours Monday-Friday, 120 on 24 hours Monday-Friday and 168 on continuous.</dd>
+        <dt><math><mi mathvariant="normal">&#x394;</mi></math></dt><dd>The window in the same hours: the weeks times the hours a week adds on that sub-asset's schedule, 100 on 20 hours Monday-Friday, 120 on 24 hours Monday-Friday and 168 on continuous.</dd>
       </dl>
       <p>
         A population pools several items, so its chance is that of any of them
@@ -391,7 +405,7 @@
       <p>
         A Weibull fit only means something for one kind of item failing in one
         way, so it is run on the <a href="#common-include-flag">analysis
-        population</a>: its locations and components choose the
+        population</a>: its sub-assets and components choose the
         <strong>renewal streams</strong> pooled (one physical item each, such as
         the filter on 4002-S09), and its failure mechanism, mode, cause and
         action choose which of their failures count. Narrow it to one component,
@@ -411,7 +425,7 @@
       <h4>Events, life intervals and censoring</h4>
       <p>
         Lives are built stream by stream, then pooled. A stream's events are
-        the Failures of its component at its location, and the work that renewed
+        the Failures of its component on its sub-asset, and the work that renewed
         it alongside: a PM reset listing it among its renewed items, or a failure
         of another item that renewed it too. In date order:
       </p>
@@ -1507,7 +1521,7 @@
         months run without gaps from the earliest to the latest month with a
         work order, and a month with none counts as 0, so the line never skips
         a quiet month. The chart plots the whole population; narrow it with
-        the selector or a Pareto bar to trend one location, component or
+        the selector or a Pareto bar to trend one sub-asset, component or
         mechanism.
       </p>
       {% call std.equation("T1", "the count for a month is the sum over the selected mechanisms of their failures in that month") %}
@@ -1530,7 +1544,7 @@
 
     <section class="std-section" id="trend-cards">
       <h4>The four summary cards</h4>
-      <p>The cards compare the values of the dimension the Pareto is grouped by (location, component, mechanism and so on) within the population:</p>
+      <p>The cards compare the values of the dimension the Pareto is grouped by (sub-asset, component, mechanism and so on) within the population:</p>
       <ul>
         <li><strong>Most Frequent:</strong> the value with the most work orders; ties go to the one with more downtime.</li>
         <li><strong>Highest Downtime:</strong> the value with the most downtime hours; ties go to the one with more work orders.</li>
@@ -1609,7 +1623,7 @@
   {% call std.doc_card(
       "analysis-downtime",
       "Downtime drivers",
-      "Explains where the population's downtime comes from: how much, when, how long each stop lasted, and at which location.",
+      "Explains where the population's downtime comes from: how much, when, how long each stop lasted, and on which sub-asset.",
       eyebrow="Downtime Driver Analysis") %}
 
     <section class="std-section" id="downtime-data">
@@ -1649,7 +1663,7 @@
       <ul>
         <li><strong>Monthly downtime:</strong> downtime added up by the month of the event date, with every month from the first to the last shown, quiet months at 0. Undated work orders are left out of this chart only.</li>
         <li><strong>Downtime Distribution:</strong> how many work orders fall in each range: 0 to 1 hour, 1 to 4, 4 to 8, 8 to 24, and 24 hours or more. A value on a boundary goes in the higher range, so exactly 4 hours counts in 4 to 8.</li>
-        <li><strong>Downtime by location:</strong> downtime added up by the location each work order was dispositioned to (its sub-asset, or its own asset), highest first.</li>
+        <li><strong>Downtime by sub-asset:</strong> downtime added up by the sub-asset each work order was dispositioned to (or its own asset when it names none), highest first.</li>
         <li><strong>Top downtime events:</strong> the ten work orders with the most downtime; ties go to the most recent.</li>
       </ul>
       {% call std.equation("D2", "monthly downtime is the sum of downtime of failures dated in that month") %}
@@ -1713,13 +1727,13 @@
   {% call std.doc_card(
       "analysis-pm",
       "PM effectiveness",
-      "Pairs each completed PM at a location of the population with the next failure of the population there, and rates how long the PMs hold it off.",
+      "Pairs each completed PM on the asset or its sub-assets with the next failure of the population there, and rates how long the PMs hold it off.",
       eyebrow="PM Effectiveness Analysis") %}
 
     <section class="std-section" id="pm-data">
       <h4>What it reads</h4>
       <ul>
-        <li><strong>PMs:</strong> every completed PM at a location of the population. A PM reset counts when it renewed one of the population's components; planned work that renewed nothing (a PM-class work order dispositioned Non-failure, or not reviewed yet) counts as a PM at its location unless it is coded to another component. A PM is dated by its completion.</li>
+        <li><strong>PMs:</strong> every completed PM on the asset or one of its sub-assets. A PM reset counts when it renewed one of the population's components; planned work that renewed nothing (a PM-class work order dispositioned Non-failure, or not reviewed yet) counts as a PM on its sub-asset unless it is coded to another component. A PM is dated by its completion.</li>
         <li><strong>Failures:</strong> the population's failures, matching its mechanism, mode, cause and action, dated when each was found.</li>
         <li><strong>Undated records:</strong> a PM or failure without a usable date is left out, because it cannot be paired.</li>
       </ul>
@@ -1737,8 +1751,8 @@
     <section class="std-section" id="pm-pairing">
       <h4>Pairing PMs with failures</h4>
       <p>
-        Each PM is paired with the first failure of the population at the same
-        location found strictly after it. A PM with no later failure is not
+        Each PM is paired with the first failure of the population on the same
+        sub-asset found strictly after it. A PM with no later failure is not
         paired. Several PMs with no failure between them all pair with the same
         next failure.
       </p>
@@ -1840,7 +1854,7 @@
       <h4>Chart, table and date range</h4>
       <ul>
         <li><strong>Failures following a PM</strong> counts, by the month the failure was found, the failures paired with at least one PM, with every month from the first to the last shown.</li>
-        <li><strong>PM-to-failure detail</strong> has one row per paired PM, newest first: the PM, whether it was a reset (and of what) or planned work, its location, the next failure's date, the days between, the failure's component and mechanism, its downtime and its work order. Editors can click either task ID to review its disposition.</li>
+        <li><strong>PM-to-failure detail</strong> has one row per paired PM, newest first: the PM, whether it was a reset (and of what) or planned work, its sub-asset, the next failure's date, the days between, the failure's component and mechanism, its downtime and its work order. Editors can click either task ID to review its disposition.</li>
         <li><strong>From and To</strong> narrow the PMs and the failures alike, so a PM late in the range whose next failure falls after it counts as not followed by one.</li>
       </ul>
       <p>
@@ -1865,7 +1879,7 @@
       <h4>What it reads</h4>
       <p>
         The population's failures that have a component, taken item by item:
-        each location and component is one stream, as in the Weibull. A
+        each sub-asset and component is one stream, as in the Weibull. A
         failure with no date cannot be placed, and one dated after today can
         only be a data-entry error, so both are left out and the page says how
         many were; so are failures with no component, which belong to no item.
@@ -1882,7 +1896,7 @@
       <p>
         The gap runs from when the previous failure's repair was finished to
         when the next failure of the same item was found, in scheduled hours,
-        counted exactly as equation W1 counts a life: on the location's
+        counted exactly as equation W1 counts a life: on the sub-asset's
         schedule in the Weibull schedule register (a sub-asset takes its
         parent's), the plant default otherwise, with days split at midnight on
         the plant's clock. A repair

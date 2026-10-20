@@ -3,9 +3,12 @@
  * Two windows side by side: the asset's work orders on the left, and the one
  * picked on the right in the disposition form (disposition_form.js), with the
  * work order's own words above the fields. Save & next moves down the list, so a
- * backlog is worked through without leaving the keyboard. The same records can
- * be dispositioned offline in a workbook (Download Excel / Upload Excel), and the
- * code lists the dropdowns offer are edited here too.
+ * backlog is worked through without leaving the keyboard. Each column of the
+ * list sorts and filters from its header; the server does both, so they reach
+ * every row in the selection rather than only the page on screen. The same
+ * records can be dispositioned offline in a workbook (Download Excel / Upload
+ * Excel), which holds what the list shows, and the code lists the dropdowns
+ * offer are edited here too.
  */
 (function () {
   "use strict";
@@ -19,6 +22,10 @@
     asset: null,
     scope: "all",
     search: "",
+    // The column filters, { column key: [values kept] } ("" for a blank cell),
+    // and the sort, { key, dir } or null for newest first.
+    filters: {},
+    sort: null,
     page: 0,
     data: null,
     options: null,
@@ -30,6 +37,35 @@
 
   const rows = () => (state.data && state.data.rows) || [];
   const currentRow = () => rows().find((row) => row.mapped_record_id === state.selectedId) || null;
+  const hasFilters = () => Object.keys(state.filters).length > 0;
+
+  // The list's columns, by the key the server sorts and filters each on, with
+  // the words its sort buttons use.
+  const TEXT_SORTS = ["Sort A → Z", "Sort Z → A"];
+  const COLUMNS = [
+    { key: "task_id", label: "Task", sorts: ["Sort 0 → 9", "Sort 9 → 0"] },
+    { key: "found", label: "Found", sorts: ["Sort Oldest → Newest", "Sort Newest → Oldest"] },
+    { key: "title", label: "Work order" },
+    { key: "category", label: "Category" },
+    { key: "sub_asset", label: "Sub-asset" },
+    { key: "component", label: "Component" },
+    { key: "mechanism", label: "Mech.", title: "Failure mechanism" },
+    { key: "mode", label: "Mode", title: "Failure mode" },
+  ];
+
+  // What the list is showing, as the server reads it: the asset, Show, search,
+  // column filters and sort.
+  function listParams(extra) {
+    const params = new URLSearchParams({ asset: state.asset, scope: state.scope });
+    if (state.search) params.set("search", state.search);
+    if (hasFilters()) params.set("filters", JSON.stringify(state.filters));
+    if (state.sort) {
+      params.set("sort", state.sort.key);
+      params.set("dir", state.sort.dir);
+    }
+    Object.entries(extra || {}).forEach(([key, value]) => params.set(key, value));
+    return params;
+  }
 
   // ---- the list ---------------------------------------------------------------
   async function load(selectId) {
@@ -37,9 +73,7 @@
     const token = ++state.token;
     beginLoading("Loading work orders…");
     try {
-      const params = new URLSearchParams({ asset: state.asset, scope: state.scope, page: String(state.page) });
-      if (state.search) params.set("search", state.search);
-      const data = await getJson(`${API}/dispositions?${params}`);
+      const data = await getJson(`${API}/dispositions?${listParams({ page: String(state.page) })}`);
       if (token !== state.token) return;
       clearBanner();
       state.data = data;
@@ -64,10 +98,22 @@
     const data = state.data;
     const counts = data.counts || {};
     $("disp-list-summary").textContent =
-      `${counts.all || 0} work orders on ${state.asset}: ${counts.not_reviewed || 0} not reviewed, ` +
+      `${counts.all || 0} work orders on ${data.asset_label || state.asset}: ${counts.not_reviewed || 0} not reviewed, ` +
       `${counts.migrated || 0} migrated from the REL categories and still to confirm.`;
+    const filtered = hasFilters();
+    $("disp-filter-status").hidden = !filtered;
+    $("disp-filter-text").textContent = filtered
+      ? `${data.displayed_count} match the column filters (${Object.keys(state.filters)
+        .map((key) => (COLUMNS.find((column) => column.key === key) || { label: key }).label)
+        .join(", ")}).`
+      : "";
+    markHeader();
     if (!rows().length) {
-      body.appendChild(el("tr", {}, [el("td", { colspan: "8", class: "lda-readonly", text: "No work orders match." })]));
+      body.appendChild(el("tr", {}, [el("td", {
+        colspan: String(COLUMNS.length),
+        class: "lda-readonly",
+        text: filtered ? "No work orders match the column filters." : "No work orders match.",
+      })]));
     }
     rows().forEach((row) => {
       const d = row.disposition;
@@ -87,7 +133,7 @@
         el("td", { class: "std-nowrap", text: day(row.created_date || row.completed_date) }),
         el("td", { class: "std-title", text: row.task_name || row.request_title || "" }),
         el("td", {}, Form.categoryChip(d.disposition_category, d.source)),
-        el("td", { class: "std-nowrap", text: row.derived.location || "" }),
+        el("td", { class: "std-sub-asset", text: row.location_label || row.derived.location || "" }),
         el("td", { text: d.component_code || "" }),
         el("td", { text: d.failure_mechanism_code || "" }),
         el("td", { text: d.failure_mode_code || "" }),
@@ -100,6 +146,197 @@
     $("disp-prev").disabled = data.page_index <= 0;
     $("disp-next").disabled = data.page_index >= data.max_page_index;
   }
+
+  // ---- sorting and filtering ---------------------------------------------------
+  function renderHeader() {
+    const headerRow = $("disp-table").querySelector("thead tr");
+    headerRow.innerHTML = "";
+    COLUMNS.forEach((column) => {
+      const name = column.title || column.label;
+      const tool = el("button", {
+        type: "button",
+        class: "lda-col-tool",
+        title: `Sort or filter “${name}”`,
+        "aria-label": `Sort or filter ${name}`,
+        "aria-haspopup": "dialog",
+        text: "▾",
+      });
+      tool.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleMenu(column, tool);
+      });
+      headerRow.appendChild(el("th", { scope: "col", "data-key": column.key, title: column.title || null }, [
+        el("div", { class: "lda-col-head" }, [el("span", { class: "lda-col-label", text: column.label }), tool]),
+      ]));
+    });
+  }
+
+  function markHeader() {
+    $("disp-table").querySelectorAll("thead th").forEach((th) => {
+      const key = th.dataset.key;
+      const dir = state.sort && state.sort.key === key ? state.sort.dir : null;
+      th.classList.toggle("is-sorted-asc", dir === "asc");
+      th.classList.toggle("is-sorted-desc", dir === "desc");
+      if (dir) th.setAttribute("aria-sort", dir === "asc" ? "ascending" : "descending");
+      else th.removeAttribute("aria-sort");
+      const tool = th.querySelector(".lda-col-tool");
+      if (tool) tool.classList.toggle("is-active", Boolean(state.filters[key]));
+    });
+  }
+
+  // A new sort or filter reloads the list from its first page, keeping the
+  // work order open when it is still on it.
+  function applyView(change) {
+    if (!confirmDiscard()) return;
+    if (change.sort !== undefined) state.sort = change.sort;
+    if (change.filters !== undefined) state.filters = change.filters;
+    state.page = 0;
+    state.form = null;
+    load(state.selectedId);
+  }
+
+  let openMenu = null;
+  function closeMenu() {
+    if (!openMenu) return;
+    openMenu.node.remove();
+    openMenu = null;
+  }
+
+  // A column's menu: sort it either way, or keep only the values ticked. The
+  // values are the server's, across every row the rest of the view keeps, so a
+  // value this column's filter hides can be ticked back.
+  function toggleMenu(column, anchor) {
+    if (openMenu && openMenu.key === column.key) {
+      closeMenu();
+      return;
+    }
+    closeMenu();
+    const name = column.title || column.label;
+    const menu = el("div", { class: "lda-col-menu", role: "dialog", "aria-label": `Sort or filter ${name}` });
+    openMenu = { key: column.key, node: menu };
+    const labels = column.sorts || TEXT_SORTS;
+    const sortButton = (dir, text) =>
+      el("button", {
+        type: "button",
+        class: "lda-col-menu-sort" + (state.sort && state.sort.key === column.key && state.sort.dir === dir ? " is-active" : ""),
+        text,
+        onclick: () => {
+          closeMenu();
+          applyView({ sort: { key: column.key, dir } });
+        },
+      });
+    const sorts = [sortButton("asc", labels[0]), sortButton("desc", labels[1])];
+    if (state.sort && state.sort.key === column.key) {
+      sorts.push(el("button", {
+        type: "button",
+        class: "lda-col-menu-sort",
+        text: "Newest first (default)",
+        onclick: () => {
+          closeMenu();
+          applyView({ sort: null });
+        },
+      }));
+    }
+    menu.appendChild(el("div", { class: "lda-col-menu-sorts" }, sorts));
+
+    const search = el("input", { type: "search", class: "lda-col-menu-search", placeholder: "Search values…", "aria-label": `Search ${name} values` });
+    const allBox = el("input", { type: "checkbox", checked: true });
+    const list = el("div", { class: "lda-col-menu-values" }, [el("p", { class: "lda-hint", text: "Loading values…" })]);
+    const apply = el("button", { type: "button", class: "btn-primary", text: "Apply", disabled: true });
+    const clear = el("button", {
+      type: "button",
+      class: "btn-secondary",
+      text: "Clear filter",
+      disabled: !state.filters[column.key],
+      onclick: () => {
+        const filters = { ...state.filters };
+        delete filters[column.key];
+        closeMenu();
+        applyView({ filters });
+      },
+    });
+    menu.append(
+      search,
+      el("label", { class: "lda-col-menu-all" }, [allBox, el("span", { text: "(Select all)" })]),
+      list,
+      el("div", { class: "lda-col-menu-actions" }, [clear, apply])
+    );
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    let left = rect.left;
+    if (left + menu.offsetWidth > window.innerWidth - 8) left = window.innerWidth - menu.offsetWidth - 8;
+    menu.style.left = `${Math.round(Math.max(8, left))}px`;
+    menu.style.top = `${Math.round(Math.min(rect.bottom + 4, Math.max(8, window.innerHeight - menu.offsetHeight - 8)))}px`;
+    search.focus();
+
+    getJson(`${API}/dispositions/column-values?${listParams({ column: column.key })}`)
+      .then((data) => {
+        if (!openMenu || openMenu.node !== menu) return;
+        const active = state.filters[column.key];
+        list.innerHTML = "";
+        const boxes = data.values.map((item) => {
+          const box = el("input", { type: "checkbox" });
+          box.checked = !active || active.includes(item.value);
+          const label = el("label", { class: "lda-col-menu-value" }, [
+            box,
+            el("span", { text: item.label, title: item.label }),
+            el("span", { class: "std-col-count", text: String(item.count) }),
+          ]);
+          list.appendChild(label);
+          return { box, label, value: item.value, search: item.label.toLowerCase() };
+        });
+        if (!boxes.length) list.appendChild(el("p", { class: "lda-hint", text: "No values to filter by." }));
+        if (data.truncated) {
+          list.appendChild(el("p", { class: "lda-hint", text: "Only the first values are listed; search the list to narrow it first." }));
+        }
+        const visible = () => boxes.filter((b) => b.label.style.display !== "none");
+        const syncAll = () => {
+          const shown = visible();
+          allBox.checked = shown.length > 0 && shown.every((b) => b.box.checked);
+        };
+        syncAll();
+        allBox.addEventListener("change", () => visible().forEach((b) => { b.box.checked = allBox.checked; }));
+        boxes.forEach((b) => b.box.addEventListener("change", syncAll));
+        search.addEventListener("input", () => {
+          const query = search.value.trim().toLowerCase();
+          boxes.forEach((b) => { b.label.style.display = b.search.includes(query) ? "" : "none"; });
+          syncAll();
+        });
+        const commit = () => {
+          const kept = boxes.filter((b) => b.box.checked).map((b) => b.value);
+          const filters = { ...state.filters };
+          if (kept.length === boxes.length && !data.truncated) delete filters[column.key];
+          else filters[column.key] = kept;
+          closeMenu();
+          applyView({ filters });
+        };
+        apply.disabled = false;
+        apply.addEventListener("click", commit);
+        search.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+        });
+      })
+      .catch((err) => {
+        list.innerHTML = "";
+        list.appendChild(el("p", { class: "lda-hint", text: err.message }));
+      });
+  }
+
+  document.addEventListener("mousedown", (event) => {
+    if (!openMenu || openMenu.node.contains(event.target)) return;
+    if (event.target.closest && event.target.closest(".lda-col-tool")) return;
+    closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenu();
+  });
+  window.addEventListener("resize", closeMenu);
+  window.addEventListener("scroll", (event) => {
+    if (openMenu && !openMenu.node.contains(event.target)) closeMenu();
+  }, true);
 
   function markSelectedRow() {
     $("disp-table").querySelectorAll("tr.std-row").forEach((tr) => {
@@ -182,8 +419,7 @@
     }
     beginLoading("Building the workbook…");
     try {
-      const params = new URLSearchParams({ asset: state.asset, scope: state.scope });
-      const name = await G.download(`${API}/dispositions/excel?${params}`, "dispositions.xlsx");
+      const name = await G.download(`${API}/dispositions/excel?${listParams()}`, "dispositions.xlsx");
       showToast(`Downloaded ${name}.`, "success");
     } catch (err) {
       showBanner(err.message, "error");
@@ -412,11 +648,25 @@
         "to open it in the window beside.",
     },
     {
+      target: "#disp-table-head",
+      title: "Sort and filter",
+      body:
+        "The ▾ on each column header sorts by it or keeps only the values you tick, as a spreadsheet's filter does. " +
+        "Both reach every work order in the list, not only this page, and the workbook download follows them.",
+    },
+    {
       target: "#disp-editor-card",
       title: "The disposition window",
       body:
-        "The work order's own words first -- request, completion notes, area, condition, cause and action -- so the " +
-        "disposition is read off the record, and any review flag from the migration above them.",
+        "The work order itself first, each part under its own label: when it was created, started and completed, its " +
+        "downtime and record class, then the request title and description -- so the disposition is read off the record.",
+    },
+    {
+      target: ".std-narrative",
+      title: "The failure narrative",
+      body:
+        "What the technician found: the area affected, the condition found, the cause and the action taken. It is " +
+        "the best evidence for the mechanism, mode and component; a part left empty says so.",
     },
     {
       target: ".std-categories",
@@ -476,6 +726,8 @@
 
   // ---- start -----------------------------------------------------------------------
   function init() {
+    renderHeader();
+    $("disp-clear-filters").addEventListener("click", () => applyView({ filters: {} }));
     combobox = G.assetCombobox({
       input: $("lda-asset"),
       list: $("lda-asset-list"),
@@ -490,6 +742,8 @@
         state.page = 0;
         state.form = null;
         state.selectedId = null;
+        // Filters name another asset's values; the sort still applies.
+        state.filters = {};
         if (asset) load(null);
         else $("disp-workspace").hidden = true;
       },

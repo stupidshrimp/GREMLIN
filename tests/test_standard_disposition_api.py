@@ -164,6 +164,37 @@ def test_the_workbook_round_trips_through_the_api(monkeypatch, tmp_path):
     assert garbage.status_code == 400
 
 
+def test_the_list_sorts_filters_and_downloads_what_it_shows(monkeypatch, tmp_path):
+    import io
+    import json
+    import zipfile
+
+    module = _app(monkeypatch, tmp_path)
+    dispositions = _seed(module)
+    viewer = _client(module, role="viewer")
+    # Only S09 has a record of its own here, so only it is a sub-asset.
+    module._standard_service().save_dispositions(
+        [disposition for disposition in dispositions if disposition.get("sub_asset") in (S09, None)], decided_by="tim"
+    )
+    filters = json.dumps({"component": ["Filter"]})
+    page = viewer.get(f"{API}/dispositions?asset={PFS}&filters={filters}&sort=task_id&dir=desc").get_json()
+    task_ids = [int(row["task_id"]) for row in page["rows"]]
+    assert task_ids and task_ids == sorted(task_ids, reverse=True)
+    assert {row["disposition"]["component_code"] for row in page["rows"]} == {"Filter"}
+    assert page["sort"] == {"key": "task_id", "dir": "desc"} and page["filters"] == {"component": ["Filter"]}
+
+    values = viewer.get(f"{API}/dispositions/column-values?asset={PFS}&column=component&filters={filters}").get_json()
+    assert "Filter" in [item["value"] for item in values["values"]] and len(values["values"]) > 1
+    assert viewer.get(f"{API}/dispositions/column-values?asset={PFS}&column=colour").status_code == 400
+    assert viewer.get(f"{API}/dispositions?asset={PFS}&filters=not-json").status_code == 400
+
+    # The workbook holds the rows the list shows: a header and one row each.
+    workbook = viewer.get(f"{API}/dispositions/excel?asset={PFS}&filters={filters}")
+    with zipfile.ZipFile(io.BytesIO(workbook.data)) as archive:
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode()
+    assert sheet.count("<row ") == page["displayed_count"] + 1
+
+
 def test_a_refused_save_says_which_record_and_why(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     _seed(module)

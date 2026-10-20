@@ -64,20 +64,16 @@
   <section class="glass-card lda-card" id="disp-list-card" aria-labelledby="disp-list-title">
     <h2 id="disp-list-title">Work orders</h2>
     <p class="lda-hint" id="disp-list-summary"></p>
+    <p class="lda-hint">Sort or filter any column from the ▾ on its header; both reach every work order in the
+       list, not only this page.</p>
+    <div class="std-filter-status" id="disp-filter-status" hidden>
+      <span id="disp-filter-text"></span>
+      <button type="button" class="btn-secondary" id="disp-clear-filters">Clear column filters</button>
+    </div>
     <div class="lda-table-scroll">
       <table class="lda-table" id="disp-table">
-        <thead>
-          <tr>
-            <th scope="col">Task</th>
-            <th scope="col">Found</th>
-            <th scope="col">Work order</th>
-            <th scope="col">Category</th>
-            <th scope="col">Location</th>
-            <th scope="col">Component</th>
-            <th scope="col">Mech.</th>
-            <th scope="col">Mode</th>
-          </tr>
-        </thead>
+        {# disposition.js draws the headers, each with its sort and filter menu. #}
+        <thead id="disp-table-head"><tr></tr></thead>
         <tbody></tbody>
       </table>
     </div>

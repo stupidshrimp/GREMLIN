@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import os
 import secrets
@@ -711,16 +712,34 @@ def _service_or_api_error() -> LifeDataService:
         ) from exc
 
 
+def _limble_asset_hierarchy() -> list[dict] | None:
+    """Limble's asset hierarchy as the PM calendar stores it, or None when it has none.
+
+    The PM calendar reads each asset's parent from /assets by ``parentAssetID``
+    alone, which is what an asset's sub-assets are; work orders imported before
+    the Limble sync learned the same rule name the wrong parent for top-level
+    assets. Read only: a PM calendar database that was never created is left
+    uncreated rather than made just to be read.
+    """
+
+    if not PM_CALENDAR_DB_PATH.exists():
+        return None
+    try:
+        return pm_calendar_service.repo.fetch_assets() or None
+    except Exception:  # noqa: BLE001 - an unreadable calendar falls back to the work orders' hierarchy
+        return None
+
+
 def _standard_service() -> StandardDispositionService:
     """The work-order disposition standard, over the shared LifeDataService."""
 
-    return StandardDispositionService(_service_or_api_error())
+    return StandardDispositionService(_service_or_api_error(), asset_hierarchy=_limble_asset_hierarchy)
 
 
 def _analysis_service() -> PopulationAnalysisService:
     """Perform an Analysis's population and views, over the shared LifeDataService."""
 
-    return PopulationAnalysisService(_service_or_api_error())
+    return PopulationAnalysisService(_service_or_api_error(), _standard_service())
 
 
 def _required_asset() -> str:
@@ -2553,6 +2572,27 @@ def api_save_code():
     return jsonify({"code_lists": _standard_service().save_code(payload, updated_by=_username())})
 
 
+def _disposition_list_view() -> dict:
+    """What the Disposition list is showing: its Show setting, search, column filters and sort.
+
+    The filters come as JSON, ``{"column": ["value", ...]}``; the service drops
+    any column or value it does not know.
+    """
+
+    raw_filters = request.values.get("filters") or ""
+    try:
+        filters = json.loads(raw_filters) if raw_filters else {}
+    except ValueError:
+        raise LifeDataApiError("The column filters could not be read. Clear them and try again.", status_code=400) from None
+    return {
+        "scope": (request.values.get("scope") or "all").strip().lower(),
+        "search": (request.values.get("search") or "").strip() or None,
+        "filters": filters,
+        "sort": (request.values.get("sort") or "").strip() or None,
+        "direction": (request.values.get("dir") or "").strip().lower() or None,
+    }
+
+
 @app.route("/life-data-analysis/api/dispositions")
 @life_data_api
 def api_dispositions():
@@ -2564,13 +2604,29 @@ def api_dispositions():
         page_index = max(0, int(request.values.get("page", 0)))
     except (TypeError, ValueError):
         page_index = 0
-    page = service.disposition_page(
-        asset_number,
-        scope=(request.values.get("scope") or "all").strip().lower(),
-        search=(request.values.get("search") or "").strip() or None,
-        page=page_index,
-    )
+    page = service.disposition_page(asset_number, page=page_index, **_disposition_list_view())
     return jsonify({**page, "options": service.editor_options(asset_number)})
+
+
+@app.route("/life-data-analysis/api/dispositions/column-values")
+@life_data_api
+def api_disposition_column_values():
+    """The values one column of the Disposition list shows, for its filter menu."""
+
+    service = _standard_service()
+    asset_number = _required_asset()
+    view = _disposition_list_view()
+    try:
+        values = service.list_column_values(
+            asset_number,
+            (request.values.get("column") or "").strip(),
+            scope=view["scope"],
+            search=view["search"],
+            filters=view["filters"],
+        )
+    except ValueError as exc:
+        raise LifeDataApiError(str(exc), status_code=400) from None
+    return jsonify(values)
 
 
 @app.route("/life-data-analysis/api/dispositions/record")
@@ -2611,11 +2667,12 @@ def api_save_dispositions():
 @app.route("/life-data-analysis/api/dispositions/excel")
 @life_data_api
 def api_download_disposition_excel():
-    """The asset's work orders as a workbook to disposition offline, for the Show setting on screen."""
+    """The asset's work orders as a workbook to disposition offline: the rows the list shows, in its order."""
 
     service = _standard_service()
     asset_number = _required_asset()
-    scope = (request.values.get("scope") or "all").strip().lower()
+    view = _disposition_list_view()
+    scope = view["scope"]
     safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
     # In the name, so a backlog workbook is not mistaken for the full record set later.
     scope_token = {"not_reviewed": "not_reviewed_", "migrated": "to_confirm_"}.get(scope, "")
@@ -2624,7 +2681,7 @@ def api_download_disposition_excel():
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_")
     os.close(fd)
     try:
-        service.export_excel(asset_number, path, scope=scope)
+        service.export_excel(asset_number, path, **view)
         with open(path, "rb") as handle:
             workbook_bytes = handle.read()
     finally:
@@ -2740,7 +2797,7 @@ def api_summary():
             payload["selection"],
             start=payload["start"],
             end=payload["end"],
-            group_by=str(payload.get("group_by") or "location"),
+            group_by=str(payload.get("group_by") or "sub_asset"),
             weeks=_risk_weeks(payload.get("weeks")),
         )
     )

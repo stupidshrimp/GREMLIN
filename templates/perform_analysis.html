@@ -10,7 +10,7 @@
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Life Data Analysis</p>
   <h1>Perform an Analysis</h1>
-  <p>Choose an asset and narrow it to the population you want to understand: a location, a component, a
+  <p>Choose an asset and narrow it to the population you want to understand: a sub-asset, a component, a
      failure mechanism. Every analysis on this page reads that same population from the work-order
      dispositions, so a Pareto bar, the trend under it, its downtime and its Weibull life always count
      the same work orders.</p>
@@ -49,9 +49,9 @@
 <section class="glass-card slide-in lda-card" id="lda-population-card" aria-labelledby="lda-step-2" hidden>
   <p class="eyebrow">Step 2</p>
   <h2 id="lda-step-2">Analysis population</h2>
-  <p class="lda-hint">Leave a list unticked for no restriction on it. Location and component choose which items'
-     lives are pooled; mechanism, mode, cause and action choose which of their failures count. Clicking a Pareto
-     bar or a matrix cell below narrows it for you.</p>
+  <p class="lda-hint">Leave a list unticked for no restriction on it. Sub-asset and component choose which items'
+     lives are pooled; mechanism, mode, cause and action choose which of their failures count. The asset's
+     sub-assets have no list here: click a sub-asset's Pareto bar or matrix cell below to narrow to it.</p>
   <div class="std-selector" id="lda-population-selector"></div>
   <div class="lda-population-row">
     <div class="lda-field" id="lda-categories-field">
@@ -121,7 +121,7 @@
   <div class="lda-subgrid">
     <div class="lda-panel" id="lda-pareto-panel">
       <div class="lda-pareto-head">
-        <h3 id="lda-pareto-title">Pareto by location</h3>
+        <h3 id="lda-pareto-title">Pareto by sub-asset</h3>
         <div class="lda-pareto-toolbar">
           <div class="lda-pareto-option">
             <label class="lda-pareto-option-label" for="lda-pareto-group">Group by</label>
@@ -147,9 +147,9 @@
   </div>
 
   <details class="lda-panel lda-matrix-panel" id="lda-matrix-panel">
-    <summary>Where it happens: location × component</summary>
+    <summary>Where it happens: sub-asset × component</summary>
     <p class="lda-hint">Work orders in the population by where (rows) and what (columns). Click a cell to narrow
-       the population to that location and component.</p>
+       the population to that sub-asset and component.</p>
     <div class="std-matrix-scroll" id="lda-matrix-wrap"></div>
   </details>
 
@@ -187,8 +187,8 @@
   </div>
   <div class="lda-panel" id="lda-pm-table-panel" hidden>
     <h3>PM-to-failure detail</h3>
-    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM at a location of the population, paired with the
-       next failure of the population found there after it.</p>
+    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM on the asset or one of its sub-assets, paired with
+       the next failure of the population found there after it.</p>
     <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
   </div>
 
@@ -197,7 +197,7 @@
     <p class="lda-hint">A failure is a repeat when it is found within
       <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="0" max="720" step="any" value="24"
              aria-label="Repeat window in scheduled hours"> scheduled hours of the previous failure's repair being
-      finished, on that location's Weibull schedule, item by item (location and component). The rate is repeats over
+      finished, on that sub-asset's Weibull schedule, item by item (sub-asset and component). The rate is repeats over
       the gaps between failures. Click a row to list only its repeats.</p>
     <p class="lda-hint" id="lda-repeat-basis"></p>
     <div class="lda-table-scroll" id="lda-repeat-rate-wrap"></div>
@@ -227,8 +227,8 @@
     </div>
   </div>
   <div class="lda-panel" id="lda-downtime-asset-panel" hidden>
-    <h3>Downtime by location</h3>
-    <p class="lda-hint">Total downtime hours by where the work order was dispositioned, highest first.</p>
+    <h3>Downtime by sub-asset</h3>
+    <p class="lda-hint">Total downtime hours by the sub-asset the work order was dispositioned to (or the asset itself), highest first.</p>
     <div class="lda-chart-wrap">
       <canvas id="lda-downtime-asset-chart" class="lda-canvas" height="320"></canvas>
     </div>

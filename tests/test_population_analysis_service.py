@@ -27,7 +27,7 @@ class PopulationViewTests(StandardDispositionFixture):
         bins = {row["label"]: row["count"] for row in downtime["distribution"]}
         self.assertEqual(bins["1–4 hr"], 6)
         self.assertEqual(bins["4–8 hr"], 1)
-        self.assertEqual(downtime["by_location"][0], {"label": S09, "downtime_hours": 15.0})
+        self.assertEqual(downtime["by_location"][0], {"label": "Asset 4002-S09", "downtime_hours": 15.0})
         self.assertEqual(downtime["top_events"][0]["mapped_record_id"], 220477)
         self.assertEqual(downtime["months"][0], "2024-02")
 
@@ -102,7 +102,7 @@ class SavedFitTests(StandardDispositionFixture):
         self.assertEqual(result["failure_count"], 8)
         self.assertEqual(result["total_observation_count"], len(result["observations"]))
         self.assertEqual(result["current_life_censored_count"], 1)
-        self.assertEqual(result["analysis_label"], "4002-S09 · Filter · CONT")
+        self.assertEqual(result["analysis_label"], "Asset 4002-S09 · Filter · CONT")
         self.assertEqual(result["life_basis"]["schedule_name"], "20 hours Monday-Friday")
         self.assertTrue(result["interpretation_summary"])
         self.assertEqual(result["result_id"], result["analysis_id"])

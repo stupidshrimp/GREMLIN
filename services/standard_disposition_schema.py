@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from services import disposition_standard as std
 
@@ -216,59 +216,172 @@ def _natural_key(value: str) -> list[Any]:
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
-def sub_asset_options(conn: sqlite3.Connection, asset_number: str) -> list[dict[str, str]]:
-    """An asset's children in the asset hierarchy, as ``{asset_number, asset_name}``.
+# How deep the tree is walked before it is taken to be a loop in bad data.
+_MAX_TREE_DEPTH = 50
 
-    Read from the hierarchy Limble attaches to every work order: a child is any
-    asset whose records name this asset's id as their immediate parent. So a
-    sub-asset appears here once it has a work order of its own in GREMLIN.
+
+def _id_text(value: Any) -> str | None:
+    """An asset id as plain text: "4002", never "4002.0" or " 4002 "."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value).strip()
+    if not text or text == "0":
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    return str(int(number)) if number.is_integer() else text
+
+
+class AssetTree:
+    """Limble's asset hierarchy, by GREMLIN asset number: who hangs under whom.
+
+    Built from two sources. Every work order carries its asset's immediate
+    parent, as the Limble sync recorded it; and the PM calendar keeps the
+    hierarchy read straight from Limble's /assets, by ``parentAssetID`` alone.
+    Where the two disagree the PM calendar's is right: work orders imported
+    before the sync stopped reading ``parentID`` as a parent name another
+    top-level asset as the parent of a top-level asset, which would offer whole
+    other machines as an asset's sub-assets. So every asset the PM calendar
+    knows takes its parent from there, and only the rest from the work orders.
     """
 
-    rows = conn.execute(
+    def __init__(self, parent: Mapping[str, str], names: Mapping[str, str]) -> None:
+        self.parent = dict(parent)
+        self.names = dict(names)
+        self.children: dict[str, list[str]] = {}
+        for child, parent_number in self.parent.items():
+            self.children.setdefault(parent_number, []).append(child)
+        for kids in self.children.values():
+            kids.sort(key=lambda number: _natural_key(self.names.get(number) or number))
+
+    @classmethod
+    def load(cls, conn: sqlite3.Connection, hierarchy: Iterable[Mapping[str, Any]] | None = None) -> "AssetTree":
+        """The tree as the work orders and (when given) the PM calendar's hierarchy describe it.
+
+        ``hierarchy`` is the PM calendar's asset rows: ``asset_id``,
+        ``asset_name`` and ``parent_asset_id`` (None at the top).
         """
-        SELECT TRIM(c.asset_number) AS asset_number,
-               COALESCE(NULLIF(TRIM(c.asset_name), ''), '') AS asset_name,
-               COUNT(*) AS record_count
-        FROM mapped_cmms_record c
-        WHERE c.immediate_parent_asset_id IN (
-                SELECT DISTINCT asset_id_raw FROM mapped_cmms_record
-                WHERE asset_number = :asset AND asset_id_raw IS NOT NULL AND TRIM(asset_id_raw) <> ''
-            )
-          AND c.asset_number IS NOT NULL AND TRIM(c.asset_number) <> '' AND TRIM(c.asset_number) <> :asset
-        GROUP BY TRIM(c.asset_number), COALESCE(NULLIF(TRIM(c.asset_name), ''), '')
-        """,
-        {"asset": asset_number},
-    ).fetchall()
-    best: dict[str, tuple[str, int]] = {}
-    for row in rows:
-        number, name, count = row[0], row[1], int(row[2] or 0)
-        if number not in best or count > best[number][1]:
-            best[number] = (name, count)
-    return [
-        {"asset_number": number, "asset_name": best[number][0]}
-        for number in sorted(best, key=_natural_key)
-    ]
+
+        number_of_id: dict[str, str] = {}
+        names: dict[str, tuple[str, int]] = {}
+        parent_ids: dict[str, dict[str, int]] = {}
+        for row in conn.execute(
+            """
+            SELECT TRIM(asset_number) AS asset_number, asset_id_raw, asset_name, immediate_parent_asset_id,
+                   COUNT(*) AS record_count
+            FROM mapped_cmms_record
+            WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
+            GROUP BY TRIM(asset_number), asset_id_raw, asset_name, immediate_parent_asset_id
+            """
+        ):
+            number = row["asset_number"]
+            count = int(row["record_count"] or 0)
+            asset_id = _id_text(row["asset_id_raw"])
+            if asset_id is not None:
+                number_of_id.setdefault(asset_id, number)
+            name = (row["asset_name"] or "").strip()
+            if name and (number not in names or count > names[number][1]):
+                names[number] = (name, count)
+            parent_id = _id_text(row["immediate_parent_asset_id"])
+            if parent_id is not None:
+                tally = parent_ids.setdefault(number, {})
+                tally[parent_id] = tally.get(parent_id, 0) + count
+        # Most work orders' word for an asset's parent, as an id.
+        parent_id_of = {number: max(tally, key=tally.get) for number, tally in parent_ids.items()}
+        final_names = {number: name for number, (name, _) in names.items()}
+        for row in hierarchy or ():
+            asset_id = _id_text(row.get("asset_id"))
+            if asset_id is None:
+                continue
+            # On this account an asset's number is its Limble id, so an asset with
+            # no work orders of its own is still found under its id.
+            number = number_of_id.get(asset_id, asset_id)
+            parent_id = _id_text(row.get("parent_asset_id"))
+            if parent_id is None:
+                parent_id_of.pop(number, None)
+            else:
+                parent_id_of[number] = parent_id
+            # Limble's current name for it, over the one a work order was imported with.
+            name = (row.get("asset_name") or "").strip()
+            if name:
+                final_names[number] = name
+        parent = {}
+        for number, parent_id in parent_id_of.items():
+            parent_number = number_of_id.get(parent_id, parent_id)
+            if parent_number != number:
+                parent[number] = parent_number
+        return cls(parent, final_names)
+
+    def name(self, number: str | None) -> str:
+        return self.names.get(number or "", "")
+
+    def label(self, number: str | None) -> str:
+        """How a page names an asset: "4002-S09 Dry-off oven (13051)", or its number alone."""
+
+        if not number:
+            return ""
+        name = self.name(number)
+        if not name or name == number:
+            return number
+        return f"{name} ({number})" if number not in name else name
+
+    def parent_of(self, number: str) -> str | None:
+        return self.parent.get(number)
+
+    def ancestors(self, number: str) -> list[str]:
+        found: list[str] = []
+        current = self.parent.get(number)
+        while current and current not in found and current != number and len(found) < _MAX_TREE_DEPTH:
+            found.append(current)
+            current = self.parent.get(current)
+        return found
+
+    def descendants(self, number: str) -> list[dict[str, Any]]:
+        """Every asset under ``number``, each after its parent, with how deep it sits."""
+
+        found: list[dict[str, Any]] = []
+        seen = {number}
+
+        def walk(parent_number: str, depth: int) -> None:
+            if depth > _MAX_TREE_DEPTH:
+                return
+            for child in self.children.get(parent_number, ()):
+                if child in seen:
+                    continue
+                seen.add(child)
+                found.append({
+                    "asset_number": child,
+                    "asset_name": self.name(child),
+                    "label": self.label(child),
+                    "parent": parent_number,
+                    "depth": depth,
+                })
+                walk(child, depth + 1)
+
+        walk(number, 1)
+        return found
 
 
-def parent_asset_numbers(conn: sqlite3.Connection, asset_numbers: Iterable[str]) -> dict[str, str]:
-    """Each asset's parent asset number, where the hierarchy and the records name one."""
+def sub_asset_options(
+    conn: sqlite3.Connection, asset_number: str, hierarchy: Iterable[Mapping[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """An asset's sub-assets, every level down, as the editor offers them."""
 
-    wanted = sorted({number for number in asset_numbers if number})
-    if not wanted:
-        return {}
-    placeholders = ",".join("?" for _ in wanted)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT TRIM(child.asset_number) AS child_number, TRIM(parent.asset_number) AS parent_number
-        FROM mapped_cmms_record child
-        JOIN mapped_cmms_record parent ON parent.asset_id_raw = child.immediate_parent_asset_id
-        WHERE TRIM(child.asset_number) IN ({placeholders})
-          AND parent.asset_number IS NOT NULL AND TRIM(parent.asset_number) <> ''
-          AND TRIM(parent.asset_number) <> TRIM(child.asset_number)
-        """,
-        wanted,
-    ).fetchall()
-    return {row[0]: row[1] for row in rows}
+    return AssetTree.load(conn, hierarchy).descendants(asset_number)
+
+
+def parent_asset_numbers(
+    conn: sqlite3.Connection, asset_numbers: Iterable[str], hierarchy: Iterable[Mapping[str, Any]] | None = None
+) -> dict[str, str]:
+    """Each asset's parent asset number, where the hierarchy names one."""
+
+    tree = AssetTree.load(conn, hierarchy)
+    return {number: tree.parent[number] for number in asset_numbers if number in tree.parent}
 
 
 def renewed_items_from_json(text: Any) -> tuple[str, ...]:
@@ -379,6 +492,7 @@ def sync_migrated_dispositions(conn: sqlite3.Connection, mapped_record_ids: Iter
         return 0
     codebook = load_codebook(conn)
     children: dict[str, list[str]] = {}
+    tree: AssetTree | None = None
     for row in rows:
         legacy_category = row[2]
         category = std.LEGACY_CATEGORY_MAP.get(legacy_category, std.NOT_REVIEWED)
@@ -400,10 +514,13 @@ def sync_migrated_dispositions(conn: sqlite3.Connection, mapped_record_ids: Iter
         if category != std.DUPLICATE_MISFILED and any(
             pattern.match(legacy_mechanism) for pattern, _ in std.LEGACY_AUTO_CONVERSIONS
         ):
+            if tree is None:
+                tree = AssetTree.load(conn)
             if asset_number not in children:
-                children[asset_number] = [option["asset_number"] for option in sub_asset_options(conn, asset_number)]
+                children[asset_number] = [option["asset_number"] for option in tree.descendants(asset_number)]
             converted = std.legacy_auto_conversion(
-                row[6], asset_number=asset_number, sub_asset_choices=children[asset_number], codebook=codebook
+                row[6], asset_number=asset_number, sub_asset_choices=children[asset_number], codebook=codebook,
+                asset_names=tree.names,
             )
             if converted:
                 values.update(converted)

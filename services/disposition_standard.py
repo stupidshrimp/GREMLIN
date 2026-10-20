@@ -610,12 +610,19 @@ LEGACY_AUTO_CONVERSIONS = (
 )
 
 
-def _sub_asset_token_matches(asset_number: str, token: str) -> bool:
-    number = asset_number.strip().upper()
+def _sub_asset_token_matches(asset_number: str, token: str, name: str | None = None) -> bool:
+    """Whether a sub-asset is the one a token such as "S09" names.
+
+    By its number ("4002-S09") or, since on Limble an asset's number is often
+    just its id, by a word of its name ("4002-S09 Dry-off oven").
+    """
+
     token = token.strip().upper()
-    if number == token:
-        return True
-    return any(number.endswith(separator + token) for separator in ("-", " ", "_", "."))
+    for word in [asset_number, *(name or "").split()]:
+        text = word.strip().upper()
+        if text == token or any(text.endswith(separator + token) for separator in ("-", "_", ".")):
+            return True
+    return False
 
 
 def legacy_auto_conversion(
@@ -624,12 +631,17 @@ def legacy_auto_conversion(
     asset_number: str,
     sub_asset_choices: Sequence[str],
     codebook: CodeBook,
+    asset_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Coded fields read off a legacy mechanism name, when it is unambiguous.
 
     None when no rule matches, when its sub-asset token does not resolve to
     exactly one place, or when the codes it would set are not in the lists.
+    ``asset_names`` lets the token match a sub-asset by its name as well as its
+    number.
     """
+
+    names = asset_names or {}
 
     text = clean_text(legacy_mechanism)
     if text is None:
@@ -645,10 +657,10 @@ def legacy_auto_conversion(
         ):
             return None
         token = match.group("sub")
-        if _sub_asset_token_matches(asset_number, token):
+        if _sub_asset_token_matches(asset_number, token, names.get(asset_number)):
             sub_asset = None
         else:
-            matches = [choice for choice in sub_asset_choices if _sub_asset_token_matches(choice, token)]
+            matches = [choice for choice in sub_asset_choices if _sub_asset_token_matches(choice, token, names.get(choice))]
             if len(matches) != 1:
                 return None
             sub_asset = matches[0]

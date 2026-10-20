@@ -20,12 +20,20 @@ confirm or change those choices.
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
-moves down the list. The same records can be dispositioned offline in a workbook
-(Download Excel / Upload Excel), and the code lists are edited from there.
-**Perform an Analysis** analyses one population: an asset, narrowed by location,
-component, mechanism, mode, cause and action (in the selector, or by clicking a
-Pareto bar or a matrix cell, which drills down location → component →
-mechanism), by disposition category and by date. Every view on it — Pareto,
+moves down the list. Every column of the list sorts and filters from the ▾ on its
+header, server-side, so both reach every row rather than the page on screen. The
+picked work order shows its facts in a labelled grid (asset; created, started and
+completed on the plant's clock; downtime; record class; category), then its
+request title and description, its failure narrative and its completion notes,
+each under its own heading, with an empty part marked rather than left out. The
+same records can be dispositioned offline in a workbook (Download Excel / Upload
+Excel), which holds the rows the list shows, and the code lists are edited from
+there.
+**Perform an Analysis** analyses one population: an asset, narrowed by
+sub-asset, component, mechanism, mode, cause and action (in the selector, or by
+clicking a Pareto bar or a matrix cell, which drills down sub-asset → component
+→ mechanism; the asset is already chosen, so its sub-assets have no list on the
+population card), by disposition category and by date. Every view on it — Pareto,
 failure trend, downtime drivers, PM effectiveness, repeat fixes and the Weibull —
 reads that same population.
 
@@ -39,23 +47,24 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
 * **Readiness** counts the work orders in reach: dispositioned, not reviewed,
   migrated and still to confirm, failures and PM resets in the population, and
   failures or PM resets with no component (which no life can use).
-* **Pareto** — one bar per value of the dimension chosen (location, component,
-  mechanism, mode, cause, action, category, detection method, asset), ranked by
-  count or downtime, each bar split by failure cause.
+* **Pareto** — one bar per value of the dimension chosen (sub-asset by default,
+  where the asset's own work orders are one bar; component, mechanism, mode,
+  cause, action, category, detection method), ranked by count or downtime, each
+  bar split by failure cause.
 * **Failure trend** — the population's work orders per month (continuous axis),
   with most frequent / highest downtime / fastest growing / most improved read
   for the Pareto's dimension (growth: last three months against the three
   before, once there are six).
 * **Downtime drivers** — total, average, median and longest stop; downtime per
   month; the distribution of stop lengths (0–1, 1–4, 4–8, 8–24, 24+ h); downtime
-  by location; the ten longest stops.
-* **PM effectiveness** — each completed PM at a location of the population (a
+  by sub-asset; the ten longest stops.
+* **PM effectiveness** — each completed PM on the asset or a sub-asset (a
   PM_RESET that renewed one of its components, or PM-class work there that renewed
-  nothing) paired with the next failure of the population found at that location.
+  nothing) paired with the next failure of the population found on that sub-asset.
   Ratings as before: Excellent ≥ 180 days, Good ≥ 90, Fair ≥ 30, else Poor.
-* **Repeat fix rate** — item by item (location + component), a failure is a
+* **Repeat fix rate** — item by item (sub-asset + component), a failure is a
   repeat when it is found within the window (24 scheduled hours by default) of the
-  previous failure's repair being finished, on that location's Weibull schedule.
+  previous failure's repair being finished, on that sub-asset's Weibull schedule.
 * **Weibull** — the renewal-stream fit below, shown with its population
   definition, validity warnings, the items pooled, the sensitivity fit, the
   charts, the interpretation summary, the lives and the event processing table.
@@ -172,12 +181,15 @@ written against them.
     out and the first renewal inside the window starts the clock (the existing
     REL-WBL convention). The POP string's window starts at the From date, or at the
     earliest event in reach when none is entered.
-15. **Life hours** are schedule-adjusted on each location's Weibull schedule; a
+15. **Life hours** are schedule-adjusted on each sub-asset's Weibull schedule; a
     sub-asset with no register entry of its own takes its parent's, then the plant
     default. Each life also shows its calendar days.
 16. **What an asset includes.** Selecting an asset reaches the work orders logged
-    on it, those logged on its sub-assets, and those dispositioned to a location
-    under it.
+    on it, those logged on its sub-assets, and those dispositioned to a
+    sub-asset under it. Sub-assets are every asset under it in Limble's
+    hierarchy, read by `parentAssetID` (never `parentID`, which Limble also sends
+    on top-level assets): from the PM calendar's copy of the asset list when it
+    has one, otherwise from the parents the work orders were imported with.
 17. **Pattern views** read the categories ticked on Perform an Analysis, which
     starts at FAILURE alone; a request that names none gets the categories §2.1
     marks "pattern views: yes" (FAILURE, PM_RESET, EXTERNAL, NON_FAILURE, HELD).
