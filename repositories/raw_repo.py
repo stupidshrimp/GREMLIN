@@ -75,6 +75,19 @@ _MODERN_TABLE_STATEMENTS = (
         FOREIGN KEY (import_batch_id) REFERENCES import_batch(import_batch_id) ON UPDATE CASCADE ON DELETE RESTRICT
     )
     """,
+    # Limble's asset list as the last sync read it: each asset's id, name and
+    # parent by parentAssetID. Replaced whole each sync. The Disposition page's
+    # sub-assets and every analysis that reaches an asset's sub-assets read the
+    # hierarchy from here (see standard_disposition_schema.AssetTree), since
+    # the work orders only record the parent each had when it was imported.
+    """
+    CREATE TABLE IF NOT EXISTS limble_asset (
+        asset_id TEXT PRIMARY KEY,
+        asset_name TEXT,
+        parent_asset_id TEXT,
+        synced_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
 )
 
 # Best-effort helper indexes; created only when every referenced column exists.
@@ -134,6 +147,26 @@ class RawRepository:
                     conn.execute(
                         f"CREATE INDEX IF NOT EXISTS {index_name} ON {table} ({', '.join(columns)})"
                     )
+
+    # ------------------------------------------------------------------
+    # Limble's asset list
+    # ------------------------------------------------------------------
+    def replace_limble_assets(self, assets: list[dict[str, Any]]) -> int:
+        """Store the asset list a sync read, in place of the last one, and return how many.
+
+        Each dict is ``{"asset_id", "asset_name", "parent_asset_id"}``. Wholesale
+        rather than upserted, so an asset moved or removed in Limble leaves no
+        old link behind; one transaction, so a reader never sees half a list.
+        """
+
+        with self.write_connection() as conn:
+            conn.execute(_MODERN_TABLE_STATEMENTS[-1])
+            conn.execute("DELETE FROM limble_asset")
+            conn.executemany(
+                "INSERT OR REPLACE INTO limble_asset (asset_id, asset_name, parent_asset_id) VALUES (?, ?, ?)",
+                [(row["asset_id"], row.get("asset_name"), row.get("parent_asset_id")) for row in assets],
+            )
+        return len(assets)
 
     # ------------------------------------------------------------------
     # Batch lifecycle

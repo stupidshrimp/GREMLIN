@@ -276,7 +276,8 @@
           select.value = draft.sub_asset || "";
           select.addEventListener("change", update("sub_asset"));
           form.appendChild(field("sub-asset", "Sub-asset", select, {
-            hint: "Where it failed. Leave at the whole asset when the work order does not say.",
+            hint: `Where it failed: every asset numbered ${row.asset_number}-… or under it in Limble. Leave at the whole ` +
+              "asset when the work order does not say.",
           }));
         }
         const component = codeSelect("component", "COMPONENT", draft.component_code);

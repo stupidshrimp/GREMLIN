@@ -186,10 +186,22 @@ written against them.
     default. Each life also shows its calendar days.
 16. **What an asset includes.** Selecting an asset reaches the work orders logged
     on it, those logged on its sub-assets, and those dispositioned to a
-    sub-asset under it. Sub-assets are every asset under it in Limble's
-    hierarchy, read by `parentAssetID` (never `parentID`, which Limble also sends
-    on top-level assets): from the PM calendar's copy of the asset list when it
-    has one, otherwise from the parents the work orders were imported with.
+    sub-asset under it. An asset's sub-assets are, every level down:
+    * **by its number** — the plant numbers a sub-asset from its parent:
+      4002-S09 (or an asset named "4002-S09 …") is under 4002, 4002-S09-01 under
+      4002-S09. Two plain numbers of one length are a range of machines
+      ("3101-3107"), not a parent and its sub-asset. An asset that shares
+      another's number ("4002-S09 Burner" beside "4002-S09 Dry-off oven") is a
+      part of that one;
+    * **by Limble's hierarchy** — `parentAssetID`, never `parentID` (which
+      Limble also sends on top-level assets), from the asset list each Limble
+      sync now stores in GREMLIN.db (`limble_asset`), else the PM calendar's
+      copy. A Limble id is read as the Asset Number its work orders are filed
+      under; one with none yet as the untied Asset Number its name's code is,
+      else its own id. Limble's ids and the plant's numbers share a range, so an
+      id that is another machine's Asset Number is never merged into it;
+    * **by the work orders' imported parent**, only for an asset Limble's list
+      does not have.
 17. **Pattern views** read the categories ticked on Perform an Analysis, which
     starts at FAILURE alone; a request that names none gets the categories §2.1
     marks "pattern views: yes" (FAILURE, PM_RESET, EXTERNAL, NON_FAILURE, HELD).

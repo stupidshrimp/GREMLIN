@@ -160,6 +160,7 @@ class IngestionService:
             tasks = kept
 
         asset_index = AssetIndex.empty()
+        assets: list[dict[str, Any]] = []
         if self.fetch_assets:
             self._log("Fetching assets for enrichment ...")
             self._emit(PHASE_ASSETS, 0, None)
@@ -196,6 +197,7 @@ class IngestionService:
         self._log(f"Writing {len(records)} record(s) to the database ...")
         self._emit(PHASE_WRITE, 0, len(records))
         self.raw_repo.ensure_schema()
+        stored_assets = self._store_asset_list(assets)
         batch_id = self.raw_repo.start_batch(notes=f"Limble sync of {len(records)} task(s)")
         if self._on_batch_started is not None:
             try:
@@ -242,6 +244,7 @@ class IngestionService:
             "fetched_tasks": fetched_tasks,
             "excluded_templates": excluded_templates,
             "fetched_assets": asset_index.count,
+            "stored_assets": stored_assets,
             **instruction_counts,
             "records": len(records),
             "import_batch_id": batch_id,
@@ -249,6 +252,35 @@ class IngestionService:
             **mapping,
             "dry_run": False,
         }
+
+    def _store_asset_list(self, assets: list[dict[str, Any]]) -> int:
+        """Keep the asset list this run read, with each parent by parentAssetID, for the sub-asset pickers.
+
+        Only a list that came back with assets replaces the stored one: a run
+        that skipped /assets, or got nothing, leaves the last good list. A
+        failure here is logged, not raised -- the work orders are the import.
+        """
+
+        rows = []
+        for asset in assets:
+            asset_id = asset.get("assetID")
+            if asset_id in (None, ""):
+                continue
+            name = asset.get("name")
+            rows.append({
+                "asset_id": _asset_id_text(asset_id),
+                "asset_name": str(name).strip() if name not in (None, "") else None,
+                "parent_asset_id": _asset_parent_id(asset),
+            })
+        if not rows:
+            return 0
+        try:
+            stored = self.raw_repo.replace_limble_assets(rows)
+        except Exception as exc:  # noqa: BLE001 - the asset list must not cost the import
+            self._log(f"Could not store the asset list: {exc}")
+            return 0
+        self._log(f"Stored {stored} asset(s) for the sub-asset hierarchy.")
+        return stored
 
     def _attach_instructions(self, tasks: list[dict[str, Any]], *, checkpoint: bool = True) -> dict[str, Any]:
         """Fill in each task's four narrative boxes from its instruction items.
@@ -722,6 +754,14 @@ def _asset_parent_id(asset: dict[str, Any]) -> str | None:
     if isinstance(own, float) and own.is_integer():
         own = int(own)
     return None if not parent or parent == str(own).strip() else parent
+
+
+def _asset_id_text(value: Any) -> str:
+    """An asset id as plain text: "4002", never "4002.0" or " 4002 "."""
+
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
 
 
 def _utc_now() -> float:
