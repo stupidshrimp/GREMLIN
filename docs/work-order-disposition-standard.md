@@ -196,10 +196,16 @@ written against them.
     * **by Limble's hierarchy** — `parentAssetID`, never `parentID` (which
       Limble also sends on top-level assets), from the asset list each Limble
       sync now stores in GREMLIN.db (`limble_asset`), else the PM calendar's
-      copy. A Limble id is read as the Asset Number its work orders are filed
-      under; one with none yet as the untied Asset Number its name's code is,
-      else its own id. Limble's ids and the plant's numbers share a range, so an
-      id that is another machine's Asset Number is never merged into it;
+      copy. A Limble asset is the Asset Number the code in its name is
+      ("4002-S09 Dry-off oven" is 4002-S09), never the number some of its work
+      orders were filed under: work orders on the oven filed under 4002 with
+      the oven's name do not make the oven 4002, nor 4002 the oven. One with no
+      work orders yet goes by its code (by its id where work orders go by
+      Limble ids). Limble's ids and the plant's numbers share a range, so an
+      id that is another machine's Asset Number is never merged into it. An
+      Asset Number's name is a name led by its code or naming it whole, so
+      4002 is "4002 Panel Finishing System" whatever most of its work orders
+      are named;
     * **by the work orders' imported parent**, only for an asset Limble's list
       does not have.
 17. **Pattern views** read the categories ticked on Perform an Analysis, which

@@ -232,18 +232,20 @@ class CuratedNumberTests(unittest.TestCase):
     def test_limble_adds_the_sub_assets_with_no_work_orders_and_those_numbered_otherwise(self):
         RawRepository(self.life.db_path).replace_limble_assets(LIMBLE_ASSETS)
         offered = self.offered()
-        # The burner shares 4002-S09's code and hangs under it in Limble; the
-        # riser bank and the fan have no work orders, so they go by their ids
-        # (what the sync will file their first work order under), and the fan's
-        # name has no number, so only Limble puts it here. The sander is the
-        # same asset as 4002-S01 and is offered once.
+        # The burner shares 4002-S09's code and hangs under it in Limble, so it
+        # goes by its id; the riser bank has no work orders and goes by its code,
+        # as the plant numbers it; the fan's name has no number, so it goes by
+        # its id and only Limble puts it here. The sander is the same asset as
+        # 4002-S01 and is offered once.
         self.assertEqual(offered, [
-            ("4002-S01", 1), ("4002-S05", 1), ("4002-S09", 1), (BURNER, 2), ("4111", 1), ("4199", 1),
+            ("4002-S01", 1), ("4002-S05", 1), ("4002-S09", 1), (BURNER, 2), ("4002-S11", 1), ("4199", 1),
         ])
         with self.life.connect() as conn:
             tree = AssetTree.load(conn)
+        self.assertEqual(tree.label("4002"), "4002 Panel Finishing System")
         self.assertEqual(tree.label("4002-S09"), "4002-S09 Dry-off oven")
-        self.assertEqual(tree.label("4111"), "4002-S11 Riser bank (4111)")
+        self.assertEqual(tree.label("4002-S11"), "4002-S11 Riser bank")
+        self.assertEqual(tree.label(BURNER), "4002-S09 Burner (4201)")
         # The building above the line is Limble's grouping, not a sub-asset of anything.
         self.assertEqual(tree.parent_of("4002"), "706")
 
@@ -264,8 +266,43 @@ class CuratedNumberTests(unittest.TestCase):
         self.assertEqual(tree.name("4002-S05"), "4002-S05 Activator")
         self.assertNotIn("4005", [option["asset_number"] for option in tree.descendants("4002")])
 
+    def test_work_orders_filed_under_4002_with_a_sub_assets_name_do_not_rename_4002(self):
+        # Most of 4002's work orders were logged on the oven: filed under 4002,
+        # named for the oven, carrying the oven's Limble id.
+        with self.life.write_connection() as conn:
+            for record_id in range(20, 26):
+                conn.execute("INSERT INTO raw_cmms_record (raw_record_id, raw_json) VALUES (?, '{}')", (record_id,))
+                conn.execute(
+                    """
+                    INSERT INTO mapped_cmms_record (mapped_record_id, raw_record_id, import_batch_id, asset_number,
+                        asset_name, asset_id_raw, task_id, task_name, created_date_final, completed_date_final,
+                        record_class_auto, mapping_version)
+                    VALUES (?, ?, 1, '4002', '4002-S09 Dry-off oven', ?, ?, 'Work', '2024-01-01', '2024-01-01',
+                        'CORRECTIVE_WO', 'v4')
+                    """,
+                    (record_id, record_id, OVEN, str(record_id)),
+                )
+        RawRepository(self.life.db_path).replace_limble_assets(LIMBLE_ASSETS)
+        with self.life.connect() as conn:
+            tree = AssetTree.load(conn)
+        self.assertEqual(tree.label("4002"), "4002 Panel Finishing System")
+        self.assertEqual(tree.label("4002-S09"), "4002-S09 Dry-off oven")
+        self.assertEqual(tree.parent_of("4002-S09"), "4002")
+        self.assertEqual(
+            [option["asset_number"] for option in tree.descendants("4002") if option["depth"] == 1],
+            ["4002-S01", "4002-S05", "4002-S09", "4002-S11", "4199"],
+        )
+        # The page names the asset 4002, and shows each work order's own name
+        # where it names a sub-asset.
+        page = StandardDispositionService(self.life).disposition_page("4002")
+        self.assertEqual({row["asset_label"] for row in page["rows"]}, {"4002 Panel Finishing System"})
+        self.assertEqual(
+            {row["task_id"]: row["logged_asset_name"] for row in page["rows"]},
+            {"1": None, "2": None, **{str(record_id): "4002-S09 Dry-off oven" for record_id in range(20, 26)}},
+        )
+
     def test_the_pm_calendar_stands_in_until_the_sync_has_stored_the_list(self):
-        self.assertIn(("4111", 1), self.offered(hierarchy=LIMBLE_ASSETS))
+        self.assertIn(("4002-S11", 1), self.offered(hierarchy=LIMBLE_ASSETS))
 
     def test_the_analysis_reaches_the_sub_assets_work_orders(self):
         records = StandardDispositionService(self.life)

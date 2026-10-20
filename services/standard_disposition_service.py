@@ -627,6 +627,13 @@ class StandardDispositionService:
 
         record["asset_label"] = tree.label(record["asset_number"])
         record["location_label"] = tree.label(record["derived"]["location"])
+        # The name the work order itself carries, when it is not the asset's own:
+        # one filed under 4002 can be named for the sub-asset it was on.
+        own = (record.get("asset_name") or "").strip()
+        record["logged_asset_name"] = (
+            own if own and own.casefold() not in (tree.name(record["asset_number"]).casefold(), str(record["asset_number"]).casefold())
+            else None
+        )
 
     def _add_plant_times(self, conn: sqlite3.Connection, records: Iterable[dict[str, Any]]) -> None:
         """Each record's created, started and completed times on the plant's clock, for its card.

@@ -134,6 +134,8 @@
         el("div", { class: "std-fact" + (wide ? " std-fact-wide" : "") }, [el("dt", { text: label }), el("dd", {}, [content])]);
       const facts = el("dl", { class: "std-facts", id: id("facts") }, [
         fact("Asset", shown(row.asset_label || [row.asset_number, row.asset_name].filter(Boolean).join(" · ")), true),
+        // A work order filed under the asset can name the sub-asset it was on.
+        row.logged_asset_name ? fact("Asset named on the work order", row.logged_asset_name, true) : null,
         fact("Created", shown(times.created || day(row.created_date))),
         fact("Started", shown(times.started || day(row.start_date))),
         fact("Completed", shown(times.completed || day(row.completed_date))),
@@ -266,7 +268,7 @@
           // Every asset under this one in Limble's hierarchy, each level indented
           // under its parent.
           const select = el("select", { id: id("sub-asset"), class: "lda-select" }, [
-            el("option", { value: "", text: `${row.asset_label || row.asset_number} (whole asset)` }),
+            el("option", { value: "", text: `${row.asset_number} (whole asset)` }),
             ...subAssets.map((option) => el("option", {
               value: option.asset_number,
               text: `${"\u00a0\u00a0\u00a0".repeat(Math.max(0, (option.depth || 1) - 1))}${(option.depth || 1) > 1 ? "└ " : ""}` +
