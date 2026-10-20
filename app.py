@@ -5,6 +5,8 @@ import secrets
 import sqlite3
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import date
 from functools import wraps
 from pathlib import Path
@@ -25,19 +27,13 @@ from services.availability_dashboard import (
 from services.reliability_service import ReliabilityService
 from services.life_data_service import (
     DEFAULT_DB_PATH,
-    DISPLAY_COLUMNS,
-    MODELED_POPULATION_PLACEHOLDER,
-    NARRATIVE_COLUMNS,
-    PM_DISPOSITION_CATEGORIES,
-    PM_RESET_DECISIONS,
     REPEAT_FIX_DEFAULT_WINDOW_HOURS,
-    REPEAT_FIX_MAX_WINDOW_HOURS,
     RISK_WINDOW_WEEKS,
-    WO_DISPOSITION_CATEGORIES,
     DatabaseWriteError,
     LifeDataService,
     WeibullFitError,
 )
+from services.population_analysis_service import PopulationAnalysisService
 from services.standard_disposition_service import StandardDispositionService
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
@@ -427,9 +423,6 @@ PAGES = [
         # which is the difference between the page being hidden and being shut.
         "withheld_from_department": DEPARTMENT_OPERATIONS_MAINTENANCE,
         "section": ("/life-data-analysis",),
-        # Analysis Population is the same kind of page as Perform an Analysis, read
-        # from the work-order disposition standard, so it needs an account too.
-        "covers": ("/life-data-analysis/population-analysis",),
     },
     {
         "route": "/metrics",
@@ -724,18 +717,17 @@ def _standard_service() -> StandardDispositionService:
     return StandardDispositionService(_service_or_api_error())
 
 
+def _analysis_service() -> PopulationAnalysisService:
+    """Perform an Analysis's population and views, over the shared LifeDataService."""
+
+    return PopulationAnalysisService(_service_or_api_error())
+
+
 def _required_asset() -> str:
     asset_number = (request.values.get("asset") or "").strip()
     if not asset_number:
         raise LifeDataApiError("Select an Asset Number first.", status_code=400)
     return asset_number
-
-
-def _disposition_kind() -> str:
-    kind = (request.values.get("kind") or "").strip().lower()
-    if kind not in {"wo", "pm"}:
-        raise LifeDataApiError("Disposition kind must be 'wo' or 'pm'.", status_code=400)
-    return kind
 
 
 # Pages that exist and are routable but are deliberately kept out of the sidebar
@@ -1299,7 +1291,7 @@ SEARCH_ENTRIES = [
         "kind": "page",
         "context": "Life Data Analysis",
         "role": "editor",
-        "keywords": ["work order", "wo", "pm reset", "failure mode", "failure mechanism", "classify"],
+        "keywords": ["work order", "wo", "pm reset", "component", "sub-asset", "failure mode", "failure mechanism", "iso 14224", "classify", "excel"],
     },
     {
         "label": "Metrics",
@@ -1492,20 +1484,20 @@ SEARCH_ENTRIES = [
         "keywords": ["repeat failure", "repair quality", "came back", "rework", "fix did not hold"],
     },
     {
-        "label": "Disposition Work Orders",
-        "url": "/life-data-analysis/disposition?kind=wo",
+        "label": "Work orders not reviewed",
+        "url": "/life-data-analysis/disposition?scope=not_reviewed",
         "kind": "function",
         "context": "Disposition",
         "role": "editor",
-        "keywords": ["wo", "corrective", "assign failure mode", "record class"],
+        "keywords": ["backlog", "wo", "corrective", "pm reset", "component", "failure mechanism", "record class"],
     },
     {
-        "label": "Disposition PM Resets",
-        "url": "/life-data-analysis/disposition?kind=pm",
+        "label": "Migrated dispositions to confirm",
+        "url": "/life-data-analysis/disposition?scope=migrated",
         "kind": "function",
         "context": "Disposition",
         "role": "editor",
-        "keywords": ["pm", "reset decision", "preventive maintenance"],
+        "keywords": ["rel", "legacy", "review flag", "confirm", "pm"],
     },
     {
         "label": "Reliability performance by asset",
@@ -1889,7 +1881,7 @@ def perform_analysis():
 
 @app.route("/life-data-analysis/disposition")
 def disposition():
-    # The whole page is an editor: every table on it writes dispositions back to
+    # The whole page is an editor: every control on it writes dispositions back to
     # GREMLIN.db. There is nothing here to show a viewer with the controls taken
     # away, so the page is refused rather than rendered read-only. Home still
     # shows the card to a viewer, but as a button that explains the role instead
@@ -1906,35 +1898,7 @@ def disposition():
             ),
             403,
         )
-    return render_template(
-        "disposition.html",
-        page_title="Disposition",
-    )
-
-
-@app.route("/life-data-analysis/disposition/standard")
-def standard_disposition():
-    # The work-order disposition standard's editor. An editor like the Disposition
-    # page it sits under, and refused the same way to anybody who is not one.
-    _user, error = _authorised_user("editor")
-    if error:
-        return (
-            render_template(
-                "not_authorized.html",
-                page_title="Work-Order Disposition",
-                page_heading="Work-order disposition is for editors.",
-                required_role="editor",
-                back_url=url_for("population_analysis"),
-            ),
-            403,
-        )
-    return render_template("wo_disposition.html", page_title="Work-Order Disposition")
-
-
-@app.route("/life-data-analysis/population-analysis")
-def population_analysis():
-    # Needs an account like Perform an Analysis, which its PAGES entry "covers".
-    return render_template("population_analysis.html", page_title="Analysis Population")
+    return render_template("disposition.html", page_title="Disposition")
 
 
 @app.route("/life-data-analysis/failure-classification")
@@ -2484,13 +2448,13 @@ def submit_bug_report():
 
 
 # ---------------------------------------------------------------------------
-# Life Data Analysis / Weibull JSON API
+# Life Data Analysis JSON API
 #
-# These endpoints mirror, one-to-one, the LifeDataService calls the desktop GUI
-# makes, so the browser workspace performs the exact same backend operations:
-# asset selection, readiness summary + Pareto + beta rankings, REL disposition
-# editing (with Excel round-trips), Weibull MLE fitting, bulk calculation, and
-# saving manual parameter adjustments.
+# The Disposition page and Perform an Analysis, both read from the work-order
+# disposition standard (services/disposition_standard.py). Reads are open to
+# whoever may see Life Data Analysis; every write -- a disposition, a code, a
+# saved Weibull run, an adjustment, a numbered report -- needs the editor role
+# and is recorded against the account.
 # ---------------------------------------------------------------------------
 
 
@@ -2516,76 +2480,6 @@ def api_refresh_mapping():
     service = _service_or_api_error()
     mapped = service.refresh_mapped_cmms_records()
     return jsonify({"mapped": int(mapped or 0), "assets": service.asset_number_options()})
-
-
-@app.route("/life-data-analysis/api/summary")
-@life_data_api
-def api_summary():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    summary = service.summary_for_asset(asset_number)
-    return jsonify(
-        {
-            "asset_number": asset_number,
-            "summary": {field: getattr(summary, field) for field in summary.__dataclass_fields__},
-            "rankings": service.latest_failure_mechanism_beta_rankings(asset_number, limit=5),
-            "risk_rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=_risk_window_weeks(), limit=5),
-            "pareto": service.failure_mechanism_pareto(asset_number, **_date_window()),
-            "trend": service.failure_mode_trend(asset_number, **_date_window()),
-            # The zone a Weibull run counts days in, from which the page works out
-            # the plant's today to decide whether the To date can go to it as a cutoff.
-            "plant_time_zone": service.plant_time_zone_name(),
-        }
-    )
-
-
-def _date_window() -> dict:
-    """Perform an Analysis's From and To days from ``?date_from=`` / ``?date_to=``, as keyword arguments.
-
-    Either may be blank for no bound on that side. The Pareto and the trend,
-    downtime, PM and repeat analyses all take them, as days read in UTC; see
-    LifeDataService._work_order_date_window.
-    """
-
-    window = {}
-    for key, name, what in (("start", "date_from", "From"), ("end", "date_to", "To")):
-        value = (request.values.get(name) or "").strip()
-        if not value:
-            window[key] = None
-            continue
-        try:
-            window[key] = date.fromisoformat(value)
-        except ValueError:
-            raise LifeDataApiError(f"The {what} date must be a date in the form YYYY-MM-DD.", status_code=400) from None
-    return window
-
-
-def _risk_window_weeks() -> float:
-    """The "most likely to fail" window in weeks from ``?weeks=``, the default when absent."""
-
-    value = (request.values.get("weeks") or "").strip()
-    if not value:
-        return float(RISK_WINDOW_WEEKS)
-    try:
-        weeks = float(value)
-    except ValueError:
-        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400) from None
-    if not (math.isfinite(weeks) and 1 <= weeks <= 52):
-        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400)
-    return weeks
-
-
-@app.route("/life-data-analysis/api/risk-rankings")
-@life_data_api
-def api_risk_rankings():
-    """The asset's mechanisms most likely to fail in the next ``weeks`` weeks (default 4)."""
-
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    weeks = _risk_window_weeks()
-    return jsonify(
-        {"weeks": weeks, "rankings": service.latest_failure_mechanism_risk_rankings(asset_number, weeks=weeks, limit=5)}
-    )
 
 
 @app.route("/life-data-analysis/api/schedule-register")
@@ -2621,364 +2515,8 @@ def api_set_asset_schedule():
     )
 
 
-@app.route("/life-data-analysis/api/tour-example")
-@life_data_api
-def api_tour_example():
-    """The asset "Show me around" picks as its example when none is selected.
-
-    Only a read: the tour then loads it the way picking it from the list would.
-    ``asset_number`` is null when no asset has an included failure to show.
-    """
-    service = _service_or_api_error()
-    return jsonify({"asset_number": service.tour_example_asset()})
-
-
-@app.route("/life-data-analysis/api/disposition-tour-example")
-@life_data_api
-def api_disposition_tour_example():
-    """The asset the Disposition page's "Show me around" picks when none is selected.
-
-    The one whose table, for the Record Type, Rows and search asked for, has the
-    most rows. Only a read, like the analysis tour's; ``asset_number`` is null
-    when no asset has a record that fits.
-    """
-    service = _service_or_api_error()
-    kind = _disposition_kind()
-    only_needing = (request.values.get("scope") or "all").strip().lower() == "new"
-    search = (request.values.get("search") or "").strip()
-    return jsonify(
-        {
-            "asset_number": service.disposition_tour_example_asset(
-                kind, only_needing_disposition=only_needing, search=search or None
-            )
-        }
-    )
-
-
-# The Record Class choices each disposition kind offers. PM records cannot be
-# reclassed as corrective work orders (save_disposition refuses it), so the PM
-# list leaves it out rather than offering a choice that fails on save.
-WO_RECORD_CLASS_OPTIONS = ("CORRECTIVE_WO", "PM", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN")
-PM_RECORD_CLASS_OPTIONS = ("PM", "PM_RESET_CANDIDATE", "INSPECTION", "PARTS_ORDER", "ADMINISTRATIVE", "PROJECT_WORK", "UNKNOWN")
-
-
-def _disposition_editor_options(service: LifeDataService, asset_number: str, kind: str) -> dict:
-    """What a disposition editor is built from, beyond the records themselves.
-
-    Shared by the paged disposition table and the single-record editor the
-    analysis tables open, so a record offers the same choices in either place.
-    """
-    return {
-        "display_columns": list(DISPLAY_COLUMNS),
-        # The narrative boxes travel with their labels rather than as bare
-        # column keys: the table renders them as one stacked cell, so it needs
-        # to caption each line it draws.
-        "narrative_columns": [dict(column) for column in NARRATIVE_COLUMNS],
-        # The Modeled Population cell for a row that has none yet. The screen
-        # renders it, so the ORDER BY sorts by it; both read this one copy.
-        "modeled_population_placeholder": MODELED_POPULATION_PLACEHOLDER,
-        "mode_options": service.get_asset_failure_mode_options(asset_number),
-        "mechanism_options": service.get_asset_failure_mechanism_options(asset_number),
-        "categories": list(PM_DISPOSITION_CATEGORIES if kind == "pm" else WO_DISPOSITION_CATEGORIES),
-        "record_classes": list(PM_RECORD_CLASS_OPTIONS if kind == "pm" else WO_RECORD_CLASS_OPTIONS),
-        "pm_reset_decisions": list(PM_RESET_DECISIONS),
-    }
-
-
-@app.route("/life-data-analysis/api/dispositions")
-@life_data_api
-def api_dispositions():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    kind = _disposition_kind()
-    scope = (request.values.get("scope") or "all").strip().lower()
-    only_needing = scope == "new"
-    search = (request.values.get("search") or "").strip()
-    page_size = 50
-    try:
-        page_index = max(0, int(request.values.get("page", 0)))
-    except (TypeError, ValueError):
-        page_index = 0
-
-    # The table is paginated, so the chosen column has to be ordered here across
-    # every eligible row -- sorting the 50 rows already on screen would answer a
-    # different question. An unrecognised column name is dropped rather than
-    # trusted: it names an ORDER BY expression, so only the known set is allowed.
-    sortable_columns = service.disposition_sort_columns(kind)
-    sort = (request.values.get("sort") or "").strip()
-    if sort not in sortable_columns:
-        sort = ""
-    sort_dir = "desc" if (request.values.get("dir") or "").strip().lower() == "desc" else "asc"
-
-    all_count = service.disposition_row_count(asset_number, kind)
-    displayed_count = service.disposition_row_count(
-        asset_number, kind, only_needing_disposition=only_needing, search=search or None
-    )
-    max_page_index = max(0, math.ceil(displayed_count / page_size) - 1) if displayed_count else 0
-    page_index = min(page_index, max_page_index)
-    offset = page_index * page_size
-    rows = service.disposition_rows(
-        asset_number,
-        kind,
-        only_needing_disposition=only_needing,
-        limit=page_size,
-        offset=offset,
-        search=search or None,
-        sort=sort or None,
-        sort_dir=sort_dir,
-    )
-
-    return jsonify(
-        {
-            "asset_number": asset_number,
-            "kind": kind,
-            "scope": scope,
-            "search": search,
-            # Echoed back rather than assumed by the browser: an unknown column
-            # is dropped above, and the table has to show the sort that was
-            # actually applied.
-            "sort": sort,
-            "sort_dir": sort_dir,
-            "sortable_columns": sortable_columns,
-            "rows": rows,
-            **_disposition_editor_options(service, asset_number, kind),
-            "page_index": page_index,
-            "max_page_index": max_page_index,
-            "page_size": page_size,
-            "offset": offset,
-            "displayed_count": displayed_count,
-            "all_count": all_count,
-        }
-    )
-
-
-@app.route("/life-data-analysis/api/dispositions/record")
-@life_data_api
-def api_disposition_record():
-    """One record's current disposition, for the analysis tables' in-place editor.
-
-    An analysis lists the work orders it was built from, and the one that turns
-    out to be misclassified is found there rather than on the disposition page.
-    This hands the editor that record plus the same dropdown options the
-    disposition table is built from; the save goes through
-    /api/dispositions/save like any other, so the rules it enforces are the same.
-    """
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    kind = _disposition_kind()
-    try:
-        mapped_record_id = int(request.values.get("mapped_record_id") or "")
-    except (TypeError, ValueError):
-        raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400)
-    row = service.disposition_record(asset_number, mapped_record_id)
-    if row is None:
-        raise LifeDataApiError(
-            f"That record was not found on asset {asset_number}. Reload the analysis and try again.",
-            status_code=404,
-        )
-    return jsonify(
-        {
-            "asset_number": asset_number,
-            "kind": kind,
-            "row": row,
-            **_disposition_editor_options(service, asset_number, kind),
-        }
-    )
-
-
-@app.route("/life-data-analysis/api/dispositions/save", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-def api_save_dispositions():
-    service = _service_or_api_error()
-    payload = request.get_json(silent=True) or {}
-    dispositions = payload.get("dispositions")
-    if not isinstance(dispositions, list) or not dispositions:
-        raise LifeDataApiError("No disposition rows were provided to save.", status_code=400)
-    saved = service.save_dispositions(dispositions)
-    return jsonify({"saved": saved})
-
-
-@app.route("/life-data-analysis/api/dispositions/excel")
-@life_data_api
-def api_download_disposition_excel():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    kind = _disposition_kind()
-    # The Rows selector, read exactly as /api/dispositions reads it: the workbook
-    # is the offline copy of the table, so "Only new / undispositioned" on screen
-    # has to mean the same rows in the file. Anything else is the full selection,
-    # which is what an unset or unknown value already meant.
-    only_needing = (request.values.get("scope") or "all").strip().lower() == "new"
-    safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
-    # In the name, so the two workbooks for one asset are told apart on disk and
-    # the narrower one is not mistaken for the full record set months later.
-    scope_token = "new_" if only_needing else ""
-    # Build the workbook in a temp file, then serve it from memory and delete the
-    # temp file immediately so repeated downloads never orphan files on disk.
-    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_{kind}_")
-    os.close(fd)
-    try:
-        service.export_disposition_excel(asset_number, kind, path, only_needing_disposition=only_needing)
-        with open(path, "rb") as handle:
-            workbook_bytes = handle.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    return send_file(
-        io.BytesIO(workbook_bytes),
-        as_attachment=True,
-        download_name=f"{safe_asset}_{kind}_{scope_token}dispositions.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-
-@app.route("/life-data-analysis/api/dispositions/excel", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-@requires_csrf
-def api_upload_disposition_excel():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    kind = _disposition_kind()
-    upload = request.files.get("file")
-    if upload is None or not upload.filename:
-        raise LifeDataApiError("Choose an .xlsx file exported from this disposition screen.", status_code=400)
-    fd, path = tempfile.mkstemp(suffix=".xlsx")
-    os.close(fd)
-    try:
-        upload.save(path)
-        imported = service.import_disposition_excel(asset_number, kind, path)
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    return jsonify({"imported": imported})
-
-
-@app.route("/life-data-analysis/api/pm-effectiveness")
-@life_data_api
-def api_pm_effectiveness():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    mechanism_raw = request.values.get("failure_mechanism_id")
-    if mechanism_raw in (None, ""):
-        raise LifeDataApiError("Select a failure mechanism to evaluate PM effectiveness.", status_code=400)
-    try:
-        failure_mechanism_id = int(mechanism_raw)
-    except (TypeError, ValueError):
-        raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
-    mode_raw = request.values.get("failure_mode_id")
-    failure_mode_id = None
-    if mode_raw not in (None, ""):
-        try:
-            failure_mode_id = int(mode_raw)
-        except (TypeError, ValueError):
-            raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
-    return jsonify(
-        {
-            "pm_effectiveness": service.pm_effectiveness(
-                asset_number,
-                failure_mechanism_id=failure_mechanism_id,
-                failure_mode_id=failure_mode_id,
-                **_date_window(),
-            )
-        }
-    )
-
-
-@app.route("/life-data-analysis/api/repeat-fixes")
-@life_data_api
-def api_repeat_fixes():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    window_raw = request.values.get("window_hours")
-    window_hours = REPEAT_FIX_DEFAULT_WINDOW_HOURS
-    if window_raw not in (None, ""):
-        try:
-            window_hours = float(window_raw)
-        except (TypeError, ValueError):
-            raise LifeDataApiError("The repeat window must be a number of scheduled hours.", status_code=400)
-        if not math.isfinite(window_hours) or window_hours <= 0 or window_hours > REPEAT_FIX_MAX_WINDOW_HOURS:
-            raise LifeDataApiError(
-                f"The repeat window must be more than 0 and at most {REPEAT_FIX_MAX_WINDOW_HOURS:g} scheduled hours.",
-                status_code=400,
-            )
-    return jsonify({"repeat_fixes": service.repeat_fix_rate(asset_number, window_hours=window_hours, **_date_window())})
-
-
-@app.route("/life-data-analysis/api/downtime-drivers")
-@life_data_api
-def api_downtime_drivers():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    # The selected failure mode/mechanism comes from a Pareto bar (both ids) or the
-    # Perform Analysis picker (a mode-level choice carries only the mode id), so the
-    # mode id is required and the mechanism id is optional.
-    mode_raw = request.values.get("failure_mode_id")
-    if mode_raw in (None, ""):
-        raise LifeDataApiError("Select a failure mode or mechanism to analyze downtime drivers.", status_code=400)
-    try:
-        failure_mode_id = int(mode_raw)
-    except (TypeError, ValueError):
-        raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
-    mechanism_raw = request.values.get("failure_mechanism_id")
-    failure_mechanism_id = None
-    if mechanism_raw not in (None, ""):
-        try:
-            failure_mechanism_id = int(mechanism_raw)
-        except (TypeError, ValueError):
-            raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
-    return jsonify(
-        {
-            "downtime_drivers": service.downtime_driver_analysis(
-                asset_number,
-                failure_mechanism_id=failure_mechanism_id,
-                failure_mode_id=failure_mode_id,
-                **_date_window(),
-            )
-        }
-    )
-
-
-@app.route("/life-data-analysis/api/weibull-groups")
-@life_data_api
-def api_weibull_groups():
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    return jsonify({"groups": service.weibull_group_options(asset_number)})
-
-
-def _serialize_analysis_result(result) -> dict:
-    return {field: getattr(result, field) for field in result.__dataclass_fields__}
-
-
-@app.route("/life-data-analysis/api/perform-analysis", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-def api_perform_analysis():
-    service = _service_or_api_error()
-    payload = request.get_json(silent=True) or {}
-    asset_number = (payload.get("asset") or "").strip()
-    if not asset_number:
-        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
-    grouping_level = (payload.get("grouping_level") or "").strip()
-    failure_mode_id = payload.get("failure_mode_id")
-    failure_mechanism_id = payload.get("failure_mechanism_id")
-    if failure_mode_id is None:
-        raise LifeDataApiError("Select a failure mode or failure mechanism first.", status_code=400)
-    result = service.perform_weibull_analysis(
-        asset_number,
-        grouping_level=grouping_level,
-        failure_mode_id=int(failure_mode_id),
-        failure_mechanism_id=int(failure_mechanism_id) if failure_mechanism_id is not None else None,
-        analysis_start=_optional_plant_date(payload.get("analysis_start"), "analysis start date"),
-        analysis_cutoff=_optional_plant_date(payload.get("analysis_cutoff"), "analysis cutoff date"),
-    )
-    return jsonify({"result": _serialize_analysis_result(result)})
+def _username() -> str | None:
+    return (current_user() or {}).get("username")
 
 
 def _optional_plant_date(value, what: str) -> date | None:
@@ -2996,134 +2534,30 @@ def _optional_plant_date(value, what: str) -> date | None:
         raise LifeDataApiError(f"The {what} must be a date in the form YYYY-MM-DD.", status_code=400) from None
 
 
-@app.route("/life-data-analysis/api/saved-analysis")
+# ---- Code lists and the Disposition page ------------------------------------
+
+
+@app.route("/life-data-analysis/api/code-lists")
 @life_data_api
-def api_saved_analysis():
-    """Read back the Weibull fit already saved for a failure group.
-
-    Performing an analysis rebuilds and stores event processing, observations, a
-    dataset, a run, and a result, so that route stays editor-only. This is the
-    read-only twin: a viewer or a signed-out visitor can open the Weibull view for
-    any group an editor has already run, without writing anything. ``result`` comes
-    back null when the group has never been analyzed.
-    """
-    service = _service_or_api_error()
-    asset_number = _required_asset()
-    grouping_level = (request.values.get("grouping_level") or "FAILURE_MECHANISM").strip().upper()
-    if grouping_level not in {"FAILURE_MODE", "FAILURE_MECHANISM"}:
-        raise LifeDataApiError("grouping_level must be FAILURE_MODE or FAILURE_MECHANISM.", status_code=400)
-    mode_raw = request.values.get("failure_mode_id")
-    if mode_raw in (None, ""):
-        raise LifeDataApiError("Select a failure mode or mechanism to view its Weibull analysis.", status_code=400)
-    try:
-        failure_mode_id = int(mode_raw)
-    except (TypeError, ValueError):
-        raise LifeDataApiError("failure_mode_id must be an integer.", status_code=400)
-    mechanism_raw = request.values.get("failure_mechanism_id")
-    failure_mechanism_id = None
-    if mechanism_raw not in (None, ""):
-        try:
-            failure_mechanism_id = int(mechanism_raw)
-        except (TypeError, ValueError):
-            raise LifeDataApiError("failure_mechanism_id must be an integer.", status_code=400)
-    result = service.load_saved_weibull_analysis(
-        asset_number,
-        grouping_level=grouping_level,
-        failure_mode_id=failure_mode_id,
-        failure_mechanism_id=failure_mechanism_id,
-    )
-    return jsonify({"result": _serialize_analysis_result(result) if result is not None else None})
-
-
-@app.route("/life-data-analysis/api/parameter-adjustment", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-def api_parameter_adjustment():
-    service = _service_or_api_error()
-    payload = request.get_json(silent=True) or {}
-    try:
-        result_id = int(payload.get("result_id"))
-        beta = float(payload.get("beta"))
-        eta = float(payload.get("eta"))
-    except (TypeError, ValueError):
-        raise LifeDataApiError("Adjusted beta, eta, and the source result id are required.", status_code=400)
-    if not (math.isfinite(beta) and math.isfinite(eta) and beta > 0 and eta > 0):
-        raise LifeDataApiError("Adjusted beta and eta must both be finite and greater than zero.", status_code=400)
-    reason = str(payload.get("reason") or "")
-    adjustment_id = service.save_parameter_adjustment(result_id, beta, eta, reason)
-    return jsonify({"parameter_adjustment_id": adjustment_id})
-
-
-@app.route("/life-data-analysis/api/weibull-report", methods=["POST"])
-@life_data_api
-@requires_role("editor")
-def api_weibull_report():
-    service = _service_or_api_error()
-    payload = request.get_json(silent=True) or {}
-    asset_number = (payload.get("asset") or "").strip()
-    if not asset_number:
-        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
-    result_id = payload.get("result_id")
-    if result_id in (None, ""):
-        result_id = (payload.get("result") or {}).get("result_id")
-    if result_id in (None, ""):
-        raise LifeDataApiError("Run a Weibull analysis before generating a report.", status_code=400)
-    try:
-        payload["result_id"] = int(result_id)
-    except (TypeError, ValueError):
-        raise LifeDataApiError("A valid saved Weibull result id is required.", status_code=400)
-    # Build the .docx in a temp file, serve it from memory, then delete the temp
-    # file immediately so repeated downloads never orphan files on disk.
-    fd, path = tempfile.mkstemp(suffix=".docx", prefix="weibull_report_")
-    os.close(fd)
-    try:
-        report_number = service.build_weibull_report_docx(asset_number, payload, path)
-        with open(path, "rb") as handle:
-            document_bytes = handle.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    return send_file(
-        io.BytesIO(document_bytes),
-        as_attachment=True,
-        download_name=f"{report_number}.docx",
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-
-# --------------------------------------------------------------------------- #
-# The work-order disposition standard (services/disposition_standard.py)
-#
-# Reads are open to whoever may see Life Data Analysis, as the rest of its API
-# is; every write needs the editor role and is recorded against the account.
-# --------------------------------------------------------------------------- #
-
-
-def _username() -> str | None:
-    return (current_user() or {}).get("username")
-
-
-@app.route("/life-data-analysis/api/standard/code-lists")
-@life_data_api
-def api_standard_code_lists():
+def api_code_lists():
     return jsonify({"code_lists": _standard_service().code_lists()})
 
 
-@app.route("/life-data-analysis/api/standard/code-lists", methods=["POST"])
+@app.route("/life-data-analysis/api/code-lists", methods=["POST"])
 @life_data_api
 @requires_role("editor")
-def api_standard_save_code():
+def api_save_code():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         raise LifeDataApiError("Send the code as JSON.", status_code=400)
     return jsonify({"code_lists": _standard_service().save_code(payload, updated_by=_username())})
 
 
-@app.route("/life-data-analysis/api/standard/dispositions")
+@app.route("/life-data-analysis/api/dispositions")
 @life_data_api
-def api_standard_dispositions():
+def api_dispositions():
+    """One page of an asset's work orders with their dispositions, and what the editor offers."""
+
     service = _standard_service()
     asset_number = _required_asset()
     try:
@@ -3139,9 +2573,11 @@ def api_standard_dispositions():
     return jsonify({**page, "options": service.editor_options(asset_number)})
 
 
-@app.route("/life-data-analysis/api/standard/dispositions/record")
+@app.route("/life-data-analysis/api/dispositions/record")
 @life_data_api
-def api_standard_disposition_record():
+def api_disposition_record():
+    """One record, its history and its asset's editor options: for the editor an analysis table opens."""
+
     try:
         mapped_record_id = int(request.values.get("mapped_record_id") or "")
     except (TypeError, ValueError):
@@ -3158,10 +2594,10 @@ def api_standard_disposition_record():
     })
 
 
-@app.route("/life-data-analysis/api/standard/dispositions/save", methods=["POST"])
+@app.route("/life-data-analysis/api/dispositions/save", methods=["POST"])
 @life_data_api
 @requires_role("editor")
-def api_standard_save_dispositions():
+def api_save_dispositions():
     payload = request.get_json(silent=True) or {}
     dispositions = payload.get("dispositions")
     if not isinstance(dispositions, list) or not dispositions:
@@ -3172,50 +2608,184 @@ def api_standard_save_dispositions():
     return jsonify({"saved": saved})
 
 
-@app.route("/life-data-analysis/api/standard/population-options")
+@app.route("/life-data-analysis/api/dispositions/excel")
 @life_data_api
-def api_standard_population_options():
-    assets = [value.strip() for value in request.values.getlist("asset") if value.strip()]
-    if not assets:
-        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
-    return jsonify(_standard_service().population_options(assets))
+def api_download_disposition_excel():
+    """The asset's work orders as a workbook to disposition offline, for the Show setting on screen."""
+
+    service = _standard_service()
+    asset_number = _required_asset()
+    scope = (request.values.get("scope") or "all").strip().lower()
+    safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
+    # In the name, so a backlog workbook is not mistaken for the full record set later.
+    scope_token = {"not_reviewed": "not_reviewed_", "migrated": "to_confirm_"}.get(scope, "")
+    # Built in a temp file, served from memory, and the file deleted at once, so
+    # repeated downloads never leave files behind.
+    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_")
+    os.close(fd)
+    try:
+        service.export_excel(asset_number, path, scope=scope)
+        with open(path, "rb") as handle:
+            workbook_bytes = handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return send_file(
+        io.BytesIO(workbook_bytes),
+        as_attachment=True,
+        download_name=f"{safe_asset}_{scope_token}dispositions.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/life-data-analysis/api/dispositions/excel", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+@requires_csrf
+def api_upload_disposition_excel():
+    """Save what a filled-in workbook changed: every changed row, or none if one is refused."""
+
+    service = _standard_service()
+    asset_number = _required_asset()
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        raise LifeDataApiError("Choose an .xlsx file downloaded from this page.", status_code=400)
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        upload.save(path)
+        try:
+            outcome = service.import_excel(asset_number, path, decided_by=_username())
+        except (zipfile.BadZipFile, KeyError, ET.ParseError):
+            raise LifeDataApiError("That file is not a workbook this page can read. Upload the .xlsx you downloaded.") from None
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return jsonify(outcome)
+
+
+@app.route("/life-data-analysis/api/disposition-tour-example")
+@life_data_api
+def api_disposition_tour_example():
+    """The asset the Disposition page's "Show me around" opens when none is picked: the one with the most work orders."""
+
+    service = _service_or_api_error()
+    with service.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT TRIM(asset_number) AS asset_number, COUNT(*) AS records
+            FROM mapped_cmms_record
+            WHERE TRIM(COALESCE(asset_number, '')) <> ''
+            GROUP BY TRIM(asset_number)
+            ORDER BY records DESC, asset_number
+            LIMIT 1
+            """
+        ).fetchone()
+    return jsonify({"asset_number": row["asset_number"] if row else None})
+
+
+# ---- Perform an Analysis --------------------------------------------------
 
 
 def _population_payload() -> dict:
+    """The JSON body every analysis takes: the population, and the From/To days to read it over."""
+
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         raise LifeDataApiError("Send the analysis population as JSON.", status_code=400)
     selection = payload.get("selection")
     if not isinstance(selection, dict):
         raise LifeDataApiError("The analysis population is missing.", status_code=400)
+    payload["start"] = _optional_plant_date(payload.get("date_from"), "From date")
+    payload["end"] = _optional_plant_date(payload.get("date_to"), "To date")
     return payload
 
 
-@app.route("/life-data-analysis/api/standard/patterns", methods=["POST"])
+def _risk_weeks(value) -> float:
+    if value in (None, ""):
+        return float(RISK_WINDOW_WEEKS)
+    try:
+        weeks = float(value)
+    except (TypeError, ValueError):
+        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400) from None
+    if not (math.isfinite(weeks) and 1 <= weeks <= 52):
+        raise LifeDataApiError("The window has to be a number of weeks between 1 and 52.", status_code=400)
+    return weeks
+
+
+@app.route("/life-data-analysis/api/population-options")
 @life_data_api
-def api_standard_patterns():
-    """The triage views for a population. A read: POST only to carry the selection as JSON."""
+def api_population_options():
+    assets = [value.strip() for value in request.values.getlist("asset") if value.strip()]
+    if not assets:
+        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
+    return jsonify(_analysis_service().options(assets))
+
+
+@app.route("/life-data-analysis/api/summary", methods=["POST"])
+@life_data_api
+def api_summary():
+    """Readiness, the Pareto, the matrix, the trend and the rankings for a population.
+
+    A read: POST only to carry the population as JSON, as every analysis below does.
+    """
 
     payload = _population_payload()
-    try:
-        top_n = int(payload.get("top_n") or 5)
-    except (TypeError, ValueError):
-        raise LifeDataApiError("Top N must be a whole number.", status_code=400) from None
     return jsonify(
-        _standard_service().patterns(
+        _analysis_service().summary(
             payload["selection"],
-            start=_optional_plant_date(payload.get("date_from"), "From date"),
-            end=_optional_plant_date(payload.get("date_to"), "To date"),
+            start=payload["start"],
+            end=payload["end"],
             group_by=str(payload.get("group_by") or "location"),
-            period=str(payload.get("period") or "month"),
-            top_n=top_n,
+            weeks=_risk_weeks(payload.get("weeks")),
         )
     )
 
 
-def _standard_weibull(save: bool):
+@app.route("/life-data-analysis/api/risk-rankings", methods=["POST"])
+@life_data_api
+def api_risk_rankings():
     payload = _population_payload()
-    result = _standard_service().run_weibull(
+    weeks = _risk_weeks(payload.get("weeks"))
+    return jsonify({"weeks": weeks, "rankings": _analysis_service().risk_rankings(payload["selection"], weeks=weeks)})
+
+
+@app.route("/life-data-analysis/api/downtime-drivers", methods=["POST"])
+@life_data_api
+def api_downtime_drivers():
+    payload = _population_payload()
+    return jsonify(_analysis_service().downtime(payload["selection"], start=payload["start"], end=payload["end"]))
+
+
+@app.route("/life-data-analysis/api/pm-effectiveness", methods=["POST"])
+@life_data_api
+def api_pm_effectiveness():
+    payload = _population_payload()
+    return jsonify(_analysis_service().pm_effectiveness(payload["selection"], start=payload["start"], end=payload["end"]))
+
+
+@app.route("/life-data-analysis/api/repeat-fixes", methods=["POST"])
+@life_data_api
+def api_repeat_fixes():
+    payload = _population_payload()
+    window = payload.get("window_hours")
+    return jsonify(
+        _analysis_service().repeat_fixes(
+            payload["selection"],
+            window_hours=REPEAT_FIX_DEFAULT_WINDOW_HOURS if window in (None, "") else window,
+            start=payload["start"],
+            end=payload["end"],
+        )
+    )
+
+
+def _run_weibull(save: bool):
+    payload = _population_payload()
+    result = _analysis_service().run_weibull(
         payload["selection"],
         analysis_start=_optional_plant_date(payload.get("analysis_start"), "analysis start date"),
         analysis_cutoff=_optional_plant_date(payload.get("analysis_cutoff"), "analysis cutoff date"),
@@ -3225,37 +2795,106 @@ def _standard_weibull(save: bool):
     return jsonify({"result": result})
 
 
-@app.route("/life-data-analysis/api/standard/weibull", methods=["POST"])
+@app.route("/life-data-analysis/api/weibull", methods=["POST"])
 @life_data_api
-def api_standard_weibull_preview():
+def api_weibull_preview():
     """Build and fit a population's lives without saving anything: open to every reader."""
 
-    return _standard_weibull(save=False)
+    return _run_weibull(save=False)
 
 
-@app.route("/life-data-analysis/api/standard/weibull/save", methods=["POST"])
+@app.route("/life-data-analysis/api/weibull/save", methods=["POST"])
 @life_data_api
 @requires_role("editor")
-def api_standard_weibull_save():
-    """Build, fit and save a population's lives, with the population definition string."""
+def api_weibull_save():
+    """Build, fit and save a population's lives, with its population definition string."""
 
-    return _standard_weibull(save=True)
+    return _run_weibull(save=True)
 
 
-@app.route("/life-data-analysis/api/standard/weibull/saved")
+@app.route("/life-data-analysis/api/saved-analysis", methods=["POST"])
 @life_data_api
-def api_standard_saved_weibull():
-    asset_number = (request.values.get("asset") or "").strip() or None
-    return jsonify({"analyses": _standard_service().saved_analyses(asset_number=asset_number)})
+def api_latest_saved_analysis():
+    """The newest saved run of exactly this population, or null when it has never been saved."""
+
+    payload = _population_payload()
+    return jsonify({"result": _analysis_service().latest_saved(payload["selection"])})
 
 
-@app.route("/life-data-analysis/api/standard/weibull/saved/<int:analysis_id>")
+@app.route("/life-data-analysis/api/saved-analysis/<int:analysis_id>")
 @life_data_api
-def api_standard_saved_weibull_result(analysis_id: int):
-    result = _standard_service().load_saved_analysis(analysis_id)
+def api_saved_analysis(analysis_id: int):
+    result = _analysis_service().load_saved(analysis_id) if analysis_id < 2**63 else None
     if result is None:
         raise LifeDataApiError("That saved analysis was not found.", status_code=404)
     return jsonify({"result": result})
+
+
+@app.route("/life-data-analysis/api/saved-analyses")
+@life_data_api
+def api_saved_analyses():
+    asset_number = (request.values.get("asset") or "").strip() or None
+    return jsonify({"analyses": _analysis_service().saved_analyses(asset_number=asset_number)})
+
+
+@app.route("/life-data-analysis/api/parameter-adjustment", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_parameter_adjustment():
+    """Keep an editor's beta and eta beside a saved run's MLE, with why."""
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        analysis_id = int(payload.get("analysis_id"))
+    except (TypeError, ValueError):
+        raise LifeDataApiError("Save the Weibull analysis before adjusting it.", status_code=400) from None
+    try:
+        adjustment = _analysis_service().save_adjustment(
+            analysis_id, payload.get("beta"), payload.get("eta"), payload.get("reason"), adjusted_by=_username()
+        )
+    except LookupError as exc:
+        raise LifeDataApiError(str(exc), status_code=404) from None
+    return jsonify({"adjustment": adjustment})
+
+
+@app.route("/life-data-analysis/api/weibull-report", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_weibull_report():
+    """A numbered Word report of a saved run, read back from the database rather than the request."""
+
+    payload = request.get_json(silent=True) or {}
+    fd, path = tempfile.mkstemp(suffix=".docx", prefix="weibull_report_")
+    os.close(fd)
+    try:
+        try:
+            report_number = _analysis_service().build_report(payload.get("analysis_id"), payload, path)
+        except LookupError as exc:
+            raise LifeDataApiError(str(exc), status_code=404) from None
+        with open(path, "rb") as handle:
+            document_bytes = handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return send_file(
+        io.BytesIO(document_bytes),
+        as_attachment=True,
+        download_name=f"{report_number}.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@app.route("/life-data-analysis/api/tour-example")
+@life_data_api
+def api_tour_example():
+    """What Perform an Analysis's "Show me around" opens when nothing is picked, or null.
+
+    Only a read: the tour then loads it the way picking it would.
+    """
+
+    return jsonify({"example": _analysis_service().tour_example()})
 
 
 @app.route("/reliability-links")

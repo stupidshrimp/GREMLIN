@@ -1,34 +1,27 @@
-/* Life Data Analysis / Weibull workspace client.
+/* Perform an Analysis: every analysis of one population of work orders.
  *
- * Mirrors the desktop GREMLIN GUI's Life Data Analysis tab: select an asset,
- * review the Weibull readiness summary + Pareto + beta rankings, disposition
- * corrective work orders and PM reset events, then run a REL-style 2P Weibull
- * MLE analysis. Every action calls the same LifeDataService methods through the
- * Flask JSON API, so the backend is identical to the desktop application.
+ * Pick an asset, and narrow it to the population to understand -- a location, a
+ * component, a failure mechanism -- in the selector, or by clicking a Pareto bar
+ * or a matrix cell, which drills down a level at a time. Every view on the page
+ * reads that same population from the work-order dispositions
+ * (services/population_analysis_service.py), so the Pareto, the trend, the
+ * downtime, PM effectiveness, repeat fixes and the Weibull fit always count the
+ * same records. The Weibull is the renewal-stream fit of the disposition
+ * standard: lives built item by item, pooled, saved with the population's
+ * definition string.
  */
 (function () {
   "use strict";
 
   const API = "/life-data-analysis/api";
-  // The chart palette. The values live in theme.css like every other colour in
-  // the application -- chart_theme.js reads them back out, since a canvas
-  // inherits nothing from the cascade and has to be told. Held in a variable
-  // rather than read at each use because getComputedStyle is a layout read and
-  // these are wanted once per plotted point; reassigned on a theme change, next
-  // to the redraw it goes with.
+  // The chart palette, read out of theme.css by chart_theme.js: a canvas inherits
+  // nothing from the cascade. Reassigned on a theme change, next to the redraw.
   let C = window.gremlinChartPalette();
-  // Whether this browser session may write. Rendered by the server into every
-  // page, so it reflects the account's role rather than anything the client
-  // decided. The API enforces the same rule on its own -- this only keeps the
-  // page from offering an action that would be refused.
+  // Whether this browser session may write. Rendered by the server; the API
+  // enforces the same rule on its own, this only keeps the page from offering an
+  // action that would be refused.
   const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
-  // Added to the hint over each analysis table whose record numbers open that
-  // record's disposition, for the accounts that get those buttons.
-  const RECORD_EDIT_HINT = CAN_EDIT ? " Click a WO number to review or change its disposition." : "";
-  // Analysis types offered by the Step 1 selector. Weibull and Failure Mode Trend
-  // are implemented; the rest render a "Coming soon" placeholder for now. The
-  // selected type only controls the secondary analysis panel — the Pareto chart
-  // stays visible for every type.
+  const RECORD_EDIT_HINT = CAN_EDIT ? " Click a task ID to review or change its disposition." : "";
   const ANALYSIS_TYPES = {
     WEIBULL: "Weibull Analysis",
     TREND: "Failure Mode Trend Analysis",
@@ -36,169 +29,65 @@
     PM: "PM Effectiveness Analysis",
     REPEAT: "Repeat Fix Rate Analysis",
   };
-  // The editable half of a disposition, per record kind, as columns: what the
-  // disposition table draws after the read-only record columns, and what the
-  // analysis page's single-record editor labels its fields with, so the two
-  // always call a field the same thing. Each key is the name the server orders
-  // that column by.
-  const DISPOSITION_EDIT_COLUMNS = {
-    wo: [
-      { key: "disposition_notes", label: "Disposition Notes" },
-      { key: "disposition_category", label: "Disposition Category" },
-      { key: "effective_record_class", label: "Record Class" },
-      { key: "failure_mode", label: "Failure Mode" },
-      { key: "failure_mechanism", label: "Failure Mechanism" },
-      { key: "modeled_population_name", label: "Modeled Population" },
-      { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
-    ],
-    pm: [
-      { key: "disposition_notes", label: "Disposition Notes" },
-      { key: "disposition_category", label: "Disposition Category" },
-      { key: "effective_record_class", label: "Record Class" },
-      { key: "pm_reset_inclusion_decision", label: "PM Reset Decision" },
-      { key: "reset_target_failure_mode", label: "Reset Target Failure Mode" },
-      { key: "reset_target_failure_mechanism", label: "Reset Target Failure Mechanism" },
-      { key: "modeled_population_name", label: "Modeled Population" },
-      { key: "include_in_weibull_candidate", label: "Include in Weibull Candidate" },
-      { key: "pm_reset_renewal_rationale", label: "PM Reset Renewal Rationale / Evidence" },
-    ],
-  };
-  const SUMMARY_FIELDS = [
-    ["total_entries", "Total entries for this asset"],
-    ["usable_wos_for_weibull", "Usable WOs for Weibull"],
-    ["usable_pms_for_weibull", "Usable PMs for Weibull"],
-    ["wos_dispositioned", "WOs dispositioned"],
-    ["wos_not_dispositioned", "WOs not dispositioned"],
-    ["pms_dispositioned", "PMs dispositioned"],
-    ["pms_not_dispositioned", "PMs not dispositioned"],
+  // The selector's lists, in the order a population is narrowed: where, what, how.
+  const DIMENSIONS = [
+    ["locations", "Location"],
+    ["components", "Component"],
+    ["failure_mechanisms", "Failure mechanism"],
+    ["failure_modes", "Failure mode"],
+    ["failure_causes", "Failure cause"],
+    ["actions", "Action"],
   ];
+  const READINESS_FIELDS = [
+    ["in_reach", "Work orders in reach"],
+    ["dispositioned", "Dispositioned"],
+    ["not_reviewed", "Not reviewed yet"],
+    ["to_confirm", "Migrated, still to confirm"],
+    ["failures", "Failures in the population"],
+    ["pm_resets", "PM resets in the population"],
+    ["uncoded", "Failures and PM resets with no component"],
+  ];
+  const PARETO_MAX_BARS = 15;
+
+  function emptySelection() {
+    return Object.fromEntries(DIMENSIONS.map(([key]) => [key, []]));
+  }
 
   const state = {
-    assets: [],
-    assetByNumber: new Map(),
-    assetFiltered: [],
-    assetDropdownOpen: false,
-    assetActiveIndex: -1,
-    selectedAsset: null,
-    paretoRows: [],
-    // Highest-beta mechanisms, as the summary last sent them: the fits already
-    // saved on this asset, which the tour picks its Weibull example from.
-    rankings: [],
-    paretoMetric: "downtime_hours",
-    // What each Pareto bar is: "mechanism", one per failure mode and mechanism pair
-    // as the server sends them, or "mode", one per failure mode with its pairs added
-    // up. Kept across a change of asset, as the measure is.
-    paretoGroupBy: "mechanism",
-    // The failure mode whose mechanisms alone the mechanism Pareto shows, after its
-    // mode bar was opened into them ({ failure_mode_id, failure_mode_name }); null
-    // for every mechanism.
-    paretoModeFocus: null,
-    // The From and To days ("YYYY-MM-DD") on the Pareto panel; null means no bound
-    // on that side. The server applies them by work order date to the Pareto and
-    // to the trend, downtime, PM and repeat analyses, so a bar and the analysis it
-    // opens count the same records; a Weibull run takes them as its start and
-    // cutoff. Kept across a change of asset, so assets can be compared over the
-    // same dates.
-    dateRange: { from: null, to: null },
-    // The zone a Weibull run keeps the plant's calendar in, from the summary: the
-    // plant's today is worked out from it when needed, since this browser's own
-    // day can differ from the plant's and a day stored earlier goes stale.
-    plantTimeZone: null,
-    // Selected Analysis Type (Step 1) and the data that drives the Failure Mode
-    // Trend panel. `trend` is the latest payload returned alongside the summary;
-    // `selectedTrend` is the failure mode/mechanism whose monthly trend is plotted.
+    asset: null,
     analysisType: ANALYSIS_TYPES.WEIBULL,
-    trend: null,
-    selectedTrend: null,
-    // Inclusive month bounds ("YYYY-MM") for the Failure Mode Trend chart/table.
-    // null means "no bound" (use the full data range on that side).
-    trendRange: { from: null, to: null },
-    // A single month ("YYYY-MM") drilled into by clicking a trend data point or a
-    // Failure Mode Trend Detail month row. When set, the "Work Orders in Trend"
-    // table is filtered to that month; null shows every WO in the active range.
-    trendSelectedMonth: null,
-    // Inclusive month bounds for the PM Effectiveness "Failures Following PM" chart
-    // and PM-to-Failure table (same semantics as trendRange).
-    pmRange: { from: null, to: null },
-    // PM Effectiveness Analysis: `pmSelection` is the chosen failure mechanism
-    // (from a Pareto click or the Perform Analysis picker); `pmData` is the latest
-    // payload from the pm-effectiveness endpoint. `pmToken` drops stale responses.
-    pmSelection: null,
-    pmData: null,
+    // The population: what each selector list has ticked, the categories the
+    // pattern views read, and whether induced failures count.
+    selection: emptySelection(),
+    categories: ["FAILURE"],
+    excludeInduced: false,
+    // The From and To days ("YYYY-MM-DD"), null for no bound. Every view takes
+    // them; a Weibull run takes them as its start and cutoff.
+    dateRange: { from: null, to: null },
+    // Each narrowing a Pareto or matrix click made, to step back out of.
+    drillHistory: [],
+    options: null,
+    optionsToken: 0,
+    groupBy: "location",
+    metric: "count",
+    summary: null,
+    summaryToken: 0,
+    plantTimeZone: null,
+    trendMonth: null,
+    pm: null,
     pmToken: 0,
-    // Downtime Driver Analysis: `downtimeSelection` is the chosen failure
-    // mode/mechanism (Pareto click or Perform Analysis picker); `downtimeData` is
-    // the latest payload from the downtime-drivers endpoint. `downtimeToken` drops
-    // stale responses (same pattern as the PM analysis above).
-    downtimeSelection: null,
-    downtimeData: null,
+    downtime: null,
     downtimeToken: 0,
-    // Repeat Fix Rate Analysis: `repeatData` is the latest asset-wide payload from the
-    // repeat-fixes endpoint, `repeatWindow` the scheduled hours it was counted with,
-    // `repeatFilter` the one mechanism the repeats list is narrowed to (null for
-    // all), and `repeatToken` drops stale responses.
-    repeatData: null,
+    repeat: null,
+    repeatToken: 0,
     repeatWindow: 24,
     repeatFilter: null,
-    repeatToken: 0,
-    // "Most likely to fail soon": the window in weeks the list was last asked for, and
-    // a token both requests that draw it (the summary and the risk-rankings call)
-    // take, so a response for an older window cannot land on top of a newer one.
+    // The Weibull result in the workspace, and a token that drops stale ones.
+    result: null,
+    analysisToken: 0,
+    analysisRedraw: null,
     riskWeeks: 4,
     riskToken: 0,
-    // `latestResult` is the Weibull result rendered in the workspace; `analysisToken`
-    // drops stale responses (same pattern as the PM and Downtime analyses above), so an
-    // older group's result -- or its "nothing saved" empty state -- cannot land on top
-    // of a newer one.
-    latestResult: null,
-    // The failure group `latestResult` was fitted for, so a disposition changed
-    // from its data table can run the same group again. It outlives latestResult
-    // when the page switches to another analysis type, so that coming back can
-    // run the group over the same window; a new asset, or a refusal that removes
-    // the group's saved fit, clears it.
-    latestResultGroup: null,
-    // The analysis start and cutoff dates an editor entered for that run, if any
-    // ({ start, cutoff } as YYYY-MM-DD, either blank), so the re-run after a
-    // disposition change or a type switch keeps the same window rather than
-    // quietly widening it.
-    latestResultWindow: null,
-    analysisToken: 0,
-    // The most recently selected failure mode/mechanism, regardless of which
-    // analysis type made the selection. Carried forward when the user switches
-    // analysis types so the new analysis auto-computes for the same failure focus.
-    activeMechanismRow: null,
-    summaryToken: 0,
-    // Page context: "analysis" (Perform an Analysis) or "disposition" (the
-    // dedicated disposition page). Set during init so shared helpers branch.
-    pageMode: "analysis",
-    dispositionKind: "wo",
-    dispositionScope: "all",
-    dispositionPageIndex: 0,
-    // Free-text filter applied to the disposition table (matched server-side
-    // across every record column, so it spans all pages, not just the visible one).
-    dispositionSearch: "",
-    // Column ordering for the disposition table, applied server-side for the
-    // same reason the search is: the table is paginated, so ordering has to
-    // cover every eligible row or "oldest first" only means oldest of the 50 on
-    // screen. `key` is a column name the server advertised; "" is its own
-    // default order.
-    dispositionSort: { key: "", dir: "asc" },
-    // Active column value filters for the disposition table, keyed by column, so
-    // paging and sorting -- both of which rebuild the table from the server --
-    // land on the view they left instead of quietly dropping the filter.
-    // dispositionFilterSelection is the selection they were chosen against;
-    // when that changes the rows do too, and the filter goes with them.
-    dispositionFilters: {},
-    dispositionFilterSelection: "",
-    // Monotonic token for disposition reloads. Overlapping debounced searches /
-    // page changes can resolve out of order on a slow endpoint; only the load
-    // whose token still matches is allowed to render, so a stale response never
-    // leaves the table filtered for a previous search.
-    dispositionToken: 0,
-    // Redraws the current analysis charts at the live canvas size (set while a
-    // result is shown, cleared with the workspace) so window resizes don't leave
-    // the Weibull plots stretched or squished.
-    analysisRedraw: null,
   };
 
   // ---- small DOM + format helpers ------------------------------------------
@@ -512,7 +401,6 @@
     loadingDepth = Math.max(0, loadingDepth - 1);
     if (loadingDepth === 0) {
       $("lda-loading").hidden = true;
-      startOwedDispositionTour();
     }
   }
 
@@ -558,867 +446,6 @@
     setTimeout(remove, 5000);
   }
 
-  // ---- help tooltips ---------------------------------------------------------
-  // Wraps a control in a bubble that opens on hover and on keyboard focus, for
-  // buttons whose label has no room to say what the button actually does. The
-  // cascade drives both states (see .lda-tip in the stylesheet), so re-rendering
-  // the editor can never strand an open bubble on the page. The bubble
-  // *describes* the control rather than naming it, so a screen reader still
-  // announces the button's own text first.
-  let tooltipSeq = 0;
-  function withTooltip(control, text) {
-    const id = `lda-tip-${++tooltipSeq}`;
-    control.setAttribute("aria-describedby", id);
-    return el("span", { class: "lda-tip-wrap" }, [
-      control,
-      el("span", { class: "lda-tip", id, role: "tooltip", text }),
-    ]);
-  }
-
-  // ---- modal ----------------------------------------------------------------
-  function openModal({ title, bodyNodes, actions }) {
-    return new Promise((resolve) => {
-      const backdrop = el("div", { class: "lda-modal-backdrop" });
-      const actionRow = el("div", { class: "lda-modal-actions" });
-      function close(value) {
-        document.removeEventListener("keydown", onKey);
-        backdrop.remove();
-        resolve(value);
-        startOwedDispositionTour();
-      }
-      function onKey(event) {
-        if (event.key === "Escape") close(null);
-      }
-      (actions || []).forEach((action) => {
-        const button = el("button", {
-          class: action.primary ? "btn-primary" : "btn-secondary",
-          text: action.label,
-          onclick: () => {
-            if (action.validate && !action.validate()) return;
-            close(action.value === undefined ? action.label : action.value());
-          },
-        });
-        actionRow.appendChild(button);
-      });
-      const modal = el("div", { class: "lda-modal" }, [
-        el("h3", { text: title }),
-        el("div", { class: "lda-modal-body" }, bodyNodes || []),
-        actionRow,
-      ]);
-      backdrop.appendChild(modal);
-      backdrop.addEventListener("click", (event) => {
-        if (event.target === backdrop) close(null);
-      });
-      document.addEventListener("keydown", onKey);
-      document.body.appendChild(backdrop);
-    });
-  }
-
-  // ---- asset selection ------------------------------------------------------
-  // The asset list is filtered entirely in the browser against state.assets, so
-  // every mapped Asset Number is searchable regardless of how many exist. (The
-  // previous native <datalist> silently capped its suggestions, which made
-  // higher asset numbers appear to be missing from the search.)
-  const ASSET_DROPDOWN_LIMIT = 50;
-
-  function setAssetOptions(assets) {
-    state.assets = assets || [];
-    state.assetByNumber = new Map(state.assets.map((a) => [a.asset_number, a]));
-  }
-
-  // The asset list's first load, set as the page starts. The tour waits on it
-  // before it asks for its example: Show me around works from the moment the
-  // page is drawn, before the list it looks the example up in is in, and before
-  // the records it is chosen from have been mapped on a first visit after an
-  // import (see asset_number_options).
-  let assetsLoaded = Promise.resolve();
-
-  async function loadAssets() {
-    const hint = $("lda-asset-hint");
-    try {
-      const data = await getJson(`${API}/assets`);
-      setAssetOptions(data.assets || []);
-      if (state.assetDropdownOpen) renderAssetDropdown();
-      hint.textContent = state.assets.length
-        ? `${state.assets.length} Asset Number(s) available. Type to search.`
-        : "No mapped CMMS Asset Numbers were found in the database.";
-    } catch (err) {
-      hint.textContent = "";
-      showBanner(err.message, "error");
-    }
-  }
-
-  function filterAssets(query) {
-    const q = (query || "").trim().toLowerCase();
-    if (!q) return state.assets;
-    return state.assets.filter((asset) => {
-      const number = String(asset.asset_number || "").toLowerCase();
-      const name = String(asset.asset_name || "").toLowerCase();
-      return number.includes(q) || name.includes(q);
-    });
-  }
-
-  function renderAssetDropdown() {
-    const list = $("lda-asset-list");
-    list.innerHTML = "";
-    if (!state.assets.length) {
-      list.appendChild(el("li", { class: "lda-combobox-empty", text: "No Asset Numbers available." }));
-      state.assetFiltered = [];
-      return;
-    }
-    const query = currentAssetValue();
-    const matches = filterAssets(query);
-    state.assetFiltered = matches.slice(0, ASSET_DROPDOWN_LIMIT);
-    if (!matches.length) {
-      list.appendChild(el("li", { class: "lda-combobox-empty", text: `No Asset Numbers match "${query}".` }));
-      return;
-    }
-    state.assetFiltered.forEach((asset, index) => {
-      list.appendChild(
-        el(
-          "li",
-          {
-            class: "lda-combobox-option" + (index === state.assetActiveIndex ? " is-active" : ""),
-            role: "option",
-            // Use mousedown so selection happens before the input's blur closes
-            // the list; preventDefault keeps focus on the input.
-            onmousedown: (event) => {
-              event.preventDefault();
-              chooseAsset(asset);
-            },
-          },
-          [
-            el("span", { class: "lda-combobox-number", text: asset.asset_number }),
-            asset.asset_name ? el("span", { class: "lda-combobox-name", text: asset.asset_name }) : null,
-          ]
-        )
-      );
-    });
-    if (matches.length > state.assetFiltered.length) {
-      list.appendChild(
-        el("li", {
-          class: "lda-combobox-empty",
-          text: `Showing first ${state.assetFiltered.length} of ${matches.length} matches. Keep typing to narrow.`,
-        })
-      );
-    }
-  }
-
-  function openAssetDropdown() {
-    renderAssetDropdown();
-    $("lda-asset-list").hidden = false;
-    $("lda-asset").setAttribute("aria-expanded", "true");
-    state.assetDropdownOpen = true;
-  }
-
-  function closeAssetDropdown() {
-    $("lda-asset-list").hidden = true;
-    $("lda-asset").setAttribute("aria-expanded", "false");
-    state.assetDropdownOpen = false;
-    state.assetActiveIndex = -1;
-    startOwedDispositionTour();
-  }
-
-  // Resolves once the asset's summary is on the page, or on the Disposition
-  // page its editor, which is what the tour waits for after picking its example.
-  function chooseAsset(asset) {
-    $("lda-asset").value = asset.asset_number;
-    closeAssetDropdown();
-    return evaluateAssetSelection();
-  }
-
-  function moveAssetActive(delta) {
-    const count = state.assetFiltered.length;
-    if (!count) return;
-    let index = state.assetActiveIndex + delta;
-    if (index < 0) index = count - 1;
-    if (index >= count) index = 0;
-    state.assetActiveIndex = index;
-    renderAssetDropdown();
-    const active = $("lda-asset-list").querySelectorAll(".lda-combobox-option")[index];
-    if (active) active.scrollIntoView({ block: "nearest" });
-  }
-
-  function onAssetKeydown(event) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      if (!state.assetDropdownOpen) openAssetDropdown();
-      moveAssetActive(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      if (!state.assetDropdownOpen) openAssetDropdown();
-      moveAssetActive(-1);
-    } else if (event.key === "Enter") {
-      if (state.assetDropdownOpen && state.assetActiveIndex >= 0) {
-        event.preventDefault();
-        chooseAsset(state.assetFiltered[state.assetActiveIndex]);
-      }
-    } else if (event.key === "Escape") {
-      closeAssetDropdown();
-    }
-  }
-
-  let assetDebounce = null;
-  function onAssetInput() {
-    state.assetActiveIndex = -1;
-    openAssetDropdown();
-    if (assetDebounce) clearTimeout(assetDebounce);
-    assetDebounce = setTimeout(evaluateAssetSelection, 300);
-  }
-
-  function currentAssetValue() {
-    let value = ($("lda-asset").value || "").trim();
-    if (value.includes(" — ")) value = value.split(" — ")[0].trim();
-    return value;
-  }
-
-  function evaluateAssetSelection() {
-    const value = currentAssetValue();
-    const asset = state.assetByNumber.get(value) || null;
-    const previous = state.selectedAsset;
-    state.selectedAsset = asset ? asset.asset_number : null;
-    if (previous !== state.selectedAsset) {
-      state.latestResult = null;
-      state.latestResultGroup = null;
-      state.latestResultWindow = null;
-      // A new asset invalidates the cached trend data and any failure-mechanism
-      // selection driving the trend chart or PM effectiveness analysis.
-      state.trend = null;
-      state.selectedTrend = null;
-      state.trendRange = { from: null, to: null };
-      state.trendSelectedMonth = null;
-      state.pmSelection = null;
-      state.pmData = null;
-      state.pmRange = { from: null, to: null };
-      // Bump the PM token so an in-flight pm-effectiveness request for the prior
-      // asset can't render after this reset (e.g. switching away and back).
-      state.pmToken += 1;
-      // A new asset likewise invalidates the Downtime Driver selection/data; bump
-      // its token so a late downtime-drivers response for the old asset is dropped.
-      state.downtimeSelection = null;
-      state.downtimeData = null;
-      state.downtimeToken += 1;
-      state.repeatData = null;
-      state.repeatFilter = null;
-      state.repeatToken += 1;
-      // The new asset may not have the mode a bar was opened into.
-      state.paretoModeFocus = null;
-      // Same for a Weibull lookup still in flight: clearWorkspace() below empties the
-      // workspace, and a late response for the old asset must not refill it.
-      state.analysisToken += 1;
-      // A new asset's failure mode/mechanism ids may not apply; drop the carried
-      // selection so a type switch doesn't auto-run a stale mechanism on it.
-      state.activeMechanismRow = null;
-      clearWorkspace();
-    }
-    const ready = Boolean(state.selectedAsset);
-    // The summary / action cards only exist on the Perform Analysis page; guard
-    // so the same asset combobox can drive the disposition page too.
-    const summaryCard = $("lda-summary-card");
-    const actionsBar = $("lda-actions");
-    if (summaryCard) summaryCard.hidden = !ready;
-    // The action bar holds a read-only Pareto toggle alongside the write
-    // buttons, so it still appears; its buttons are hidden by the template for
-    // a viewer.
-    if (actionsBar) actionsBar.hidden = !ready;
-    if (asset) {
-      $("lda-asset-hint").textContent = asset.asset_name
-        ? `Selected ${asset.asset_number}: ${asset.asset_name}.`
-        : `Selected ${asset.asset_number}.`;
-      if (state.pageMode === "disposition") return reloadDispositionForSelection();
-      return refreshSummary();
-    } else if (value) {
-      if (state.pageMode === "disposition") clearWorkspace();
-      $("lda-asset-hint").textContent = `"${value}" is not a known Asset Number. Choose one from the list.`;
-    }
-  }
-
-  function clearWorkspace() {
-    // Failure mode/mechanism dropdown lists are portaled to <body>; remove any
-    // that are still open so re-rendering the editor never orphans them.
-    document.querySelectorAll("body > .lda-portal-list").forEach((node) => node.remove());
-    $("lda-workspace").innerHTML = "";
-    state.analysisRedraw = null;
-    state.dispositionChangedFn = null;
-    // Invalidate any in-flight disposition load so it can't render into the
-    // workspace we just cleared (e.g. the asset selection was removed).
-    state.dispositionToken += 1;
-  }
-
-  // ---- readiness summary ----------------------------------------------------
-  async function refreshSummary() {
-    // The summary grid / rankings / Pareto chart only exist on the Perform
-    // Analysis page; the dedicated disposition page has no such markup.
-    if (state.pageMode === "disposition") return;
-    if (!state.selectedAsset) return;
-    const asset = state.selectedAsset;
-    const token = ++state.summaryToken;
-    // The summary carries the risk list too, so it takes a risk token: a weeks change
-    // made while it is in flight asks again, and the older list must not land last.
-    const riskToken = ++state.riskToken;
-    try {
-      const params = withDateRange(new URLSearchParams({ asset, weeks: String(riskWeeks()) }));
-      const data = await getJson(`${API}/summary?${params.toString()}`);
-      if (token !== state.summaryToken || state.selectedAsset !== asset) return;
-      renderSummary(data.summary || {});
-      state.rankings = data.rankings || [];
-      renderRankings(state.rankings);
-      if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
-      state.paretoRows = data.pareto || [];
-      state.trend = data.trend || null;
-      state.plantTimeZone = data.plant_time_zone || null;
-      drawPareto();
-      // The trend summary cards and chart share the same filtered dataset as the
-      // Pareto, so refresh them here too (this fires on asset selection and after
-      // every disposition change, keeping the cards in sync with the filters).
-      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
-      // PM effectiveness is computed from a separate endpoint, but a disposition
-      // change can move a failure in/out of the included set, so re-fetch it when
-      // a mechanism is already selected so every card/chart/table stays in sync.
-      // With no selection (e.g. the asset just changed, clearing it), render the
-      // empty PM state so the previous asset's cards/chart/table don't linger.
-      if (state.analysisType === ANALYSIS_TYPES.PM) {
-        if (state.pmSelection) loadPmEffectiveness();
-        else renderPm();
-      }
-      // Downtime Driver Analysis is computed from its own endpoint but shares the
-      // included-failure dataset, so a disposition change can move work orders in/out
-      // of the selected mechanism — re-fetch when a mechanism is selected so every
-      // card/chart/table stays in sync; otherwise render the empty state.
-      if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
-        if (state.downtimeSelection) loadDowntime();
-        else renderDowntime();
-      }
-      // Repeat Fix Rate reads the same included failures, so a disposition change
-      // can make or break a repeat: re-fetch it whenever it is showing.
-      if (state.analysisType === ANALYSIS_TYPES.REPEAT) loadRepeatFixes();
-      offerAnalysisResultsTour();
-    } catch (err) {
-      if (token === state.summaryToken) showBanner(err.message, "error");
-    }
-  }
-
-  function renderSummary(summary) {
-    const grid = $("lda-summary-grid");
-    grid.innerHTML = "";
-    SUMMARY_FIELDS.forEach(([key, label]) => {
-      grid.appendChild(
-        el("div", { class: "lda-metric" }, [
-          el("span", { class: "lda-metric-value", text: String(summary[key] ?? "—") }),
-          el("span", { class: "lda-metric-label", text: label }),
-        ])
-      );
-    });
-  }
-
-  function renderRankings(rankings) {
-    const list = $("lda-beta-rankings");
-    list.innerHTML = "";
-    if (!rankings.length) {
-      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
-      return;
-    }
-    // Only fits with enough failure lives are ranked at all; one saved under an earlier
-    // method still is, marked, because its beta is close but not what a run today gives.
-    rankings.forEach((row) => {
-      list.appendChild(
-        el("li", {
-          text:
-            `${row.failure_mechanism_name}: beta ${fmt(row.beta_mle)} ` +
-            `(${row.failure_count} failures, eta ${fmt(row.eta_mle)} h` +
-            (row.probability_plot_r_squared != null
-              ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}${row.probability_plot_review ? ", below its review threshold" : ""}`
-              : "") +
-            ")" +
-            rankingMarker(row),
-        })
-      );
-    });
-  }
-
-  // Why a ranked fit wants running again, if it does: saved under an earlier method,
-  // or counted on a schedule the asset has since been moved off.
-  function rankingMarker(row) {
-    if (row.method_current === false) return " — saved under an earlier method; run it again";
-    if (row.schedule_current === false) return " — counted on the asset's old schedule; run it again";
-    if (row.time_zone_current === false) return " — counted in an earlier plant time zone; run it again";
-    return "";
-  }
-
-  // The "Most likely to fail soon" window, in weeks: what the box says when that is a
-  // whole number of weeks from 1 to 52 (a fraction is refused, not rounded),
-  // otherwise the last window that was. The box is
-  // put back to the window used, so the sentence around it never names another.
-  function riskWeekValue(box) {
-    const text = box ? String(box.value).trim() : "";
-    const weeks = Number(text);
-    return text !== "" && Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
-  }
-
-  function riskWeeks() {
-    const box = $("lda-risk-weeks");
-    const weeks = riskWeekValue(box);
-    if (weeks != null) state.riskWeeks = weeks;
-    if (box && box.value !== String(state.riskWeeks)) box.value = String(state.riskWeeks);
-    return state.riskWeeks;
-  }
-
-  function onRiskWeeksChange() {
-    if (riskWeekValue($("lda-risk-weeks")) == null) {
-      riskWeeks();
-      showBanner("The window must be a whole number of weeks from 1 to 52.", "error");
-      return;
-    }
-    refreshRiskRankings();
-  }
-
-  function renderRiskRankings(rankings) {
-    const list = $("lda-risk-rankings");
-    if (!list) return;
-    list.innerHTML = "";
-    if (!rankings.length) {
-      list.appendChild(el("li", { class: "is-empty", text: "No saved Weibull mechanism results with enough failures to rank yet." }));
-      return;
-    }
-    rankings.forEach((row) => {
-      const percent = 100 * Number(row.probability);
-      const asOf = cutoffPlantDate(row.analysis_cutoff, row.analysis_cutoff_source, row.time_zone);
-      list.appendChild(
-        el("li", {
-          text:
-            `${row.failure_mechanism_name}: ${percent.toFixed(percent < 10 ? 1 : 0)}% chance of failing in the next ` +
-            `${fmt(row.window_weeks)} weeks (current life ${fmt(row.current_life_hours)} h, beta ${fmt(row.beta_mle)}, ` +
-            `${row.failure_count} failures${row.probability_plot_review ? ", plot R² below its review threshold" : ""}` +
-            `${asOf ? `, as of ${asOf}` : ""})` +
-            rankingMarker(row),
-        })
-      );
-    });
-  }
-
-  async function refreshRiskRankings() {
-    if (!state.selectedAsset || !$("lda-risk-rankings")) return;
-    const asset = state.selectedAsset;
-    const token = ++state.riskToken;
-    try {
-      const data = await getJson(`${API}/risk-rankings?asset=${encodeURIComponent(asset)}&weeks=${riskWeeks()}`);
-      if (token !== state.riskToken || state.selectedAsset !== asset) return;
-      renderRiskRankings(data.rankings || []);
-    } catch (err) {
-      if (token === state.riskToken) showBanner(err.message, "error");
-    }
-  }
-
-  // ---- From/To dates --------------------------------------------------------
-  // `params` with the bounds of the From/To dates that are set, for every request
-  // that takes them: the summary (Pareto and trend) and the downtime, PM and
-  // repeat analyses.
-  function withDateRange(params) {
-    const { from, to } = state.dateRange;
-    if (from) params.set("date_from", from);
-    if (to) params.set("date_to", to);
-    return params;
-  }
-
-  // Today as a Weibull run counts it: the plant's day right now, or this browser's
-  // own before a summary has named the plant's zone.
-  function plantToday() {
-    if (state.plantTimeZone) return plantTimeText(new Date().toISOString(), state.plantTimeZone).slice(0, 10);
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  }
-
-  // The dates as a Weibull run's window ({ start, cutoff } as YYYY-MM-DD, either
-  // blank), or null when they set neither. A To date of today or later is left
-  // off on purpose. A cutoff of today censors the current life at the moment of
-  // the run, crediting it with hours the database has heard nothing about yet;
-  // with no cutoff the run ends at the last completed import, which is never
-  // before the group's latest event, so the fit still holds every failure the
-  // Pareto counts. A later date would be refused. Today is the plant's, since
-  // this browser's calendar can be a day either side of it.
-  function weibullDateWindow() {
-    const { from, to } = state.dateRange;
-    const cutoff = to && to < plantToday() ? to : "";
-    return from || cutoff ? { start: from || "", cutoff } : null;
-  }
-
-  // A date box reports a change as each part of a date being typed completes one
-  // (a year typed as 2024 passes through 0002, 0020 and 0202), so the page waits
-  // for the typing to settle rather than re-running every analysis on each.
-  let dateRangeDebounce = null;
-  function onDateRangeChange() {
-    if (dateRangeDebounce) clearTimeout(dateRangeDebounce);
-    dateRangeDebounce = setTimeout(applyDateRange, 400);
-  }
-
-  // Apply the From/To date inputs to the Pareto and every analysis. Bounds are kept
-  // ordered (from <= to) by swapping when the user picks an inverted range, as the
-  // trend's month range does.
-  function applyDateRange() {
-    dateRangeDebounce = null;
-    const fromInput = $("lda-date-from");
-    const toInput = $("lda-date-to");
-    let from = fromInput.value || null;
-    let to = toInput.value || null;
-    if (from && to && from > to) {
-      [from, to] = [to, from];
-      fromInput.value = from;
-      toInput.value = to;
-    }
-    if (from === state.dateRange.from && to === state.dateRange.to) return;
-    state.dateRange = { from, to };
-    // The trend's and the PM chart's month ranges were bounded by the data the old
-    // dates gave; open them back out to whatever the new dates give.
-    state.trendRange = { from: null, to: null };
-    state.trendSelectedMonth = null;
-    state.pmRange = { from: null, to: null };
-    // The group last fitted is run over the new dates the next time it runs: now,
-    // if its fit is on screen, as a disposition change re-runs it, or on coming
-    // back to Weibull. A viewer only opens saved fits, each over the dates it was
-    // run with.
-    const rerunWeibull =
-      CAN_EDIT && Boolean(state.selectedAsset) && state.analysisType === ANALYSIS_TYPES.WEIBULL &&
-      Boolean(state.latestResult && state.latestResultGroup);
-    if (CAN_EDIT && state.latestResultGroup) state.latestResultWindow = weibullDateWindow();
-    // The Pareto and trend come with the summary, which also re-reads the downtime,
-    // PM and repeat analyses when one is showing.
-    refreshSummary();
-    if (rerunWeibull) {
-      runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis over the new dates…", {
-        window: state.latestResultWindow,
-      });
-    }
-  }
-
-  function resetDateRange() {
-    if (dateRangeDebounce) clearTimeout(dateRangeDebounce);
-    $("lda-date-from").value = "";
-    $("lda-date-to").value = "";
-    applyDateRange();
-  }
-
-  // ---- Pareto chart ---------------------------------------------------------
-  // The bars before ranking. The server sends one row per failure mode and
-  // mechanism pair, which is the mechanism view as it stands, narrowed to one
-  // mode's mechanisms while that mode is opened into them. Grouped by failure mode,
-  // each mode's pairs are added up into one row with no mechanism: the mode-level
-  // selection the analysis pickers offer as "all mechanisms", so clicking it runs
-  // the analysis for the whole mode. Every pair has a mechanism, so a failure
-  // dispositioned with a mode and no mechanism is in neither view, the same as in
-  // the trend, downtime, PM and repeat analyses; only a mode-level Weibull fit
-  // counts it.
-  function paretoGroupedRows(groupBy) {
-    if (groupBy === "mode") {
-      const byMode = new Map();
-      state.paretoRows.forEach((row) => {
-        let mode = byMode.get(row.failure_mode_id);
-        if (!mode) {
-          mode = {
-            failure_mode_id: row.failure_mode_id,
-            failure_mode_name: row.failure_mode_name,
-            failure_mechanism_id: null,
-            failure_mechanism_name: null,
-            failure_count: 0,
-            downtime_hours: 0,
-            mechanism_count: 0,
-          };
-          byMode.set(row.failure_mode_id, mode);
-        }
-        mode.failure_count += Number(row.failure_count) || 0;
-        mode.downtime_hours += Number(row.downtime_hours) || 0;
-        mode.mechanism_count += 1;
-      });
-      return Array.from(byMode.values());
-    }
-    const focus = state.paretoModeFocus;
-    return state.paretoRows
-      .filter((row) => !focus || row.failure_mode_id == focus.failure_mode_id)
-      .map((row) => ({ ...row }));
-  }
-
-  // Sort by the active metric and recompute the cumulative percentage for it, so
-  // the "failure count" view is a real count Pareto rather than the downtime
-  // ordering/cumulative returned by failure_mechanism_pareto(). `groupBy` is the
-  // grouping on show unless the caller names one.
-  function paretoDisplayRows(groupBy = state.paretoGroupBy) {
-    const metric = state.paretoMetric;
-    const rows = paretoGroupedRows(groupBy);
-    rows.sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0));
-    const total = rows.reduce((sum, row) => sum + (Number(row[metric]) || 0), 0) || 1;
-    let cumulative = 0;
-    rows.forEach((row) => {
-      cumulative += Number(row[metric]) || 0;
-      row._cumulative_percent = (cumulative / total) * 100;
-    });
-    return rows;
-  }
-
-  // Show at most this many mechanisms (the highest-ranked by the active metric).
-  // Fewer are shown when fewer exist — this is a cap, not a fixed count.
-  const PARETO_MAX_BARS = 15;
-
-  // Bring the Pareto's title, switches and opened-mode note into line with the
-  // state, which a bar click can change as well as the switches themselves.
-  function renderParetoControls() {
-    const byMode = state.paretoGroupBy === "mode";
-    const title = $("lda-pareto-title");
-    if (title) title.textContent = byMode ? "Failure mode Pareto" : "Failure mechanism Pareto";
-    const press = (selector, isActive) =>
-      document.querySelectorAll(selector).forEach((button) => {
-        const active = isActive(button);
-        button.classList.toggle("is-active", active);
-        button.setAttribute("aria-pressed", active ? "true" : "false");
-      });
-    press("#lda-pareto-group [data-group]", (button) => button.dataset.group === state.paretoGroupBy);
-    press("#lda-pareto-metric [data-metric]", (button) => button.dataset.metric === state.paretoMetric);
-    const focus = state.paretoModeFocus;
-    setHidden($("lda-pareto-focus"), !focus);
-    const focusText = $("lda-pareto-focus-text");
-    if (focus && focusText) {
-      focusText.textContent =
-        state.analysisType === ANALYSIS_TYPES.PM
-          ? `Showing the mechanisms under ${focus.failure_mode_name}. PM effectiveness is per mechanism, so pick one.`
-          : `Showing only the mechanisms under ${focus.failure_mode_name}.`;
-    }
-  }
-
-  // The Group by switch. Either choice shows the whole of that grouping, so it also
-  // closes a mode that was opened into its mechanisms.
-  function setParetoGroupBy(groupBy) {
-    if (groupBy !== "mode" && groupBy !== "mechanism") return;
-    if (groupBy === state.paretoGroupBy && !state.paretoModeFocus) return;
-    state.paretoGroupBy = groupBy;
-    state.paretoModeFocus = null;
-    drawPareto();
-  }
-
-  // The Rank by switch.
-  function setParetoMetric(metric) {
-    if (metric !== "downtime_hours" && metric !== "failure_count") return;
-    if (metric === state.paretoMetric) return;
-    state.paretoMetric = metric;
-    drawPareto();
-  }
-
-  // PM effectiveness is worked out per failure mechanism, so a failure mode bar
-  // can't drive it. Clicking one opens the mode into its mechanisms instead, for
-  // one of them to be picked.
-  function openParetoMode(row) {
-    state.paretoGroupBy = "mechanism";
-    state.paretoModeFocus = { failure_mode_id: row.failure_mode_id, failure_mode_name: row.failure_mode_name };
-    drawPareto();
-  }
-
-  // What clicking a bar does under the analysis type showing, finishing "Click
-  // to …". `byMode` is whether the bar is a failure mode; `row`, when given, is the
-  // bar itself, for the repeats list a second click on the same bar opens back out.
-  function paretoClickHint(byMode, row) {
-    switch (state.analysisType) {
-      case ANALYSIS_TYPES.TREND:
-        return "chart its trend below";
-      case ANALYSIS_TYPES.DOWNTIME:
-        return "break its downtime down below";
-      case ANALYSIS_TYPES.PM:
-        return byMode ? "pick from its mechanisms, since PM effectiveness is per mechanism" : "see how soon it follows a PM";
-      case ANALYSIS_TYPES.REPEAT:
-        return row && selectionMatches(state.repeatFilter, row) ? "list every repeat again" : "list only its repeat failures below";
-      default:
-        return CAN_EDIT ? "run a Weibull fit on it" : "open the Weibull fit last saved for it";
-    }
-  }
-
-  // The hover card for a bar: its full name, which the axis label may cut short,
-  // and its numbers.
-  function paretoTooltipRows(row) {
-    const byMode = row.failure_mechanism_id == null;
-    const rows = byMode
-      ? [
-          ["Mode", row.failure_mode_name || "—"],
-          ["Mechanisms", String(row.mechanism_count || 0)],
-        ]
-      : [
-          ["Mechanism", row.failure_mechanism_name || "—"],
-          ["Mode", row.failure_mode_name || "—"],
-        ];
-    rows.push(
-      ["Downtime", `${fmt(row.downtime_hours)} h`],
-      ["Failures", String(row.failure_count || 0)],
-      ["Cumulative", `${fmt(row._cumulative_percent, 3)}%`],
-      ["Click to", paretoClickHint(byMode, row)]
-    );
-    return rows;
-  }
-
-  function drawPareto() {
-    renderParetoControls();
-    const canvas = $("lda-pareto-chart");
-    const empty = $("lda-pareto-empty");
-    const byMode = state.paretoGroupBy === "mode";
-    const allRows = paretoDisplayRows();
-    // Cap the number of bars. Cumulative % is still computed across every mechanism
-    // or mode (in paretoDisplayRows), so the line reflects the true contribution of
-    // the top ones instead of renormalizing to just the displayed subset.
-    const rows = allRows.slice(0, PARETO_MAX_BARS);
-    empty.hidden = allRows.length > 0;
-    const { from, to } = state.dateRange;
-    const dated =
-      from || to
-        ? ` with a work order date ${from && to ? `from ${from} to ${to}` : from ? `on or after ${from}` : `on or before ${to}`}`
-        : "";
-    const focus = state.paretoModeFocus;
-    empty.textContent = focus
-      ? `No included failures under ${focus.failure_mode_name}${dated}.`
-      : dated
-      ? `No included failures${dated}.`
-      : "No included failure mechanisms to chart yet.";
-    const metric = state.paretoMetric;
-    const { ctx, width: W, height: H } = setupCanvas(canvas, 320);
-    ctx.clearRect(0, 0, W, H);
-    // The click and hover handlers are replaced below with ones over the bars just
-    // drawn. With none to draw, drop the last ones, whose bars are no longer on
-    // screen, and the hover card of a bar that has just gone.
-    canvas.onclick = null;
-    canvas.onmousemove = null;
-    canvas.onmouseleave = null;
-    canvas.style.cursor = "";
-    hidePointTooltip();
-    if (!rows.length) return;
-
-    const left = 64; // room for the left value-axis labels + rotated title
-    const right = W - 56; // room for the right cumulative %-axis labels + title
-    const top = 24;
-    const bottom = H - 72; // room for the rotated mechanism labels below the axis
-    const plotH = bottom - top;
-    const slot = (right - left) / rows.length;
-    const maxVal = Math.max(...rows.map((r) => Number(r[metric]) || 0), 1);
-    const barGap = 8;
-    const barW = Math.max(6, slot - barGap);
-    const hitboxes = [];
-
-    // Compact axis tick label so large downtime values stay narrow (e.g. 12.3k).
-    const tickLabel = (v) => {
-      const n = Number(v) || 0;
-      if (Math.abs(n) >= 1000) return Math.round(n / 100) / 10 + "k";
-      return n >= 100 ? String(Math.round(n)) : Number(n.toPrecision(3)).toString();
-    };
-
-    // Horizontal gridlines + numeric y-axis labels (left = metric value, right = %).
-    const tickCount = 5;
-    ctx.font = "10px Inter, sans-serif";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i <= tickCount; i += 1) {
-      const frac = i / tickCount;
-      const y = bottom - frac * plotH;
-      ctx.strokeStyle = C.grid;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.lineTo(right, y);
-      ctx.stroke();
-      ctx.fillStyle = C.label;
-      ctx.textAlign = "right";
-      ctx.fillText(tickLabel(maxVal * frac), left - 7, y);
-      ctx.textAlign = "left";
-      ctx.fillText(Math.round(frac * 100) + "%", right + 7, y);
-    }
-    ctx.textBaseline = "alphabetic";
-
-    // Left and right axes.
-    ctx.strokeStyle = C.axis;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(left, top);
-    ctx.lineTo(left, bottom);
-    ctx.lineTo(right, bottom);
-    ctx.moveTo(right, top);
-    ctx.lineTo(right, bottom);
-    ctx.stroke();
-
-    // Bars + rotated mechanism labels.
-    rows.forEach((row, index) => {
-      const value = Number(row[metric]) || 0;
-      const x = left + index * slot + barGap / 2;
-      const barHeight = (value / maxVal) * plotH;
-      const y = bottom - barHeight;
-      ctx.fillStyle = C.bar;
-      ctx.fillRect(x, y, barW, barHeight);
-      hitboxes.push({ x, y: top, w: barW, h: plotH, row });
-
-      ctx.save();
-      ctx.fillStyle = C.label;
-      ctx.font = "10px Inter, sans-serif";
-      ctx.translate(x + barW / 2, bottom + 6);
-      ctx.rotate(Math.PI / 5);
-      // A mode bar has no mechanism, so it is labelled with the mode. A name cut
-      // short says so; the hover card has it in full.
-      const name = row.failure_mechanism_name || row.failure_mode_name || "—";
-      ctx.fillText(name.length > 18 ? `${name.slice(0, 17)}…` : name, 0, 0);
-      ctx.restore();
-    });
-
-    // Cumulative percent line + markers (right axis scale: 0..100%).
-    ctx.strokeStyle = C.highlight;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    rows.forEach((row, index) => {
-      const x = left + index * slot + slot / 2;
-      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.fillStyle = C.highlight;
-    rows.forEach((row, index) => {
-      const x = left + index * slot + slot / 2;
-      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
-      ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    // Rotated axis titles on both sides.
-    ctx.fillStyle = C.label;
-    ctx.font = "10px Inter, sans-serif";
-    ctx.textAlign = "center";
-    ctx.save();
-    ctx.translate(13, (top + bottom) / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText(metric === "failure_count" ? "Failure count" : "Downtime (hours)", 0, 0);
-    ctx.restore();
-    ctx.save();
-    ctx.translate(W - 9, (top + bottom) / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.fillText("Cumulative %", 0, 0);
-    ctx.restore();
-
-    // Note when the bar count was capped so the cut-off is explicit.
-    if (allRows.length > rows.length) {
-      ctx.fillText(`Top ${rows.length} of ${allRows.length} ${byMode ? "modes" : "mechanisms"}`, (left + right) / 2, 12);
-    }
-    ctx.textAlign = "left";
-
-    const barAt = (event) => {
-      const rect = canvas.getBoundingClientRect();
-      const px = event.clientX - rect.left;
-      const py = event.clientY - rect.top;
-      return hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
-    };
-    canvas.onclick = (event) => {
-      const hit = barAt(event);
-      if (hit) onParetoBarSelected(hit.row);
-    };
-    canvas.onmousemove = (event) => {
-      const hit = barAt(event);
-      canvas.style.cursor = hit ? "pointer" : "";
-      if (hit) showTooltipRows(event.clientX, event.clientY, paretoTooltipRows(hit.row));
-      else hidePointTooltip();
-    };
-    canvas.onmouseleave = () => {
-      canvas.style.cursor = "";
-      hidePointTooltip();
-    };
-  }
-
   // The topbar is pinned at the top of the viewport and the Step 1 card is pinned
   // directly below it, so a plain scrollIntoView({block:"start"}) parks the target's
   // heading underneath them. scrollIntoView honours scroll-margin-top, so reserve the
@@ -1441,435 +468,394 @@
   // renders a whole results card into the workspace and scrolls to that itself; the
   // other types update panels that are already on the page, so nothing would move the
   // viewport without this.
-  const ANALYSIS_SCROLL_TARGETS = {
-    [ANALYSIS_TYPES.TREND]: "lda-trend-chart-panel",
-    [ANALYSIS_TYPES.PM]: "lda-pm-chart-panel",
-    [ANALYSIS_TYPES.DOWNTIME]: "lda-downtime-trend-panel",
-    [ANALYSIS_TYPES.REPEAT]: "lda-repeat-pairs-panel",
-  };
 
-  // Scroll to the active analysis type's first result panel. Deferred to the next
-  // frame so it runs after the render that precedes it has laid out — the summary
-  // cards above the panel change height when a first selection populates them, which
-  // would otherwise move the target out from under an already-started smooth scroll.
-  function scrollToAnalysisPanel() {
-    const id = ANALYSIS_SCROLL_TARGETS[state.analysisType];
-    const panel = id ? $(id) : null;
-    if (!panel || panel.hidden) return;
-    requestAnimationFrame(() => scrollBelowSticky(panel));
-  }
-
-  // A Pareto bar click drives the active analysis: Weibull runs the clicked
-  // mechanism's fit; Failure Mode Trend selects it as the trended mechanism. A
-  // failure mode bar does the same for the whole mode, except under PM
-  // effectiveness, which is per mechanism, where it opens the mode into its
-  // mechanisms to pick from. Resolves once the analysis has drawn, for the tour,
-  // which clicks one too.
-  function onParetoBarSelected(row) {
-    if (state.analysisType === ANALYSIS_TYPES.TREND) {
-      return selectTrendMechanism(row);
-    } else if (state.analysisType === ANALYSIS_TYPES.PM) {
-      if (row.failure_mechanism_id == null) return openParetoMode(row);
-      return selectPmMechanism(row);
-    } else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
-      return selectDowntimeMechanism(row);
-    } else if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
-      return selectRepeatMechanism(row);
-    } else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) {
-      return runParetoMechanism(row);
-    }
-    return undefined;
-  }
-
-  // `options` goes on to runAnalysisForGroup. The fit is run over the From/To dates
-  // the bar was counted over, unless `options` names a window of its own. A failure
-  // mode bar has no mechanism and runs the mode-level fit.
-  function runParetoMechanism(row, options) {
-    if (row.failure_mode_id == null) {
-      showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
-      return undefined;
-    }
-    const byMode = row.failure_mechanism_id == null;
-    setActiveMechanism(row);
-    return runAnalysisForGroup(
-      {
-        grouping_level: byMode ? "FAILURE_MODE" : "FAILURE_MECHANISM",
-        failure_mode_id: row.failure_mode_id,
-        failure_mechanism_id: byMode ? null : row.failure_mechanism_id,
-      },
-      byMode ? "Running clicked failure mode Weibull analysis…" : "Running clicked mechanism Weibull analysis…",
-      { window: weibullDateWindow(), ...options }
-    );
-  }
-
-  // ---- analysis type switching ----------------------------------------------
-  function setHidden(node, hidden) {
-    if (node) node.hidden = Boolean(hidden);
-  }
-
-  function setAnalysisType(value) {
-    state.analysisType = value || ANALYSIS_TYPES.WEIBULL;
-    applyAnalysisTypeUI();
-  }
-
-  // Normalize a Pareto row / Weibull group into the minimal failure mode+mechanism
-  // shape that every analysis type's select function understands. Stored as the
-  // "active" selection so it can be replayed onto a different analysis when the user
-  // switches analysis types.
-  function rowToActiveSelection(row) {
-    if (!row) return null;
+  // ---- the population -------------------------------------------------------
+  // What every request is sent: the population and the From/To days.
+  function selectionPayload() {
     return {
-      failure_mode_id: row.failure_mode_id != null ? row.failure_mode_id : null,
-      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
-      failure_mode_name: row.failure_mode_name != null ? row.failure_mode_name : null,
-      failure_mechanism_name: row.failure_mechanism_name != null ? row.failure_mechanism_name : null,
-      // Preserve the Weibull grouping level when the source carries one (the modal's
-      // "Failure mode" vs "Failure mechanism" groups). Pareto rows omit it but are
-      // always mechanism-level, so it's derived from the mechanism id when absent.
-      grouping_level: row.grouping_level != null ? row.grouping_level : null,
+      assets: state.asset ? [state.asset] : [],
+      ...state.selection,
+      categories: state.categories.slice(),
+      exclude_induced: state.excludeInduced,
+    };
+  }
+  function populationBody(extra) {
+    return {
+      selection: selectionPayload(),
+      date_from: state.dateRange.from,
+      date_to: state.dateRange.to,
+      ...(extra || {}),
     };
   }
 
-  // The Weibull grouping level implied by an active selection: an explicit level from
-  // the source when present, otherwise mechanism-level when a mechanism is set and
-  // mode-level when only a mode is. The backend accepts both FAILURE_MODE and
-  // FAILURE_MECHANISM, so mode-only selections stay runnable.
-  function weibullGroupingLevel(active) {
-    if (active.grouping_level) return active.grouping_level;
-    return active.failure_mechanism_id != null ? "FAILURE_MECHANISM" : "FAILURE_MODE";
+  async function chooseAsset(asset) {
+    if (asset === state.asset) return;
+    state.asset = asset;
+    state.selection = emptySelection();
+    state.drillHistory = [];
+    state.groupBy = "location";
+    $("lda-pareto-group").value = "location";
+    state.summary = null;
+    state.options = null;
+    resetAnalyses();
+    clearWorkspace();
+    $("lda-population-card").hidden = !asset;
+    $("lda-summary-card").hidden = !asset;
+    if (!asset) return;
+    const link = $("lda-disposition-link");
+    if (link) link.href = `/life-data-analysis/disposition?asset=${encodeURIComponent(asset)}`;
+    await loadOptions();
+    await refresh();
   }
 
-  function setActiveMechanism(row) {
-    const normalized = rowToActiveSelection(row);
-    if (normalized) state.activeMechanismRow = normalized;
+  function resetAnalyses() {
+    state.pm = null;
+    state.downtime = null;
+    state.repeat = null;
+    state.repeatFilter = null;
+    state.trendMonth = null;
+    state.result = null;
+    state.pmToken += 1;
+    state.downtimeToken += 1;
+    state.repeatToken += 1;
+    state.analysisToken += 1;
   }
 
-  function selectionMatches(selection, active) {
-    return Boolean(
-      selection &&
-        active &&
-        selection.failure_mode_id == active.failure_mode_id &&
-        selection.failure_mechanism_id == active.failure_mechanism_id
-    );
+  async function loadOptions() {
+    if (!state.asset) return;
+    const token = ++state.optionsToken;
+    try {
+      const data = await getJson(`${API}/population-options?asset=${encodeURIComponent(state.asset)}`);
+      if (token !== state.optionsToken) return;
+      state.options = data;
+      renderSelector();
+    } catch (err) {
+      showBanner(err.message, "error");
+    }
   }
 
-  // Replay the active failure mode/mechanism onto the newly selected analysis type so
-  // switching analyses keeps the same failure focus and auto-computes it. Returns
-  // true when it kicked off the selection/compute for the type (so the caller can
-  // skip its own empty-state render). PM needs a specific mechanism, so a mode-only
-  // focus can't drive it — that case clears any stale PM result and falls back to the
-  // empty prompt. Weibull and the trend/downtime analyses run at mode level too.
-  function applyCarriedSelection(type) {
-    const active = state.activeMechanismRow;
-    if (!active) return false;
-    if (type === ANALYSIS_TYPES.TREND) {
-      if (active.failure_mode_id == null || selectionMatches(state.selectedTrend, active)) return false;
-      selectTrendMechanism(active);
-      return true;
-    }
-    if (type === ANALYSIS_TYPES.PM) {
-      if (active.failure_mechanism_id == null) {
-        // The carried focus is mode-level and can't drive PM (which needs a specific
-        // mechanism). Drop any stale mechanism PM result so the panel shows the empty
-        // "pick a mechanism" prompt for the current focus, not a previous mechanism's
-        // data. Bump the token so an in-flight load for the old mechanism is dropped.
-        if (state.pmSelection || state.pmData) {
-          state.pmSelection = null;
-          state.pmData = null;
-          state.pmToken += 1;
-        }
-        return false;
-      }
-      if (selectionMatches(state.pmSelection, active)) return false;
-      selectPmMechanism(active);
-      return true;
-    }
-    if (type === ANALYSIS_TYPES.DOWNTIME) {
-      if (active.failure_mode_id == null || selectionMatches(state.downtimeSelection, active)) return false;
-      selectDowntimeMechanism(active);
-      return true;
-    }
-    if (type === ANALYSIS_TYPES.REPEAT) {
-      // The repeats load for every mechanism anyway; the carried mechanism, or every
-      // mechanism under a carried mode, only narrows the list, so the type's own
-      // load below still runs.
-      state.repeatFilter = active.failure_mode_id != null ? repeatFilterFor(active) : null;
-      return false;
-    }
-    if (type === ANALYSIS_TYPES.WEIBULL) {
-      if (active.failure_mode_id == null) return false;
-      const groupingLevel = weibullGroupingLevel(active);
-      const group = {
-        grouping_level: groupingLevel,
-        failure_mode_id: active.failure_mode_id,
-        failure_mechanism_id: groupingLevel === "FAILURE_MECHANISM" ? active.failure_mechanism_id : null,
-      };
-      // Coming back to the group whose fit was last on screen runs it over the
-      // window that fit had (or the From/To dates, if they changed since), so a fit
-      // over entered dates isn't replaced by one over all history just for looking
-      // at another analysis type in between. Another group runs over the From/To
-      // dates, as its Pareto bar would.
-      runAnalysisForGroup(group, "Recomputing Weibull analysis for the carried-over selection…", {
-        window: sameWeibullGroup(state.latestResultGroup, group) ? state.latestResultWindow : weibullDateWindow(),
+  // The selector: one list per dimension, each value with how many work orders
+  // in reach carry it, plus the categories, the induced-failure switch and the
+  // dates. A value that is selected but not in the list (a drill into "not
+  // coded", or a retired code) still shows, ticked.
+  function renderSelector() {
+    const wrap = $("lda-population-selector");
+    wrap.innerHTML = "";
+    const dimensions = (state.options && state.options.dimensions) || {};
+    DIMENSIONS.forEach(([key, label]) => {
+      const values = (dimensions[key] || []).slice();
+      const chosen = state.selection[key];
+      chosen.forEach((value) => {
+        if (!values.some((option) => option.value === value)) values.unshift({ value, label: value, count: 0 });
       });
-      return true;
-    }
-    return false;
+      const list = el("div", { class: "std-multi", role: "group", "aria-label": label });
+      if (!values.length) list.appendChild(el("span", { class: "std-multi-empty", text: "None coded yet" }));
+      values.forEach((option) => {
+        const box = el("input", {
+          type: "checkbox",
+          value: option.value,
+          checked: chosen.includes(option.value),
+          onchange: (event) => {
+            const next = state.selection[key].filter((value) => value !== option.value);
+            if (event.target.checked) next.push(option.value);
+            state.selection[key] = next;
+            state.drillHistory = [];
+            onPopulationChange();
+          },
+        });
+        list.appendChild(el("label", {}, [box, el("span", { text: option.label }), el("span", { class: "std-count", text: String(option.count) })]));
+      });
+      wrap.appendChild(el("div", { class: "lda-field", id: `lda-dim-${key}` }, [
+        el("div", { class: "std-multi-head" }, [
+          el("span", { class: "lda-field-label", text: label }),
+          chosen.length
+            ? el("button", { type: "button", text: "Clear", onclick: () => {
+                state.selection[key] = [];
+                state.drillHistory = [];
+                onPopulationChange();
+              } })
+            : null,
+        ]),
+        list,
+      ]));
+    });
+    const categories = $("lda-categories");
+    categories.innerHTML = "";
+    ((state.options && state.options.categories) || []).forEach((option) => {
+      categories.appendChild(el("label", { class: "lda-checkbox" }, [
+        el("input", {
+          type: "checkbox",
+          checked: state.categories.includes(option.value),
+          onchange: (event) => {
+            const next = state.categories.filter((value) => value !== option.value);
+            if (event.target.checked) next.push(option.value);
+            state.categories = next;
+            onPopulationChange();
+          },
+        }),
+        option.label,
+      ]));
+    });
+    $("lda-exclude-induced").checked = state.excludeInduced;
+    renderDrill();
   }
 
-  // Toggle the secondary analysis panel (and the Step 2 heading) to match the
-  // selected analysis type. The Pareto panel is never touched here, so it stays
-  // visible for every analysis type.
-  function applyAnalysisTypeUI() {
-    const type = state.analysisType;
-    const isWeibull = type === ANALYSIS_TYPES.WEIBULL;
-    const isTrend = type === ANALYSIS_TYPES.TREND;
-    const isPm = type === ANALYSIS_TYPES.PM;
-    const isDowntime = type === ANALYSIS_TYPES.DOWNTIME;
-    const isRepeat = type === ANALYSIS_TYPES.REPEAT;
-    const isPlaceholder = !isWeibull && !isTrend && !isPm && !isDowntime && !isRepeat;
-
-    const heading = $("lda-step-2");
-    if (heading) {
-      heading.textContent = isWeibull
-        ? "Asset Weibull readiness summary"
-        : isTrend
-        ? "Failure mode trend summary"
-        : isPm
-        ? "PM effectiveness summary"
-        : isDowntime
-        ? "Downtime driver summary"
-        : isRepeat
-        ? "Repeat fix rate summary"
-        : type;
+  // The narrowing in force, as chips that each take one value back out, with a
+  // step back out of the last drill and a way to start over.
+  function renderDrill() {
+    const wrap = $("lda-drill");
+    wrap.innerHTML = "";
+    const chips = [];
+    DIMENSIONS.forEach(([key, label]) => {
+      state.selection[key].forEach((value) => {
+        chips.push(el("button", {
+          type: "button",
+          class: "std-chip lda-drill-chip",
+          title: `Take ${value} out of the population`,
+          text: `${label}: ${value} ×`,
+          onclick: () => {
+            state.selection[key] = state.selection[key].filter((item) => item !== value);
+            state.drillHistory = [];
+            onPopulationChange();
+          },
+        }));
+      });
+    });
+    wrap.appendChild(el("span", { class: "lda-hint", text: chips.length ? "Narrowed to:" : `Every work order in reach of ${state.asset || "the asset"}.` }));
+    chips.forEach((chip) => wrap.appendChild(chip));
+    if (state.drillHistory.length) {
+      wrap.appendChild(el("button", { type: "button", class: "btn-secondary", text: "← Back", onclick: drillBack }));
     }
-
-    // Weibull-specific cards/sections are hidden for every non-Weibull type so no
-    // Weibull labels remain on screen.
-    setHidden($("lda-weibull-summary"), !isWeibull);
-    setHidden($("lda-beta-panel"), !isWeibull);
-    setHidden($("lda-risk-panel"), !isWeibull);
-    setHidden($("lda-trend-summary"), !isTrend);
-    setHidden($("lda-trend-chart-panel"), !isTrend);
-    setHidden($("lda-trend-table-panel"), !isTrend);
-    setHidden($("lda-trend-wo-panel"), !isTrend);
-    setHidden($("lda-pm-summary"), !isPm);
-    setHidden($("lda-pm-chart-panel"), !isPm);
-    setHidden($("lda-pm-table-panel"), !isPm);
-    setHidden($("lda-downtime-summary"), !isDowntime);
-    setHidden($("lda-downtime-trend-panel"), !isDowntime);
-    setHidden($("lda-downtime-dist-panel"), !isDowntime);
-    setHidden($("lda-downtime-asset-panel"), !isDowntime);
-    setHidden($("lda-downtime-events-panel"), !isDowntime);
-    setHidden($("lda-repeat-summary"), !isRepeat);
-    setHidden($("lda-repeat-rate-panel"), !isRepeat);
-    setHidden($("lda-repeat-pairs-panel"), !isRepeat);
-    setHidden($("lda-placeholder-summary"), !isPlaceholder);
-
-    // The beta panel now sits in its own full-width row above the Pareto, so
-    // showing/hiding it no longer changes the Pareto's width. Redraw anyway when a
-    // type switch could have altered the layout (e.g. a panel above appearing and
-    // shifting the scrollbar) so the canvas backing store and bar hitboxes stay
-    // sized to the live parent width.
-    if (state.paretoRows.length) drawPareto();
-
-    if (isPlaceholder) {
-      const text = $("lda-placeholder-text");
-      if (text) text.textContent = `${type} is coming soon.`;
-    }
-    // A rendered Weibull result lives in the workspace; drop it for non-Weibull
-    // types so no Weibull-specific plots/cards linger after switching.
-    if (!isWeibull) {
-      state.latestResult = null;
-      clearWorkspace();
-    }
-
-    // Carry the most-recently selected failure mode/mechanism onto the newly chosen
-    // analysis type and auto-compute it, so switching analyses keeps the same
-    // failure focus instead of resetting to "pick a mechanism". When it handles the
-    // selection, skip the per-type empty/idle render below to avoid double work.
-    const autoComputed = applyCarriedSelection(type);
-
-    if (isTrend && !autoComputed) renderTrend();
-    if (isPm && !autoComputed) {
-      // Returning to PM mode with a selection but no data (e.g. the in-flight
-      // request was dropped as stale when the user switched type mid-request)
-      // must re-fetch, otherwise the panels would prompt to reselect a mechanism.
-      if (state.pmSelection && !state.pmData) loadPmEffectiveness();
-      else renderPm();
-    }
-    if (isDowntime && !autoComputed) {
-      // Same re-fetch guard as PM: a selection without data (dropped as stale on a
-      // mid-request type switch) re-fetches instead of showing the reselect prompt.
-      if (state.downtimeSelection && !state.downtimeData) loadDowntime();
-      else renderDowntime();
-    }
-    if (isRepeat) {
-      // Re-fetch when the results on hand were counted with another window: a window
-      // change whose request was dropped on a type switch leaves the old ones behind.
-      const stale = !state.repeatData || Number(state.repeatData.window_hours) !== Number(state.repeatWindow);
-      if (state.selectedAsset && stale) loadRepeatFixes();
-      else renderRepeat();
+    if (chips.length) {
+      wrap.appendChild(el("button", { type: "button", class: "btn-secondary", text: "Start over", onclick: () => {
+        state.selection = emptySelection();
+        state.drillHistory = [];
+        state.groupBy = "location";
+        $("lda-pareto-group").value = "location";
+        onPopulationChange();
+      } }));
     }
   }
 
-  // ---- failure mode trend ---------------------------------------------------
-  function renderTrend() {
-    renderTrendCards();
-    renderTrendControls();
-    renderTrendChart();
-    renderTrendTable();
-    renderTrendRecordsTable();
+  let populationDebounce = null;
+  function onPopulationChange() {
+    renderSelector();
+    resetAnalyses();
+    clearWorkspace();
+    clearTimeout(populationDebounce);
+    populationDebounce = setTimeout(refresh, 250);
   }
 
-  // Signed "+N / −N vs. prior 3 mo" label for the growth/improvement cards.
-  function trendDeltaText(value) {
-    const n = Number(value) || 0;
-    const sign = n > 0 ? "+" : n < 0 ? "−" : "±";
-    return `${sign}${Math.abs(n)} occ. vs. prior 3 mo`;
+  // Narrow the population by one value of a dimension, remembering where it was.
+  function drillInto(changes, nextGroupBy) {
+    state.drillHistory.push({
+      selection: JSON.parse(JSON.stringify(state.selection)),
+      categories: state.categories.slice(),
+      groupBy: state.groupBy,
+    });
+    Object.entries(changes).forEach(([key, value]) => {
+      if (key === "categories") state.categories = [value];
+      else state.selection[key] = [value];
+    });
+    if (nextGroupBy) {
+      state.groupBy = nextGroupBy;
+      $("lda-pareto-group").value = nextGroupBy;
+    }
+    onPopulationChange();
   }
 
-  function renderTrendCards() {
-    const grid = $("lda-trend-cards");
-    if (!grid) return;
+  function drillBack() {
+    const previous = state.drillHistory.pop();
+    if (!previous) return;
+    state.selection = previous.selection;
+    state.categories = previous.categories;
+    state.groupBy = previous.groupBy;
+    $("lda-pareto-group").value = previous.groupBy;
+    renderSelector();
+    resetAnalyses();
+    clearWorkspace();
+    refresh();
+  }
+
+  // ---- loading what the page shows ------------------------------------------
+  // The summary (readiness, Pareto, matrix, trend, rankings) on every change,
+  // then whatever the analysis type showing needs on top of it.
+  async function refresh() {
+    if (!state.asset) return;
+    await loadSummary();
+    loadAnalysis();
+  }
+
+  async function loadSummary() {
+    const asset = state.asset;
+    const token = ++state.summaryToken;
+    const riskToken = ++state.riskToken;
+    try {
+      const data = await postJson(`${API}/summary`, populationBody({ group_by: state.groupBy, weeks: riskWeeks() }));
+      if (token !== state.summaryToken || asset !== state.asset) return;
+      clearBanner();
+      state.summary = data;
+      state.plantTimeZone = data.plant_time_zone || null;
+      renderSummary();
+      if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
+    } catch (err) {
+      if (token === state.summaryToken) showBanner(err.message, "error");
+    }
+  }
+
+  function loadAnalysis() {
+    if (!state.asset) return;
+    if (state.analysisType === ANALYSIS_TYPES.PM) loadPm();
+    else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) loadDowntime();
+    else if (state.analysisType === ANALYSIS_TYPES.REPEAT) loadRepeat();
+    else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) loadSavedFit();
+  }
+
+  function renderSummary() {
+    const summary = state.summary;
+    if (!summary) return;
+    $("lda-pop-string").textContent = summary.population_definition;
+    const grid = $("lda-summary-grid");
     grid.innerHTML = "";
-    const trend = state.trend;
-    const summary = (trend && trend.summary) || {};
-    // Each growth card carries the wording shown when no mechanism moved in its
-    // direction (distinct from "Insufficient Data", which means too few months).
-    const cards = [
-      ["most_frequent", "Most Frequent", (c) => `${c.value} work orders`, null],
-      ["highest_downtime", "Highest Downtime", (c) => `${fmt(c.value)} downtime hours`, null],
-      ["fastest_growing", "Fastest Growing", (c) => trendDeltaText(c.value), "No mechanism increased"],
-      ["most_improved", "Most Improved", (c) => trendDeltaText(c.value), "No mechanism decreased"],
-    ];
-    cards.forEach(([key, label, detail, emptyDirectionText]) => {
-      const entry = summary[key];
-      let valueText;
-      let detailText = "";
-      if (entry) {
-        valueText = entry.failure_mechanism_name || "—";
-        detailText = detail(entry);
-      } else if (emptyDirectionText && trend && !trend.has_growth_window) {
-        // Fewer than six months of data, so growth/improvement can't be computed.
-        valueText = "Insufficient Data";
-      } else if (emptyDirectionText && trend) {
-        // Enough data, but no mechanism moved in this card's direction.
-        valueText = "—";
-        detailText = emptyDirectionText;
-      } else {
-        valueText = "—";
-      }
-      grid.appendChild(
-        el("div", { class: "lda-metric lda-trend-metric" }, [
-          el("span", { class: "lda-metric-label", text: label }),
-          el("span", { class: "lda-metric-value lda-trend-metric-value", text: valueText }),
-          detailText ? el("span", { class: "lda-metric-label", text: detailText }) : null,
-        ])
-      );
+    READINESS_FIELDS.forEach(([key, label]) => {
+      grid.appendChild(el("div", { class: "lda-metric" }, [
+        el("span", { class: "lda-metric-value", text: String((summary.readiness || {})[key] ?? "—") }),
+        el("span", { class: "lda-metric-label", text: label }),
+      ]));
     });
+    renderRankings(summary.rankings || []);
+    drawPareto();
+    renderMatrix();
+    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
+    renderPerformHint();
   }
 
-  // Build the monthly occurrence series for the selected failure mode/mechanism
-  // across the FULL data range. A mechanism-level selection plots that one
-  // mechanism; a mode-level selection (no mechanism id) sums every mechanism under
-  // the mode. Returns null when there is no selection, no trend data, or the
-  // selection has no dated occurrences.
-  function fullTrendSeries() {
-    const trend = state.trend;
-    const sel = state.selectedTrend;
-    if (!trend || !sel) return null;
-    const months = trend.months || [];
-    if (!months.length) return null;
-    const matches = (trend.mechanisms || []).filter(
-      (m) =>
-        Number(m.failure_mode_id) === Number(sel.failure_mode_id) &&
-        (sel.failure_mechanism_id == null || Number(m.failure_mechanism_id) === Number(sel.failure_mechanism_id))
-    );
-    if (!matches.length) return null;
-    const counts = months.map((_, index) =>
-      matches.reduce((sum, m) => sum + (Number((m.monthly_counts || [])[index]) || 0), 0)
-    );
-    if (counts.reduce((a, b) => a + b, 0) === 0) return null;
-    return { label: sel.label, months, counts };
+  // ---- rankings of the saved fits ---------------------------------------------
+  function rankingMarker(row) {
+    if (row.method_current === false) return " — saved under an earlier method; run it again";
+    if (row.schedule_current === false) return " — counted on a schedule since changed; run it again";
+    if (row.time_zone_current === false) return " — counted in an earlier plant time zone; run it again";
+    return "";
   }
 
-  // The full series restricted to the active date range (state.trendRange). Month
-  // keys are "YYYY-MM", so string comparison gives the right chronological bounds.
-  // Returns the same shape as fullTrendSeries; `months` may be empty when the
-  // range excludes every dated occurrence (the renderers show a range-specific
-  // empty state in that case rather than treating it as "no selection").
-  function selectedTrendSeries() {
-    const base = fullTrendSeries();
-    if (!base) return null;
-    const { from, to } = state.trendRange;
-    if (!from && !to) return base;
-    const months = [];
-    const counts = [];
-    base.months.forEach((key, index) => {
-      if (from && key < from) return;
-      if (to && key > to) return;
-      months.push(key);
-      counts.push(base.counts[index]);
+  // Opening a ranked fit makes its population the page's, and the Weibull view
+  // then shows the latest fit saved for it.
+  function openRankedFit(row) {
+    const selection = row.selection || {};
+    state.selection = emptySelection();
+    DIMENSIONS.forEach(([key]) => {
+      state.selection[key] = (selection[key] || []).slice();
     });
-    return { label: base.label, months, counts };
+    state.excludeInduced = Boolean(selection.exclude_induced);
+    state.drillHistory = [];
+    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
+      $("lda-analysis-type").value = ANALYSIS_TYPES.WEIBULL;
+      setAnalysisType(ANALYSIS_TYPES.WEIBULL, { skipLoad: true });
+    }
+    renderSelector();
+    resetAnalyses();
+    clearWorkspace();
+    return refresh();
   }
 
-  function selectTrendMechanism(row) {
-    if (row == null || row.failure_mode_id == null) return;
-    setActiveMechanism(row);
-    const modeName = row.failure_mode_name;
-    const mechName = row.failure_mechanism_name;
-    const label = mechName
-      ? modeName
-        ? `${modeName} / ${mechName}`
-        : mechName
-      : modeName || "the selected failure mode";
-    state.selectedTrend = {
-      failure_mode_id: row.failure_mode_id,
-      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
-      label,
-    };
-    // A new mode/mechanism invalidates any month the user had drilled into.
-    state.trendSelectedMonth = null;
-    renderTrendControls();
-    renderTrendChart();
-    renderTrendTable();
-    renderTrendRecordsTable();
-    // The trend is computed from data already on the client, so the panels are fully
-    // rendered by this point and the viewport can follow the selection down to them.
-    scrollToAnalysisPanel();
+  function rankingItem(row, text) {
+    return el("li", {}, [
+      el("button", { type: "button", class: "lda-ranking-link", text: row.label, onclick: () => openRankedFit(row) }),
+      document.createTextNode(text + rankingMarker(row)),
+    ]);
   }
 
-  // Show and populate the date-range inputs whenever the selected mode/mechanism
-  // has a plottable series. The inputs are bounded by the full data range; the
-  // current value falls back to the data bounds when no explicit range is set.
-  function renderTrendControls() {
-    const controls = $("lda-trend-controls");
-    if (!controls) return;
-    const fromInput = $("lda-trend-from");
-    const toInput = $("lda-trend-to");
-    const base = fullTrendSeries();
-    if (!base || !base.months.length) {
-      controls.hidden = true;
+  function renderRankings(rankings) {
+    const list = $("lda-beta-rankings");
+    list.innerHTML = "";
+    if (!rankings.length) {
+      list.appendChild(el("li", { class: "is-empty", text: "No saved one-component Weibull fit on this asset has enough failures to rank yet." }));
       return;
     }
-    controls.hidden = false;
-    const minMonth = base.months[0];
-    const maxMonth = base.months[base.months.length - 1];
-    fromInput.min = minMonth;
-    fromInput.max = maxMonth;
-    toInput.min = minMonth;
-    toInput.max = maxMonth;
-    fromInput.value = state.trendRange.from || minMonth;
-    toInput.value = state.trendRange.to || maxMonth;
+    rankings.forEach((row) => {
+      list.appendChild(rankingItem(row,
+        `: beta ${fmt(row.beta_mle)} (${row.failure_count} failures, eta ${fmt(row.eta_mle)} h` +
+        (row.probability_plot_r_squared != null
+          ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}${row.probability_plot_review ? ", below its review threshold" : ""}`
+          : "") + ")"));
+    });
   }
 
-  // Apply the From/To month inputs to state.trendRange and redraw. Bounds are kept
-  // ordered (from <= to) by swapping when the user picks an inverted range.
-  function onTrendRangeChange() {
-    const fromInput = $("lda-trend-from");
-    const toInput = $("lda-trend-to");
+  function renderRiskRankings(rankings) {
+    const list = $("lda-risk-rankings");
+    list.innerHTML = "";
+    if (!rankings.length) {
+      const ranked = state.summary && (state.summary.rankings || []).length;
+      list.appendChild(el("li", {
+        class: "is-empty",
+        text: ranked
+          ? "None of the ranked fits had an item still in service at its run's cutoff: each ended in a failure that did not renew the item."
+          : "No saved one-component Weibull fit on this asset has enough failures to rank yet.",
+      }));
+      return;
+    }
+    rankings.forEach((row) => {
+      const percent = 100 * Number(row.probability);
+      const asOf = cutoffPlantDate(row.analysis_cutoff, row.analysis_cutoff_source, row.time_zone);
+      list.appendChild(rankingItem(row,
+        `: ${percent.toFixed(percent < 10 ? 1 : 0)}% chance of a failure in the next ${fmt(row.window_weeks)} weeks ` +
+        `(${row.items_in_service} item${row.items_in_service === 1 ? "" : "s"} in service, oldest ${fmt(row.current_life_hours)} h, ` +
+        `beta ${fmt(row.beta_mle)}${asOf ? `, as of ${asOf}` : ""})`));
+    });
+  }
+
+  function riskWeekValue(box) {
+    const text = box ? String(box.value).trim() : "";
+    const weeks = Number(text);
+    return text !== "" && Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : null;
+  }
+  function riskWeeks() {
+    const box = $("lda-risk-weeks");
+    const weeks = riskWeekValue(box);
+    if (weeks != null) state.riskWeeks = weeks;
+    if (box && box.value !== String(state.riskWeeks)) box.value = String(state.riskWeeks);
+    return state.riskWeeks;
+  }
+  async function onRiskWeeksChange() {
+    if (riskWeekValue($("lda-risk-weeks")) == null) {
+      riskWeeks();
+      showBanner("The window must be a whole number of weeks from 1 to 52.", "error");
+      return;
+    }
+    if (!state.asset) return;
+    const token = ++state.riskToken;
+    try {
+      const data = await postJson(`${API}/risk-rankings`, populationBody({ weeks: riskWeeks() }));
+      if (token === state.riskToken) renderRiskRankings(data.rankings || []);
+    } catch (err) {
+      if (token === state.riskToken) showBanner(err.message, "error");
+    }
+  }
+
+  // ---- From/To dates ------------------------------------------------------------
+  // Today as a Weibull run counts it: the plant's day right now.
+  function plantToday() {
+    if (state.plantTimeZone) return plantTimeText(new Date().toISOString(), state.plantTimeZone).slice(0, 10);
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+
+  // The dates as a Weibull run's window. A To date of today or later is left
+  // off: with no cutoff the run ends at the last completed import, which never
+  // credits the current life with hours the database has heard nothing about.
+  function weibullDateWindow() {
+    const { from, to } = state.dateRange;
+    return { analysis_start: from || null, analysis_cutoff: to && to < plantToday() ? to : null };
+  }
+
+  let dateDebounce = null;
+  function onDateRangeChange() {
+    clearTimeout(dateDebounce);
+    dateDebounce = setTimeout(applyDateRange, 400);
+  }
+  function applyDateRange() {
+    const fromInput = $("lda-date-from");
+    const toInput = $("lda-date-to");
     let from = fromInput.value || null;
     let to = toInput.value || null;
     if (from && to && from > to) {
@@ -1877,209 +863,1499 @@
       fromInput.value = from;
       toInput.value = to;
     }
-    state.trendRange.from = from;
-    state.trendRange.to = to;
-    // Drop a drilled month that the new range no longer covers so the WO table
-    // can't stay filtered to a now-hidden month.
-    const month = state.trendSelectedMonth;
-    if (month && ((from && month < from) || (to && month > to))) {
-      state.trendSelectedMonth = null;
+    if (from === state.dateRange.from && to === state.dateRange.to) return;
+    state.dateRange = { from, to };
+    resetAnalyses();
+    clearWorkspace();
+    refresh();
+  }
+  function resetDateRange() {
+    $("lda-date-from").value = "";
+    $("lda-date-to").value = "";
+    applyDateRange();
+  }
+
+  // ---- Pareto ---------------------------------------------------------------------
+  // One bar per value of the dimension chosen, ranked by count or downtime, each
+  // split by failure cause; a click narrows the population to the bar and steps
+  // the dimension down (location, then component, then mechanism).
+  function paretoRows() {
+    const pareto = state.summary && state.summary.pareto;
+    if (!pareto) return [];
+    const metric = state.metric;
+    const rows = pareto.rows.map((row) => ({ ...row }));
+    rows.sort((a, b) => (Number(b[metric]) || 0) - (Number(a[metric]) || 0));
+    const total = rows.reduce((sum, row) => sum + (Number(row[metric]) || 0), 0) || 1;
+    let cumulative = 0;
+    rows.forEach((row) => {
+      cumulative += Number(row[metric]) || 0;
+      row._cumulative_percent = (cumulative / total) * 100;
+    });
+    return rows;
+  }
+
+  // Every cause in the population gets one colour, the same across the bars.
+  function causeColours(rows) {
+    const order = [];
+    rows.forEach((row) => row.causes.forEach((cause) => {
+      if (!order.some((item) => item.key === cause.key)) order.push({ key: cause.key, label: cause.label });
+    }));
+    const series = (C.series && C.series.length ? C.series : [C.bar]);
+    return order.map((item, index) => ({ ...item, colour: series[index % series.length] }));
+  }
+
+  function paretoClick(row) {
+    const pareto = state.summary.pareto;
+    if (row.key === null || row.key === undefined) {
+      showToast("Not coded is not a value to narrow by: disposition those work orders first.", "info");
+      return;
     }
-    renderTrendChart();
-    renderTrendTable();
-    renderTrendRecordsTable();
+    if (!pareto.selection_key) {
+      showToast(`${pareto.label} can't narrow the population; group by another dimension to drill down.`, "info");
+      return;
+    }
+    drillInto({ [pareto.selection_key]: row.key }, pareto.next_group_by);
   }
 
-  function resetTrendRange() {
-    state.trendRange = { from: null, to: null };
-    state.trendSelectedMonth = null;
-    renderTrendControls();
-    renderTrendChart();
-    renderTrendTable();
-    renderTrendRecordsTable();
+  function drawPareto() {
+    const canvas = $("lda-pareto-chart");
+    const pareto = state.summary && state.summary.pareto;
+    $("lda-pareto-title").textContent = pareto ? `Pareto by ${pareto.label.toLowerCase()}` : "Pareto";
+    document.querySelectorAll("#lda-pareto-metric [data-metric]").forEach((button) => {
+      const active = button.dataset.metric === state.metric;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    const allRows = paretoRows();
+    const rows = allRows.slice(0, PARETO_MAX_BARS);
+    $("lda-pareto-empty").hidden = allRows.length > 0;
+    const metric = state.metric;
+    const { ctx, width: W, height: H } = setupCanvas(canvas, 340);
+    ctx.clearRect(0, 0, W, H);
+    canvas.onclick = null;
+    canvas.onmousemove = null;
+    canvas.onmouseleave = null;
+    canvas.style.cursor = "";
+    hidePointTooltip();
+    const colours = causeColours(rows);
+    const legend = $("lda-pareto-legend");
+    legend.innerHTML = "";
+    if (rows.length) {
+      legend.appendChild(el("span", { text: "Failure cause:" }));
+      colours.forEach((cause) => legend.appendChild(el("span", {}, [el("i", { style: `background:${cause.colour}` }), cause.label])));
+    }
+    if (!rows.length) return;
+
+    const left = 64;
+    const right = W - 56;
+    const top = 24;
+    const bottom = H - 80;
+    const plotH = bottom - top;
+    const slot = (right - left) / rows.length;
+    const maxVal = Math.max(...rows.map((r) => Number(r[metric]) || 0), 1);
+    const barGap = 8;
+    // A few bars stay bars rather than slabs across the whole chart.
+    const barW = Math.max(6, Math.min(slot - barGap, 110));
+    const hitboxes = [];
+    const tickLabel = (v) => {
+      const n = Number(v) || 0;
+      if (Math.abs(n) >= 1000) return Math.round(n / 100) / 10 + "k";
+      return n >= 100 ? String(Math.round(n)) : Number(n.toPrecision(3)).toString();
+    };
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= 5; i += 1) {
+      const frac = i / 5;
+      const y = bottom - frac * plotH;
+      ctx.strokeStyle = C.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillStyle = C.label;
+      ctx.textAlign = "right";
+      ctx.fillText(tickLabel(maxVal * frac), left - 7, y);
+      ctx.textAlign = "left";
+      ctx.fillText(Math.round(frac * 100) + "%", right + 7, y);
+    }
+    ctx.textBaseline = "alphabetic";
+    ctx.strokeStyle = C.axis;
+    ctx.beginPath();
+    ctx.moveTo(left, top);
+    ctx.lineTo(left, bottom);
+    ctx.lineTo(right, bottom);
+    ctx.moveTo(right, top);
+    ctx.lineTo(right, bottom);
+    ctx.stroke();
+
+    rows.forEach((row, index) => {
+      const value = Number(row[metric]) || 0;
+      const x = left + index * slot + (slot - barW) / 2;
+      let y = bottom;
+      // Each cause's share of the bar, stacked from the axis up.
+      row.causes.forEach((cause) => {
+        const part = metric === "count" ? Number(cause.count) : Number(cause.downtime_hours);
+        const height = (part / maxVal) * plotH;
+        ctx.fillStyle = (colours.find((item) => item.key === cause.key) || { colour: C.bar }).colour;
+        ctx.fillRect(x, y - height, barW, height);
+        y -= height;
+      });
+      hitboxes.push({ x, y: top, w: barW, h: plotH, row });
+      ctx.save();
+      ctx.fillStyle = C.label;
+      ctx.font = "10px Inter, sans-serif";
+      ctx.translate(x + barW / 2, bottom + 6);
+      ctx.rotate(Math.PI / 5);
+      const name = String(row.label || "—");
+      ctx.fillText(name.length > 20 ? `${name.slice(0, 19)}…` : name, 0, 0);
+      ctx.restore();
+      if (value > 0) {
+        ctx.fillStyle = C.ink;
+        ctx.textAlign = "center";
+        ctx.fillText(tickLabel(value), x + barW / 2, bottom - (value / maxVal) * plotH - 4);
+        ctx.textAlign = "left";
+      }
+    });
+
+    ctx.strokeStyle = C.highlight;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    rows.forEach((row, index) => {
+      const x = left + index * slot + slot / 2;
+      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = C.highlight;
+    rows.forEach((row, index) => {
+      ctx.beginPath();
+      ctx.arc(left + index * slot + slot / 2, bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.fillStyle = C.label;
+    ctx.textAlign = "center";
+    ctx.save();
+    ctx.translate(13, (top + bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(metric === "count" ? "Work orders" : "Downtime (hours)", 0, 0);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(W - 9, (top + bottom) / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillText("Cumulative %", 0, 0);
+    ctx.restore();
+    if (allRows.length > rows.length) ctx.fillText(`Top ${rows.length} of ${allRows.length}`, (left + right) / 2, 12);
+    ctx.textAlign = "left";
+
+    const barAt = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      return hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
+    };
+    const canDrill = Boolean(pareto.selection_key);
+    canvas.onclick = (event) => {
+      const hit = barAt(event);
+      if (hit) paretoClick(hit.row);
+    };
+    canvas.onmousemove = (event) => {
+      const hit = barAt(event);
+      canvas.style.cursor = hit ? "pointer" : "";
+      if (!hit) return hidePointTooltip();
+      const row = hit.row;
+      showTooltipRows(event.clientX, event.clientY, [
+        [pareto.label, row.label],
+        ["Work orders", String(row.count)],
+        ["Downtime", `${fmt(row.downtime_hours)} h`],
+        ["Cumulative", `${fmt(row._cumulative_percent, 3)}%`],
+        ...row.causes.slice(0, 4).map((cause) => [cause.label, `${cause.count} (${fmt(cause.downtime_hours)} h)`]),
+        ["Click to", canDrill && row.key != null
+          ? `narrow to ${row.label}${pareto.next_group_by ? ` and show it by ${pareto.next_group_by.replace("_", " ")}` : ""}`
+          : "—"],
+      ]);
+    };
+    canvas.onmouseleave = () => {
+      canvas.style.cursor = "";
+      hidePointTooltip();
+    };
   }
 
-  // Toggle the drilled-into month for the Work Orders in Trend table. Clicking the
-  // active month again clears the drill-down (back to every month in the range).
-  function toggleTrendMonth(month) {
-    if (!month) return;
-    state.trendSelectedMonth = state.trendSelectedMonth === month ? null : month;
+  // ---- location x component matrix ---------------------------------------------
+  function renderMatrix() {
+    const wrap = $("lda-matrix-wrap");
+    wrap.innerHTML = "";
+    const matrix = state.summary && state.summary.matrix;
+    if (!matrix || !matrix.rows.length) {
+      wrap.appendChild(el("p", { class: "lda-hint", text: "No work orders in this population yet." }));
+      return;
+    }
+    const table = el("table", { class: "std-matrix" });
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { scope: "col", text: "Location \\ component" }),
+      ...matrix.columns.map((column) => el("th", { scope: "col", text: column.label, title: `${column.total} work orders` })),
+    ])]));
+    const body = el("tbody");
+    const peak = matrix.max_count || 1;
+    matrix.rows.forEach((row, rowIndex) => {
+      body.appendChild(el("tr", {}, [
+        el("th", { scope: "row", text: row.label }),
+        ...matrix.columns.map((column, columnIndex) => {
+          const cell = matrix.cells[rowIndex][columnIndex];
+          if (!cell.count) return el("td", { class: "is-zero", text: "·" });
+          const drillable = row.key != null && column.key != null;
+          return el("td", {
+            class: "has-count",
+            style: `background: color-mix(in srgb, ${C.bar} ${Math.round(12 + 60 * (cell.count / peak))}%, transparent)`,
+            title: `${cell.count} work orders, ${fmt(cell.downtime_hours)} h downtime` + (drillable ? ". Click to narrow to it." : ""),
+            text: String(cell.count),
+            onclick: drillable ? () => drillInto({ locations: row.key, components: column.key }, "failure_mechanism") : null,
+          });
+        }),
+      ]));
+    });
+    table.appendChild(body);
+    wrap.appendChild(table);
+  }
+
+  // ---- analysis type ---------------------------------------------------------------
+  function setHidden(node, hidden) {
+    if (node) node.hidden = Boolean(hidden);
+  }
+
+  function setAnalysisType(value, { skipLoad } = {}) {
+    state.analysisType = value || ANALYSIS_TYPES.WEIBULL;
+    applyAnalysisTypeUI();
+    if (!skipLoad && state.asset && state.summary) {
+      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
+      loadAnalysis();
+    }
+  }
+
+  function applyAnalysisTypeUI() {
+    const type = state.analysisType;
+    const is = (other) => type === other;
+    $("lda-step-3").textContent = {
+      [ANALYSIS_TYPES.WEIBULL]: "Weibull readiness",
+      [ANALYSIS_TYPES.TREND]: "Failure trend",
+      [ANALYSIS_TYPES.PM]: "PM effectiveness",
+      [ANALYSIS_TYPES.DOWNTIME]: "Downtime drivers",
+      [ANALYSIS_TYPES.REPEAT]: "Repeat fix rate",
+    }[type] || type;
+    setHidden($("lda-weibull-summary"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-beta-panel"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-risk-panel"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-actions"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-perform-hint"), !is(ANALYSIS_TYPES.WEIBULL));
+    ["lda-trend-summary", "lda-trend-chart-panel", "lda-trend-table-panel", "lda-trend-wo-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.TREND)));
+    ["lda-pm-summary", "lda-pm-chart-panel", "lda-pm-table-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.PM)));
+    ["lda-downtime-summary", "lda-downtime-trend-panel", "lda-downtime-dist-panel", "lda-downtime-asset-panel", "lda-downtime-events-panel"]
+      .forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.DOWNTIME)));
+    ["lda-repeat-summary", "lda-repeat-rate-panel", "lda-repeat-pairs-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.REPEAT)));
+    if (!is(ANALYSIS_TYPES.WEIBULL)) clearWorkspace();
+    if (state.summary) drawPareto();
+  }
+
+  // ---- record numbers that open the record ---------------------------------------
+  // A task ID in an analysis table, as a button that opens that work order's
+  // disposition over the page for an editor, and as text for anybody else.
+  function recordNumberCell(taskId, mappedRecordId, emptyText) {
+    const text = taskId != null && taskId !== "" ? String(taskId) : emptyText || "";
+    if (!CAN_EDIT || mappedRecordId == null || !text) return el("td", { class: "lda-nowrap", text });
+    return el("td", { class: "lda-nowrap", "data-column-text": text }, [
+      el("button", {
+        type: "button",
+        class: "lda-record-link",
+        title: "Review or change this work order's disposition",
+        text,
+        onclick: () => openRecordEditor(mappedRecordId),
+      }),
+    ]);
+  }
+
+  // ---- failure trend -----------------------------------------------------------------
+  function trendDeltaText(value) {
+    const n = Number(value) || 0;
+    const sign = n > 0 ? "+" : n < 0 ? "−" : "±";
+    return `${sign}${Math.abs(n)} vs. the 3 months before`;
+  }
+
+  function renderTrend() {
+    const trend = state.summary && state.summary.trend;
+    if (!trend) return;
+    const grid = $("lda-trend-cards");
+    grid.innerHTML = "";
+    const summary = trend.summary || {};
+    const dimension = trend.label.toLowerCase();
+    [
+      ["most_frequent", `Most frequent ${dimension}`, (c) => `${c.value} work orders`, null],
+      ["highest_downtime", "Highest downtime", (c) => `${fmt(c.value)} downtime hours`, null],
+      ["fastest_growing", "Fastest growing", (c) => trendDeltaText(c.value), `No ${dimension} increased`],
+      ["most_improved", "Most improved", (c) => trendDeltaText(c.value), `No ${dimension} decreased`],
+    ].forEach(([key, label, detail, emptyText]) => {
+      const entry = summary[key];
+      let valueText = "—";
+      let detailText = "";
+      if (entry) {
+        valueText = entry.label;
+        detailText = detail(entry);
+      } else if (emptyText && !trend.has_growth_window) {
+        valueText = "Insufficient Data";
+        detailText = "Needs six months of data";
+      } else if (emptyText) {
+        detailText = emptyText;
+      }
+      grid.appendChild(el("div", { class: "lda-metric lda-trend-metric" }, [
+        el("span", { class: "lda-metric-label", text: label }),
+        el("span", { class: "lda-metric-value lda-trend-metric-value", text: valueText }),
+        detailText ? el("span", { class: "lda-metric-label", text: detailText }) : null,
+      ]));
+    });
     renderTrendChart();
     renderTrendTable();
-    renderTrendRecordsTable();
+    renderTrendRecords();
   }
 
   function renderTrendChart() {
+    const trend = state.summary && state.summary.trend;
     const canvas = $("lda-trend-chart");
     const hint = $("lda-trend-selection");
-    if (!canvas) return;
-    const series = selectedTrendSeries();
-    if (!series || !series.months.length) {
-      if (hint) {
-        hint.hidden = false;
-        if (!state.selectedTrend) {
-          hint.textContent =
-            "Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.";
-        } else if (series) {
-          // A selection with a plottable full series, but the active date range
-          // excludes every month — point the user at the range, not the data.
-          hint.textContent = `No occurrences for ${state.selectedTrend.label} in the selected date range.`;
-        } else {
-          hint.textContent = `No occurrences found for ${state.selectedTrend.label} in the current dataset.`;
-        }
-      }
+    if (!trend || !trend.months.length) {
+      hint.textContent = "No dated work orders in this population.";
       canvas.hidden = true;
       return;
     }
-    if (hint) {
-      hint.hidden = false;
-      hint.textContent = `Monthly occurrence count for ${series.label}. Click a point to show only that month's work orders below.`;
-    }
     canvas.hidden = false;
-    const selectedIndex = state.trendSelectedMonth ? series.months.indexOf(state.trendSelectedMonth) : -1;
-    drawTrendChart(canvas, series.months, series.counts, "Occurrence count", {
-      selectedIndex,
-      onPointClick: (index) => toggleTrendMonth(series.months[index]),
+    hint.textContent =
+      `Work orders per month in the population (${state.summary.population_label}). Click a point to list only that month's work orders.` +
+      (trend.undated ? ` ${trend.undated} without a date are left out.` : "");
+    drawTrendChart(canvas, trend.months, trend.monthly_counts, "Work orders", {
+      selectedIndex: state.trendMonth ? trend.months.indexOf(state.trendMonth) : -1,
+      onPointClick: (index) => toggleTrendMonth(trend.months[index]),
     });
   }
 
-  // Tabular view of the exact values feeding the trend chart: one row per month in
-  // the active date range, plus a total. Kept in sync with the chart by sharing
-  // selectedTrendSeries(), so range changes update both together.
+  function toggleTrendMonth(month) {
+    state.trendMonth = state.trendMonth === month ? null : month;
+    renderTrendChart();
+    renderTrendTable();
+    renderTrendRecords();
+  }
+
+  // Each month's total, and the five values of the Pareto's dimension with the most
+  // work orders beside it, so a rise can be traced to what rose.
   function renderTrendTable() {
     const wrap = $("lda-trend-table-wrap");
-    if (!wrap) return;
     wrap.innerHTML = "";
-    const series = selectedTrendSeries();
-    const headers = ["Month", "Occurrences"];
+    const trend = state.summary && state.summary.trend;
+    if (!trend || !trend.months.length) return;
+    const top = trend.groups.slice(0, 5);
     const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    const months = (series && series.months) || [];
-    if (!months.length) {
-      const emptyText = !state.selectedTrend
-        ? "Select a failure mode or mechanism to view its monthly detail."
-        : series
-        ? "No occurrences in the selected date range."
-        : "No occurrences found for the selected failure mode or mechanism.";
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: emptyText }),
-        ])
-      );
-    } else {
-      months.forEach((key, index) => {
-        const isActive = state.trendSelectedMonth === key;
-        const tr = el(
-          "tr",
-          {
-            class: `lda-trend-month-row${isActive ? " is-active" : ""}`,
-            title: "Click to show only this month's work orders below",
-            onclick: () => toggleTrendMonth(key),
-          },
-          [el("td", { text: monthLabel(key) }), el("td", { text: String(series.counts[index]) })]
-        );
-        tbody.appendChild(tr);
-      });
-      const total = series.counts.reduce((sum, value) => sum + value, 0);
-      tbody.appendChild(
-        el("tr", { class: "lda-trend-total" }, [
-          el("td", { text: "Total" }),
-          el("td", { text: String(total) }),
-        ])
-      );
-    }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
-
-  // Individual work orders backing the trend for the selected mode/mechanism,
-  // honoring the active date range and (when set) the drilled-into month. Returns
-  // newest-first so the most recent work appears at the top of the detail table.
-  function selectedTrendRecords() {
-    const trend = state.trend;
-    const sel = state.selectedTrend;
-    if (!trend || !sel) return [];
-    const matches = (trend.mechanisms || []).filter(
-      (m) =>
-        Number(m.failure_mode_id) === Number(sel.failure_mode_id) &&
-        (sel.failure_mechanism_id == null || Number(m.failure_mechanism_id) === Number(sel.failure_mechanism_id))
-    );
-    const { from, to } = state.trendRange;
-    const month = state.trendSelectedMonth;
-    const records = [];
-    matches.forEach((m) => {
-      (m.records || []).forEach((record) => {
-        if (month) {
-          if (record.month !== month) return;
-        } else {
-          if (from && record.month < from) return;
-          if (to && record.month > to) return;
-        }
-        records.push(record);
-      });
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Month" }),
+      el("th", { text: "Work orders" }),
+      el("th", { text: "Downtime (h)" }),
+      ...top.map((group) => el("th", { text: group.label })),
+    ])]));
+    const body = el("tbody");
+    trend.months.forEach((month, index) => {
+      body.appendChild(el("tr", {
+        class: `lda-trend-month-row${state.trendMonth === month ? " is-active" : ""}`,
+        title: "Click to list only this month's work orders below",
+        onclick: () => toggleTrendMonth(month),
+      }, [
+        el("td", { text: monthLabel(month) }),
+        el("td", { text: String(trend.monthly_counts[index]) }),
+        el("td", { text: fmtFixed(trend.monthly_downtime_hours[index]) || "0" }),
+        ...top.map((group) => el("td", { text: String(group.monthly_counts[index]) })),
+      ]));
     });
-    records.sort((a, b) => String(b.month || "").localeCompare(String(a.month || "")));
-    return records;
-  }
-
-  // "Work Orders in Trend" table: one row per work order feeding the plotted
-  // months, filtered to the drilled month when one is selected. Shows the WO id,
-  // title, request description and completion notes so the trend is traceable to
-  // the source records.
-  function renderTrendRecordsTable() {
-    const wrap = $("lda-trend-wo-wrap");
-    const hint = $("lda-trend-wo-hint");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    if (hint) {
-      if (!state.selectedTrend) {
-        hint.textContent = "The specific work orders that populate the months plotted above.";
-      } else if (state.trendSelectedMonth) {
-        hint.textContent =
-          `Work orders for ${monthLabel(state.trendSelectedMonth)}. Click the month again to show every month in range.` +
-          RECORD_EDIT_HINT;
-      } else {
-        hint.textContent =
-          "The specific work orders that populate the months plotted above. Click a month/data point to drill in." +
-          RECORD_EDIT_HINT;
-      }
-    }
-    const headers = ["WO #", "WO Title", "Month", "Downtime (h)", "Request Description", "Completion Notes", "Failure Narrative"];
-    const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    const records = selectedTrendRecords();
-    if (!records.length) {
-      const emptyText = !state.selectedTrend
-        ? "Select a failure mode or mechanism to list its work orders."
-        : state.trendSelectedMonth
-        ? "No work orders for the selected month."
-        : "No work orders for the selected failure mode or mechanism in this range.";
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: emptyText }),
-        ])
-      );
-    } else {
-      records.forEach((record) => {
-        tbody.appendChild(
-          el("tr", {}, [
-            recordNumberCell(record.task_id, { mappedRecordId: record.mapped_record_id, kind: "wo" }),
-            el("td", { text: record.task_name || "" }),
-            el("td", { text: monthLabel(record.month) }),
-            el("td", { text: record.downtime_hours != null ? fmtFixed(record.downtime_hours) : "" }),
-            el("td", { class: "lda-wo-text", text: record.requestor_description || "" }),
-            el("td", { class: "lda-wo-text", text: record.completion_notes || "" }),
-            narrativeCell(record),
-          ])
-        );
-      });
-    }
-    table.appendChild(tbody);
+    body.appendChild(el("tr", { class: "lda-trend-total" }, [
+      el("td", { text: "Total" }),
+      el("td", { text: String(trend.monthly_counts.reduce((a, b) => a + b, 0)) }),
+      el("td", { text: fmtFixed(trend.monthly_downtime_hours.reduce((a, b) => a + b, 0)) || "0" }),
+      ...top.map((group) => el("td", { text: String(group.total_count) })),
+    ]));
+    table.appendChild(body);
     wrap.appendChild(table);
   }
 
+  // The population's work orders as one table: what the trend counts, the
+  // downtime list sorts, and a record can be opened from.
+  function recordsTable(records, emptyText) {
+    const columns = [
+      { label: "Task ID", type: "number", get: (r) => String(r.task_id ?? ""), node: (r) => recordNumberCell(r.task_id, r.mapped_record_id) },
+      { label: "Found", type: "datetime", get: (r) => r.event_date || "" },
+      { label: "Work order", cls: "lda-wo-text", get: (r) => r.task_name || "" },
+      { label: "Category", get: (r) => r.category || "" },
+      { label: "Location", get: (r) => r.location || "" },
+      { label: "Component", get: (r) => r.component || "" },
+      { label: "Mechanism", get: (r) => r.failure_mechanism || "" },
+      { label: "Mode", get: (r) => r.failure_mode || "" },
+      { label: "Cause", get: (r) => r.failure_cause || "" },
+      { label: "Downtime (h)", type: "number", get: (r) => (r.downtime_hours != null ? fmtFixed(r.downtime_hours) : "") },
+      { label: "Request", cls: "lda-wo-text", get: (r) => r.requestor_description || "" },
+      { label: "Completion notes", cls: "lda-wo-text", get: (r) => r.completion_notes || "" },
+      { label: "Failure narrative", cls: "lda-wo-text", get: (r) => narrativeText(r), node: (r) => narrativeCell(r, { cls: "lda-wo-text" }) },
+    ];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
+    const body = el("tbody");
+    if (!records.length) {
+      body.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: emptyText })]));
+    }
+    records.forEach((record) => {
+      body.appendChild(el("tr", {}, columns.map((c) => (c.node ? c.node(record) : el("td", { text: c.get(record), class: c.cls || null })))));
+    });
+    table.appendChild(body);
+    if (records.length) enableTableColumnTools(table, { columns });
+    return table;
+  }
+
+  function renderTrendRecords() {
+    const wrap = $("lda-trend-wo-wrap");
+    wrap.innerHTML = "";
+    const trend = state.summary && state.summary.trend;
+    if (!trend) return;
+    const month = state.trendMonth;
+    const records = month ? trend.records.filter((record) => record.month === month) : trend.records;
+    $("lda-trend-wo-hint").textContent =
+      (month
+        ? `Work orders found in ${monthLabel(month)}. Click the month again to list every month.`
+        : "The work orders the trend counts, newest first. Click a month above to list only its work orders.") +
+      (trend.records_truncated ? " Only the newest 500 are listed." : "") +
+      RECORD_EDIT_HINT;
+    wrap.appendChild(recordsTable(records, month ? "No work orders that month." : "No work orders in this population."));
+  }
+
+  // ---- PM effectiveness ---------------------------------------------------------------
+  async function loadPm() {
+    const token = ++state.pmToken;
+    try {
+      const data = await postJson(`${API}/pm-effectiveness`, populationBody());
+      if (token !== state.pmToken) return;
+      state.pm = data;
+      renderPm();
+    } catch (err) {
+      if (token === state.pmToken) showBanner(err.message, "error");
+    }
+  }
+
+  function pmDaysClass(days) {
+    const n = Number(days);
+    if (!isFinite(n)) return "";
+    if (n >= 180) return "lda-days-green";
+    if (n >= 90) return "lda-days-yellow";
+    if (n >= 30) return "lda-days-orange";
+    return "lda-days-red";
+  }
+
+  function renderPm() {
+    const data = state.pm;
+    const grid = $("lda-pm-cards");
+    grid.innerHTML = "";
+    if (!data) return;
+    [
+      [String(data.pms_performed), "PMs performed", `${data.pm_resets} renewed an item of the population`],
+      [String(data.failures_after_pm), "Failures after a PM", `of ${data.failures} failures in the population`],
+      [data.average_days_to_failure != null ? `${fmt(data.average_days_to_failure)} days` : "—", "Average days to failure", "from each PM to the next failure"],
+      [data.effectiveness, "PM effectiveness", "Excellent ≥180 · Good ≥90 · Fair ≥30 days"],
+    ].forEach(([value, label, detail]) => {
+      grid.appendChild(el("div", { class: "lda-metric" }, [
+        el("span", { class: "lda-metric-value", text: value }),
+        el("span", { class: "lda-metric-label", text: label }),
+        el("span", { class: "lda-metric-label", text: detail }),
+      ]));
+    });
+    const message = $("lda-pm-message");
+    message.hidden = data.has_pm_history;
+    message.textContent = data.has_pm_history ? "" : "No completed PM is on record at the population's locations for its items.";
+    const canvas = $("lda-pm-chart");
+    const hint = $("lda-pm-selection");
+    if (data.months.length) {
+      canvas.hidden = false;
+      hint.textContent = "Failures of the population found after a PM, by month: each failure once, however many PMs it followed.";
+      drawTrendChart(canvas, data.months, data.monthly_counts, "Failures after a PM", {});
+    } else {
+      canvas.hidden = true;
+      hint.textContent = "No failure of the population followed a PM.";
+    }
+    const wrap = $("lda-pm-table-wrap");
+    wrap.innerHTML = "";
+    const columns = [
+      { label: "PM", type: "number", get: (r) => String(r.pm_task_id ?? ""), node: (r) => recordNumberCell(r.pm_task_id, r.pm_mapped_record_id) },
+      { label: "PM completed", type: "datetime", get: (r) => r.pm_completion_date },
+      { label: "PM", cls: "lda-wo-text", get: (r) => r.pm_task_name || "" },
+      { label: "Kind", get: (r) => r.pm_kind + (r.renewed_items.length ? ` (${r.renewed_items.join(", ")})` : "") },
+      { label: "Location", get: (r) => r.location },
+      { label: "Next failure", type: "datetime", get: (r) => r.next_failure_date },
+      { label: "Days to failure", type: "number", get: (r) => fmt(r.days_to_failure), cls: null },
+      { label: "Failure", get: (r) => r.failure },
+      { label: "Downtime (h)", type: "number", get: (r) => fmtFixed(r.downtime_hours) || "0" },
+      { label: "Failure WO", type: "number", get: (r) => String(r.corrective_wo_number ?? ""), node: (r) => recordNumberCell(r.corrective_wo_number, r.corrective_mapped_record_id) },
+    ];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label })))]));
+    const body = el("tbody");
+    if (!data.rows.length) {
+      body.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: "No PM was followed by a failure of the population." })]));
+    }
+    data.rows.forEach((row) => {
+      body.appendChild(el("tr", {}, columns.map((c) => {
+        if (c.node) return c.node(row);
+        return el("td", { text: c.get(row), class: c.label === "Days to failure" ? pmDaysClass(row.days_to_failure) : c.cls || null });
+      })));
+    });
+    table.appendChild(body);
+    if (data.rows.length) enableTableColumnTools(table, { columns });
+    wrap.appendChild(table);
+    $("lda-pm-table-hint").textContent =
+      "Each completed PM at a location of the population -- a reset that renewed one of its items, or planned work there " +
+      "that renewed nothing -- paired with the next failure of the population found at that location." + RECORD_EDIT_HINT;
+  }
+
+  // ---- repeat fixes ----------------------------------------------------------------
+  function repeatWindowHours() {
+    const box = $("lda-repeat-window");
+    const value = Number(box.value);
+    return box.value !== "" && isFinite(value) && value >= 0 && value <= 720 ? value : null;
+  }
+
+  function onRepeatWindowChange() {
+    const hours = repeatWindowHours();
+    if (hours == null) {
+      $("lda-repeat-window").value = String(state.repeatWindow);
+      showBanner("The repeat window is a number of scheduled hours from 0 to 720.", "error");
+      return;
+    }
+    state.repeatWindow = hours;
+    if (state.asset) loadRepeat();
+  }
+
+  async function loadRepeat() {
+    const token = ++state.repeatToken;
+    try {
+      const data = await postJson(`${API}/repeat-fixes`, populationBody({ window_hours: state.repeatWindow }));
+      if (token !== state.repeatToken) return;
+      state.repeat = data;
+      if (state.repeatFilter && !data.groups.some((group) => group.key === state.repeatFilter)) state.repeatFilter = null;
+      renderRepeat();
+    } catch (err) {
+      if (token === state.repeatToken) showBanner(err.message, "error");
+    }
+  }
+
+  const fmtRate = (rate) => (rate == null ? "—" : `${(100 * Number(rate)).toFixed(rate < 0.1 ? 1 : 0)}%`);
+
+  function renderRepeat() {
+    const data = state.repeat;
+    const grid = $("lda-repeat-cards");
+    grid.innerHTML = "";
+    if (!data) return;
+    const highest = data.highest_rate;
+    const most = data.most_repeats;
+    [
+      [String(data.failures), "Failures with a component", data.uncoded_failures ? `${data.uncoded_failures} more have none and are left out` : "item by item"],
+      [String(data.repeats), "Repeats", `of ${data.intervals} gaps between failures`],
+      [fmtRate(data.repeat_rate), "Repeat rate", `within ${fmt(data.window_hours)} scheduled hours`],
+      [highest ? highest.label : "—", "Highest rate", highest ? `${fmtRate(highest.repeat_rate)} over ${highest.intervals} gaps` : `needs ${data.min_intervals_for_rate}+ gaps and a repeat`],
+      [most ? most.label : "—", "Most repeats", most ? `${most.repeats} repeats` : "no repeats"],
+    ].forEach(([value, label, detail]) => {
+      grid.appendChild(el("div", { class: "lda-metric" }, [
+        el("span", { class: "lda-metric-value lda-trend-metric-value", text: value }),
+        el("span", { class: "lda-metric-label", text: label }),
+        el("span", { class: "lda-metric-label", text: detail }),
+      ]));
+    });
+    const notes = [];
+    if (data.undated_failures) notes.push(`${data.undated_failures} failures have no date and are left out.`);
+    if (data.future_failures) notes.push(`${data.future_failures} are dated in the future and are left out.`);
+    if (data.possible_duplicates) notes.push(`${data.possible_duplicates} repeats look like duplicate work orders; check them below.`);
+    const message = $("lda-repeat-message");
+    message.hidden = !notes.length;
+    message.textContent = notes.join(" ");
+    $("lda-repeat-basis").textContent =
+      `Counted on ${data.schedules.length ? data.schedules.join(", ") : "each location's Weibull schedule"}, days split at midnight ${data.time_zone}.` +
+      (data.time_zone_warning ? ` ${data.time_zone_warning}` : "");
+
+    const rates = $("lda-repeat-rate-wrap");
+    rates.innerHTML = "";
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, ["Item", "Schedule", "Failures", "Gaps", "Repeats", "Rate"].map((h) => el("th", { text: h })))]));
+    const body = el("tbody");
+    if (!data.groups.length) body.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: "6", text: "No failures with a component in this population." })]));
+    data.groups.forEach((group) => {
+      body.appendChild(el("tr", {
+        class: `lda-trend-month-row${state.repeatFilter === group.key ? " is-active" : ""}`,
+        title: "Click to list only this item's repeats",
+        onclick: () => {
+          state.repeatFilter = state.repeatFilter === group.key ? null : group.key;
+          renderRepeat();
+        },
+      }, [
+        el("td", { text: group.label }),
+        el("td", { text: group.schedule_name }),
+        el("td", { text: String(group.failures) }),
+        el("td", { text: String(group.intervals) }),
+        el("td", { text: String(group.repeats) }),
+        el("td", { text: group.intervals >= data.min_intervals_for_rate ? fmtRate(group.repeat_rate) : `${fmtRate(group.repeat_rate)} (few gaps)` }),
+      ]));
+    });
+    table.appendChild(body);
+    rates.appendChild(table);
+
+    const filter = state.repeatFilter;
+    const filterGroup = data.groups.find((group) => group.key === filter);
+    setHidden($("lda-repeat-filter"), !filterGroup);
+    if (filterGroup) $("lda-repeat-filter-text").textContent = `Showing only ${filterGroup.label}.`;
+    const pairs = data.pairs.filter((pair) => !filter || pair.group_key === filter);
+    const wrap = $("lda-repeat-pairs-wrap");
+    wrap.innerHTML = "";
+    const columns = [
+      { label: "Item", get: (p) => p.label },
+      { label: "Fixed", type: "number", get: (p) => String(p.prior_task_id ?? ""), node: (p) => recordNumberCell(p.prior_task_id, p.prior_mapped_record_id) },
+      { label: "Fixed on", type: "datetime", get: (p) => formatRecordDate(p.prior_fixed) },
+      { label: "Mechanism", get: (p) => p.prior_mechanism },
+      { label: "Came back", type: "number", get: (p) => String(p.repeat_task_id ?? ""), node: (p) => recordNumberCell(p.repeat_task_id, p.repeat_mapped_record_id) },
+      { label: "Found on", type: "datetime", get: (p) => formatRecordDate(p.repeat_found) },
+      { label: "Mechanism", get: (p) => p.repeat_mechanism },
+      { label: "Scheduled h", type: "number", get: (p) => fmtFixed(p.scheduled_hours) || "0" },
+      { label: "Raw h", type: "number", get: (p) => fmtFixed(p.raw_hours) || "0" },
+      { label: "Check", cls: "lda-wo-text", get: (p) => p.duplicate_check || "" },
+    ];
+    const pairTable = el("table", { class: "lda-table" });
+    pairTable.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label })))]));
+    const pairBody = el("tbody");
+    if (!pairs.length) pairBody.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: "No failure came back within the window." })]));
+    pairs.forEach((pair) => pairBody.appendChild(el("tr", {}, columns.map((c) => (c.node ? c.node(pair) : el("td", { text: c.get(pair), class: c.cls || null }))))));
+    pairTable.appendChild(pairBody);
+    if (pairs.length) enableTableColumnTools(pairTable, { columns });
+    wrap.appendChild(pairTable);
+    $("lda-repeat-pairs-hint").textContent = "Each failure that came back within the window, with the fix before it." + RECORD_EDIT_HINT;
+  }
+
+  // ---- downtime drivers ------------------------------------------------------------
+  async function loadDowntime() {
+    const token = ++state.downtimeToken;
+    try {
+      const data = await postJson(`${API}/downtime-drivers`, populationBody());
+      if (token !== state.downtimeToken) return;
+      state.downtime = data;
+      renderDowntime();
+    } catch (err) {
+      if (token === state.downtimeToken) showBanner(err.message, "error");
+    }
+  }
+
+  function renderDowntime() {
+    const data = state.downtime;
+    const grid = $("lda-downtime-cards");
+    grid.innerHTML = "";
+    if (!data) return;
+    const s = data.summary;
+    [
+      [`${fmt(s.total_downtime_hours)} h`, "Total downtime"],
+      [String(s.work_order_count), "Work orders"],
+      [`${fmt(s.average_downtime_hours)} h`, "Average per work order"],
+      [`${fmt(s.median_downtime_hours)} h`, "Median"],
+      [`${fmt(s.max_downtime_hours)} h`, "Longest stop"],
+    ].forEach(([value, label]) => {
+      grid.appendChild(el("div", { class: "lda-metric" }, [
+        el("span", { class: "lda-metric-value", text: value }),
+        el("span", { class: "lda-metric-label", text: label }),
+      ]));
+    });
+    const message = $("lda-downtime-message");
+    message.hidden = data.has_records;
+    message.textContent = data.has_records ? "" : "No work orders in this population.";
+    renderDowntimeCharts();
+    const wrap = $("lda-downtime-events-wrap");
+    wrap.innerHTML = "";
+    wrap.appendChild(recordsTable(data.top_events, "No work orders in this population."));
+    $("lda-downtime-events-hint").textContent = "The ten work orders with the most downtime." + RECORD_EDIT_HINT;
+  }
+
+  function renderDowntimeCharts() {
+    const data = state.downtime;
+    if (!data) return;
+    const trend = $("lda-downtime-trend-chart");
+    trend.hidden = !data.months.length;
+    if (data.months.length) drawDowntimeLineChart(trend, data.months, data.monthly_downtime_hours, "Downtime (hours)");
+    drawBarChart($("lda-downtime-dist-chart"), data.distribution.map((bin) => bin.label), data.distribution.map((bin) => bin.count), {
+      yLabel: "Work orders",
+      xLabel: "Downtime per work order",
+    });
+    const locations = data.by_location.slice(0, 15);
+    drawBarChart($("lda-downtime-asset-chart"), locations.map((row) => row.label), locations.map((row) => row.downtime_hours), {
+      yLabel: "Downtime (hours)",
+      tickFormat: compactHours,
+      rotateLabels: locations.length > 6,
+    });
+  }
+
+  // ---- the Weibull fit ----------------------------------------------------------------
+  // What the action bar says under the button: what pressing it will do, given
+  // what the population has.
+  function renderPerformHint() {
+    const hint = $("lda-perform-hint");
+    if (!hint || !state.summary) return;
+    const readiness = state.summary.readiness || {};
+    const pieces = [
+      CAN_EDIT
+        ? "Perform Analysis builds the population's lives item by item, fits them, and saves the run with its population definition."
+        : "Preview the fit builds and fits the population's lives without saving anything; an editor saves a run.",
+    ];
+    if (readiness.uncoded) pieces.push(`${readiness.uncoded} failures or PM resets have no component yet and are left out until dispositioned.`);
+    if (readiness.not_reviewed) pieces.push(`${readiness.not_reviewed} work orders in reach are not reviewed yet.`);
+    hint.textContent = pieces.join(" ");
+  }
+
+  // The fit saved for exactly this population, whatever its window: shown when the
+  // population changes, so a saved fit is there without running anything.
+  async function loadSavedFit() {
+    const asset = state.asset;
+    const token = ++state.analysisToken;
+    try {
+      const data = await postJson(`${API}/saved-analysis`, populationBody());
+      if (token !== state.analysisToken || asset !== state.asset || state.analysisType !== ANALYSIS_TYPES.WEIBULL) return;
+      if (data.result) renderAnalysisResult(data.result, { scroll: false });
+      else {
+        clearWorkspace();
+        $("lda-workspace").appendChild(el("section", { class: "glass-card lda-card lda-empty-result", id: "lda-no-fit" }, [
+          el("h2", { text: "No saved Weibull fit for this population" }),
+          el("p", {
+            class: "lda-hint",
+            text: CAN_EDIT
+              ? "Perform Analysis fits it and saves the run. Narrow the population to one component (and mechanism) first: a Weibull life is measured on one kind of item."
+              : "An editor has to save a fit of this population before it can be opened here; Preview the fit shows one without saving.",
+          }),
+        ]));
+      }
+    } catch (err) {
+      if (token === state.analysisToken) showBanner(err.message, "error");
+    }
+  }
+
+  async function performAnalysis() {
+    if (!state.asset) {
+      showBanner("Select an Asset Number first.", "error");
+      return undefined;
+    }
+    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) return undefined;
+    const token = ++state.analysisToken;
+    beginLoading(CAN_EDIT ? "Fitting and saving the population's lives…" : "Fitting the population's lives…");
+    try {
+      const data = await postJson(`${API}/${CAN_EDIT ? "weibull/save" : "weibull"}`, populationBody(weibullDateWindow()));
+      if (token !== state.analysisToken) return undefined;
+      renderAnalysisResult(data.result, { scroll: true });
+      if (CAN_EDIT) loadSummary();
+    } catch (err) {
+      if (token === state.analysisToken && !err.toastShown) showBanner(err.message, "error");
+    } finally {
+      endLoading();
+    }
+    return undefined;
+  }
+
+  function clearWorkspace() {
+    const workspace = $("lda-workspace");
+    if (workspace) workspace.innerHTML = "";
+    state.analysisRedraw = null;
+    state.result = null;
+  }
+
+  // What the lives count and the window they were built in, in one line each.
+  function resultContextLines(result) {
+    const basis = result.life_basis || {};
+    const zone = basis.time_zone || "UTC";
+    const lines = [
+      `Life basis: schedule-adjusted hours, an exposure proxy rather than run-meter hours, on ${scheduleLabel(basis)}, ` +
+        `with days split at midnight ${zone}.`,
+      `Window: ${result.analysis_start ? `from ${plantTimeText(result.analysis_start, zone)}` : "all history"} to ` +
+        `${cutoffText(result, zone) || "an unrecorded cutoff"}` +
+        `${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source] ? `, ${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source]}` : ""}.`,
+      `Lives: ${result.total_observation_count} in total, ${result.failure_count} ending in a failure and ` +
+        `${result.censored_count} suspended (${result.suspension_count || 0} renewed by other work, ` +
+        `${result.current_life_censored_count || 0} still in service at the cutoff).`,
+      result.saved
+        ? `Saved ${result.run_at ? `${result.run_at} UTC` : ""}${result.run_by ? ` by ${result.run_by}` : ""}, method ${result.method_version}.`
+        : "A preview: not saved, so it can't be adjusted or reported.",
+    ];
+    return lines;
+  }
+
+  // Notices a result has to carry: saved under an earlier method or on schedules
+  // since changed, too few failures to fit, a crooked probability plot, lives that
+  // look like duplicates.
+  function resultNotices(result) {
+    const notices = [];
+    const rerun = CAN_EDIT ? "Run it again to apply them; " : "An editor has to run it again; ";
+    if (result.method_current === false) {
+      notices.push(`Saved by an earlier version of the method (${result.method_version || "unrecorded"}). ${rerun}it can't be reported until then.`);
+    }
+    if (result.method_current !== false && result.schedule_current === false) {
+      const changed = (result.schedules_changed || []).map((row) => `${row.location} from ${row.counted_on} to ${row.now_on}`).join("; ");
+      notices.push(`Counted on schedules since changed (${changed}), so its life hours have changed. ${rerun}it can't be reported until then.`);
+    }
+    if (result.method_current !== false && result.schedule_current !== false && result.time_zone_current === false) {
+      notices.push(
+        `Its days were split at midnight ${(result.life_basis || {}).time_zone || "UTC"}, but the plant's time zone is now ` +
+          `${result.current_time_zone}. ${rerun}it can't be reported until then.`
+      );
+    }
+    if (!result.fitted) notices.push(result.fit_reason || "No fit could be made of these lives.");
+    if (result.probability_plot_review) {
+      notices.push(
+        `The probability plot is less straight than 90% of genuine Weibull samples with ${result.failure_count} failures ` +
+          `(R² ${Number(result.probability_plot_r_squared).toFixed(3)}, review threshold ` +
+          `${Number(result.probability_plot_r_squared_threshold).toFixed(3)}). Review the population before acting on beta: ` +
+          "mixed components or mechanisms, or a duplicate work order, are the usual causes."
+      );
+    }
+    const flagged = (result.observations || []).filter((obs) => obs.data_quality_assumption_flag).length;
+    if (flagged) {
+      notices.push(
+        `${flagged} ${flagged === 1 ? "life ends" : "lives end"} within an hour of the event before, which is what two work ` +
+          "orders for one breakdown look like. Check the flagged rows in the data table."
+      );
+    }
+    return notices;
+  }
+
+  function warningsList(result) {
+    const warnings = result.warnings || [];
+    if (!warnings.length) return null;
+    return el("div", { class: "std-warnings", id: "lda-result-warnings" }, warnings.map((warning) =>
+      el("div", { class: `std-warning${warning.level === "info" ? " is-info" : ""}`, role: "note" }, [
+        el("strong", { text: warning.title }),
+        warning.message,
+      ])
+    ));
+  }
+
+  // The pooled streams: every item whose lives the fit rests on.
+  function streamsTable(result) {
+    const streams = result.streams || [];
+    const table = el("table", { class: "lda-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, ["Location", "Component", "Failures", "Suspensions", "Schedule", ""].map((h) => el("th", { text: h })))]));
+    const body = el("tbody");
+    if (!streams.length) body.appendChild(el("tr", {}, [el("td", { colspan: "6", class: "lda-readonly lda-empty-row", text: "No item in this population has a renewal on record." })]));
+    streams.forEach((stream) => {
+      body.appendChild(el("tr", {}, [
+        el("td", { text: stream.location }),
+        el("td", { text: stream.component_name && stream.component_name !== stream.component ? `${stream.component} · ${stream.component_name}` : stream.component }),
+        el("td", { class: "std-failure", text: String(stream.failures) }),
+        el("td", { class: "std-suspension", text: String(stream.suspensions) }),
+        el("td", { text: stream.schedule_name || "" }),
+        el("td", { text: stream.recurrent ? "Recurrent: a failure did not renew the item (Crow-AMSAA)" : "" }),
+      ]));
+    });
+    table.appendChild(body);
+    return el("div", { class: "lda-table-scroll" }, [table]);
+  }
+
+  // When a failure of unknown mechanism could be the selected one, both readings
+  // are fitted, and both shown.
+  function sensitivityPanel(result) {
+    const fit = result.sensitivity_fit;
+    if (!fit) return null;
+    const main = result.fit || {};
+    const describe = (f) => (f.fitted ? `beta ${fmt(f.beta)}, eta ${fmt(f.eta)} h` : f.reason || "not fitted");
+    return el("div", { class: "lda-panel", id: "lda-sensitivity-panel" }, [
+      el("h3", { text: "Unknown mechanisms: both readings" }),
+      el("div", { class: "std-fits" }, [
+        el("div", { class: "std-fit" }, [
+          el("h3", { text: main.label || "Unknown mechanisms as suspensions" }),
+          el("p", { class: "std-params", text: describe(main) }),
+          el("p", { class: "lda-hint", text: `${main.failure_count} failures, ${main.suspension_count} suspensions. The fit shown above.` }),
+        ]),
+        el("div", { class: "std-fit" }, [
+          el("h3", { text: fit.label }),
+          el("p", { class: "std-params", text: describe(fit) }),
+          el("p", { class: "lda-hint", text: `${fit.failure_count} failures, ${fit.suspension_count} suspensions.` }),
+        ]),
+      ]),
+      el("p", { class: "lda-hint", text: "If the two disagree, the unknowns matter: dispositioning them is worth more than either fit." }),
+    ]);
+  }
+
+  function renderAnalysisResult(result, options) {
+    const scroll = !options || options.scroll !== false;
+    clearWorkspace();
+    state.result = result;
+    let chartApi = null;
+    const dataTable = buildWeibullDataTable(result, (obs) => {
+      if (chartApi) chartApi.focus(obs);
+    });
+    const eventTable = buildEventProcessingTable(result);
+    const notices = resultNotices(result);
+    const header = [
+      el("h2", { text: "Weibull Analysis Results" }),
+      el("p", { class: "std-pop-string", id: "lda-result-pop", text: result.population_definition }),
+    ];
+    if (!result.fitted) {
+      const card = el("section", { class: "glass-card lda-card fade-in-up", id: "lda-result-card" }, [
+        ...header,
+        el("div", { class: "lda-result-context", id: "lda-result-context" },
+          resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
+        ...notices.map((notice) => el("p", { class: "lda-banner is-warning lda-result-notice", role: "note", text: notice })),
+        warningsList(result),
+        panel("Items pooled", streamsTable(result), "Each renewal stream: one physical item at one location.", "lda-streams-panel"),
+        panel("Lives", dataTable.node, "The lives there are, listed so they can be checked.", "lda-weibull-data-panel"),
+        eventTable.node,
+      ]);
+      $("lda-workspace").appendChild(card);
+      if (scroll) scrollBelowSticky(card);
+      return;
+    }
+    const agePanel = buildTargetAgePanel(result);
+    const adjustment = result.adjustment || null;
+    const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(adjustment ? adjustment.adjusted_beta : result.beta_mle, 6) });
+    const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(adjustment ? adjustment.adjusted_eta : result.eta_mle, 6) });
+    const reasonInput = el("input", { class: "lda-input", placeholder: "Why, from the data points…", value: adjustment ? adjustment.adjustment_reason || "" : "" });
+    const charts = el("div", { class: "lda-charts" });
+    chartApi = buildAnalysisCharts(charts, result, dataTable.highlight);
+    function applyParameters() {
+      const beta = Number(betaInput.value);
+      const eta = Number(etaInput.value);
+      if (beta > 0 && eta > 0) chartApi.update(beta, eta);
+      agePanel.update(beta, eta);
+    }
+    betaInput.addEventListener("input", applyParameters);
+    etaInput.addEventListener("input", applyParameters);
+    state.analysisRedraw = applyParameters;
+    const canAdjust = CAN_EDIT && result.saved && result.analysis_id != null;
+    const adjustRow = canAdjust
+      ? el("div", { class: "lda-adjust-row", id: "lda-adjust-row" }, [
+          field("Adjusted beta (±0.2)", betaInput),
+          field("Adjusted eta (±100 h)", etaInput),
+          field("Adjustment reason", reasonInput),
+          el("div", { class: "lda-field" }, [el("label", { html: "&nbsp;" }), el("button", {
+            class: "btn-primary",
+            text: "Save Adjusted Parameters",
+            onclick: () => saveAdjustedParameters(result, Number(betaInput.value), Number(etaInput.value), reasonInput.value),
+          })]),
+        ])
+      : null;
+    const metrics = lifeMetricsText(result);
+    const card = el("section", { class: "glass-card lda-card fade-in-up", id: "lda-result-card" }, [
+      ...header,
+      el("div", { class: "lda-result-headline" }, [
+        el("strong", { text: result.analysis_label || "Selected population" }),
+        el("span", { class: "lda-result-params", id: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
+        el("span", { class: "lda-hint", id: "lda-result-ci", text: confidenceIntervalText(result) }),
+        metrics ? el("span", { class: "lda-hint", id: "lda-result-life", text: metrics }) : null,
+        el("span", { class: "lda-hint", id: "lda-result-fit-check", text: fitCheckText(result) }),
+        adjustment
+          ? el("span", { class: "lda-hint", text: `Adjusted by ${adjustment.adjusted_by || "an editor"} to beta ${fmt(adjustment.adjusted_beta)}, eta ${fmt(adjustment.adjusted_eta)} h: ${adjustment.adjustment_reason || ""}` })
+          : null,
+      ]),
+      el("div", { class: "lda-result-context", id: "lda-result-context" },
+        resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))),
+      ...notices.map((notice) => el("p", { class: "lda-banner is-warning lda-result-notice", role: "note", text: notice })),
+      warningsList(result),
+      adjustRow,
+      legend(),
+      charts,
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Green lines show the MLE fit; yellow lines the approximate 95% confidence-interval fits. Red vertical lines mark " +
+          "the items still in service: each one's life from its last renewal to the cutoff. Hover a point for its work " +
+          "order; click it to jump to its row below.",
+      }),
+      agePanel.node,
+      sensitivityPanel(result),
+      panel("Results Interpretation Summary", buildInterpretationTable(result),
+        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals and the probability plot R².",
+        "lda-interpretation-panel"),
+      panel("Items pooled", streamsTable(result),
+        "Each renewal stream is one physical item at one location; its lives run from one renewal to the next event in that stream.",
+        "lda-streams-panel"),
+      panel("Weibull Data Used for Graphs", dataTable.node,
+        "Rows are the lives the fit rests on. Raw elapsed hours are calendar hours; weekend and non-run hours are taken out " +
+          "to give the life hours. Check flags a life that ends within an hour of the event before, a likely duplicate. " +
+          "Click a row to ring it on the graph that plots it." + RECORD_EDIT_HINT + " Use the ▾ menu in a column header to sort or filter.",
+        "lda-weibull-data-panel"),
+      eventTable.node,
+      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) : null,
+    ]);
+    $("lda-workspace").appendChild(card);
+    if (adjustment) applyParameters();
+    if (scroll) scrollBelowSticky(card);
+  }
+
+  // Every event the pooled streams saw, and what it did there: starts a life,
+  // ends one as a failure or a suspension, or nothing, and why. Collapsed by
+  // default; it is the audit trail behind the lives.
+  const ROLE_LABELS = {
+    STARTS_LIFE: "Starts a life",
+    FAILURE: "Failure",
+    SUSPENSION: "Suspension",
+    NO_EFFECT: "No effect",
+    EXCLUDED: "Left out",
+  };
+  function buildEventProcessingTable(result) {
+    const events = result.events || [];
+    const excluded = events.filter((event) => event.role === "EXCLUDED").length;
+    const columns = [
+      { label: "#", type: "number", get: (e) => String(e.sequence ?? "") },
+      { label: "Item", get: (e) => e.stream || "" },
+      { label: "Task ID", type: "number", get: (e) => String(e.task_id ?? ""), node: (e) => recordNumberCell(e.task_id, e.mapped_record_id) },
+      { label: "Work Title", cls: "lda-data-text", get: (e) => e.task_name || "" },
+      { label: "Category", get: (e) => e.category || "" },
+      { label: "When", type: "datetime", get: (e) => formatRecordDate(e.when) },
+      { label: "Role", get: (e) => ROLE_LABELS[e.role] || e.role || "" },
+      { label: "Note", cls: "lda-data-text", get: (e) => e.note || "" },
+    ];
+    const table = el("table", { class: "lda-data" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
+    const tbody = el("tbody");
+    events.forEach((event) => {
+      tbody.appendChild(el("tr", { class: event.role === "EXCLUDED" ? "is-excluded" : null }, columns.map((c) =>
+        c.node ? c.node(event) : el("td", { text: c.get(event), class: c.cls || null })
+      )));
+    });
+    table.appendChild(tbody);
+    if (events.length) enableTableColumnTools(table, { columns });
+    const details = el("details", { class: "lda-panel lda-events", id: "lda-event-table" }, [
+      el("summary", { text: `Event processing table: ${events.length} ${events.length === 1 ? "event" : "events"}` + (excluded ? `, ${excluded} left out` : "") }),
+      el("div", { class: "lda-data-scroll" }, [table]),
+      el("p", {
+        class: "lda-hint",
+        text:
+          "Every failure and PM reset that touched a pooled item, item by item in date order, with what it did there. The " +
+          "first renewal of an item only starts its clock; an event with no date, or outside the window, is listed but left out.",
+      }),
+    ]);
+    return { node: details };
+  }
+
+  // Generating a report reserves a numbered REL report for a saved run.
+  function buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) {
+    let blocked = "";
+    if (!result.saved || result.analysis_id == null) blocked = "Only a saved run can be reported: Perform Analysis saves one.";
+    else if (result.method_current === false) blocked = "Run the analysis again to report it: it was saved by an earlier version of the method.";
+    else if (result.schedule_current === false) blocked = "Run the analysis again to report it: a location has moved to another schedule since.";
+    else if (result.time_zone_current === false) blocked = "Run the analysis again to report it: the plant's time zone has changed since.";
+    const button = el("button", { class: "btn-primary", type: "button", text: "Generate Weibull Report", disabled: Boolean(blocked) });
+    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
+    return el("div", { class: "lda-report-bar", id: "lda-report-bar" }, [
+      button,
+      el("p", {
+        class: "lda-hint",
+        text:
+          blocked ||
+          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) of this saved run: the population definition, the items " +
+            "pooled, the life basis and window, the fitted values with B10, B50 and the reliability at the age entered above, " +
+            "the validity warnings, the graphs, the interpretation summary, the limitations, and every life it rests on.",
+      }),
+    ]);
+  }
+
+  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput, agePanel) {
+    // The report's tables are the MLE fit, so its graphs must show that fit, not an
+    // adjustment being tried on screen: redraw at the MLE, capture, then restore.
+    if (chartApi && result.beta_mle > 0 && result.eta_mle > 0) chartApi.update(Number(result.beta_mle), Number(result.eta_mle));
+    const charts = [];
+    chartsContainer.querySelectorAll(".lda-chart-card").forEach((cardEl) => {
+      const canvas = cardEl.querySelector("canvas");
+      const heading = cardEl.querySelector("h4");
+      if (!canvas) return;
+      try {
+        charts.push({ title: heading ? heading.textContent : "", image: canvas.toDataURL("image/png") });
+      } catch (err) {
+        /* a locally drawn canvas is never tainted */
+      }
+    });
+    if (chartApi) {
+      const beta = Number(betaInput.value);
+      const eta = Number(etaInput.value);
+      if (beta > 0 && eta > 0) chartApi.update(beta, eta);
+    }
+    button.disabled = true;
+    beginLoading("Generating Weibull report…");
+    try {
+      const filename = await postDownload(
+        `${API}/weibull-report`,
+        { analysis_id: result.analysis_id, charts, target_age_hours: agePanel ? agePanel.value() : null },
+        "weibull-report.docx"
+      );
+      showBanner(`Generated ${filename}.`, "success");
+    } catch (err) {
+      showBanner(err.message, "error");
+    } finally {
+      endLoading();
+      button.disabled = false;
+    }
+  }
+
+  async function saveAdjustedParameters(result, beta, eta, reason) {
+    if (!(beta > 0) || !(eta > 0)) {
+      showBanner("Adjusted beta and eta must both be positive numbers.", "error");
+      return;
+    }
+    beginLoading("Saving adjusted Weibull parameters…");
+    try {
+      const data = await postJson(`${API}/parameter-adjustment`, { analysis_id: result.analysis_id, beta, eta, reason });
+      result.adjustment = data.adjustment;
+      showBanner("The adjusted beta and eta were saved beside the MLE, which is unchanged.", "success");
+    } catch (err) {
+      if (!err.toastShown) showBanner(err.message, "error");
+    } finally {
+      endLoading();
+    }
+  }
+
+  function buildWeibullDataTable(result, onRowActivate) {
+    const columns = [
+      { label: "#", type: "number", get: (obs) => String(obs.ordered_index ?? "") },
+      { label: "Item", get: (obs) => obs.stream || "" },
+      { label: "Started by", type: "number", get: (obs) => (obs.start_task_id != null ? String(obs.start_task_id) : ""), node: (obs) => recordNumberCell(obs.start_task_id, obs.start_mapped_record_id) },
+      { label: "Ended by", type: "number", get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : ""), node: (obs) => recordNumberCell(obs.source_task_id, obs.source_mapped_record_id, "cutoff") },
+      { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
+      { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
+      { label: "Type", get: (obs) => OBSERVATION_TYPE_LABELS[obs.observation_type] || obs.observation_type || "" },
+      { label: "Life Hours", type: "number", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
+      { label: "Raw Elapsed (h)", type: "number", get: (obs) => (obs.life_hours_raw_elapsed != null ? fmtFixed(obs.life_hours_raw_elapsed) : "") },
+      { label: "Excl. Weekend (h)", type: "number", get: (obs) => (obs.excluded_weekend_hours != null ? fmtFixed(obs.excluded_weekend_hours) : "") },
+      { label: "Excl. Non-run (h)", type: "number", get: (obs) => (obs.excluded_schedule_non_run_hours != null ? fmtFixed(obs.excluded_schedule_non_run_hours) : "") },
+      { label: "Failure", type: "boolean", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
+      { label: "Start", type: "datetime", get: (obs) => formatRecordDate(obs.start_datetime) },
+      { label: "End/Cutoff", type: "datetime", get: (obs) => formatRecordDate(obs.end_datetime || obs.analysis_cutoff_datetime) },
+      { label: "Request Description", cls: "lda-data-text", get: (obs) => obs.source_request_description || "" },
+      { label: "Completion Notes", cls: "lda-data-text", get: (obs) => obs.source_completion_notes || "" },
+      { label: "Failure Narrative", cls: "lda-data-text", get: (obs) => narrativeText(obs, "source_"), node: (obs) => narrativeCell(obs, { prefix: "source_", cls: "lda-data-text" }) },
+      { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
+      { label: "Check", cls: "lda-data-text lda-check", get: (obs) => obs.data_quality_assumption_flag || "" },
+    ];
+    const table = el("table", { class: "lda-data" });
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
+    const tbody = el("tbody");
+    const rowByObs = new Map();
+    (result.observations || []).forEach((obs) => {
+      const tr = el("tr", {}, columns.map((c) => (c.node ? c.node(obs) : el("td", { text: c.get(obs), class: c.cls || null }))));
+      if (typeof onRowActivate === "function" && result.fitted) {
+        tr.classList.add("is-clickable");
+        tr.title = "Show this life on the graphs above";
+        tr.addEventListener("click", (event) => {
+          if (event.target.closest("button")) return;
+          markRow(tr);
+          onRowActivate(obs);
+        });
+      }
+      rowByObs.set(Number(obs.weibull_observation_id), tr);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    const tableTools = (result.observations || []).length ? enableTableColumnTools(table, { columns }) : null;
+    const node = el("div", { class: "lda-data-scroll" }, [table]);
+    function markRow(tr) {
+      tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
+      tr.classList.add("is-highlight");
+    }
+    function highlight(observationId) {
+      const tr = rowByObs.get(Number(observationId));
+      if (!tr) return;
+      if (tr.style.display === "none" && tableTools) tableTools.clearFilters();
+      markRow(tr);
+      tr.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    return { node, highlight };
+  }
+
+  // ---- a work order's disposition, from any table -----------------------------------
+  // The disposition form over the page, for the record a table lists. Saving it
+  // reloads everything on the page, since a disposition can move a work order in
+  // or out of every view.
+  async function openRecordEditor(mappedRecordId) {
+    let data;
+    beginLoading("Opening the work order…");
+    try {
+      data = await getJson(`${API}/dispositions/record?mapped_record_id=${encodeURIComponent(mappedRecordId)}`);
+    } catch (err) {
+      if (!err.toastShown) showBanner(err.message, "error");
+      return;
+    } finally {
+      endLoading();
+    }
+    const backdrop = el("div", { class: "lda-modal-backdrop" });
+    let form = null;
+    function close(force) {
+      if (!force && form && form.isDirty() && !window.confirm("Discard the unsaved changes to this disposition?")) return;
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+    }
+    function onKey(event) {
+      if (event.key === "Escape") close(false);
+    }
+    form = window.GremlinDispositionForm.create({
+      row: data.record,
+      options: data.options,
+      history: data.history,
+      saveLabel: "Save and re-run the analysis",
+      onCancel: () => close(false),
+      onSave: async (payload) => {
+        await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
+        close(true);
+        showToast(`Task ${data.record.task_id} saved.`, "success");
+        await loadOptions();
+        resetAnalyses();
+        if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.result && CAN_EDIT && state.result.saved) {
+          await loadSummary();
+          await performAnalysis();
+        } else {
+          clearWorkspace();
+          await refresh();
+        }
+      },
+    });
+    const modal = el("div", { class: "lda-modal lda-record-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": form.id("title") }, [
+      el("button", { type: "button", class: "lda-help-close lda-record-close", "aria-label": "Close the disposition", text: "×", onclick: () => close(false) }),
+      form.node,
+    ]);
+    backdrop.appendChild(modal);
+    backdrop.addEventListener("mousedown", (event) => {
+      if (event.target === backdrop) close(false);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+    form.focus();
+  }
+
+  // ---- Weibull result text ---------------------------------------------------
+  function confidenceIntervalText(result) {
+    const betaCi =
+      result.beta_lower_ci != null && result.beta_upper_ci != null
+        ? `${fmt(result.beta_lower_ci)} to ${fmt(result.beta_upper_ci)}`
+        : "not available";
+    const etaCi =
+      result.eta_lower_ci != null && result.eta_upper_ci != null
+        ? `${fmt(result.eta_lower_ci)} to ${fmt(result.eta_upper_ci)} hours`
+        : "not available";
+    const mttf = result.mean_time_to_failure != null ? `${fmt(result.mean_time_to_failure)} hours` : "not available";
+    return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
+  }
+
+  // The probability plot's R²: how straight its Kaplan-Meier failure points lie. It
+  // checks the model rather than being part of the fit, so adjusting beta and eta
+  // leaves it where it is.
+  function fitCheckText(result) {
+    const r2 = Number(result.probability_plot_r_squared);
+    if (result.probability_plot_r_squared == null || !isFinite(r2)) {
+      return "Probability plot R²: not available (fewer than three distinct failure points).";
+    }
+    const threshold = Number(result.probability_plot_r_squared_threshold);
+    const against =
+      result.probability_plot_r_squared_threshold == null || !isFinite(threshold)
+        ? ""
+        : result.probability_plot_review
+          ? `, below the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`
+          : `, meeting the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`;
+    return `Probability plot R² ${r2.toFixed(3)}${against}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
+  }
+
+  // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
+  function lifeMetricsText(result) {
+    const part = (label, hours) => {
+      if (hours == null || !isFinite(Number(hours))) return null;
+      const weeks = calendarWeeksText(hours, result.life_basis);
+      return `${label} ${fmt(hours)} h${weeks ? ` (${weeks})` : ""}`;
+    };
+    const parts = [
+      part("B10 life", result.b10_life),
+      part("B50 (median) life", result.b50_life),
+      part("MTTF", result.mean_time_to_failure),
+    ].filter(Boolean);
+    return parts.length ? `${parts.join(" · ")}.` : "";
+  }
+
+  // The YYYY-MM-DD plant date of a stored UTC instant, `secondsBefore` it.
+  function plantDateOf(value, zone, secondsBefore) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return "";
+    return plantTimeText(new Date(when.getTime() - (secondsBefore || 0) * 1000).toISOString(), zone || "UTC").slice(0, 10);
+  }
+
+  // The plant day a run's cutoff falls on. An entered cutoff is stored as the next
+  // plant midnight (or the moment of the run, when its day was that day), so its day
+  // is the one the second before it falls on; any other cutoff is the day it is on.
+  function cutoffPlantDate(value, source, zone) {
+    return plantDateOf(value, zone, source === "USER" ? 1 : 0);
+  }
+
+  function plantTimeText(value, zoneName) {
+    if (!value) return "";
+    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
+    if (isNaN(when.getTime())) return String(value);
+    const zone = zoneName || "UTC";
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(when);
+      const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ${zone}`;
+    } catch (err) {
+      return when.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    }
+  }
+
+  const CUTOFF_SOURCE_TEXT = {
+    LAST_IMPORT: "the last completed Limble import",
+    USER: "the cutoff date entered for the run",
+    NOW: "the time of the run",
+  };
+
+  // An entered cutoff date runs to the end of that plant day, which is stored as the
+  // next day's midnight; read it back as "the end of 2025-06-30" rather than as
+  // "2025-07-01 00:00". A cutoff capped at the moment of the run keeps its time.
+  function cutoffText(result, zone) {
+    const shown = plantTimeText(result.analysis_cutoff, zone);
+    if (result.analysis_cutoff_source !== "USER" || !/ 00:00 /.test(shown)) return shown;
+    const instant = new Date(String(result.analysis_cutoff).replace(" ", "T"));
+    if (isNaN(instant.getTime())) return shown;
+    const dayBefore = plantTimeText(new Date(instant.getTime() - 60000).toISOString(), zone);
+    return `the end of ${dayBefore.slice(0, 10)} (${zone})`;
+  }
+
+  // R(t) and F(t) at an age the user enters -- the current PM interval, say -- at the
+  // beta and eta on screen: the fitted values, or the ones an editor is trying.
+  function buildTargetAgePanel(result) {
+    const input = el("input", {
+      class: "lda-input",
+      type: "number",
+      min: "0",
+      step: "50",
+      id: "lda-target-age",
+      placeholder: "Life hours, e.g. a PM interval",
+    });
+    const output = el("p", { class: "lda-age-output", "aria-live": "polite" });
+    let beta = Number(result.beta_mle);
+    let eta = Number(result.eta_mle);
+    let fitted = true;
+    function render() {
+      const age = Number(input.value);
+      if (!input.value || !isFinite(age) || age <= 0) {
+        output.textContent = "Enter an age in life hours to see the chance of surviving to it and of failing by it.";
+        return;
+      }
+      if (!(beta > 0) || !(eta > 0)) {
+        output.textContent = "Enter a positive beta and eta to evaluate an age.";
+        return;
+      }
+      const reliability = Math.exp(-Math.pow(age / eta, beta));
+      const weeks = calendarWeeksText(age, result.life_basis);
+      output.textContent =
+        `At ${fmt(age)} life hours${weeks ? ` (${weeks})` : ""}: R = ${reliability.toFixed(3)}, so about ` +
+        `${(reliability * 100).toFixed(1)}% are expected to survive to that age, and F = ${(1 - reliability).toFixed(3)} ` +
+        `to fail by it. At the ${fitted ? "fitted" : "beta and eta entered above, not the fitted"} values.`;
+    }
+    input.addEventListener("input", render);
+    render();
+    const node = el("div", { class: "lda-panel lda-age-panel", id: "lda-age-panel" }, [
+      el("h3", { text: "Reliability at an age" }),
+      el("div", { class: "lda-field" }, [el("label", { for: "lda-target-age", text: "Age (life hours)" }), input]),
+      output,
+    ]);
+    // The inputs open on the fitted values rounded to six places, so a pair that
+    // still reads as those is the fit itself, evaluated at its unrounded values.
+    const fittedText = [numericInputValue(result.beta_mle, 6), numericInputValue(result.eta_mle, 6)];
+    return {
+      node,
+      // Redraw at another beta/eta: the editor's inputs moved.
+      update(nextBeta, nextEta) {
+        fitted =
+          numericInputValue(nextBeta, 6) === fittedText[0] && numericInputValue(nextEta, 6) === fittedText[1];
+        beta = fitted ? Number(result.beta_mle) : Number(nextBeta);
+        eta = fitted ? Number(result.eta_mle) : Number(nextEta);
+        render();
+      },
+      // The age entered, for the report, or null.
+      value() {
+        const age = Number(input.value);
+        return input.value && isFinite(age) && age > 0 ? age : null;
+      },
+    };
+  }
+
+
+  function field(labelText, input) {
+    return el("div", { class: "lda-field" }, [el("label", { text: labelText }), input]);
+  }
+  function panel(title, body, footer, id) {
+    return el("div", { class: "lda-panel", id: id || null }, [el("h3", { text: title }), body, footer ? el("p", { class: "lda-hint", text: footer }) : null]);
+  }
+  function legend() {
+    return el("div", { class: "lda-legend", id: "lda-result-legend" }, [
+      el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#2f8f5b" }), document.createTextNode("MLE fit")]),
+      el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#d6a700" }), document.createTextNode("95% CI fit")]),
+      el("span", {}, [el("span", { class: "lda-dot", style: "background:#ffffff" }), document.createTextNode("Completed failure")]),
+      el("span", {}, [el("span", { class: "lda-dot", style: "background:#c0392b;border-color:#7d2b2b" }), document.createTextNode("Right-censored")]),
+      el("span", {}, [el("span", { class: "lda-vline" }), document.createTextNode("Current life")]),
+    ]);
+  }
+
+  function buildInterpretationTable(result) {
+    const rows = result.interpretation_summary || [];
+    const table = el("table", { class: "lda-interpretation" });
+    table.appendChild(el("thead", {}, [el("tr", {}, ["Metric", "Value", "Interpretation / Recommended Action"].map((h) => el("th", { text: h })))]));
+    const tbody = el("tbody");
+    if (!rows.length) {
+      tbody.appendChild(el("tr", {}, [el("td", { colspan: "3", text: "No interpretation summary is available for this Weibull result." })]));
+    }
+    rows.forEach((row) => {
+      tbody.appendChild(
+        el("tr", {}, [
+          el("td", { text: row.metric || "—" }),
+          buildInterpretationValueCell(row, result),
+          el("td", { text: row.recommendation || "—" }),
+        ])
+      );
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  // Value cell for one interpretation-summary row. The MTTF row adds how many calendar
+  // weeks that many life hours take on the result's own schedule: life hours exclude
+  // weekends and count each weekday at the schedule's hours, so 24 hours a day of
+  // running would overstate how soon the mean life comes round. Every other metric
+  // renders as a plain value cell.
+  function buildInterpretationValueCell(row, result) {
+    const isMttf = String(row.metric || "").trim().toUpperCase() === "MTTF";
+    const mttfHours = result ? Number(result.mean_time_to_failure) : NaN;
+    if (!isMttf || !isFinite(mttfHours) || mttfHours <= 0) {
+      return el("td", { text: row.value || "—" });
+    }
+    const weeks = calendarWeeksText(mttfHours, result.life_basis);
+    return el("td", { class: "lda-mttf-cell" }, [
+      el("span", { class: "lda-mttf-hours-value", text: row.value || `${fmt(mttfHours)} hours` }),
+      weeks
+        ? el("span", { class: "lda-mttf-duration", text: `${weeks[0].toUpperCase()}${weeks.slice(1)} on ${scheduleLabel(result.life_basis)}` })
+        : null,
+    ]);
+  }
+
+  // What a life is, in the words the data table and the report use: a life ends in
+  // a failure, is suspended when other work renewed the item, or is still running
+  // at the cutoff.
+  const OBSERVATION_TYPE_LABELS = {
+    COMPLETED_FAILURE_LIFE: "Ends in a failure",
+    PM_RESET_CENSORED_LIFE: "Censored at a PM reset",
+    SUSPENDED_LIFE: "Suspended: renewed by other work",
+    RIGHT_CENSORED_LIFE: "Censored at the cutoff (current life)",
+  };
+
+
+  // ---- charts -----------------------------------------------------------------
   // "2025-01" -> "Jan '25" for compact month-axis labels.
   function monthLabel(key) {
     const parts = String(key || "").split("-");
@@ -2230,2279 +2506,6 @@
 
   // Build the Perform Analysis (trend) picker choices: an "all mechanisms"
   // failure-mode option for every mode that spans more than one mechanism, plus
-  // each individual mechanism. The mode-level option carries failure_mechanism_id
-  // null so selectedTrendSeries() aggregates every mechanism under that mode —
-  // matching the panel text that users can trend a failure mode or a mechanism.
-  function trendPickerChoices() {
-    const mechanisms = (state.trend && state.trend.mechanisms) || [];
-    const byMode = new Map();
-    mechanisms.forEach((mechanism) => {
-      if (!byMode.has(mechanism.failure_mode_id)) byMode.set(mechanism.failure_mode_id, []);
-      byMode.get(mechanism.failure_mode_id).push(mechanism);
-    });
-    const choices = [];
-    byMode.forEach((mechs, modeId) => {
-      const modeName = mechs[0].failure_mode_name;
-      if (mechs.length > 1) {
-        const totalCount = mechs.reduce((sum, m) => sum + (Number(m.total_count) || 0), 0);
-        const totalDowntime = mechs.reduce((sum, m) => sum + (Number(m.total_downtime_hours) || 0), 0);
-        choices.push({
-          row: {
-            failure_mode_id: modeId,
-            failure_mechanism_id: null,
-            failure_mode_name: modeName,
-            failure_mechanism_name: null,
-          },
-          labelText: `${modeName}: all mechanisms (${totalCount} WOs, ${fmt(totalDowntime)} downtime h)`,
-        });
-      }
-      mechs.forEach((mechanism) => {
-        choices.push({
-          row: mechanism,
-          labelText:
-            `${mechanism.failure_mode_name} / ${mechanism.failure_mechanism_name} ` +
-            `(${mechanism.total_count} WOs, ${fmt(mechanism.total_downtime_hours)} downtime h)`,
-        });
-      });
-    });
-    return choices;
-  }
-
-  // Perform Analysis in trend mode: pick the failure mode/mechanism to trend from
-  // the same filtered dataset as the Pareto, then plot its monthly occurrences.
-  async function performTrendSelection() {
-    // state.trend is populated by the asynchronous summary request kicked off on
-    // asset selection. If the user clicks Perform Analysis before it returns,
-    // fetch it first so an empty choice list isn't mistaken for "no trendable
-    // mechanisms" while the data is still loading.
-    if (!state.trend && state.selectedAsset) {
-      beginLoading("Loading failure mechanisms…");
-      try {
-        await refreshSummary();
-      } finally {
-        endLoading();
-      }
-    }
-    const choices = trendPickerChoices();
-    if (!choices.length) {
-      showBanner(
-        "No failure mechanisms with included failures are available to trend yet. Disposition WO failures with a failure mechanism first.",
-        "error"
-      );
-      return;
-    }
-    const options = el("div", { class: "lda-modal-options" });
-    choices.forEach((choice, index) => {
-      const radio = el("input", { type: "radio", name: "lda-trend-group", value: String(index) });
-      if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
-    });
-    const choice = await openModal({
-      title: "Select failure mode or mechanism to trend",
-      bodyNodes: [el("p", { text: "Choose the failure mode or mechanism to view its monthly trend:" }), options],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        {
-          label: "View trend",
-          primary: true,
-          value: () => {
-            const checked = options.querySelector("input[name='lda-trend-group']:checked");
-            return checked ? Number(checked.value) : null;
-          },
-        },
-      ],
-    });
-    if (choice === null || choice === undefined) return;
-    selectTrendMechanism(choices[choice].row);
-  }
-
-  // ---- PM effectiveness analysis --------------------------------------------
-  // The selected failure mechanism (Pareto click or Perform Analysis picker)
-  // drives a server-side PM-to-failure analysis: every completed PM on the asset
-  // is paired with the first corrective WO for this mechanism that follows it.
-  function pmSelectionLabel(row) {
-    const modeName = row.failure_mode_name;
-    const mechName = row.failure_mechanism_name;
-    return mechName
-      ? modeName
-        ? `${modeName} / ${mechName}`
-        : mechName
-      : modeName || "the selected failure mechanism";
-  }
-
-  function selectPmMechanism(row) {
-    if (row == null || row.failure_mechanism_id == null) {
-      showBanner("PM effectiveness needs a failure mechanism. Pick a mechanism-level Pareto bar.", "error");
-      return;
-    }
-    setActiveMechanism(row);
-    state.pmSelection = {
-      failure_mode_id: row.failure_mode_id != null ? row.failure_mode_id : null,
-      failure_mechanism_id: row.failure_mechanism_id,
-      label: pmSelectionLabel(row),
-    };
-    state.pmData = null;
-    // A new mechanism's PM history has its own data range; drop the prior range.
-    state.pmRange = { from: null, to: null };
-    // Clear the previous mechanism's cards/chart/table immediately so a slow or
-    // failed request can't leave stale results visible under the new selection.
-    renderPm();
-    // Scroll only once the response has rendered: the summary cards sit above the
-    // chart panel and change height when they populate, which would drag the panel
-    // out from under a scroll started now.
-    return loadPmEffectiveness({ scrollToPanel: true });
-  }
-
-  async function loadPmEffectiveness(opts) {
-    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
-    if (state.pageMode === "disposition") return;
-    if (!state.selectedAsset || !state.pmSelection) {
-      renderPm();
-      return;
-    }
-    const asset = state.selectedAsset;
-    const sel = state.pmSelection;
-    const token = ++state.pmToken;
-    // A response is stale when a newer request superseded this one, the asset or
-    // analysis type changed, or the selection was cleared/replaced (object
-    // identity also covers switching away and back to the same asset before this
-    // resolved). Both the success and error paths use it so a late failure can't
-    // surface a PM error over the Weibull/Trend/Downtime view after a type switch.
-    const isStale = () =>
-      token !== state.pmToken ||
-      state.selectedAsset !== asset ||
-      state.analysisType !== ANALYSIS_TYPES.PM ||
-      state.pmSelection !== sel;
-    beginLoading("Evaluating PM effectiveness…");
-    try {
-      const params = withDateRange(new URLSearchParams({ asset, failure_mechanism_id: sel.failure_mechanism_id }));
-      if (sel.failure_mode_id != null) params.set("failure_mode_id", sel.failure_mode_id);
-      const data = await getJson(`${API}/pm-effectiveness?${params.toString()}`);
-      if (isStale()) return;
-      // The endpoint wraps the service result under `pm_effectiveness` (matching
-      // the other analysis routes), so unwrap it before the renderers read fields
-      // like has_pm_history / months / rows directly off state.pmData.
-      state.pmData = data.pm_effectiveness || null;
-      renderPm();
-      if (scrollWhenRendered) scrollToAnalysisPanel();
-    } catch (err) {
-      if (!isStale()) {
-        showBanner(err.message, "error");
-        // Reflect the (now-cleared) data so a failed load doesn't leave another
-        // mechanism's results on screen; an in-place refresh keeps its own data.
-        renderPm();
-        // The panel now says why there is nothing to plot, so the click still lands
-        // somewhere the user can read rather than leaving them where they clicked.
-        if (scrollWhenRendered) scrollToAnalysisPanel();
-      }
-    } finally {
-      endLoading();
-    }
-  }
-
-  // Perform Analysis in PM mode: pick the failure mechanism to evaluate from the
-  // same filtered dataset as the Pareto, then run the PM-to-failure analysis.
-  async function performPmSelection() {
-    if (!state.trend && state.selectedAsset) {
-      beginLoading("Loading failure mechanisms…");
-      try {
-        await refreshSummary();
-      } finally {
-        endLoading();
-      }
-    }
-    // PM effectiveness is per-mechanism, so only mechanism-level choices apply
-    // (the mode-level "all mechanisms" aggregate has no single mechanism id).
-    const choices = trendPickerChoices().filter((choice) => choice.row.failure_mechanism_id != null);
-    if (!choices.length) {
-      showBanner(
-        "No failure mechanisms with included failures are available yet. Disposition WO failures with a failure mechanism first.",
-        "error"
-      );
-      return;
-    }
-    const options = el("div", { class: "lda-modal-options" });
-    choices.forEach((choice, index) => {
-      const radio = el("input", { type: "radio", name: "lda-pm-group", value: String(index) });
-      if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
-    });
-    const choice = await openModal({
-      title: "Select failure mechanism to evaluate",
-      bodyNodes: [el("p", { text: "Choose the failure mechanism to evaluate PM effectiveness for:" }), options],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        {
-          label: "Evaluate",
-          primary: true,
-          value: () => {
-            const checked = options.querySelector("input[name='lda-pm-group']:checked");
-            return checked ? Number(checked.value) : null;
-          },
-        },
-      ],
-    });
-    if (choice === null || choice === undefined) return;
-    selectPmMechanism(choices[choice].row);
-  }
-
-  function renderPm() {
-    renderPmCards();
-    renderPmControls();
-    renderPmChart();
-    renderPmTable();
-  }
-
-  // Full continuous month series for the PM "Failures Following PM" chart, before
-  // the date-range filter is applied. Returns null when there is no PM data yet.
-  function pmFullSeries() {
-    const data = state.pmData;
-    if (!data) return null;
-    const months = data.months || [];
-    if (!months.length) return null;
-    return { months, counts: data.monthly_counts || [] };
-  }
-
-  // The PM month series restricted to the active date range (state.pmRange). Month
-  // keys are "YYYY-MM", so string comparison gives the right chronological bounds.
-  function selectedPmSeries() {
-    const base = pmFullSeries();
-    if (!base) return null;
-    const { from, to } = state.pmRange;
-    if (!from && !to) return base;
-    const months = [];
-    const counts = [];
-    base.months.forEach((key, index) => {
-      if (from && key < from) return;
-      if (to && key > to) return;
-      months.push(key);
-      counts.push(base.counts[index]);
-    });
-    return { months, counts };
-  }
-
-  // Show and populate the PM date-range inputs whenever there is a plottable PM
-  // series, bounded by the data range (matching the Failure Mode Trend controls).
-  function renderPmControls() {
-    const controls = $("lda-pm-controls");
-    if (!controls) return;
-    const fromInput = $("lda-pm-from");
-    const toInput = $("lda-pm-to");
-    const base = pmFullSeries();
-    if (!base || !base.months.length) {
-      controls.hidden = true;
-      return;
-    }
-    controls.hidden = false;
-    const minMonth = base.months[0];
-    const maxMonth = base.months[base.months.length - 1];
-    fromInput.min = minMonth;
-    fromInput.max = maxMonth;
-    toInput.min = minMonth;
-    toInput.max = maxMonth;
-    fromInput.value = state.pmRange.from || minMonth;
-    toInput.value = state.pmRange.to || maxMonth;
-  }
-
-  function onPmRangeChange() {
-    const fromInput = $("lda-pm-from");
-    const toInput = $("lda-pm-to");
-    let from = fromInput.value || null;
-    let to = toInput.value || null;
-    if (from && to && from > to) {
-      [from, to] = [to, from];
-      fromInput.value = from;
-      toInput.value = to;
-    }
-    state.pmRange.from = from;
-    state.pmRange.to = to;
-    renderPmChart();
-    renderPmTable();
-  }
-
-  function resetPmRange() {
-    state.pmRange = { from: null, to: null };
-    renderPmControls();
-    renderPmChart();
-    renderPmTable();
-  }
-
-  // Color band for a Days to Failure value, matching the PM Effectiveness rating.
-  function pmDaysClass(days) {
-    const n = Number(days);
-    if (!isFinite(n)) return "";
-    if (n >= 180) return "lda-days-green";
-    if (n >= 90) return "lda-days-yellow";
-    if (n >= 30) return "lda-days-orange";
-    return "lda-days-red";
-  }
-
-  // Shared empty-state text: distinguishes "no selection yet", "no PM history",
-  // and "PMs but no subsequent failures" so each panel can show the right prompt.
-  function pmEmptyText() {
-    const data = state.pmData;
-    if (!state.pmSelection) {
-      return "Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.";
-    }
-    // A selection is set but its data hasn't arrived yet (initial load, a new
-    // selection that just cleared the previous data, or a failed request): show a
-    // neutral evaluating message rather than the reselect prompt or stale results.
-    if (!data) {
-      return `Evaluating PM effectiveness for ${state.pmSelection.label}…`;
-    }
-    if (!data.has_pm_history) {
-      return "No completed PM work orders were found for this asset.";
-    }
-    return "No failures recorded following completed PMs within the selected date range.";
-  }
-
-  function renderPmCards() {
-    const grid = $("lda-pm-cards");
-    const message = $("lda-pm-message");
-    if (!grid) return;
-    grid.innerHTML = "";
-    const data = state.pmData;
-    if (!state.pmSelection || !data) {
-      if (message) {
-        message.hidden = false;
-        message.textContent = pmEmptyText();
-      }
-      return;
-    }
-    const avg = data.average_days_to_failure;
-    const cards = [
-      ["PMs Performed", String(data.pms_performed ?? 0)],
-      ["Failures After PM", String(data.failures_after_pm ?? 0)],
-      ["Average Days to Failure", avg != null ? `${fmt(avg)} days` : "Insufficient Data"],
-      ["PM Effectiveness", data.effectiveness || "Insufficient Data"],
-    ];
-    cards.forEach(([label, value]) => {
-      grid.appendChild(
-        el("div", { class: "lda-metric" }, [
-          el("span", { class: "lda-metric-value", text: value }),
-          el("span", { class: "lda-metric-label", text: label }),
-        ])
-      );
-    });
-    // Surface the informative message for the two empty-but-valid cases; hide it
-    // once there is real PM-to-failure data to read from the cards/table.
-    if (message) {
-      if (!data.has_pm_history || !data.failures_after_pm) {
-        message.hidden = false;
-        message.textContent = pmEmptyText();
-      } else {
-        message.hidden = true;
-        message.textContent = "";
-      }
-    }
-  }
-
-  function renderPmChart() {
-    const canvas = $("lda-pm-chart");
-    const hint = $("lda-pm-selection");
-    if (!canvas) return;
-    const data = state.pmData;
-    const series = selectedPmSeries();
-    if (!state.pmSelection || !data || !series || !series.months.length) {
-      if (hint) {
-        hint.hidden = false;
-        if (series && !series.months.length) {
-          // A plottable series exists, but the active date range excludes it all.
-          hint.textContent = `No corrective work orders after PM for ${data.failure_mechanism_name || state.pmSelection.label} in the selected date range.`;
-        } else {
-          hint.textContent = pmEmptyText();
-        }
-      }
-      canvas.hidden = true;
-      return;
-    }
-    if (hint) {
-      hint.hidden = false;
-      hint.textContent = `Corrective work orders for ${data.failure_mechanism_name || state.pmSelection.label} occurring after a completed PM, by month.`;
-    }
-    canvas.hidden = false;
-    drawTrendChart(canvas, series.months, series.counts, "Corrective WOs after PM");
-  }
-
-  function renderPmTable() {
-    const wrap = $("lda-pm-table-wrap");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    const data = state.pmData;
-    // Filter to the active date range by the corrective WO's failure month so the
-    // table matches the "Failures Following PM" chart above it.
-    const { from, to } = state.pmRange;
-    const rows = ((data && data.rows) || []).filter((row) => {
-      if (!from && !to) return true;
-      const month = String(row.next_failure_date || "").slice(0, 7);
-      if (!month) return true;
-      if (from && month < from) return false;
-      if (to && month > to) return false;
-      return true;
-    });
-    const headers = [
-      "PM Completion Date",
-      "Asset",
-      "Next Failure Date",
-      "Days to Failure",
-      "Failure Mechanism",
-      "Downtime",
-      "Corrective WO Number",
-    ];
-    const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    if (!rows.length) {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text: pmEmptyText() }),
-        ])
-      );
-    }
-    rows.forEach((row) => {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { text: row.pm_completion_date || "" }),
-          el("td", { text: row.asset_number || "" }),
-          el("td", { text: row.next_failure_date || "" }),
-          el("td", { class: pmDaysClass(row.days_to_failure), text: fmt(row.days_to_failure) }),
-          el("td", { text: row.failure_mechanism_name || "" }),
-          el("td", { text: row.downtime_hours != null ? `${fmt(row.downtime_hours)} h` : "" }),
-          recordNumberCell(row.corrective_wo_number, { mappedRecordId: row.corrective_mapped_record_id, kind: "wo" }),
-        ])
-      );
-    });
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
-
-  // ---- repeat fix rate -------------------------------------------------------
-  // Asset-wide: every mechanism's repeats load at once, so there is nothing to pick
-  // before it draws. A Pareto click, or a row in the rate table, narrows the list of
-  // repeats to one mechanism; clicking the same one again shows them all.
-  function repeatWindowHours() {
-    const input = $("lda-repeat-window");
-    const value = input ? Number(input.value) : state.repeatWindow;
-    if (!isFinite(value) || value <= 0 || value > 720) return null;
-    return value;
-  }
-
-  function onRepeatWindowChange() {
-    const value = repeatWindowHours();
-    if (value == null) {
-      showBanner("The repeat window must be more than 0 and at most 720 scheduled hours.", "error");
-      const input = $("lda-repeat-window");
-      if (input) input.value = String(state.repeatWindow);
-      return;
-    }
-    if (value === state.repeatWindow && state.repeatData) return;
-    state.repeatWindow = value;
-    loadRepeatFixes();
-  }
-
-  async function loadRepeatFixes(opts) {
-    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
-    if (state.pageMode === "disposition") return;
-    if (!state.selectedAsset) {
-      renderRepeat();
-      return;
-    }
-    const asset = state.selectedAsset;
-    const windowHours = state.repeatWindow;
-    const token = ++state.repeatToken;
-    const isStale = () =>
-      token !== state.repeatToken ||
-      state.selectedAsset !== asset ||
-      state.analysisType !== ANALYSIS_TYPES.REPEAT;
-    beginLoading("Finding repeat failures…");
-    try {
-      const params = withDateRange(new URLSearchParams({ asset, window_hours: String(windowHours) }));
-      const data = await getJson(`${API}/repeat-fixes?${params.toString()}`);
-      if (isStale()) return;
-      state.repeatData = data.repeat_fixes || null;
-      renderRepeat();
-      if (scrollWhenRendered) scrollToAnalysisPanel();
-    } catch (err) {
-      if (!isStale()) {
-        state.repeatData = null;
-        showBanner(err.message, "error");
-        renderRepeat();
-      }
-    } finally {
-      endLoading();
-    }
-  }
-
-  // The repeats-list filter for a mechanism, or for a failure mode (no mechanism),
-  // which keeps every mechanism under it.
-  function repeatFilterFor(row) {
-    return {
-      failure_mode_id: row.failure_mode_id,
-      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
-      label: pmSelectionLabel(row),
-    };
-  }
-
-  // Whether the filter keeps a repeat or a rate row: one of its mechanism, or of
-  // any mechanism under its mode when it is a failure mode's.
-  function repeatFilterKeeps(filter, row) {
-    return Boolean(
-      filter &&
-        row &&
-        filter.failure_mode_id == row.failure_mode_id &&
-        (filter.failure_mechanism_id == null || filter.failure_mechanism_id == row.failure_mechanism_id)
-    );
-  }
-
-  // Narrow the repeats list to one mechanism, or to every mechanism under a failure
-  // mode bar, or show them all again when it is the one already shown. Resolves
-  // once drawn, for the tour.
-  function selectRepeatMechanism(row) {
-    if (row == null || row.failure_mode_id == null) {
-      showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
-      return undefined;
-    }
-    setActiveMechanism(row);
-    state.repeatFilter = selectionMatches(state.repeatFilter, row) ? null : repeatFilterFor(row);
-    if (!state.repeatData) return loadRepeatFixes({ scrollToPanel: true });
-    renderRepeat();
-    scrollToAnalysisPanel();
-    return undefined;
-  }
-
-  function clearRepeatFilter() {
-    state.repeatFilter = null;
-    renderRepeat();
-  }
-
-  function renderRepeat() {
-    renderRepeatCards();
-    renderRepeatRates();
-    renderRepeatPairs();
-  }
-
-  function fmtRate(rate) {
-    return rate == null ? "—" : `${fmt(rate * 100, 3)}%`;
-  }
-
-  function renderRepeatCards() {
-    const grid = $("lda-repeat-cards");
-    const message = $("lda-repeat-message");
-    if (!grid) return;
-    grid.innerHTML = "";
-    const data = state.repeatData;
-    if (!data) {
-      if (message) {
-        message.hidden = false;
-        message.textContent = state.selectedAsset ? "Finding repeat failures…" : "Select an asset to find its repeat failures.";
-      }
-      return;
-    }
-    // [label, value, detail]: a mechanism's card names it under the value, the way
-    // the Failure Mode Trend cards do.
-    const mechanismCard = (label, entry, value) =>
-      entry
-        ? [label, value(entry), `${entry.failure_mechanism_name}: ${entry.repeats} of ${entry.intervals} gaps`]
-        : [label, "None", null];
-    const cards = [
-      [
-        "Repeat Fix Rate",
-        data.repeat_rate == null ? "Insufficient Data" : fmtRate(data.repeat_rate),
-        data.repeat_rate == null ? null : `${data.repeats} of ${data.intervals} gaps`,
-      ],
-      mechanismCard(`Highest Rate (${data.min_intervals_for_rate}+ gaps)`, data.highest_rate, (e) => fmtRate(e.repeat_rate)),
-      mechanismCard("Most Repeats", data.most_repeats, (e) => String(e.repeats)),
-      ["Possible Duplicates", String(data.possible_duplicates ?? 0), "repeats within 1 calendar hour"],
-    ];
-    cards.forEach(([label, value, detail]) => {
-      grid.appendChild(
-        el("div", { class: "lda-metric lda-trend-metric" }, [
-          el("span", { class: "lda-metric-label", text: label }),
-          el("span", { class: "lda-metric-value lda-trend-metric-value", text: value }),
-          detail ? el("span", { class: "lda-metric-label", text: detail }) : null,
-        ])
-      );
-    });
-    if (message) {
-      const notes = [];
-      if (!data.intervals) {
-        notes.push("No mechanism on this asset has two dated included failures yet, so there is no gap to measure.");
-      }
-      if (data.undated_failures) {
-        notes.push(
-          `${data.undated_failures} included ${data.undated_failures === 1 ? "failure has" : "failures have"} no completed ` +
-            "date and could not be placed."
-        );
-      }
-      if (data.future_failures) {
-        notes.push(
-          `${data.future_failures} included ${data.future_failures === 1 ? "failure is" : "failures are"} dated after ` +
-            "today, which can only be a data-entry error, and left out."
-        );
-      }
-      if (data.possible_duplicates) {
-        notes.push(
-          "A possible duplicate closed within an hour of the failure before it: check it is not the same breakdown " +
-            "recorded twice before reading it as a repeat."
-        );
-      }
-      message.hidden = !notes.length;
-      message.textContent = notes.join(" ");
-    }
-  }
-
-  function renderRepeatRates() {
-    const wrap = $("lda-repeat-rate-wrap");
-    const basis = $("lda-repeat-basis");
-    const input = $("lda-repeat-window");
-    if (input && document.activeElement !== input) input.value = String(state.repeatWindow);
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    const data = state.repeatData;
-    if (basis) {
-      basis.textContent = data
-        ? `Counted on the ${data.schedule_name} schedule, with days split at midnight ${data.time_zone}.` +
-          (data.time_zone_warning ? ` ${data.time_zone_warning}` : "")
-        : "";
-    }
-    const headers = ["Failure Mechanism", "Failure Mode", "Failures", "Gaps", "Repeats", "Repeat Rate"];
-    const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    const rows = (data && data.mechanisms) || [];
-    if (!rows.length) {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", {
-            class: "lda-readonly lda-empty-row",
-            colspan: String(headers.length),
-            text: data ? "No included failures with a failure mechanism on this asset yet." : "",
-          }),
-        ])
-      );
-    }
-    rows.forEach((row) => {
-      const isActive = repeatFilterKeeps(state.repeatFilter, row);
-      tbody.appendChild(
-        el(
-          "tr",
-          {
-            class: `lda-trend-month-row${isActive ? " is-active" : ""}`,
-            title: "Click to list only this mechanism's repeats below",
-            onclick: () => selectRepeatMechanism(row),
-          },
-          [
-            el("td", { text: row.failure_mechanism_name || "" }),
-            el("td", { text: row.failure_mode_name || "" }),
-            el("td", { text: String(row.failures) }),
-            el("td", { text: String(row.intervals) }),
-            el("td", { text: String(row.repeats) }),
-            el("td", { text: fmtRate(row.repeat_rate) }),
-          ]
-        )
-      );
-    });
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
-
-  function renderRepeatPairs() {
-    const wrap = $("lda-repeat-pairs-wrap");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    const data = state.repeatData;
-    const filter = state.repeatFilter;
-    const filterBar = $("lda-repeat-filter");
-    const filterText = $("lda-repeat-filter-text");
-    setHidden(filterBar, !filter);
-    if (filterText) {
-      filterText.textContent = !filter
-        ? ""
-        : filter.failure_mechanism_id == null
-        ? `Showing every mechanism under ${filter.label} only.`
-        : `Showing ${filter.label} only.`;
-    }
-    const rows = ((data && data.pairs) || []).filter((pair) => !filter || repeatFilterKeeps(filter, pair));
-    const headers = [
-      "Failure Mechanism",
-      "Previous WO",
-      "Previous Completed",
-      "Repeat WO",
-      "Repeat Completed",
-      "Scheduled Hours",
-      "Calendar Hours",
-      "Check",
-    ];
-    const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    if (!rows.length) {
-      const text = !data
-        ? ""
-        : filter
-        ? `No repeats of ${filter.label} within ${fmt(data.window_hours)} scheduled hours.`
-        : `No failure came back within ${fmt(data.window_hours)} scheduled hours.`;
-      tbody.appendChild(
-        el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(headers.length), text })])
-      );
-    }
-    rows.forEach((pair) => {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { text: pair.failure_mechanism_name || "" }),
-          recordNumberCell(pair.prior_task_id, { mappedRecordId: pair.prior_mapped_record_id, kind: "wo" }),
-          el("td", { text: formatRecordDate(pair.prior_completed_raw ?? pair.prior_completed) }),
-          recordNumberCell(pair.repeat_task_id, { mappedRecordId: pair.repeat_mapped_record_id, kind: "wo" }),
-          el("td", { text: formatRecordDate(pair.repeat_completed_raw ?? pair.repeat_completed) }),
-          el("td", { text: fmtFixed(pair.scheduled_hours, 3) }),
-          el("td", { text: fmtFixed(pair.raw_hours, 3) }),
-          el("td", { text: pair.duplicate_check ? "Possible duplicate" : "" }),
-        ])
-      );
-    });
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
-
-  // ---- disposition editor ---------------------------------------------------
-  // From the Perform Analysis page the disposition buttons now navigate to the
-  // dedicated disposition page (its own route) instead of rendering the editor
-  // below everything else. The selected asset and record kind ride along in the
-  // query string so the disposition page opens ready to edit.
-  function gotoDisposition(kind) {
-    if (!state.selectedAsset) {
-      showBanner("Select an Asset Number before opening the disposition page.", "error");
-      return;
-    }
-    const params = new URLSearchParams({ asset: state.selectedAsset, kind });
-    window.location.href = `/life-data-analysis/disposition?${params.toString()}`;
-  }
-
-  // On the dedicated disposition page, (re)load the editor whenever the asset,
-  // record kind, or scope changes. Resolves once the editor is drawn.
-  function reloadDispositionForSelection() {
-    if (!state.selectedAsset) {
-      clearWorkspace();
-      return Promise.resolve();
-    }
-    return loadDispositionPage(state.dispositionKind, state.dispositionScope, state.dispositionPageIndex || 0);
-  }
-
-  async function loadDispositionPage(kind, scope, pageIndex) {
-    // Claim this reload; a newer one (or a workspace clear) bumps the token and
-    // supersedes us, so the response below is dropped instead of rendering stale.
-    const token = ++state.dispositionToken;
-    beginLoading("Loading disposition editor…");
-    try {
-      const search = state.dispositionSearch ? `&search=${encodeURIComponent(state.dispositionSearch)}` : "";
-      const sort = state.dispositionSort.key
-        ? `&sort=${encodeURIComponent(state.dispositionSort.key)}&dir=${state.dispositionSort.dir}`
-        : "";
-      const url = `${API}/dispositions?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}&scope=${scope}&page=${pageIndex}${search}${sort}`;
-      const data = await getJson(url);
-      if (token !== state.dispositionToken) return;
-      renderDispositionEditor(data);
-    } catch (err) {
-      if (token === state.dispositionToken) showBanner(err.message, "error");
-    } finally {
-      endLoading();
-    }
-  }
-
-  function dispositionPayloadFromRow(rowState, kind) {
-    const payload = {
-      mapped_record_id: rowState.mapped_record_id,
-      kind,
-      disposition_category: rowState.category.value,
-      disposition_text: rowState.notes.value,
-      record_class_final: rowState.recordClass.value,
-      include_in_weibull_candidate: rowState.include.checked,
-    };
-    if (kind === "pm") {
-      payload.pm_reset_decision = rowState.decision.value;
-      payload.pm_reset_rationale = rowState.rationale.value;
-      // PM mode/mechanism are searchable dropdowns that carry the real id of the
-      // chosen option, so mechanisms sharing a display name across modes stay
-      // distinct (and PMs can only point at existing taxonomy entries).
-      payload.reset_target_failure_mode_id = rowState.mode.getSelectedId();
-      payload.reset_target_failure_mechanism_id = rowState.mech.getSelectedId();
-    } else {
-      const modeName = rowState.mode.getValue();
-      const mechName = rowState.mech.getValue();
-      const modeId = modeName ? (rowState.modeOptions.get(modeName) ?? null) : null;
-      payload.failure_mode_id = modeId;
-      // Resolve the mechanism id within the selected failure mode so a duplicate
-      // mechanism name under a different mode is never sent. When it cannot be
-      // resolved unambiguously, send null + text and let the backend upsert the
-      // mechanism under (name, selected failure mode).
-      payload.failure_mechanism_id = resolveMechanismId(rowState.mechByNameMode, mechName, modeId);
-      payload.failure_mode_text = modeName;
-      payload.failure_mechanism_text = mechName;
-    }
-    return payload;
-  }
-
-  // Shared key so the mechanism map build and the lookup can never drift.
-  function mechKey(name, modeId) {
-    return name + String.fromCharCode(0) + (modeId == null ? "" : modeId);
-  }
-
-  function resolveMechanismId(mechByNameMode, name, modeId) {
-    if (!name) return null;
-    const scopedKey = mechKey(name, modeId);
-    if (mechByNameMode.has(scopedKey)) return mechByNameMode.get(scopedKey);
-    // mechanisms saved without a parent mode live under the empty-mode bucket
-    const unscopedKey = mechKey(name, null);
-    if (mechByNameMode.has(unscopedKey)) return mechByNameMode.get(unscopedKey);
-    return null;
-  }
-
-  // The name -> id maps a WO save resolves typed taxonomy through. Built once per
-  // payload rather than once per row: every row of a page shares the options.
-  function dispositionTaxonomy(data) {
-    return {
-      // Failure-mode names are globally unique, so a name -> id map is safe.
-      modeMap: new Map(data.mode_options.map((o) => [o.failure_mode_name, o.failure_mode_id])),
-      // Mechanism names can repeat across modes, so key by (name, parent mode id).
-      mechByNameMode: new Map(
-        data.mechanism_options.map((o) => [mechKey(o.failure_mechanism_name, o.failure_mode_id), o.failure_mechanism_id])
-      ),
-    };
-  }
-
-  // The editable half of one record's disposition: a control per
-  // DISPOSITION_EDIT_COLUMNS key, plus the row state a save is read from. Shared
-  // by the disposition table (a row per record) and the analysis tables'
-  // single-record editor, so a record starts from the same defaults and saves the
-  // same payload wherever it is edited. Each cell carries the nodes to place, the
-  // class the table gives its <td>, and the one control a <label> points at.
-  function buildDispositionControls(row, data, taxonomy) {
-    const isPm = data.kind === "pm";
-    const notes = el("textarea", { class: "lda-textarea" });
-    notes.value = row.disposition_notes || row.disposition_text || "";
-
-    const category = buildSelect(data.categories, row.disposition_category || "UNKNOWN");
-    const recordClass = buildSelect(data.record_classes, row.effective_record_class || (isPm ? "PM" : "CORRECTIVE_WO"));
-
-    let decision = null;
-    let mode;
-    let mech;
-    let rationale = null;
-    if (isPm) {
-      decision = buildSelect(data.pm_reset_decisions, row.pm_reset_inclusion_decision || "NEEDS_REVIEW");
-      // PMs may only reference existing modes/mechanisms, so the searchable
-      // dropdown is restricted to known options (allowFreeText: false).
-      mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.reset_target_failure_mode_id, { allowFreeText: false });
-      mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.reset_target_failure_mechanism_id, {
-        allowFreeText: false,
-        contextIdKey: "failure_mode_id",
-        getContextId: () => mode.getSelectedId(),
-      });
-      rationale = el("textarea", { class: "lda-textarea" });
-      rationale.value = row.pm_reset_renewal_rationale || "";
-    } else {
-      // WO failure mode/mechanism allow typing a new value as well as picking
-      // an existing one (allowFreeText: true); ids resolve by name on save.
-      mode = buildTaxonomyCombobox(data.mode_options, "failure_mode_id", "failure_mode_name", row.failure_mode_id, { allowFreeText: true });
-      mech = buildTaxonomyCombobox(data.mechanism_options, "failure_mechanism_id", "failure_mechanism_name", row.failure_mechanism_id, { allowFreeText: true });
-    }
-
-    // A saved disposition always stores an explicit include flag, so the box
-    // shows that: an INCLUDED_FAILURE saved unticked has to stay unticked, or an
-    // edit to anything else on the row would save it back into the Weibull fit.
-    // Only a record never dispositioned falls back to what its category implies.
-    const currentCategory = row.disposition_category || "UNKNOWN";
-    const defaultInclude =
-      row.event_disposition_id != null
-        ? Boolean(row.include_in_weibull_candidate)
-        : (!isPm && currentCategory === "INCLUDED_FAILURE") ||
-          (isPm && currentCategory === "INCLUDED_PM_RESET_EVENT" && row.pm_reset_inclusion_decision === "APPROVED_RESET");
-    const include = el("input", { type: "checkbox" });
-    include.checked = defaultInclude;
-
-    const rowState = {
-      mapped_record_id: Number(row.mapped_record_id),
-      notes,
-      category,
-      recordClass,
-      include,
-      decision,
-      rationale,
-      mode,
-      mech,
-      modeOptions: taxonomy.modeMap,
-      mechByNameMode: taxonomy.mechByNameMode,
-    };
-    rowState.initial = JSON.stringify(dispositionPayloadFromRow(rowState, data.kind));
-
-    const cells = {
-      disposition_notes: { nodes: [notes], control: notes },
-      disposition_category: { nodes: [category], control: category },
-      effective_record_class: { nodes: [recordClass], control: recordClass },
-      [isPm ? "reset_target_failure_mode" : "failure_mode"]: { nodes: mode.nodes, control: mode.input },
-      [isPm ? "reset_target_failure_mechanism" : "failure_mechanism"]: { nodes: mech.nodes, control: mech.input },
-      modeled_population_name: {
-        cls: "lda-readonly",
-        // Named by the server, which also orders this column by it, so the two
-        // cannot drift into sorting by something the cell does not say.
-        nodes: [row.modeled_population_name || data.modeled_population_placeholder],
-        control: null,
-      },
-      include_in_weibull_candidate: { cls: "lda-check", nodes: [include], control: include },
-    };
-    if (isPm) {
-      cells.pm_reset_inclusion_decision = { nodes: [decision], control: decision };
-      cells.pm_reset_renewal_rationale = { nodes: [rationale], control: rationale };
-    }
-    return { rowState, cells };
-  }
-
-  function renderDispositionEditor(data) {
-    const isPm = data.kind === "pm";
-    const workspace = $("lda-workspace");
-    workspace.innerHTML = "";
-
-    const taxonomy = dispositionTaxonomy(data);
-
-    // Every column of the table, in the order it is drawn, each named by the key
-    // the server orders that column by and typed by what its values really are.
-    // The header row, the cells and the column menus are all built from this, so
-    // a header can never offer a sort the server does not have -- and the two
-    // date columns and the two numeric ones are compared as dates and numbers
-    // rather than as the text they are stored and rendered as.
-    const columnTypes = data.sortable_columns || {};
-    const typed = (column) => Object.assign({}, column, { type: columnTypes[column.key] || "text" });
-    // The read-only source columns are named by the server; it labels them with
-    // their own keys, which is what the Excel workbook calls them too.
-    const sourceColumns = data.display_columns.map((key) =>
-      typed({ key, label: key, cls: key === "name" ? "lda-col-name" : null })
-    );
-    const narrativeColumn = typed({ key: "failure_narrative", label: "Failure Narrative" });
-    const extraColumns = DISPOSITION_EDIT_COLUMNS[isPm ? "pm" : "wo"].map(typed);
-    const columns = sourceColumns.concat([narrativeColumn], extraColumns);
-
-    const startRow = data.rows.length ? data.offset + 1 : 0;
-    const endRow = data.offset + data.rows.length;
-    let metaText =
-      data.scope === "new"
-        ? `Showing rows ${startRow}-${endRow} of ${data.displayed_count} rows with a blank ` +
-          `${isPm ? "reset target failure mode or mechanism" : "failure mode or failure mechanism"} ` +
-          `(${data.all_count} eligible rows total).`
-        : `Showing rows ${startRow}-${endRow} of ${data.displayed_count} eligible rows for this asset.`;
-    if (data.search) {
-      metaText += ` Filtered by search "${data.search}".`;
-    }
-
-    const rowStates = [];
-    const table = el("table", { class: "lda-table" });
-    // The narrative reports what the maintenance team recorded, so it belongs with
-    // the other read-only source columns rather than among the editable ones.
-    const narrativeFields = data.narrative_columns || NARRATIVE_FIELDS;
-    // The editable columns' header and cells carry their key, which is how the
-    // tour lights one column at a time (see DISPOSITION_COLUMN_TOUR_STEPS).
-    const editColumn = (column) => (extraColumns.includes(column) ? column.key : null);
-    const thead = el("thead", {}, [
-      el(
-        "tr",
-        {},
-        columns.map((column) =>
-          el("th", { class: column.cls || null, "data-disp-col": editColumn(column), text: column.label })
-        )
-      ),
-    ]);
-    const tbody = el("tbody");
-
-    data.rows.forEach((row) => {
-      const tr = el("tr");
-      sourceColumns.forEach((column) => {
-        const value = row[column.key];
-        // A date column is shown in one normalised shape rather than in whatever
-        // the source system wrote, so the column reads (and filters) as a date.
-        const text =
-          column.type === "datetime" ? formatRecordDate(value) : value == null ? "" : String(value);
-        tr.appendChild(el("td", { class: ["lda-readonly", column.cls].filter(Boolean).join(" "), text }));
-      });
-      tr.appendChild(
-        narrativeCell(row, {
-          fields: narrativeFields,
-          cls: "lda-readonly",
-          // Work orders completed before the Limble template asked for these
-          // boxes have nothing to show, and saying so beats an empty cell that
-          // looks like a rendering fault.
-          emptyText: "Not recorded",
-        })
-      );
-
-      const controls = buildDispositionControls(row, data, taxonomy);
-      extraColumns.forEach((column) => {
-        const cell = controls.cells[column.key];
-        tr.appendChild(el("td", { class: cell.cls || null, "data-disp-col": column.key }, cell.nodes));
-      });
-      controls.rowState.tr = tr;
-      rowStates.push(controls.rowState);
-      tbody.appendChild(tr);
-    });
-
-    if (!data.rows.length) {
-      const colCount = columns.length;
-      const emptyText = data.search
-        ? `No rows match "${data.search}". Clear or change the search to see more.`
-        : "No eligible rows for this selection.";
-      tbody.appendChild(
-        el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(colCount), text: emptyText })])
-      );
-    }
-
-    table.appendChild(thead);
-    table.appendChild(tbody);
-
-    const changed = () => rowStates.filter((rs) => JSON.stringify(dispositionPayloadFromRow(rs, data.kind)) !== rs.initial);
-    // Exposed so the Rows/Scope selectors on the dedicated disposition page can
-    // confirm before discarding unsaved edits, the same way page navigation does.
-    state.dispositionChangedFn = changed;
-
-    // The server did the ordering, so trust what it says it applied: a column
-    // that does not exist for this record type (a WO sort still selected when
-    // the Record Type switches to PM) comes back cleared.
-    state.dispositionSort = { key: data.sort || "", dir: data.sort_dir === "desc" ? "desc" : "asc" };
-
-    // A value filter narrows what is on screen, so it is kept while the same
-    // selection is paged and sorted, and dropped when the selection itself
-    // changes: a different asset, record type, scope or search shows a different
-    // set of records, and values picked out of the old one would hide most of it.
-    const selection = [data.asset_number, data.kind, data.scope, data.search || ""].join("\u0000");
-    if (state.dispositionFilterSelection !== selection) {
-      state.dispositionFilters = {};
-      state.dispositionFilterSelection = selection;
-    }
-
-    enableTableColumnTools(table, {
-      columns,
-      sort: state.dispositionSort,
-      filters: state.dispositionFilters,
-      onFiltersChanged: (active) => { state.dispositionFilters = active; },
-      // Re-asks for the selection ordered by this column, from its first page:
-      // the point of sorting is to bring the top of the whole selection into
-      // view, which a page that stayed put would not do. A reload, so it asks
-      // before dropping unsaved edits the way paging does.
-      onSort: async (key, dir) => {
-        if (!(await confirmDiscardUnsavedChanges(changed))) return;
-        state.dispositionSort = { key, dir };
-        state.dispositionPageIndex = 0;
-        loadDispositionPage(data.kind, data.scope, 0);
-      },
-    });
-
-    const checkAllButton = el("button", {
-      id: "lda-disp-check-all",
-      class: "btn-secondary",
-      text: "Check all Include in Weibull Candidate",
-      onclick: async () => {
-        // These rows are only worth ticking while this render is the table on
-        // screen and nothing is loading to replace it. A search or asset change
-        // can start a reload while the confirmation is open, or before it opens
-        // (the loading veil stops a mouse, not a keyboard); ticking rows that are
-        // gone, or about to be, would quietly do nothing the user can see or save.
-        const settled = () => table.isConnected && loadingDepth === 0;
-        if (!settled()) {
-          showToast("The table is still loading. Try Check all again once it has finished.", "info");
-          return;
-        }
-        // Respect an active column filter: only check rows the user can currently
-        // see, so filtering to a subset and clicking this never silently flips
-        // (and later saves) the Weibull inclusion of hidden rows.
-        const visible = rowStates.filter((rs) => rs.tr.style.display !== "none");
-        const toCheck = visible.filter((rs) => !rs.include.checked);
-        if (!toCheck.length) {
-          showToast(
-            visible.length
-              ? "Include in Weibull Candidate is already ticked on every row showing."
-              : "No rows are showing, so there is nothing to tick.",
-            "info"
-          );
-          return;
-        }
-        // One click can put a whole page of records into the fit, so say what it
-        // does and let the user back out before anything changes.
-        const confirmed = await openModal({
-          title: "Check all Include in Weibull Candidate?",
-          bodyNodes: [
-            el("p", {
-              text:
-                `This ticks Include in Weibull Candidate on ${toCheck.length} of the ${visible.length} ` +
-                "row(s) showing on this page. Rows a column filter hides and rows on other pages are left " +
-                "as they are.",
-            }),
-            el("p", {
-              text: isPm
-                ? "A ticked PM reset event is used by the Weibull analysis only once it is also " +
-                  "INCLUDED_PM_RESET_EVENT with APPROVED_RESET, a reset target and a rationale."
-                : "A ticked work order is used by the Weibull analysis only once it is also " +
-                  "INCLUDED_FAILURE with a failure mode.",
-            }),
-            el("p", {
-              text:
-                "Nothing is saved until you click Save Dispositions, so any row you did not mean to include " +
-                "can still be unticked before then.",
-            }),
-          ],
-          actions: [
-            { label: "Cancel", primary: false, value: () => false },
-            { label: "Check all", primary: true, value: () => true },
-          ],
-        });
-        if (!confirmed) return;
-        if (!settled()) {
-          showToast(
-            "The table reloaded while you were confirming, so nothing was ticked. Click Check all again " +
-              "once it has loaded if you still want it.",
-            "info"
-          );
-          return;
-        }
-        toCheck.forEach((rs) => {
-          rs.include.checked = true;
-        });
-      },
-    });
-
-    const prev = el("button", {
-      class: "btn-secondary",
-      text: "← Previous Page",
-      disabled: data.page_index <= 0,
-      onclick: () => maybeChangePage(data, changed, data.page_index - 1),
-    });
-    const next = el("button", {
-      class: "btn-secondary",
-      text: "Next Page →",
-      disabled: endRow >= data.displayed_count,
-      onclick: () => maybeChangePage(data, changed, data.page_index + 1),
-    });
-    const pager = el("div", { class: "lda-pager", id: "lda-disp-pager" }, [
-      prev,
-      el("span", { class: "lda-page-status", text: `Page ${data.page_index + 1} of ${data.max_page_index + 1}` }),
-      next,
-    ]);
-
-    const recordWord = isPm ? "PM reset event" : "work order";
-    const download = el("button", {
-      class: "btn-secondary",
-      text: "Download Excel",
-      onclick: () => downloadExcel(data.kind, data.scope),
-    });
-    const upload = el("button", {
-      class: "btn-secondary",
-      text: "Disposition via Excel",
-      onclick: () => uploadExcel(data.kind, data.scope),
-    });
-    // Columns whose values a save can change. Sorting by one of them means the
-    // saved rows may have just moved in the ordering the next page will be cut
-    // from -- see the reload below.
-    const editableKeys = new Set(extraColumns.map((column) => column.key));
-    const save = el("button", {
-      id: "lda-disp-save",
-      class: "btn-primary",
-      text: "Save Dispositions",
-      onclick: () =>
-        saveDispositions(data.kind, changed, () => {
-          // A page is a slice of a global ordering, so saving a value the
-          // ordering is built from moves rows across the page boundaries while
-          // the screen still shows the slice from before the write. Paging on
-          // from there cuts the next page out of an order that no longer
-          // matches: a row already dispositioned comes round again, and one
-          // that moved up past the offset is never shown at all -- silently, on
-          // the screen whose whole job is to visit every record once. Reloading
-          // the current page puts the view back in step with the order the next
-          // OFFSET will be taken from. mapped_record_id cannot help here: it
-          // breaks ties within one ordering, not between two different ones.
-          if (!editableKeys.has(state.dispositionSort.key)) return;
-          loadDispositionPage(data.kind, data.scope, data.page_index);
-        }),
-    });
-    // The ids are what the page's tour points at (see DISPOSITION_EDITOR_TOUR_STEPS).
-    const card = el("section", { class: "glass-card lda-card" }, [
-      el("h2", { text: isPm ? "Disposition PMs" : "Disposition Work Orders" }),
-      el("div", { class: "lda-disposition-meta", id: "lda-disp-meta" }, [
-        el("p", { text: `Selected asset: ${data.asset_number}` }),
-        el("p", { class: "lda-hint", text: metaText }),
-        el("p", {
-          class: "lda-hint",
-          text: isPm
-            ? "PMs cannot create new reset targets and must point at existing WO modes/mechanisms. PMs only become Weibull-usable with INCLUDED_PM_RESET_EVENT and APPROVED_RESET."
-            : "Assign defensible failure modes/mechanisms and save asset-specific dropdown options. Corrective WOs only become Weibull-usable with INCLUDED_FAILURE.",
-        }),
-      ]),
-      el("div", { class: "lda-row-actions", style: "justify-content:flex-start" }, [checkAllButton]),
-      el("p", {
-        class: "lda-hint",
-        text:
-          "Use the ▾ menu in any column header to sort or filter. Sorting covers every row in this " +
-          "selection, not just this page, so the first page holds the top of the sort. A value filter is " +
-          "picked from the values on the current page and stays on while you sort and page.",
-      }),
-      el("div", { class: "lda-table-scroll", id: "lda-disp-table" }, [table]),
-      pager,
-      el("div", { class: "lda-row-actions", id: "lda-disp-actions" }, [
-        excelHelpButton(),
-        withTooltip(
-          download,
-          `Downloads ${
-            data.scope === "new"
-              ? `only the new / undispositioned ${recordWord} rows`
-              : `every eligible ${recordWord} row`
-          } for the asset you selected as an .xlsx workbook with the disposition dropdowns built in, ` +
-            "dates and numbers typed so the columns sort, so you can fill them in offline. " +
-            "The columns you fill in are highlighted yellow; grey-headed columns are read-only."
-        ),
-        withTooltip(
-          upload,
-          "Uploads that filled-in workbook back. Rows are matched by mapped_record_id, and every row that " +
-            "differs from the saved disposition is written, so an old workbook can put stale values back " +
-            "over someone else's newer edits."
-        ),
-        save,
-      ]),
-    ]);
-    $("lda-workspace").appendChild(card);
-    // Not under the tour, which draws the editor when it picks its example and
-    // then decides for itself what is on screen: the glide would carry the step
-    // it had just lit off the top.
-    if (!(window.gremlinTour && window.gremlinTour.isOpen())) {
-      card.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    offerDispositionTour();
-  }
-
-  function buildSelect(options, current) {
-    const select = el("select", { class: "lda-select" });
-    options.forEach((opt) => {
-      const option = el("option", { value: opt, text: opt });
-      if (opt === current) option.selected = true;
-      select.appendChild(option);
-    });
-    if (!options.includes(current)) {
-      const fallback = el("option", { value: current, text: current });
-      fallback.selected = true;
-      select.insertBefore(fallback, select.firstChild);
-    }
-    return select;
-  }
-
-  // Searchable failure mode / failure mechanism dropdown for the disposition
-  // table. Renders a text search input with a formatted option list that appears
-  // directly below it — matching the look of the Disposition Category / Record
-  // Class selects. The list is portaled to <body> (position:fixed, positioned
-  // from the input's bounding box) so the scrollable table container never clips
-  // it.
-  //   allowFreeText: true   → WO: typing a brand-new value is allowed; the id is
-  //                           resolved from the typed name on save.
-  //   allowFreeText: false  → PM: selection is restricted to existing options;
-  //                           the chosen option's real id is tracked for save.
-  function buildTaxonomyCombobox(options, idKey, nameKey, currentId, opts) {
-    const allowFreeText = Boolean(opts && opts.allowFreeText);
-    const contextIdKey = opts && opts.contextIdKey;
-    const getContextId = opts && opts.getContextId;
-    const wrap = el("div", { class: "lda-combobox lda-cell-combobox" });
-    const input = el("input", {
-      class: "lda-input",
-      autocomplete: "off",
-      role: "combobox",
-      "aria-autocomplete": "list",
-      "aria-expanded": "false",
-      placeholder: allowFreeText ? "Select existing or type new…" : "Search…",
-    });
-    const list = el("ul", { class: "lda-combobox-list lda-portal-list", role: "listbox", hidden: true });
-    wrap.appendChild(input);
-
-    let selectedId = null;
-    let isOpen = false;
-    let activeIndex = -1;
-    let filtered = [];
-
-    if (currentId != null) {
-      const match = options.find((opt) => Number(opt[idKey]) === Number(currentId));
-      if (match) {
-        input.value = match[nameKey];
-        selectedId = Number(match[idKey]);
-      }
-    }
-
-    function currentContextId() {
-      return typeof getContextId === "function" ? getContextId() : null;
-    }
-
-    function optionMatchesContext(opt, contextId) {
-      if (!contextIdKey || contextId == null) return true;
-      return Number(opt[contextIdKey]) === Number(contextId);
-    }
-
-    function contextOptions() {
-      const contextId = currentContextId();
-      return options.filter((opt) => optionMatchesContext(opt, contextId));
-    }
-
-    function matchesFor(query) {
-      const q = (query || "").trim().toLowerCase();
-      const candidates = contextOptions();
-      if (!q) return candidates.slice();
-      return candidates.filter((opt) => String(opt[nameKey]).toLowerCase().includes(q));
-    }
-
-    function positionList() {
-      const rect = input.getBoundingClientRect();
-      list.style.top = `${rect.bottom + 4}px`;
-      list.style.left = `${rect.left}px`;
-      list.style.width = `${rect.width}px`;
-    }
-
-    function renderList() {
-      list.innerHTML = "";
-      filtered = matchesFor(input.value).slice(0, 50);
-      if (!filtered.length) {
-        list.appendChild(
-          el("li", {
-            class: "lda-combobox-empty",
-            text: allowFreeText ? "No matches. Keep typing to add a new value." : "No matching options.",
-          })
-        );
-        return;
-      }
-      filtered.forEach((opt, index) => {
-        list.appendChild(
-          el(
-            "li",
-            {
-              class: "lda-combobox-option" + (index === activeIndex ? " is-active" : ""),
-              role: "option",
-              // mousedown (not click) so the choice commits before the input's
-              // blur fires; preventDefault keeps focus on the input.
-              onmousedown: (event) => {
-                event.preventDefault();
-                choose(opt);
-              },
-            },
-            [el("span", { class: "lda-combobox-option-label", text: opt[nameKey] })]
-          )
-        );
-      });
-    }
-
-    // Keep the portaled list pinned beneath its input when the page, the inner
-    // table container, or the window scrolls/resizes. A scroll *inside* the list
-    // itself (browsing the options) must not move or close it, so it is ignored.
-    // The list is only dismissed once the input has been scrolled out of view,
-    // so it can never float detached over unrelated content.
-    // The visible box the input lives in: the scrollable table container
-    // intersected with the window viewport. Because the menu is portaled to
-    // <body>, a row can be scrolled above/left of the table's visible area while
-    // its rect is still inside the page viewport — so the menu must be dismissed
-    // against this box, not the viewport alone. Falls back to the viewport when
-    // there is no scroll container. The single-record editor on the analysis page
-    // puts these in a scrolling modal instead of a table, so that clips too.
-    function visibleClip() {
-      const view = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
-      const scroller = input.closest(".lda-table-scroll, .lda-modal");
-      if (!scroller) return view;
-      const r = scroller.getBoundingClientRect();
-      return {
-        top: Math.max(view.top, r.top),
-        left: Math.max(view.left, r.left),
-        right: Math.min(view.right, r.right),
-        bottom: Math.min(view.bottom, r.bottom),
-      };
-    }
-
-    function reflowList(event) {
-      if (!isOpen) return;
-      if (event && event.type === "scroll" && event.target && list.contains(event.target)) return;
-      const rect = input.getBoundingClientRect();
-      const clip = visibleClip();
-      const clipped =
-        rect.bottom <= clip.top || rect.top >= clip.bottom ||
-        rect.right <= clip.left || rect.left >= clip.right;
-      if (clipped) {
-        closeList();
-        return;
-      }
-      positionList();
-    }
-
-    function openList() {
-      if (!isOpen) {
-        document.body.appendChild(list);
-        isOpen = true;
-        // Capture so scrolls on the inner table container are caught too; the
-        // handler re-pins the list to its input rather than dismissing it.
-        window.addEventListener("scroll", reflowList, true);
-        window.addEventListener("resize", reflowList, true);
-      }
-      list.hidden = false;
-      input.setAttribute("aria-expanded", "true");
-      positionList();
-      renderList();
-    }
-
-    function closeList() {
-      if (!isOpen) return;
-      list.hidden = true;
-      if (list.parentNode) list.parentNode.removeChild(list);
-      isOpen = false;
-      activeIndex = -1;
-      input.setAttribute("aria-expanded", "false");
-      window.removeEventListener("scroll", reflowList, true);
-      window.removeEventListener("resize", reflowList, true);
-      startOwedDispositionTour();
-    }
-
-    function choose(opt) {
-      input.value = opt[nameKey];
-      selectedId = Number(opt[idKey]);
-      closeList();
-    }
-
-    // Resolve the current input text to an option id by exact (case-insensitive)
-    // name match, independent of the blur timer. Returns null when the text does
-    // not exactly match an option. Lets getSelectedId() report a valid typed
-    // entry synchronously, so a Save click that beats the 120 ms blur timer still
-    // sends the right id instead of null.
-    function resolveIdFromText() {
-      const typed = input.value.trim().toLowerCase();
-      if (!typed) return null;
-      const exactMatches = contextOptions().filter((opt) => String(opt[nameKey]).toLowerCase() === typed);
-      if (selectedId != null) {
-        const selected = exactMatches.find((opt) => Number(opt[idKey]) === Number(selectedId));
-        if (selected) return Number(selected[idKey]);
-      }
-      return exactMatches.length === 1 ? Number(exactMatches[0][idKey]) : null;
-    }
-
-    input.addEventListener("focus", openList);
-    input.addEventListener("input", () => {
-      activeIndex = -1;
-      // Typing detaches any previously chosen option id; WO re-resolves by name
-      // on save, PM requires an explicit pick (or exact-name match on blur).
-      selectedId = null;
-      if (!isOpen) openList();
-      else {
-        positionList();
-        renderList();
-      }
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        if (!isOpen) openList();
-        if (filtered.length) {
-          activeIndex = activeIndex + 1 >= filtered.length ? 0 : activeIndex + 1;
-          renderList();
-        }
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        if (!isOpen) openList();
-        if (filtered.length) {
-          activeIndex = activeIndex <= 0 ? filtered.length - 1 : activeIndex - 1;
-          renderList();
-        }
-      } else if (event.key === "Enter") {
-        if (isOpen && activeIndex >= 0 && activeIndex < filtered.length) {
-          event.preventDefault();
-          choose(filtered[activeIndex]);
-        }
-      } else if (event.key === "Escape") {
-        // An Escape that closes the open list is spent on it: marked so a modal
-        // this combobox sits in keeps itself open rather than closing too.
-        if (isOpen) event.preventDefault();
-        closeList();
-      }
-    });
-    input.addEventListener("blur", () => {
-      // Delay so an option's mousedown selection runs before the list closes.
-      setTimeout(() => {
-        closeList();
-        if (allowFreeText) return;
-        // Restricted dropdown: keep the text in sync with the resolved id, adopt
-        // an exact-name match, or clear an unmatched entry.
-        const exactId = resolveIdFromText();
-        if (exactId != null) {
-          selectedId = exactId;
-          const match = options.find((opt) => Number(opt[idKey]) === exactId);
-          input.value = match[nameKey];
-        } else if (selectedId != null) {
-          const match = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
-          input.value = match ? match[nameKey] : "";
-          if (!match) selectedId = null;
-        } else {
-          input.value = "";
-        }
-      }, 120);
-    });
-
-    return {
-      nodes: [wrap],
-      input,
-      getValue: () => input.value.trim(),
-      // Fall back to a synchronous exact-name resolution so a typed-but-not-yet-
-      // committed valid entry isn't read as null when Save races the blur timer.
-      getSelectedId: () => {
-        if (selectedId != null) {
-          const selected = options.find((opt) => Number(opt[idKey]) === Number(selectedId));
-          if (selected && optionMatchesContext(selected, currentContextId())) return Number(selectedId);
-        }
-        return resolveIdFromText();
-      },
-    };
-  }
-
-  // Shared by page navigation and the Rows/Scope selectors: confirms before any
-  // of them discard unsaved disposition edits.
-  async function confirmDiscardUnsavedChanges(changedFn) {
-    if (!changedFn || !changedFn().length) return true;
-    return await openModal({
-      title: "Unsaved disposition changes",
-      bodyNodes: [el("p", { text: "This page has unsaved disposition changes. Continue without saving them?" })],
-      actions: [
-        { label: "Stay on page", primary: false, value: () => false },
-        { label: "Discard and continue", primary: true, value: () => true },
-      ],
-    });
-  }
-
-  async function maybeChangePage(data, changedFn, targetPage) {
-    if (!(await confirmDiscardUnsavedChanges(changedFn))) return;
-    loadDispositionPage(data.kind, data.scope, targetPage);
-  }
-
-  async function saveDispositions(kind, changedFn, afterSave) {
-    const changed = changedFn();
-    if (!changed.length) {
-      showToast("No disposition rows changed, so nothing needed to be saved.", "info");
-      return;
-    }
-    const payloads = changed.map((rs) => dispositionPayloadFromRow(rs, kind));
-    beginLoading("Saving dispositions…");
-    let saved = false;
-    try {
-      const result = await postJson(`${API}/dispositions/save`, { dispositions: payloads });
-      changed.forEach((rs) => (rs.initial = JSON.stringify(dispositionPayloadFromRow(rs, kind))));
-      showToast(`Saved ${result.saved} changed REL disposition row(s) to event_disposition.`, "success");
-      saved = true;
-      refreshSummary();
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      endLoading();
-    }
-    // Only once the write actually landed: a failed save leaves the rows on
-    // screen as the user typed them, which is what they need to fix and retry.
-    if (saved && typeof afterSave === "function") afterSave();
-  }
-
-  // ---- Excel dispositioning -------------------------------------------------
-  // The "how it works" explainer is markup in disposition.html rather than an
-  // openModal() call: it is static prose, so a native <dialog> gives it the
-  // browser's own focus trap and Escape handling for free. The button that opens
-  // it is built here because it belongs with the two Excel buttons, which the
-  // disposition editor renders. A page without the dialog (Perform Analysis)
-  // simply gets no button -- el() drops a null child.
-  function excelHelpButton() {
-    const dialog = $("lda-excel-help-dialog");
-    if (!dialog || typeof dialog.showModal !== "function") return null;
-    return el("button", {
-      class: "btn-secondary lda-help-button",
-      text: "How dispositioning on Excel works",
-      "aria-haspopup": "dialog",
-      "aria-controls": "lda-excel-help-dialog",
-      onclick: () => dialog.showModal(),
-    });
-  }
-
-  // Wired once at page init, since the dialog is part of the page rather than of
-  // the editor that re-renders under it.
-  function wireExcelHelpDialog() {
-    const dialog = $("lda-excel-help-dialog");
-    if (!dialog) return;
-    const close = $("lda-excel-help-close");
-    if (close) close.addEventListener("click", () => dialog.close());
-    dialog.addEventListener("click", (event) => {
-      // A native dialog reports a click on its backdrop as a click on itself.
-      // Only that closes it, never a click on the content inside.
-      if (event.target === dialog) dialog.close();
-    });
-    dialog.addEventListener("close", startOwedDispositionTour);
-  }
-
-  // The Rows selector travels with the download: the workbook is the offline
-  // copy of this table, so asking for only the new rows on screen and getting a
-  // file of every eligible row is the screen and the file disagreeing about what
-  // was asked for. The search box and the page number deliberately do not travel
-  // -- those narrow the view to look at something, while the scope names which
-  // records are still outstanding.
-  function downloadExcel(kind, scope) {
-    const url =
-      `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}` +
-      `&kind=${kind}&scope=${scope === "new" ? "new" : "all"}`;
-    window.location.href = url;
-  }
-
-  async function uploadExcel(kind, scope) {
-    // A successful import reloads the editor, which throws away whatever is
-    // half-typed in the table. Every other path that reloads it -- paging, the
-    // Record Type and Rows selectors, the search box -- asks first, so this one
-    // does too, before the file picker rather than after the upload: being asked
-    // once the import has already been written would be a question with no
-    // answer left.
-    if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) return;
-    const fileInput = el("input", { type: "file", accept: ".xlsx" });
-    fileInput.style.display = "none";
-    document.body.appendChild(fileInput);
-    fileInput.addEventListener("change", async () => {
-      const file = fileInput.files && fileInput.files[0];
-      fileInput.remove();
-      if (!file) return;
-      const form = new FormData();
-      form.append("file", file);
-      const csrf = document.querySelector('meta[name="gremlin-csrf-token"]');
-      if (csrf) form.append("csrf_token", csrf.content);
-      beginLoading("Importing disposition Excel…");
-      try {
-        const url = `${API}/dispositions/excel?asset=${encodeURIComponent(state.selectedAsset)}&kind=${kind}`;
-        const result = await requestJson(url, { method: "POST", body: form });
-        showBanner(`Imported ${result.imported} disposition row(s) from Excel.`, "success");
-        refreshSummary();
-        loadDispositionPage(kind, scope || "all", 0);
-      } catch (err) {
-        showBanner(err.message, "error");
-      } finally {
-        endLoading();
-      }
-    });
-    fileInput.click();
-  }
-
-  // ---- single-record disposition (analysis tables) -------------------------
-  // An analysis lists the records it was built from, and that is where a
-  // misclassified one gets noticed: a work order sitting under the wrong
-  // mechanism, or one that was never a failure at all. Its number in those
-  // tables opens that one record's disposition here, with the controls the
-  // disposition table uses, rather than sending the user off to page through the
-  // disposition screen for it. Saving refreshes the analysis on screen, so the
-  // effect of the change shows up where it was spotted.
-
-  // The disposition kind behind a Weibull observation: the event that closed its
-  // life interval was either a failure (a corrective work order) or a PM reset.
-  // The trailing current-life row has no closing event, so no record to open.
-  function observationRecordKind(obs) {
-    if (obs.source_event_role === "FAILURE_EVENT") return "wo";
-    if (obs.source_event_role === "PM_RESET_EVENT") return "pm";
-    return null;
-  }
-
-  // A table cell holding a record's number. For an editor, on a row with a
-  // record behind it, the number is a button that opens that record's
-  // disposition; everyone else gets the number as plain text, since saving a
-  // disposition is an editor's write. `ref` is { mappedRecordId, kind }, with
-  // kind "wo" or "pm".
-  function recordNumberCell(taskId, ref, emptyText) {
-    const number = taskId != null && String(taskId).trim() !== "" ? String(taskId) : "";
-    if (!CAN_EDIT || !ref || ref.mappedRecordId == null || !ref.kind) {
-      return el("td", { text: number || emptyText || "" });
-    }
-    const noun = ref.kind === "pm" ? "PM" : "work order";
-    const description = number
-      ? `Review or change the disposition of ${noun} ${number}`
-      : `Review or change this ${noun}'s disposition`;
-    const button = el(
-      "button",
-      {
-        type: "button",
-        class: "lda-record-link",
-        title: description,
-        "aria-label": description,
-        onclick: (event) => {
-          // A row that is clickable itself (the Weibull data table jumps to the
-          // graph) must not also act on a click meant for this one record.
-          event.stopPropagation();
-          openRecordDisposition({ mappedRecordId: ref.mappedRecordId, kind: ref.kind, trigger: button });
-        },
-      },
-      [
-        el("span", { class: "lda-record-link-number", text: number || "Edit" }),
-        el("span", { class: "lda-record-link-icon", "aria-hidden": "true", text: "✎" }),
-      ]
-    );
-    // Column sorting and filtering read the number, not the pencil beside it.
-    return el("td", { class: "lda-record-cell", "data-column-text": number }, [button]);
-  }
-
-  async function openRecordDisposition(ref) {
-    if (!CAN_EDIT || !state.selectedAsset || ref.mappedRecordId == null) return;
-    const asset = state.selectedAsset;
-    const params = new URLSearchParams({
-      asset,
-      kind: ref.kind === "pm" ? "pm" : "wo",
-      mapped_record_id: String(ref.mappedRecordId),
-    });
-    beginLoading("Loading this record's disposition…");
-    let data;
-    try {
-      data = await getJson(`${API}/dispositions/record?${params.toString()}`);
-    } catch (err) {
-      if (!err.toastShown) showToast(err.message, "error");
-      return;
-    } finally {
-      endLoading();
-    }
-    // Nothing can change the asset under the loading overlay today, but an editor
-    // opened for one asset must never save beside another asset's analysis.
-    if (state.selectedAsset !== asset) return;
-    const saved = await editRecordDisposition(data);
-    if (ref.trigger && ref.trigger.isConnected) ref.trigger.focus();
-    if (saved) refreshAfterRecordDisposition(saved);
-  }
-
-  // Field order in the editor: what decides a disposition first, free text last.
-  // The table leads with the notes, which suits scanning rows but not one form.
-  const RECORD_EDITOR_FIELDS = {
-    wo: [
-      "disposition_category",
-      "effective_record_class",
-      "failure_mode",
-      "failure_mechanism",
-      "include_in_weibull_candidate",
-      "modeled_population_name",
-      "disposition_notes",
-    ],
-    pm: [
-      "disposition_category",
-      "pm_reset_inclusion_decision",
-      "reset_target_failure_mode",
-      "reset_target_failure_mechanism",
-      "effective_record_class",
-      "include_in_weibull_candidate",
-      "modeled_population_name",
-      "pm_reset_renewal_rationale",
-      "disposition_notes",
-    ],
-  };
-  // Fields that take the editor's full width rather than half of it.
-  const RECORD_EDITOR_WIDE = {
-    wo: new Set(["include_in_weibull_candidate", "modeled_population_name", "disposition_notes"]),
-    pm: new Set(["modeled_population_name", "pm_reset_renewal_rationale", "disposition_notes"]),
-  };
-  let recordEditorSeq = 0;
-
-  // The editor itself: the record's own details for reference, then the same
-  // disposition controls its table row would have. Resolves with the saved
-  // record, or null when it is closed without saving. A refused save leaves it
-  // open with the reason, so what was entered can be corrected rather than
-  // entered again.
-  //
-  // Its own modal rather than openModal(), which closes on any button and on a
-  // backdrop click: a form should not lose its edits to a stray click, and it
-  // has to stay open across a save that fails. Not a native <dialog> either --
-  // the mode/mechanism option lists are portaled to <body>, which sits beneath a
-  // dialog's top layer, so they would open out of sight behind it.
-  function editRecordDisposition(data) {
-    return new Promise((resolve) => {
-      const row = data.row;
-      const kind = data.kind === "pm" ? "pm" : "wo";
-      const isPm = kind === "pm";
-      const number =
-        row.taskID != null && String(row.taskID).trim() !== "" ? String(row.taskID) : `record ${row.mapped_record_id}`;
-      const recordLabel = `${isPm ? "PM" : "WO"} ${number}`;
-      const controls = buildDispositionControls(row, data, dispositionTaxonomy(data));
-      const rowState = controls.rowState;
-      const labels = new Map(DISPOSITION_EDIT_COLUMNS[kind].map((column) => [column.key, column.label]));
-      const idPrefix = `lda-record-${++recordEditorSeq}`;
-
-      const facts = [
-        ["Title", row.name],
-        ["Request title", row.requestTitle],
-        ["Created", formatRecordDate(row.createdDate_Final)],
-        ["Completed", formatRecordDate(row.completedDate_Final)],
-        ["Downtime", row.downtime != null && row.downtime !== "" ? `${fmtFixed(row.downtime)} h` : ""],
-        ["Request description", row.requestorDescription],
-        ["Completion notes", row.completionNotes],
-        ...narrativeLines(row, "", data.narrative_columns).map((line) => [line.label, line.text]),
-      ].filter(([, value]) => value != null && String(value).trim() !== "");
-
-      const fields = RECORD_EDITOR_FIELDS[kind].map((key) => {
-        const cell = controls.cells[key];
-        const label = labels.get(key);
-        const wide = RECORD_EDITOR_WIDE[kind].has(key) ? " is-wide" : "";
-        if (key === "include_in_weibull_candidate") {
-          // Not an .lda-field: its input rules would pad and border the checkbox.
-          return el("div", { class: "lda-record-check" + wide }, [
-            el("label", { class: "lda-checkbox" }, [cell.control, document.createTextNode(label)]),
-          ]);
-        }
-        const cls = "lda-field" + wide;
-        if (!cell.control) {
-          // Modeled Population is derived on save from the asset and the
-          // mode/mechanism, so it is shown rather than edited.
-          return el("div", { class: cls }, [
-            el("span", { class: "lda-record-field-label", text: label }),
-            el("p", { class: "lda-record-readonly", text: String(cell.nodes[0] || "") }),
-          ]);
-        }
-        cell.control.id = `${idPrefix}-${key}`;
-        return el("div", { class: cls }, [el("label", { for: cell.control.id, text: label }), ...cell.nodes]);
-      });
-
-      const message = el("p", { class: "lda-banner", role: "alert", hidden: true });
-      const cancelButton = el("button", { type: "button", class: "btn-secondary", text: "Cancel" });
-      const saveButton = el("button", { type: "button", class: "btn-primary", text: "Save disposition" });
-      const titleId = `${idPrefix}-title`;
-      const modal = el(
-        "div",
-        { class: "lda-modal lda-record-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
-        [
-          el("div", {}, [
-            el("p", { class: "eyebrow", text: `Asset ${data.asset_number}` }),
-            el("h3", { id: titleId, text: `Edit disposition: ${recordLabel}` }),
-          ]),
-          facts.length
-            ? el(
-                "dl",
-                { class: "lda-record-facts" },
-                facts.flatMap(([label, value]) => [el("dt", { text: label }), el("dd", { text: String(value).trim() })])
-              )
-            : null,
-          el("div", { class: "lda-record-fields" }, fields),
-          el("p", {
-            class: "lda-hint",
-            text:
-              (isPm
-                ? "A PM only feeds the Weibull as INCLUDED_PM_RESET_EVENT with APPROVED_RESET, an existing reset " +
-                  "target and a rationale, with Include in Weibull Candidate checked."
-                : "A corrective WO only feeds the Weibull as INCLUDED_FAILURE with a failure mode and Include in " +
-                  "Weibull Candidate checked. Moving it to another mode or mechanism moves it to that group's analysis.") +
-              " Saving keeps the previous disposition in the record's history and refreshes this analysis.",
-          }),
-          message,
-          el("div", { class: "lda-modal-actions" }, [cancelButton, saveButton]),
-        ]
-      );
-      const backdrop = el("div", { class: "lda-modal-backdrop" }, [modal]);
-
-      let saving = false;
-      function showMessage(text, kindClass) {
-        message.textContent = text;
-        message.className = `lda-banner is-${kindClass}`;
-        message.hidden = false;
-      }
-      function close(value) {
-        document.removeEventListener("keydown", onKey);
-        // A focused combobox closes its portaled list on blur, and removing the
-        // modal from under it would skip that, stranding the list on the page.
-        if (modal.contains(document.activeElement)) document.activeElement.blur();
-        document.querySelectorAll("body > .lda-portal-list").forEach((node) => node.remove());
-        backdrop.remove();
-        resolve(value);
-      }
-      function onKey(event) {
-        if (saving) return;
-        // An Escape that closed a mode/mechanism list is marked as spent there.
-        if (event.key === "Escape" && !event.defaultPrevented) {
-          close(null);
-          return;
-        }
-        if (event.key !== "Tab") return;
-        // Keep Tab inside the dialog; aria-modal promises the page behind is inert.
-        const focusable = Array.from(modal.querySelectorAll("button, input, select, textarea")).filter(
-          (node) => !node.disabled
-        );
-        if (!focusable.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-      async function save() {
-        const payload = dispositionPayloadFromRow(rowState, kind);
-        if (JSON.stringify(payload) === rowState.initial) {
-          showMessage("Nothing has changed yet. Change a field and save, or cancel to leave it as it is.", "info");
-          return;
-        }
-        message.hidden = true;
-        saving = true;
-        saveButton.disabled = true;
-        cancelButton.disabled = true;
-        saveButton.textContent = "Saving…";
-        try {
-          await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
-        } catch (err) {
-          saving = false;
-          saveButton.disabled = false;
-          cancelButton.disabled = false;
-          saveButton.textContent = "Save disposition";
-          showMessage(err.message, "error");
-          return;
-        }
-        close({ mappedRecordId: rowState.mapped_record_id, kind, label: recordLabel });
-      }
-
-      cancelButton.addEventListener("click", () => close(null));
-      saveButton.addEventListener("click", save);
-      document.addEventListener("keydown", onKey);
-      document.body.appendChild(backdrop);
-      controls.cells.disposition_category.control.focus();
-    });
-  }
-
-  // After a save from the editor, bring what is on screen back in line with the
-  // data: the readiness counts, rankings and Pareto always, and the analysis the
-  // record was opened from. Trend, PM and downtime re-read inside
-  // refreshSummary(); a Weibull fit has to be run again, and
-  // runAnalysisForGroup() refreshes the summary itself once it has.
-  function refreshAfterRecordDisposition(saved) {
-    showToast(`Saved the disposition for ${saved.label}. Updating the analysis…`, "success");
-    if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.latestResult && state.latestResultGroup) {
-      runAnalysisForGroup(state.latestResultGroup, "Re-running the Weibull analysis with the updated disposition…", {
-        changedRecord: saved,
-        window: state.latestResultWindow,
-      });
-      return;
-    }
-    refreshSummary();
-  }
-
-  // ---- downtime driver analysis ---------------------------------------------
-  // The selected failure mode/mechanism (Pareto click or Perform Analysis picker)
-  // drives a server-side downtime breakdown for the same included-failure dataset
-  // as the Pareto: summary statistics, a continuous monthly downtime trend, a
-  // downtime distribution, downtime by asset/location, and the top downtime events.
-  function downtimeSelectionLabel(row) {
-    const modeName = row.failure_mode_name;
-    const mechName = row.failure_mechanism_name;
-    return mechName
-      ? modeName
-        ? `${modeName} / ${mechName}`
-        : mechName
-      : modeName || "the selected failure mechanism";
-  }
-
-  function selectDowntimeMechanism(row) {
-    if (row == null || row.failure_mode_id == null) {
-      showBanner("The selected Pareto bar does not have a complete failure mode/mechanism selection.", "error");
-      return;
-    }
-    setActiveMechanism(row);
-    state.downtimeSelection = {
-      failure_mode_id: row.failure_mode_id,
-      failure_mechanism_id: row.failure_mechanism_id != null ? row.failure_mechanism_id : null,
-      label: downtimeSelectionLabel(row),
-    };
-    state.downtimeData = null;
-    // Clear the previous mechanism's cards/charts/table immediately so a slow or
-    // failed request can't leave stale results visible under the new selection.
-    renderDowntime();
-    // Scroll only once the response has rendered, for the same reason as PM: the
-    // summary cards above the first chart panel resize when they populate.
-    return loadDowntime({ scrollToPanel: true });
-  }
-
-  async function loadDowntime(opts) {
-    const scrollWhenRendered = Boolean(opts && opts.scrollToPanel);
-    if (state.pageMode === "disposition") return;
-    if (!state.selectedAsset || !state.downtimeSelection) {
-      renderDowntime();
-      return;
-    }
-    const asset = state.selectedAsset;
-    const sel = state.downtimeSelection;
-    const token = ++state.downtimeToken;
-    // A response is stale when a newer request superseded it, the asset or analysis
-    // type changed, or the selection was cleared/replaced (object identity also
-    // covers switching away and back to the same asset before this resolved).
-    const isStale = () =>
-      token !== state.downtimeToken ||
-      state.selectedAsset !== asset ||
-      state.analysisType !== ANALYSIS_TYPES.DOWNTIME ||
-      state.downtimeSelection !== sel;
-    beginLoading("Analyzing downtime drivers…");
-    try {
-      const params = withDateRange(new URLSearchParams({ asset, failure_mode_id: sel.failure_mode_id }));
-      if (sel.failure_mechanism_id != null) params.set("failure_mechanism_id", sel.failure_mechanism_id);
-      const data = await getJson(`${API}/downtime-drivers?${params.toString()}`);
-      if (isStale()) return;
-      state.downtimeData = data.downtime_drivers || null;
-      renderDowntime();
-      if (scrollWhenRendered) scrollToAnalysisPanel();
-    } catch (err) {
-      if (!isStale()) {
-        showBanner(err.message, "error");
-        // Reflect the (now-cleared) data so a failed load doesn't leave another
-        // mechanism's results on screen.
-        renderDowntime();
-        // Same as PM: the panel explains the empty state, so still scroll to it.
-        if (scrollWhenRendered) scrollToAnalysisPanel();
-      }
-    } finally {
-      endLoading();
-    }
-  }
-
-  // Perform Analysis in downtime mode: pick the failure mode/mechanism from the
-  // same filtered dataset as the Pareto, then analyze its downtime drivers. Reuses
-  // the trend picker choices (mode-level "all mechanisms" plus each mechanism).
-  async function performDowntimeSelection() {
-    if (!state.trend && state.selectedAsset) {
-      beginLoading("Loading failure mechanisms…");
-      try {
-        await refreshSummary();
-      } finally {
-        endLoading();
-      }
-    }
-    const choices = trendPickerChoices();
-    if (!choices.length) {
-      showBanner(
-        "No failure mechanisms with included failures are available to analyze yet. Disposition WO failures with a failure mechanism first.",
-        "error"
-      );
-      return;
-    }
-    const options = el("div", { class: "lda-modal-options" });
-    choices.forEach((choice, index) => {
-      const radio = el("input", { type: "radio", name: "lda-downtime-group", value: String(index) });
-      if (index === 0) radio.checked = true;
-      options.appendChild(el("label", { class: "lda-modal-option" }, [radio, el("span", { text: choice.labelText })]));
-    });
-    const choice = await openModal({
-      title: "Select failure mode or mechanism to analyze",
-      bodyNodes: [
-        el("p", { text: "Choose the failure mode or mechanism to analyze downtime drivers for:" }),
-        options,
-      ],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        {
-          label: "Analyze downtime",
-          primary: true,
-          value: () => {
-            const checked = options.querySelector("input[name='lda-downtime-group']:checked");
-            return checked ? Number(checked.value) : null;
-          },
-        },
-      ],
-    });
-    if (choice === null || choice === undefined) return;
-    selectDowntimeMechanism(choices[choice].row);
-  }
-
-  // Shared empty-state text: "no selection", "loading", and "no records" so each
-  // downtime panel can show the right prompt (mirrors pmEmptyText()).
-  function downtimeEmptyText() {
-    if (!state.downtimeSelection) {
-      return "Select a failure mode or mechanism from the Pareto chart or analysis controls to analyze downtime drivers.";
-    }
-    if (!state.downtimeData) {
-      return `Analyzing downtime drivers for ${state.downtimeSelection.label}…`;
-    }
-    return "No downtime records found for the selected failure mechanism within the current filters.";
-  }
-
-  function renderDowntime() {
-    renderDowntimeCards();
-    renderDowntimeTrendChart();
-    renderDowntimeDistChart();
-    renderDowntimeAssetChart();
-    renderDowntimeEventsTable();
-  }
-
-  function renderDowntimeCards() {
-    const grid = $("lda-downtime-cards");
-    const message = $("lda-downtime-message");
-    if (!grid) return;
-    grid.innerHTML = "";
-    const data = state.downtimeData;
-    const hasRecords = Boolean(data && data.has_records);
-    if (!state.downtimeSelection || !data || !hasRecords) {
-      if (message) {
-        message.hidden = false;
-        message.textContent = downtimeEmptyText();
-      }
-      return;
-    }
-    if (message) {
-      message.hidden = true;
-      message.textContent = "";
-    }
-    const s = data.summary || {};
-    const cards = [
-      ["Total Downtime", `${fmt(s.total_downtime_hours)} h`],
-      ["Work Order Count", String(s.work_order_count ?? 0)],
-      ["Average Downtime", `${fmt(s.average_downtime_hours)} h`],
-      ["Median Downtime", `${fmt(s.median_downtime_hours)} h`],
-      ["Max Downtime Event", `${fmt(s.max_downtime_hours)} h`],
-    ];
-    cards.forEach(([label, value]) => {
-      grid.appendChild(
-        el("div", { class: "lda-metric" }, [
-          el("span", { class: "lda-metric-value", text: value }),
-          el("span", { class: "lda-metric-label", text: label }),
-        ])
-      );
-    });
-  }
-
-  function renderDowntimeTrendChart() {
-    const canvas = $("lda-downtime-trend-chart");
-    const hint = $("lda-downtime-trend-hint");
-    if (!canvas) return;
-    const data = state.downtimeData;
-    if (!state.downtimeSelection || !data || !data.has_records) {
-      if (hint) {
-        hint.hidden = false;
-        hint.textContent = downtimeEmptyText();
-      }
-      canvas.hidden = true;
-      return;
-    }
-    const months = data.months || [];
-    if (!months.length) {
-      // There are work orders, but none carry a usable date to bucket by month.
-      if (hint) {
-        hint.hidden = false;
-        hint.textContent = `No dated work orders for ${state.downtimeSelection.label} to plot a monthly trend.`;
-      }
-      canvas.hidden = true;
-      return;
-    }
-    if (hint) {
-      hint.hidden = false;
-      hint.textContent = `Total monthly downtime hours for ${state.downtimeSelection.label}. Zero-downtime months are included so the trend never skips a month.`;
-    }
-    canvas.hidden = false;
-    drawDowntimeLineChart(canvas, months, data.monthly_downtime_hours || [], "Total downtime hours");
-  }
-
-  function renderDowntimeDistChart() {
-    const canvas = $("lda-downtime-dist-chart");
-    const hint = $("lda-downtime-dist-hint");
-    if (!canvas) return;
-    const data = state.downtimeData;
-    if (!state.downtimeSelection || !data || !data.has_records) {
-      if (hint) {
-        hint.hidden = false;
-        hint.textContent = downtimeEmptyText();
-      }
-      canvas.hidden = true;
-      return;
-    }
-    if (hint) {
-      hint.hidden = false;
-      hint.textContent = "Work order count by downtime range shows whether downtime comes from many short events or a few long ones.";
-    }
-    canvas.hidden = false;
-    const dist = data.distribution || [];
-    drawBarChart(
-      canvas,
-      dist.map((b) => b.label),
-      dist.map((b) => b.count),
-      {
-        yLabel: "Work order count",
-        xLabel: "Downtime range",
-        tickFormat: (v) => String(Math.round(v)),
-        valueLabel: (v) => String(Math.round(v)),
-      }
-    );
-  }
-
-  function renderDowntimeAssetChart() {
-    const canvas = $("lda-downtime-asset-chart");
-    const hint = $("lda-downtime-asset-hint");
-    if (!canvas) return;
-    const data = state.downtimeData;
-    if (!state.downtimeSelection || !data || !data.has_records) {
-      if (hint) {
-        hint.hidden = false;
-        hint.textContent = downtimeEmptyText();
-      }
-      canvas.hidden = true;
-      return;
-    }
-    const all = data.by_asset || [];
-    const MAX_BARS = 12;
-    const rows = all.slice(0, MAX_BARS);
-    if (hint) {
-      hint.hidden = false;
-      hint.textContent =
-        all.length > rows.length
-          ? `Total downtime hours grouped by asset/location, highest first (top ${rows.length} of ${all.length}).`
-          : "Total downtime hours grouped by asset (or location when no asset is recorded), highest first.";
-    }
-    canvas.hidden = false;
-    drawBarChart(
-      canvas,
-      rows.map((r) => r.label),
-      rows.map((r) => r.downtime_hours),
-      {
-        yLabel: "Total downtime hours",
-        tickFormat: compactHours,
-        valueLabel: (v) => fmt(v),
-        rotateLabels: true,
-      }
-    );
-  }
-
-  function renderDowntimeEventsTable() {
-    const wrap = $("lda-downtime-events-wrap");
-    const hint = $("lda-downtime-events-hint");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    const data = state.downtimeData;
-    const hasRecords = Boolean(data && data.has_records);
-    if (hint) {
-      hint.textContent =
-        !state.downtimeSelection || !hasRecords
-          ? downtimeEmptyText()
-          : "The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10)." +
-            RECORD_EDIT_HINT;
-    }
-    const headers = ["Date", "Asset", "Location", "Failure Mechanism", "Downtime (h)", "Operator", "WO #", "Description", "Failure Narrative"];
-    const table = el("table", { class: "lda-table" });
-    table.appendChild(el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    const events = (hasRecords && data.top_events) || [];
-    if (!events.length) {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", {
-            class: "lda-readonly lda-empty-row",
-            colspan: String(headers.length),
-            text: !state.downtimeSelection || !hasRecords ? downtimeEmptyText() : "No downtime events to list.",
-          }),
-        ])
-      );
-    } else {
-      events.forEach((ev) => {
-        const description =
-          ev.requestor_description || ev.task_name || ev.request_title || ev.completion_notes || "";
-        tbody.appendChild(
-          el("tr", {}, [
-            el("td", { text: ev.wo_date || "—" }),
-            el("td", { text: ev.asset || "—" }),
-            el("td", { text: ev.location || "—" }),
-            el("td", { text: ev.failure_mechanism_name || "—" }),
-            el("td", { text: fmt(ev.downtime_hours) }),
-            el("td", { text: ev.operator || "—" }),
-            recordNumberCell(ev.task_id, { mappedRecordId: ev.mapped_record_id, kind: "wo" }, "—"),
-            el("td", { class: "lda-wo-text", text: description }),
-            narrativeCell(ev),
-          ])
-        );
-      });
-    }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
 
   // Compact numeric label for downtime-hour axes/values (e.g. 12.3k), matching the
   // Pareto's k-formatting so large totals stay narrow.
@@ -4701,1027 +2704,6 @@
     ctx.textBaseline = "alphabetic";
   }
 
-  // ---- perform analysis (routed by Analysis Type) ---------------------------
-  // The "Perform Analysis" button performs the action for the selected analysis
-  // type: the Weibull group picker for Weibull, the failure-mechanism picker for
-  // Failure Mode Trend, and a "coming soon" notice for the unimplemented types.
-  async function performAnalysis() {
-    if (!state.selectedAsset) return;
-    if (state.analysisType === ANALYSIS_TYPES.TREND) return performTrendSelection();
-    if (state.analysisType === ANALYSIS_TYPES.PM) return performPmSelection();
-    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return performDowntimeSelection();
-    // Repeat Fix Rate covers every mechanism at once, so there is nothing to pick:
-    // the button counts the repeats again, with the window in the box.
-    if (state.analysisType === ANALYSIS_TYPES.REPEAT) {
-      state.repeatWindow = repeatWindowHours() || state.repeatWindow;
-      return loadRepeatFixes({ scrollToPanel: true });
-    }
-    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) {
-      showBanner(`${state.analysisType} is coming soon.`, "info");
-      return;
-    }
-    beginLoading("Loading Weibull groups…");
-    let groups;
-    try {
-      const data = await getJson(`${API}/weibull-groups?asset=${encodeURIComponent(state.selectedAsset)}`);
-      groups = data.groups || [];
-    } catch (err) {
-      endLoading();
-      showBanner(err.message, "error");
-      return;
-    }
-    endLoading();
-    if (!groups.length) {
-      showBanner(
-        "No failure modes or failure mechanisms are ready for Weibull analysis. Disposition failures and PM resets with failure-mode/mechanism selections first.",
-        "error"
-      );
-      return;
-    }
-    // A group whose events make fewer lives ending in a failure than the minimum --
-    // counted as the run counts them, the first event only starting the clock -- can
-    // never reach it, so it is shown, with why, but can't be chosen.
-    const options = el("div", { class: "lda-modal-options" });
-    let anyFittable = false;
-    groups.forEach((group, index) => {
-      const fittable = group.fittable !== false;
-      const labelText =
-        `${group.grouping_level === "FAILURE_MECHANISM" ? "Failure mechanism" : "Failure mode"}: ` +
-        `${group.label} (${group.failure_count} failures, ${group.reset_count} PM resets)` +
-        (fittable
-          ? ""
-          : ` — too few to fit: ${
-              group.failure_lives_possible != null ? `${group.failure_lives_possible} ${group.failure_lives_possible === 1 ? "life ends" : "lives end"} in a failure, and ` : ""
-            }a Weibull fit needs ${group.min_failure_lives || 5}`);
-      const radio = el("input", { type: "radio", name: "lda-group", value: String(index) });
-      if (!fittable) radio.disabled = true;
-      else if (!anyFittable) radio.checked = true;
-      anyFittable = anyFittable || fittable;
-      options.appendChild(
-        el("label", { class: "lda-modal-option" + (fittable ? "" : " is-disabled") }, [radio, el("span", { text: labelText })])
-      );
-    });
-    // The window the lives are built in. Both are optional plant-calendar dates: the
-    // start counts from that day's first minute and the cutoff to its last.
-    const startInput = el("input", { class: "lda-input", type: "date", id: "lda-window-start" });
-    const cutoffInput = el("input", { class: "lda-input", type: "date", id: "lda-window-cutoff" });
-    // Filled in from the From/To dates on the Pareto, which a bar click would run
-    // over, and left editable.
-    const dateWindow = weibullDateWindow();
-    if (dateWindow) {
-      startInput.value = dateWindow.start;
-      cutoffInput.value = dateWindow.cutoff;
-    }
-    const windowFields = el("div", { class: "lda-window-fields" }, [
-      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-start", text: "Analysis start date (optional)" }), startInput]),
-      el("div", { class: "lda-field" }, [el("label", { for: "lda-window-cutoff", text: "Analysis cutoff date (optional)" }), cutoffInput]),
-    ]);
-    const modalError = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
-    const choice = await openModal({
-      title: "Select failure group",
-      bodyNodes: [
-        el("p", { text: "Choose the failure mechanism or failure mode to analyze:" }),
-        anyFittable
-          ? null
-          : el("p", {
-              class: "lda-hint",
-              text: "None of these has enough failures for a Weibull fit yet. Disposition more failures, or come back when more have been recorded.",
-            }),
-        options,
-        windowFields,
-        el("p", {
-          class: "lda-hint",
-          text:
-            "Leave both dates blank to use all of the asset's history and censor the current life at the last " +
-            "completed Limble import. Dates are days on the plant's clock: the start counts from midnight, and the " +
-            "cutoff runs to the end of its day. They start out as the From and To dates on the Pareto; a To date " +
-            "of today or later is left blank, so the current life ends at the last import rather than now.",
-        }),
-        modalError,
-      ],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        {
-          label: "Run analysis",
-          primary: true,
-          validate: () => {
-            const checked = options.querySelector("input[name='lda-group']:checked");
-            let problem = "";
-            if (!checked) problem = "Choose a failure group that has enough failures to fit.";
-            // The start counts from midnight and the cutoff runs to the end of its
-            // day, so the same date is a one-day window; only a later start is wrong.
-            else if (startInput.value && cutoffInput.value && startInput.value > cutoffInput.value) {
-              problem = "The analysis start date can't be later than the cutoff date.";
-            }
-            modalError.textContent = problem;
-            modalError.hidden = !problem;
-            return !problem;
-          },
-          value: () => {
-            const checked = options.querySelector("input[name='lda-group']:checked");
-            return checked ? { index: Number(checked.value), start: startInput.value, cutoff: cutoffInput.value } : null;
-          },
-        },
-      ],
-    });
-    if (choice === null || choice === undefined) return;
-    setActiveMechanism(groups[choice.index]);
-    const chosenWindow = choice.start || choice.cutoff ? { start: choice.start, cutoff: choice.cutoff } : null;
-    runAnalysisForGroup(groups[choice.index], undefined, { window: chosenWindow });
-  }
-
-  // Whether two Weibull groups ({ grouping_level, failure_mode_id, failure_mechanism_id })
-  // name the same population. A mode-level group's mechanism id may be null or absent.
-  function sameWeibullGroup(a, b) {
-    if (!a || !b) return false;
-    const mechanism = (group) => (group.grouping_level === "FAILURE_MECHANISM" ? group.failure_mechanism_id ?? null : null);
-    return (
-      a.grouping_level === b.grouping_level &&
-      a.failure_mode_id == b.failure_mode_id &&
-      mechanism(a) == mechanism(b)
-    );
-  }
-
-  // Query string for the read-only saved-analysis lookup. The mechanism id is omitted
-  // for a mode-level group so the server matches the mode-only population.
-  function savedAnalysisQuery(asset, group) {
-    const params = new URLSearchParams({
-      asset,
-      grouping_level: group.grouping_level,
-      failure_mode_id: group.failure_mode_id,
-    });
-    if (group.failure_mechanism_id != null) params.set("failure_mechanism_id", group.failure_mechanism_id);
-    return params.toString();
-  }
-
-  // `options.changedRecord` marks a re-run after a disposition saved from the data
-  // table ({ mappedRecordId, label }): the new table scrolls back to that record,
-  // and a refusal says the change was saved; the old fit stays on screen unless
-  // the refusal removed it.
-  // `options.savedOnly` opens the fit already saved even for an editor, the way a
-  // viewer always does: what the tour uses, so that showing somebody around never
-  // runs and stores a fit of its own. `options.window` ({ start, cutoff } as
-  // YYYY-MM-DD, either blank) is the analysis window an editor chose; without one
-  // the run uses all history and the server's default cutoff.
-  async function runAnalysisForGroup(group, message, options) {
-    const changedRecord = (options && options.changedRecord) || null;
-    const savedOnly = !CAN_EDIT || Boolean(options && options.savedOnly);
-    const analysisWindow = (options && options.window) || null;
-    if (!state.selectedAsset) return;
-    const asset = state.selectedAsset;
-    // Capture the analysis type too: if the user switches away from Weibull while
-    // this request is in flight, applyAnalysisTypeUI() clears the workspace, so a
-    // late Weibull response must not repopulate it under the non-Weibull panel.
-    const analysisType = state.analysisType;
-    // A response is stale when a newer lookup superseded this one, or the asset or
-    // analysis type changed while it was in flight. The asset/type checks alone cannot
-    // separate two groups on the same asset, so the token covers that: a slower
-    // response would otherwise render the older group over the newer one, or clear the
-    // workspace when the older group has nothing saved. Overlapping lookups are not
-    // reachable from the UI today -- the loading overlay covers the viewport and
-    // swallows the second click -- but every other analysis here carries a token for
-    // the same reason, and that overlay is styling, not a guarantee.
-    const token = ++state.analysisToken;
-    const isStale = () =>
-      token !== state.analysisToken ||
-      state.selectedAsset !== asset ||
-      state.analysisType !== analysisType;
-    // Computing a fit rebuilds and stores event processing, observations, a dataset,
-    // a run and a result, so it is an editor-only write. A viewer (or a signed-out
-    // visitor) reads back the fit an editor already saved for the same group instead:
-    // same shape, same rendered view, nothing written.
-    beginLoading(savedOnly ? "Loading the saved Weibull analysis…" : message || "Running Weibull analysis…");
-    try {
-      const data = !savedOnly
-        ? await postJson(`${API}/perform-analysis`, {
-            asset,
-            grouping_level: group.grouping_level,
-            failure_mode_id: group.failure_mode_id,
-            failure_mechanism_id: group.failure_mechanism_id,
-            analysis_start: (analysisWindow && analysisWindow.start) || null,
-            analysis_cutoff: (analysisWindow && analysisWindow.cutoff) || null,
-          })
-        : await getJson(`${API}/saved-analysis?${savedAnalysisQuery(asset, group)}`);
-      if (isStale()) return; // superseded, or the asset/analysis type changed mid-request
-      if (!data.result) {
-        // Only reachable on the read-only path: the group has never been analyzed, so
-        // there is nothing saved to show and a viewer cannot create it.
-        clearWorkspace();
-        showBanner(
-          "No Weibull analysis has been saved for this failure group yet. An editor has to run it once before it can be viewed.",
-          "info"
-        );
-        return;
-      }
-      state.latestResult = data.result;
-      state.latestResultGroup = group;
-      // A fit opened read-only (the tour, or a viewer) keeps the window it was saved
-      // with, so a disposition changed from its tables re-runs the same dates.
-      state.latestResultWindow = savedOnly ? savedResultWindow(data.result) : analysisWindow;
-      renderAnalysisResult(data.result, { changedRecord });
-      refreshSummary();
-    } catch (err) {
-      if (isStale()) return;
-      // A run over all history that the data cannot support (too few failure lives,
-      // no likelihood root) also removes the result saved for that group, and the
-      // server says so: take a fit of it still on screen down, forget its window,
-      // and let the rankings drop it too. A refusal over an entered window, or any
-      // other error, leaves the saved result as it was, so the fit on screen stays,
-      // as it does in the rankings.
-      const removed = Boolean(err.payload && err.payload.result_removed);
-      if (removed && sameWeibullGroup(state.latestResultGroup, group)) {
-        if (state.latestResult) {
-          state.latestResult = null;
-          clearWorkspace();
-        }
-        state.latestResultGroup = null;
-        state.latestResultWindow = null;
-      }
-      if (changedRecord) {
-        // A fit kept on screen predates the change, so the banner says so. The
-        // summary has to catch up with the save either way.
-        const kept = state.latestResult ? ", so the fit shown is the one saved before this change" : "";
-        showBanner(
-          `The disposition for ${changedRecord.label} was saved, but the Weibull analysis could not be re-run${kept}: ${err.message}`,
-          "error"
-        );
-        refreshSummary();
-      } else {
-        showBanner(err.message, "error");
-        if (removed) refreshSummary();
-      }
-    } finally {
-      endLoading();
-    }
-  }
-
-  function confidenceIntervalText(result) {
-    const betaCi =
-      result.beta_lower_ci != null && result.beta_upper_ci != null
-        ? `${fmt(result.beta_lower_ci)} to ${fmt(result.beta_upper_ci)}`
-        : "not available";
-    const etaCi =
-      result.eta_lower_ci != null && result.eta_upper_ci != null
-        ? `${fmt(result.eta_lower_ci)} to ${fmt(result.eta_upper_ci)} hours`
-        : "not available";
-    const mttf = result.mean_time_to_failure != null ? `${fmt(result.mean_time_to_failure)} hours` : "not available";
-    return `Approx. 95% CI: beta ${betaCi}; eta ${etaCi}; MTTF ${mttf}.`;
-  }
-
-  // The probability plot's R²: how straight its Kaplan-Meier failure points lie. It
-  // checks the model rather than being part of the fit, so adjusting beta and eta
-  // leaves it where it is.
-  function fitCheckText(result) {
-    const r2 = Number(result.probability_plot_r_squared);
-    if (result.probability_plot_r_squared == null || !isFinite(r2)) {
-      return "Probability plot R²: not available (fewer than three distinct failure points).";
-    }
-    const threshold = Number(result.probability_plot_r_squared_threshold);
-    const against =
-      result.probability_plot_r_squared_threshold == null || !isFinite(threshold)
-        ? ""
-        : result.probability_plot_review
-          ? `, below the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`
-          : `, meeting the ${threshold.toFixed(3)} review threshold for ${result.failure_count} failures`;
-    return `Probability plot R² ${r2.toFixed(3)}${against}: how straight the plotted failure points lie, a check on the model rather than part of the fit.`;
-  }
-
-  // "B10 412 h · B50 741 h", each with its calendar weeks on the result's schedule.
-  function lifeMetricsText(result) {
-    const part = (label, hours) => {
-      if (hours == null || !isFinite(Number(hours))) return null;
-      const weeks = calendarWeeksText(hours, result.life_basis);
-      return `${label} ${fmt(hours)} h${weeks ? ` (${weeks})` : ""}`;
-    };
-    const parts = [
-      part("B10 life", result.b10_life),
-      part("B50 (median) life", result.b50_life),
-      part("MTTF", result.mean_time_to_failure),
-    ].filter(Boolean);
-    return parts.length ? `${parts.join(" · ")}.` : "";
-  }
-
-  // A stored UTC timestamp on the plant's clock, "2026-03-02 07:00 America/Chicago".
-  // The zone is the one the result's days were split in, so the two always agree.
-  // The window an editor chose for a saved fit, as the YYYY-MM-DD plant dates the
-  // Perform Analysis dialog takes, or null for all history to the default cutoff.
-  // The start is the first instant of its plant day. An entered cutoff ends at the
-  // next plant midnight, or at the moment of the run when its day was that day, so
-  // the second before it falls on the cutoff day either way. A default cutoff (the
-  // last import or the time of the run) is not an entered date and stays blank.
-  function savedResultWindow(result) {
-    if (!result) return null;
-    const zone = (result.life_basis && result.life_basis.time_zone) || "UTC";
-    const start = result.analysis_start ? plantDateOf(result.analysis_start, zone, 0) : "";
-    const cutoff =
-      result.analysis_cutoff_source === "USER" && result.analysis_cutoff
-        ? cutoffPlantDate(result.analysis_cutoff, "USER", zone)
-        : "";
-    return start || cutoff ? { start, cutoff } : null;
-  }
-
-  // The YYYY-MM-DD plant date of a stored UTC instant, `secondsBefore` it.
-  function plantDateOf(value, zone, secondsBefore) {
-    if (!value) return "";
-    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
-    if (isNaN(when.getTime())) return "";
-    return plantTimeText(new Date(when.getTime() - (secondsBefore || 0) * 1000).toISOString(), zone || "UTC").slice(0, 10);
-  }
-
-  // The plant day a run's cutoff falls on. An entered cutoff is stored as the next
-  // plant midnight (or the moment of the run, when its day was that day), so its day
-  // is the one the second before it falls on; any other cutoff is the day it is on.
-  function cutoffPlantDate(value, source, zone) {
-    return plantDateOf(value, zone, source === "USER" ? 1 : 0);
-  }
-
-  function plantTimeText(value, zoneName) {
-    if (!value) return "";
-    const when = new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(value)) ? "" : "Z"));
-    if (isNaN(when.getTime())) return String(value);
-    const zone = zoneName || "UTC";
-    try {
-      const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: zone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }).formatToParts(when);
-      const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
-      return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ${zone}`;
-    } catch (err) {
-      return when.toISOString().replace("T", " ").slice(0, 16) + " UTC";
-    }
-  }
-
-  const CUTOFF_SOURCE_TEXT = {
-    LAST_IMPORT: "the last completed Limble import",
-    USER: "the cutoff date entered for the run",
-    NOW: "the time of the run",
-  };
-
-  // An entered cutoff date runs to the end of that plant day, which is stored as the
-  // next day's midnight; read it back as "the end of 2025-06-30" rather than as
-  // "2025-07-01 00:00". A cutoff capped at the moment of the run keeps its time.
-  function cutoffText(result, zone) {
-    const shown = plantTimeText(result.analysis_cutoff, zone);
-    if (result.analysis_cutoff_source !== "USER" || !/ 00:00 /.test(shown)) return shown;
-    const instant = new Date(String(result.analysis_cutoff).replace(" ", "T"));
-    if (isNaN(instant.getTime())) return shown;
-    const dayBefore = plantTimeText(new Date(instant.getTime() - 60000).toISOString(), zone);
-    return `the end of ${dayBefore.slice(0, 10)} (${zone})`;
-  }
-
-  // What the lives count and the window they were built in, in one line each.
-  function resultContextLines(result) {
-    const basis = result.life_basis || {};
-    const zone = basis.time_zone || "UTC";
-    const lines = [
-      `Life basis: schedule-adjusted hours, an exposure proxy rather than run-meter hours, on ${scheduleLabel(basis)}, ` +
-        `with days split at midnight ${zone}.`,
-      `Window: ${result.analysis_start ? `from ${plantTimeText(result.analysis_start, zone)}` : "all history"} to ` +
-        `${cutoffText(result, zone) || "an unrecorded cutoff"}` +
-        `${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source] ? `, ${CUTOFF_SOURCE_TEXT[result.analysis_cutoff_source]}` : ""}.`,
-      `Lives: ${result.total_observation_count} in total, ${result.failure_count} ending in a failure and ` +
-        `${result.censored_count} right-censored (${result.pm_reset_censored_count || 0} at a PM reset, ` +
-        `${result.current_life_censored_count || 0} current life).`,
-    ];
-    if (result.grouping_level === "FAILURE_MODE") {
-      lines.push(
-        "Grouping: failure mode, the fallback for when the records cannot support one mechanism. It pools every " +
-          "mechanism under the mode, which can blur beta." +
-          (result.fallback_rationale ? ` Why not a mechanism: ${result.fallback_rationale}` : "")
-      );
-    }
-    return lines;
-  }
-
-  // Notices a result has to carry: saved under an earlier method, below the minimum
-  // failure count, days split in UTC for want of the plant zone, or lives that look
-  // like duplicate work orders.
-  function resultNotices(result) {
-    const notices = [];
-    const minimum = result.min_failure_lives || 5;
-    if (result.method_current === false) {
-      // What the current method changed since the version this result was saved under.
-      const pmScope =
-        "let a PM aimed at one mechanism restart its whole failure mode, and didn't let a PM aimed at the whole mode " +
-        "restart the mechanisms under it";
-      const changed =
-        result.method_version === "life-data-v2"
-          ? pmScope
-          : "split days at midnight UTC, dated a work order with no completed date by its start or created date, had no " +
-            `minimum failure count, and ${pmScope}`;
-      notices.push(
-        `Saved by an earlier version of GREMLIN's Weibull method (${result.method_version || "unrecorded"}), which ${changed}. ` +
-          (CAN_EDIT ? "Run it again to apply the current rules; " : "An editor has to run it again to apply the current rules; ") +
-          "it can't be reported until then."
-      );
-    }
-    if (result.method_current !== false && result.schedule_current === false) {
-      const countedOn = (result.life_basis && result.life_basis.schedule_name) || "an earlier schedule";
-      notices.push(
-        `Counted on the ${countedOn} schedule, but this asset is now on ${result.current_schedule_name || "another schedule"}, ` +
-          "so its life hours have changed. " +
-          (CAN_EDIT ? "Run it again to count them on the new schedule; " : "An editor has to run it again; ") +
-          "it can't be reported until then."
-      );
-    }
-    if (result.method_current !== false && result.schedule_current !== false && result.time_zone_current === false) {
-      const splitIn = (result.life_basis && result.life_basis.time_zone) || "UTC";
-      notices.push(
-        `Its days were split at midnight ${splitIn}, but the plant's time zone is now ${result.current_time_zone || "another zone"}, ` +
-          "so its life hours have changed. " +
-          (CAN_EDIT ? "Run it again to count them in the plant's zone; " : "An editor has to run it again; ") +
-          "it can't be reported until then."
-      );
-    }
-    if (result.meets_minimum === false) {
-      notices.push(
-        `This result rests on ${result.failure_count} lives that end in a failure; GREMLIN needs at least ${minimum} to ` +
-          "fit and report a Weibull distribution, so it is not ranked and can't be reported."
-      );
-    }
-    if (result.probability_plot_review) {
-      notices.push(
-        `The probability plot is less straight than 90% of genuine Weibull samples with ${result.failure_count} failures ` +
-          `(R² ${Number(result.probability_plot_r_squared).toFixed(3)}, review threshold ` +
-          `${Number(result.probability_plot_r_squared_threshold).toFixed(3)}). Review the population before acting on ` +
-          "beta: mixed mechanisms, a life missing its real start point, or a duplicate work order are the usual causes."
-      );
-    }
-    if (result.life_basis && result.life_basis.time_zone_warning) notices.push(result.life_basis.time_zone_warning);
-    const flagged = (result.observations || []).filter((obs) => obs.data_quality_assumption_flag).length;
-    if (flagged) {
-      notices.push(
-        `${flagged} ${flagged === 1 ? "life ends" : "lives end"} within an hour of the event before, which is what two work ` +
-          "orders for one breakdown look like. Check the flagged rows in the data table: a duplicate makes a near-zero " +
-          "life that pulls beta down."
-      );
-    }
-    return notices;
-  }
-
-  // R(t) and F(t) at an age the user enters -- the current PM interval, say -- at the
-  // beta and eta on screen: the fitted values, or the ones an editor is trying.
-  function buildTargetAgePanel(result) {
-    const input = el("input", {
-      class: "lda-input",
-      type: "number",
-      min: "0",
-      step: "50",
-      id: "lda-target-age",
-      placeholder: "Life hours, e.g. a PM interval",
-    });
-    const output = el("p", { class: "lda-age-output", "aria-live": "polite" });
-    let beta = Number(result.beta_mle);
-    let eta = Number(result.eta_mle);
-    let fitted = true;
-    function render() {
-      const age = Number(input.value);
-      if (!input.value || !isFinite(age) || age <= 0) {
-        output.textContent = "Enter an age in life hours to see the chance of surviving to it and of failing by it.";
-        return;
-      }
-      if (!(beta > 0) || !(eta > 0)) {
-        output.textContent = "Enter a positive beta and eta to evaluate an age.";
-        return;
-      }
-      const reliability = Math.exp(-Math.pow(age / eta, beta));
-      const weeks = calendarWeeksText(age, result.life_basis);
-      output.textContent =
-        `At ${fmt(age)} life hours${weeks ? ` (${weeks})` : ""}: R = ${reliability.toFixed(3)}, so about ` +
-        `${(reliability * 100).toFixed(1)}% are expected to survive to that age, and F = ${(1 - reliability).toFixed(3)} ` +
-        `to fail by it. At the ${fitted ? "fitted" : "beta and eta entered above, not the fitted"} values.`;
-    }
-    input.addEventListener("input", render);
-    render();
-    const node = el("div", { class: "lda-panel lda-age-panel", id: "lda-age-panel" }, [
-      el("h3", { text: "Reliability at an age" }),
-      el("div", { class: "lda-field" }, [el("label", { for: "lda-target-age", text: "Age (life hours)" }), input]),
-      output,
-    ]);
-    // The inputs open on the fitted values rounded to six places, so a pair that
-    // still reads as those is the fit itself, evaluated at its unrounded values.
-    const fittedText = [numericInputValue(result.beta_mle, 6), numericInputValue(result.eta_mle, 6)];
-    return {
-      node,
-      // Redraw at another beta/eta: the editor's inputs moved.
-      update(nextBeta, nextEta) {
-        fitted =
-          numericInputValue(nextBeta, 6) === fittedText[0] && numericInputValue(nextEta, 6) === fittedText[1];
-        beta = fitted ? Number(result.beta_mle) : Number(nextBeta);
-        eta = fitted ? Number(result.eta_mle) : Number(nextEta);
-        render();
-      },
-      // The age entered, for the report, or null.
-      value() {
-        const age = Number(input.value);
-        return input.value && isFinite(age) && age > 0 ? age : null;
-      },
-    };
-  }
-
-  function renderAnalysisResult(result, options) {
-    const changedRecord = (options && options.changedRecord) || null;
-    clearWorkspace();
-    // The table and the charts point at each other: clicking a plotted point highlights
-    // its data row, and clicking a data row rings that observation on the graph that
-    // plots it. The charts are built second, so the row handler reads `chartApi` when it
-    // fires rather than closing over the value it had here.
-    let chartApi = null;
-    const dataTable = buildWeibullDataTable(result, (obs) => {
-      if (chartApi) chartApi.focus(obs);
-    });
-    const eventTable = buildEventProcessingTable(result);
-    const agePanel = buildTargetAgePanel(result);
-
-    const betaInput = el("input", { class: "lda-input", type: "number", step: "0.2", min: "0.01", value: numericInputValue(result.beta_mle, 6) });
-    const etaInput = el("input", { class: "lda-input", type: "number", step: "100", min: "0.01", value: numericInputValue(result.eta_mle, 6) });
-    const reasonInput = el("input", { class: "lda-input", placeholder: "Adjustment reason based on empirical data points…" });
-
-    const charts = el("div", { class: "lda-charts" });
-    chartApi = buildAnalysisCharts(charts, result, dataTable.highlight);
-
-    function applyParameters() {
-      const beta = Number(betaInput.value);
-      const eta = Number(etaInput.value);
-      if (beta > 0 && eta > 0) chartApi.update(beta, eta);
-      agePanel.update(beta, eta);
-    }
-    betaInput.addEventListener("input", applyParameters);
-    etaInput.addEventListener("input", applyParameters);
-    // Redraw the charts at the current beta/eta on window resize.
-    state.analysisRedraw = applyParameters;
-
-    const saveAdjusted = el("button", {
-      class: "btn-primary",
-      text: "Save Adjusted Parameters",
-      onclick: () => saveAdjustedParameters(result.result_id, Number(betaInput.value), Number(etaInput.value), reasonInput.value),
-    });
-
-    const adjustRow = el("div", { class: "lda-adjust-row", id: "lda-adjust-row" }, [
-      field("Adjusted beta (±0.2)", betaInput),
-      field("Adjusted eta (±100 h)", etaInput),
-      field("Adjustment reason", reasonInput),
-      el("div", { class: "lda-field" }, [el("label", { html: "&nbsp;" }), saveAdjusted]),
-    ]);
-
-    const metrics = lifeMetricsText(result);
-    const notices = resultNotices(result);
-    const card = el("section", { class: "glass-card lda-card fade-in-up" }, [
-      el("h2", { text: "Weibull Analysis Results" }),
-      el("div", { class: "lda-result-headline" }, [
-        el("strong", { text: result.analysis_label || "Selected failure group" }),
-        el("span", { class: "lda-result-params", id: "lda-result-params", text: `MLE beta: ${fmt(result.beta_mle)}    MLE eta: ${fmt(result.eta_mle)} hours` }),
-        el("span", { class: "lda-hint", id: "lda-result-ci", text: confidenceIntervalText(result) }),
-        metrics ? el("span", { class: "lda-hint", id: "lda-result-life", text: metrics }) : null,
-        el("span", { class: "lda-hint", id: "lda-result-fit-check", text: fitCheckText(result) }),
-      ]),
-      el(
-        "div",
-        { class: "lda-result-context", id: "lda-result-context" },
-        resultContextLines(result).map((line) => el("span", { class: "lda-hint", text: line }))
-      ),
-      ...notices.map((notice) => el("p", { class: "lda-banner is-warning lda-result-notice", role: "note", text: notice })),
-      // Adjusting beta/eta and saving the adjustment are writes, so the whole row is
-      // left out for a viewer or a signed-out visitor rather than shown inert. They
-      // still get the full read-only view at the fitted MLE parameters.
-      CAN_EDIT ? adjustRow : null,
-      legend(),
-      charts,
-      el("p", {
-        class: "lda-hint",
-        text:
-          "Green lines show the MLE fit; yellow lines show approximate 95% confidence-interval fits where available. " +
-          "The red vertical line marks the current life: the schedule-adjusted hours from the most recent event to the analysis cutoff. " +
-          "The hazard and PDF panes intentionally show only the MLE curve. Hover any plotted point or the current-life line to see its task ID, life hours, start/end dates, request description, and completion notes; click it to jump to the source Weibull data row below.",
-      }),
-      agePanel.node,
-      panel("Results Interpretation Summary", buildInterpretationTable(result),
-        "Recommendations are based on beta, eta, MTTF, the approximate 95% confidence intervals for the fitted Weibull parameters, and the probability plot R².",
-        "lda-interpretation-panel"),
-      panel("Weibull Data Used for Graphs", dataTable.node,
-
-        "Rows are the lives included in the Weibull fit. White points are completed failures; red points are right-censored observations. " +
-        "Raw elapsed hours are the calendar hours between the two events; weekend and non-run hours are taken out of them to give the life hours. " +
-        "Check flags a life that ends within an hour of the event before it, a likely duplicate work order. " +
-        "Click a row to jump back up to the graph that plots it, with that observation ringed. " +
-        (CAN_EDIT
-          ? "Click a Task ID to review or change that work order's disposition; the analysis re-runs when you save it. "
-          : "") +
-        "Use the ▾ menu in any column header to sort or filter the rows.",
-        "lda-weibull-data-panel"),
-      eventTable.node,
-      // Generating the report reserves a REL report number, which is a write, so the
-      // whole section is editor-only.
-      CAN_EDIT ? buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) : null,
-
-    ]);
-    $("lda-workspace").appendChild(card);
-    // After a disposition saved from the data table, land back on that record
-    // rather than at the top of the card it was edited from. A change that took
-    // it out of this failure group leaves nothing to land on, so say so.
-    if (changedRecord && (dataTable.revealRecord(changedRecord.mappedRecordId) || eventTable.revealRecord(changedRecord.mappedRecordId))) return;
-    scrollBelowSticky(card);
-    if (changedRecord) showToast(`${changedRecord.label} is no longer part of this Weibull analysis.`, "info");
-  }
-
-  // REL-WBL-DAT-004's event processing table: every event the failure group's
-  // dispositions offered, in date order, with the note saying how it was used --
-  // including the ones left out of the timeline and why. Collapsed by default; it is
-  // the audit trail behind the data table, not something every reader needs.
-  function buildEventProcessingTable(result) {
-    const events = result.events || [];
-    const excluded = events.filter((event) => event.event_role === "EXCLUDED_EVENT").length;
-    const kindOf = (event) => (Number(event.is_failure_event) ? "wo" : Number(event.is_pm_reset_event) ? "pm" : null);
-    const columns = [
-      { label: "Seq", type: "number", get: (event) => (event.weibull_sequence_number != null ? String(event.weibull_sequence_number) : "") },
-      {
-        label: "Task ID",
-        type: "number",
-        get: (event) => (event.task_id != null ? String(event.task_id) : ""),
-        node: (event) => recordNumberCell(event.task_id, { mappedRecordId: event.mapped_record_id, kind: kindOf(event) }),
-      },
-      { label: "Work Title", cls: "lda-data-text", get: (event) => event.task_name || "" },
-      { label: "Event", get: (event) => (Number(event.is_pm_reset_event) ? "PM reset" : "Failure") },
-      { label: "Completed Date", type: "datetime", get: (event) => event.completed_date_raw || "" },
-      { label: "Note", cls: "lda-data-text", get: (event) => event.weibull_life_note || "" },
-      { label: "Check", cls: "lda-data-text lda-check", get: (event) => event.data_quality_assumption_flag || "" },
-    ];
-    const table = el("table", { class: "lda-data" });
-    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))]));
-    const tbody = el("tbody");
-    const rowByRecord = new Map();
-    events.forEach((event) => {
-      const tr = el("tr", { class: event.event_role === "EXCLUDED_EVENT" ? "is-excluded" : null }, columns.map((c) =>
-        c.node ? c.node(event) : el("td", { text: c.get(event), class: c.cls || null })
-      ));
-      if (event.mapped_record_id != null) rowByRecord.set(Number(event.mapped_record_id), tr);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    if (events.length) enableTableColumnTools(table, { columns });
-    const summaryText =
-      `Event processing table: ${events.length} ${events.length === 1 ? "event" : "events"}` +
-      (excluded ? `, ${excluded} left out of the timeline` : "");
-    const details = el("details", { class: "lda-panel lda-events", id: "lda-event-table" }, [
-      el("summary", { text: summaryText }),
-      events.length
-        ? el("div", { class: "lda-data-scroll" }, [table])
-        : el("p", { class: "lda-hint", text: "This result was saved before GREMLIN kept its events." }),
-      el("p", {
-        class: "lda-hint",
-        text:
-          "Every event this failure group's dispositions put forward, in date order. The first only starts the clock; each " +
-          "later one ends a life and starts the next. An event with no completed date, a date that can't be read, or a date " +
-          "outside the analysis window is listed but left out, and its note says which.",
-      }),
-    ]);
-    // The row a record is on, opened up and highlighted: where a disposition saved
-    // from this table lands when its record is no longer one of the lives.
-    function revealRecord(mappedRecordId) {
-      const tr = rowByRecord.get(Number(mappedRecordId));
-      if (!tr) return false;
-      details.open = true;
-      tbody.querySelectorAll("tr.is-highlight").forEach((row) => row.classList.remove("is-highlight"));
-      tr.classList.add("is-highlight");
-      tr.scrollIntoView({ behavior: "smooth", block: "center" });
-      return true;
-    }
-    return { node: details, revealRecord };
-  }
-
-  // Action bar at the bottom of the results: generates a formal Weibull report (Word
-  // .docx) with the life basis and window, the charts, the interpretation summary,
-  // the limitations and the lives themselves. A result saved under an earlier method,
-  // or resting on fewer failure lives than the minimum, can't be reported, and the
-  // bar says so rather than offering a button the server would refuse.
-  function buildReportBar(result, charts, chartApi, betaInput, etaInput, agePanel) {
-    let blocked = "";
-    if (result.method_current === false) {
-      blocked = "Run the analysis again to report it: this result was saved by an earlier version of the method.";
-    } else if (result.schedule_current === false) {
-      blocked = "Run the analysis again to report it: the asset has been moved to another schedule since this result was counted.";
-    } else if (result.time_zone_current === false) {
-      blocked = "Run the analysis again to report it: the plant's time zone has changed since this result was counted.";
-    } else if (result.meets_minimum === false) {
-      blocked = `A report needs at least ${result.min_failure_lives || 5} lives that end in a failure.`;
-    }
-    const button = el("button", {
-      class: "btn-primary",
-      type: "button",
-      text: "Generate Weibull Report",
-      disabled: Boolean(blocked),
-    });
-    button.addEventListener("click", () => generateWeibullReport(result, charts, button, chartApi, betaInput, etaInput, agePanel));
-    return el("div", { class: "lda-report-bar", id: "lda-report-bar" }, [
-      button,
-      el("p", {
-        class: "lda-hint",
-        text:
-          blocked ||
-          "Creates a formal Word report (REL-WBL-RPT-<asset>-00x.docx) for this Weibull result: the population and " +
-            "grouping level, the life basis and analysis window, the fitted values with B10, B50 and the reliability at " +
-            "the age entered above, the graphs, the interpretation summary, the limitations, and every life it rests on. " +
-            (result.grouping_level === "FAILURE_MODE"
-              ? "A failure-mode report also states why a mechanism could not be fitted instead, which it asks you for."
-              : ""),
-      }),
-    ]);
-  }
-
-  // The reason a failure-mode population was fitted rather than one of its
-  // mechanisms, which its report must state (REL-WBL-PLN-003 §8). Prefilled with
-  // the one saved for the population; resolves null when cancelled.
-  async function askFallbackRationale(result) {
-    const textarea = el("textarea", {
-      class: "lda-input lda-rationale-input",
-      id: "lda-fallback-rationale",
-      rows: "4",
-      placeholder: "e.g. The completion notes don't separate seal wear from pressure loss, so no single mechanism can be assigned.",
-    });
-    textarea.value = result.fallback_rationale || "";
-    const error = el("p", { class: "lda-modal-error", role: "alert", hidden: true });
-    return openModal({
-      title: "Why a failure mode, not a mechanism?",
-      bodyNodes: [
-        el("p", {
-          text:
-            "Failure mode is the fallback grouping, for when the records cannot support one mechanism. The report " +
-            "states why this one was fitted at mode level, and the reason is kept with the population for its next report.",
-        }),
-        el("div", { class: "lda-field" }, [el("label", { for: "lda-fallback-rationale", text: "Reason" }), textarea]),
-        error,
-      ],
-      actions: [
-        { label: "Cancel", primary: false, value: () => null },
-        {
-          label: "Generate report",
-          primary: true,
-          validate: () => {
-            const empty = !textarea.value.trim();
-            error.textContent = empty ? "Write the reason before generating the report." : "";
-            error.hidden = !empty;
-            return !empty;
-          },
-          value: () => textarea.value.trim(),
-        },
-      ],
-    });
-  }
-
-  async function generateWeibullReport(result, chartsContainer, button, chartApi, betaInput, etaInput, agePanel) {
-    if (!state.selectedAsset) {
-      showBanner("Select an Asset Number first.", "error");
-      return;
-    }
-    let fallbackRationale = null;
-    if (result.grouping_level === "FAILURE_MODE") {
-      fallbackRationale = await askFallbackRationale(result);
-      if (fallbackRationale === null || fallbackRationale === undefined) return;
-    }
-    // The report's parameter and interpretation tables come from the analyzed MLE
-    // `result`, so the embedded graphs must show that same MLE fit — not any
-    // unsaved on-screen beta/eta tweak. Redraw the charts at the MLE parameters
-    // before capturing them, then restore whatever the user had on screen.
-    if (chartApi && result && result.beta_mle > 0 && result.eta_mle > 0) {
-      chartApi.update(Number(result.beta_mle), Number(result.eta_mle));
-    }
-    // Capture each rendered chart canvas as a PNG, pairing it with its heading so
-    // the report figures match the analyzed MLE result.
-    const charts = [];
-    chartsContainer.querySelectorAll(".lda-chart-card").forEach((cardEl) => {
-      const canvas = cardEl.querySelector("canvas");
-      const heading = cardEl.querySelector("h4");
-      if (!canvas) return;
-      try {
-        charts.push({ title: heading ? heading.textContent : "", image: canvas.toDataURL("image/png") });
-      } catch (err) {
-        /* tainted canvas should not happen for locally drawn charts; skip it */
-      }
-    });
-    // Restore the on-screen charts to the user's current adjusted inputs.
-    if (chartApi) {
-      const beta = betaInput ? Number(betaInput.value) : NaN;
-      const eta = etaInput ? Number(etaInput.value) : NaN;
-      if (beta > 0 && eta > 0) chartApi.update(beta, eta);
-    }
-    if (button) button.disabled = true;
-    beginLoading("Generating Weibull report…");
-    try {
-      const filename = await postDownload(
-        `${API}/weibull-report`,
-        // Send only the saved result id (plus chart images, the age to evaluate and a
-        // failure mode's rationale); the server reloads the authoritative parameters,
-        // lives and interpretation summary from the database.
-        {
-          asset: state.selectedAsset,
-          result_id: result.result_id,
-          charts,
-          target_age_hours: agePanel ? agePanel.value() : null,
-          fallback_rationale: fallbackRationale,
-        },
-        "weibull-report.docx"
-      );
-      if (fallbackRationale) result.fallback_rationale = fallbackRationale;
-      showBanner(`Generated ${filename}.`, "success");
-    } catch (err) {
-      showBanner(err.message, "error");
-    } finally {
-      endLoading();
-      if (button) button.disabled = false;
-    }
-  }
-
-  function field(labelText, input) {
-    return el("div", { class: "lda-field" }, [el("label", { text: labelText }), input]);
-  }
-  function panel(title, body, footer, id) {
-    return el("div", { class: "lda-panel", id: id || null }, [el("h3", { text: title }), body, footer ? el("p", { class: "lda-hint", text: footer }) : null]);
-  }
-  function legend() {
-    return el("div", { class: "lda-legend", id: "lda-result-legend" }, [
-      el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#2f8f5b" }), document.createTextNode("MLE fit")]),
-      el("span", {}, [el("span", { class: "lda-swatch", style: "border-top-color:#d6a700" }), document.createTextNode("95% CI fit")]),
-      el("span", {}, [el("span", { class: "lda-dot", style: "background:#ffffff" }), document.createTextNode("Completed failure")]),
-      el("span", {}, [el("span", { class: "lda-dot", style: "background:#c0392b;border-color:#7d2b2b" }), document.createTextNode("Right-censored")]),
-      el("span", {}, [el("span", { class: "lda-vline" }), document.createTextNode("Current life")]),
-    ]);
-  }
-
-  function buildInterpretationTable(result) {
-    const rows = result.interpretation_summary || [];
-    const table = el("table", { class: "lda-interpretation" });
-    table.appendChild(el("thead", {}, [el("tr", {}, ["Metric", "Value", "Interpretation / Recommended Action"].map((h) => el("th", { text: h })))]));
-    const tbody = el("tbody");
-    if (!rows.length) {
-      tbody.appendChild(el("tr", {}, [el("td", { colspan: "3", text: "No interpretation summary is available for this Weibull result." })]));
-    }
-    rows.forEach((row) => {
-      tbody.appendChild(
-        el("tr", {}, [
-          el("td", { text: row.metric || "—" }),
-          buildInterpretationValueCell(row, result),
-          el("td", { text: row.recommendation || "—" }),
-        ])
-      );
-    });
-    table.appendChild(tbody);
-    return table;
-  }
-
-  // Value cell for one interpretation-summary row. The MTTF row adds how many calendar
-  // weeks that many life hours take on the result's own schedule: life hours exclude
-  // weekends and count each weekday at the schedule's hours, so 24 hours a day of
-  // running would overstate how soon the mean life comes round. Every other metric
-  // renders as a plain value cell.
-  function buildInterpretationValueCell(row, result) {
-    const isMttf = String(row.metric || "").trim().toUpperCase() === "MTTF";
-    const mttfHours = result ? Number(result.mean_time_to_failure) : NaN;
-    if (!isMttf || !isFinite(mttfHours) || mttfHours <= 0) {
-      return el("td", { text: row.value || "—" });
-    }
-    const weeks = calendarWeeksText(mttfHours, result.life_basis);
-    return el("td", { class: "lda-mttf-cell" }, [
-      el("span", { class: "lda-mttf-hours-value", text: row.value || `${fmt(mttfHours)} hours` }),
-      weeks
-        ? el("span", { class: "lda-mttf-duration", text: `${weeks[0].toUpperCase()}${weeks.slice(1)} on ${scheduleLabel(result.life_basis)}` })
-        : null,
-    ]);
-  }
-
-  // What a life is, in the words the data table and the report use. The stored codes
-  // predate REL-WBL-DAT-004's vocabulary, so these name the interval itself: a life
-  // that ends at a PM reset is censored there, and the current life at the cutoff.
-  const OBSERVATION_TYPE_LABELS = {
-    COMPLETED_FAILURE_LIFE: "Ends in a failure",
-    PM_RESET_CENSORED_LIFE: "Censored at a PM reset",
-    RIGHT_CENSORED_LIFE: "Censored at the cutoff (current life)",
-  };
-
-  function buildWeibullDataTable(result, onRowActivate) {
-    // Each column knows how to render its header and pull its value from an
-    // observation, so the header row and body cells can never drift apart. The
-    // Task ID / Work Title / Downtime / Request Description / Completion Notes columns
-    // come from the source CMMS work order that closed the life interval (joined in
-    // perform_weibull_analysis); they are blank for trailing current-life rows.
-    // `type` is what the column header's sort compares by: without it a date
-    // column would be ordered by the digits its text happens to start with and
-    // "10" would land before "9".
-    const columns = [
-      { label: "#", type: "number", get: (obs) => String(obs.ordered_index ?? "") },
-      { label: "Observation ID", type: "number", get: (obs) => String(obs.weibull_observation_id ?? "") },
-      {
-        label: "Task ID",
-        type: "number",
-        get: (obs) => (obs.source_task_id != null ? String(obs.source_task_id) : ""),
-        node: (obs) =>
-          recordNumberCell(obs.source_task_id, {
-            mappedRecordId: obs.source_mapped_record_id,
-            kind: observationRecordKind(obs),
-          }),
-      },
-      { label: "Work Title", cls: "lda-data-text", get: (obs) => obs.source_work_title || "" },
-      { label: "Downtime (h)", type: "number", get: (obs) => (obs.source_downtime_hours != null ? fmtFixed(obs.source_downtime_hours) : "") },
-      { label: "Type", get: (obs) => OBSERVATION_TYPE_LABELS[obs.observation_type] || obs.observation_type || "" },
-      { label: "Life Hours", type: "number", get: (obs) => fmtFixed(obs.life_hours_for_weibull) },
-      { label: "Raw Elapsed (h)", type: "number", get: (obs) => (obs.life_hours_raw_elapsed != null ? fmtFixed(obs.life_hours_raw_elapsed) : "") },
-      { label: "Excl. Weekend (h)", type: "number", get: (obs) => (obs.excluded_weekend_hours != null ? fmtFixed(obs.excluded_weekend_hours) : "") },
-      { label: "Excl. Non-run (h)", type: "number", get: (obs) => (obs.excluded_schedule_non_run_hours != null ? fmtFixed(obs.excluded_schedule_non_run_hours) : "") },
-      { label: "Failure", type: "boolean", get: (obs) => (Number(obs.failure_indicator) ? "Yes" : "No") },
-      { label: "Right Censored", type: "boolean", get: (obs) => (Number(obs.is_right_censored) ? "Yes" : "No") },
-      { label: "Start Datetime", type: "datetime", get: (obs) => obs.start_datetime || "" },
-      { label: "End/Cutoff Datetime", type: "datetime", get: (obs) => obs.end_datetime || obs.analysis_cutoff_datetime || "" },
-      { label: "Request Description", cls: "lda-data-text", get: (obs) => obs.source_request_description || "" },
-      { label: "Completion Notes", cls: "lda-data-text", get: (obs) => obs.source_completion_notes || "" },
-      {
-        label: "Failure Narrative",
-        cls: "lda-data-text",
-        get: (obs) => narrativeText(obs, "source_"),
-        node: (obs) => narrativeCell(obs, { prefix: "source_", cls: "lda-data-text" }),
-      },
-      { label: "Note", cls: "lda-data-text", get: (obs) => obs.weibull_life_note || "" },
-      { label: "Check", cls: "lda-data-text lda-check", get: (obs) => obs.data_quality_assumption_flag || "" },
-    ];
-    const table = el("table", { class: "lda-data" });
-    table.appendChild(
-      el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label, class: c.cls || null })))])
-    );
-    const tbody = el("tbody");
-    const rowByObs = new Map();
-    const rowByRecord = new Map();
-    const activate = typeof onRowActivate === "function" ? onRowActivate : null;
-    (result.observations || []).forEach((obs) => {
-      const tr = el("tr", {}, columns.map((c) =>
-        c.node ? c.node(obs) : el("td", { text: c.get(obs), class: c.cls || null })
-      ));
-      if (activate) {
-        tr.classList.add("is-clickable");
-        tr.title = "Show this observation on the graphs above";
-        // The reverse of the chart's click-to-row jump: mark the row so it stays
-        // identifiable once the viewport leaves it, then hand the observation to the
-        // charts, which ring it and scroll to the pane that plots it.
-        tr.addEventListener("click", () => {
-          markRow(tr);
-          activate(obs);
-        });
-      }
-      rowByObs.set(Number(obs.weibull_observation_id), tr);
-      if (obs.source_mapped_record_id != null) rowByRecord.set(Number(obs.source_mapped_record_id), tr);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    const tableTools = enableTableColumnTools(table, { columns });
-    const node = el("div", { class: "lda-data-scroll" }, [table]);
-    function markRow(tr) {
-      tbody.querySelectorAll("tr.is-highlight").forEach((r) => r.classList.remove("is-highlight"));
-      tr.classList.add("is-highlight");
-    }
-    function reveal(tr) {
-      // A click-to-jump from a chart point may target a row that an active column
-      // filter is hiding (e.g. filtered to Failure=Yes, then clicking a censored
-      // point). Clear the filters so the jump actually reveals the row.
-      if (tr.style.display === "none" && tableTools) tableTools.clearFilters();
-      markRow(tr);
-      tr.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    function highlight(observationId) {
-      const tr = rowByObs.get(Number(observationId));
-      if (tr) reveal(tr);
-    }
-    // The row a record closes, by the record's id. False when the record closes
-    // no row here -- it has left the failure group, or it is the group's first
-    // event, which only ever opens an interval.
-    function revealRecord(mappedRecordId) {
-      const tr = rowByRecord.get(Number(mappedRecordId));
-      if (!tr) return false;
-      reveal(tr);
-      return true;
-    }
-    return { node, highlight, revealRecord };
-  }
-
-  async function saveAdjustedParameters(resultId, beta, eta, reason) {
-    if (!(beta > 0) || !(eta > 0)) {
-      showBanner("Adjusted beta and eta must both be positive numbers.", "error");
-      return;
-    }
-    beginLoading("Saving adjusted Weibull parameters…");
-    try {
-      await postJson(`${API}/parameter-adjustment`, { result_id: resultId, beta, eta, reason });
-      showBanner("Adjusted beta and eta were saved without overwriting the MLE result.", "success");
-    } catch (err) {
-      showBanner(err.message, "error");
-    } finally {
-      endLoading();
-    }
-  }
-
-  // ---- charts ---------------------------------------------------------------
   // Size the backing store to the on-screen width and return the CSS dimensions the
   // drawing code should use. Measuring the parent (not the canvas) avoids reading a
   // stale width back from a canvas whose `width` attribute was set on a previous
@@ -6288,7 +3270,6 @@
     if (openColumnMenu) {
       openColumnMenu.remove();
       openColumnMenu = null;
-      startOwedDispositionTour();
     }
   }
   document.addEventListener("mousedown", (event) => {
@@ -6718,1621 +3699,381 @@
     };
   }
 
-  // ---- tour -----------------------------------------------------------------
-  // The page's "Show me around", driven by page_tour.js: a spotlight on one part
-  // of the page at a time and a card saying what it is for, the same as the
-  // Metrics page and the PM calendar have.
-  //
-  // Most of the page is only drawn once an asset is picked, and the Weibull
-  // results only once a mechanism is. Rather than stop at whatever is on screen,
-  // the tour does the picking: with no asset chosen, Next on the first step picks
-  // an example, and with no mechanism shown, Next on the results step shows one.
-  // So the tour is the same length however far somebody had got, and the first
-  // card says how long. Which panels it covers depends on the Analysis Type,
-  // which can't change while it is open, so each step says which type it is for
-  // and which account, rather than page_tour.js finding out from what is drawn.
-  //
-  // It opens by itself on a first visit. The part about the results offers
-  // itself as well, the first time an asset's numbers arrive on a browser that
-  // hasn't seen it, for somebody who skipped the first before it got that far.
 
-  // The asset this tour picked as its example, so the cards can say so rather
-  // than leave somebody wondering where it came from; whether there was none to
-  // pick; and whether it has shown a mechanism. All three are for the tour that
-  // is open, and start over with the next. The Disposition page's tour picks an
-  // example too, and uses the first two and what follows the same way.
-  let tourExampleAsset = null;
-  let tourNoExample = false;
-  let tourMechanismTried = false;
-  // Counts the tours started, so an answer arriving for one that has since
-  // closed can tell.
-  let tourRun = 0;
-  // Set while the example's summary loads, or on the Disposition page its
-  // editor. Those are the tour's doing, so the results or editor tour mustn't
-  // take them as a reason to offer itself -- least of all when Skip has closed
-  // the tour that picked them before they land.
-  let tourExampleLoading = false;
-
+  // ---- Show me around -------------------------------------------------------------
+  // The page draws its population, summary and results only once an asset is
+  // picked, so the tour does the picking: with no asset chosen, Next on the asset
+  // step opens an example (a population with a saved fit when there is one), and
+  // on the results step it opens that saved fit -- never running and saving one of
+  // its own. Which panels it covers depends on the Analysis Type, which can't
+  // change while it is open.
+  const ANALYSIS_TOUR_SEEN_KEY = "gremlin.analysis.tour-seen";
+  const DOCS_URL = "/standards-and-documentation/documentation";
+  const docsLink = (fragment, text) => ({ href: `${DOCS_URL}#${fragment}`, text });
   const forType = (type) => () => state.analysisType === type;
+  let tourExampleTried = false;
+  let tourFitTried = false;
 
-  function tourAssetLabel(number) {
-    const asset = state.assetByNumber.get(number);
-    return asset && asset.asset_name ? `${number} (${asset.asset_name})` : number;
+  function waitFor(test, timeout) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      (function check() {
+        if (test() || Date.now() - started > (timeout || 8000)) resolve();
+        else setTimeout(check, 80);
+      })();
+    });
   }
 
-  // Asks the server, at `url`, for the asset with the most to show and picks it
-  // the way choosing it from the list would. Resolves once its summary is on the
-  // page, or its editor on the Disposition page.
-  async function pickTourExampleAsset(url) {
-    const run = tourRun;
-    let number = null;
-    try {
-      // Not until the asset list is in: the example is looked up in it, and on
-      // the first visit after an import, loading it is what maps the records the
-      // example is chosen from. loadAssets never rejects.
-      await assetsLoaded;
-      number = (await getJson(url)).asset_number || null;
-    } catch (err) {
-      // The step says there's no example, which is all the tour can do about it.
-    }
-    // Skip stays live while this is out, and nothing covers the page, so the
-    // tour may have closed and somebody picked an asset of their own since.
-    // The page is theirs again then; an example now would undo their choice.
-    if (run !== tourRun || !window.gremlinTour.isOpen() || state.selectedAsset) return;
-    const asset = number ? state.assetByNumber.get(number) : null;
-    if (!asset) {
-      tourNoExample = true;
-      return;
-    }
-    tourExampleAsset = asset.asset_number;
-    tourExampleLoading = true;
-    try {
-      await chooseAsset(asset);
-    } finally {
-      tourExampleLoading = false;
-    }
-  }
-
-  // Whether the chosen analysis is showing a mechanism yet.
-  function tourMechanismShown() {
-    if (state.analysisType === ANALYSIS_TYPES.WEIBULL) return Boolean(state.latestResult);
-    if (state.analysisType === ANALYSIS_TYPES.TREND) return Boolean(state.selectedTrend);
-    if (state.analysisType === ANALYSIS_TYPES.PM) return Boolean(state.pmSelection);
-    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) return Boolean(state.downtimeSelection);
-    if (state.analysisType === ANALYSIS_TYPES.REPEAT) return Boolean(state.repeatData);
-    return true;
-  }
-
-  // The mechanism the tour shows: the first bar on the Pareto as it is ranked
-  // now. For PM effectiveness, which a failure mode bar opens rather than shows,
-  // the first mechanism even while the Pareto is grouped by mode. For Weibull, the
-  // first bar with a saved fit, since the tour only opens fits already saved, or
-  // failing that the first Highest-beta mechanism, every one of which is. Null when
-  // there is nothing to show.
-  function tourMechanism() {
-    const bars = paretoDisplayRows();
-    if (state.analysisType === ANALYSIS_TYPES.PM && state.paretoGroupBy === "mode") {
-      return paretoDisplayRows("mechanism")[0] || null;
-    }
-    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) return bars[0] || null;
-    const saved = (bar) => state.rankings.some((fit) => selectionMatches(bar, fit));
-    return bars.find(saved) || state.rankings[0] || null;
-  }
-
-  function tourMechanismName() {
-    const row = tourMechanism();
-    return (row && (row.failure_mechanism_name || row.failure_mode_name)) || "the top mechanism";
-  }
-
-  const TOUR_MECHANISM_ACTION = {
-    label: "Show an example ►",
-    needed: () => !tourMechanismTried && Boolean(state.selectedAsset) && !tourMechanismShown() && Boolean(tourMechanism()),
-    run: () => {
-      tourMechanismTried = true;
-      const row = tourMechanism();
-      // Clicking the bar would run and save a new fit for an editor. Showing
-      // somebody around shouldn't write anything, so it opens the saved one.
-      if (state.analysisType === ANALYSIS_TYPES.WEIBULL) return runParetoMechanism(row, { savedOnly: true });
-      return onParetoBarSelected(row);
+  const TOUR_EXAMPLE_ACTION = {
+    label: "Pick an example ►",
+    needed: () => !state.asset && !tourExampleTried,
+    run: async () => {
+      tourExampleTried = true;
+      try {
+        const data = await getJson(`${API}/tour-example`);
+        const example = data.example;
+        if (!example) return;
+        combobox.select(example.asset);
+        await waitFor(() => Boolean(state.summary) && Boolean(state.options));
+        if (example.saved_fit) {
+          await openRankedFit({ selection: example.selection });
+          await waitFor(() => Boolean(state.result) || Boolean($("lda-no-fit")));
+        }
+      } catch (err) {
+        /* the tour carries on over an empty page */
+      }
     },
   };
 
-  // Ahead of a step's own text while its button is still to show a mechanism.
-  function tourMechanismLead(what) {
-    if (!TOUR_MECHANISM_ACTION.needed()) return "";
-    const topBar = selectionMatches(tourMechanism(), paretoDisplayRows()[0]);
-    return (
-      `Show an example ${what} ${tourMechanismName()}, ` +
-      (topBar ? "the top bar on the Pareto, as if it had been clicked. " : "the top failure mechanism. ")
-    );
-  }
+  // The results step opens the fit saved for the population on screen, or for the
+  // first ranked population when this one has none.
+  const TOUR_FIT_ACTION = {
+    label: "Show a fit ►",
+    needed: () => state.analysisType === ANALYSIS_TYPES.WEIBULL && !state.result && !tourFitTried && Boolean(state.asset),
+    run: async () => {
+      tourFitTried = true;
+      const ranked = (state.summary && state.summary.rankings) || [];
+      if (ranked.length) {
+        await openRankedFit(ranked[0]);
+        await waitFor(() => Boolean(state.result) || Boolean($("lda-no-fit")));
+      }
+    },
+  };
 
-  const ANALYSIS_SETUP_TOUR_STEPS = [
+  const ANALYSIS_TOUR_STEPS = [
+    {
+      target: null,
+      title: "Perform an Analysis",
+      body:
+        "Pick an asset, narrow it to a population, and every analysis on this page reads that same population from the " +
+        "work-order dispositions: the Pareto, the trend, downtime, PM effectiveness, repeat fixes and the Weibull fit.",
+    },
     {
       target: "#lda-asset-field",
       title: "Pick an asset",
-      body: () => {
-        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
-          return (
-            `The tour has picked ${tourAssetLabel(tourExampleAsset)} as its example, being the asset with the ` +
-            "most to show, and the rest of it is about that one. To look at your own, type part of its Asset " +
-            "Number or name here and choose it from the list."
-          );
-        }
-        const how =
-          "Type part of an Asset Number or an asset's name and choose it from the list. The list is every " +
-          "asset mapped from the CMMS.";
-        if (state.selectedAsset) return how;
-        if (tourNoExample) {
-          return how + " There's no asset with failures to use as an example, so the rest of the tour describes the page instead.";
-        }
-        return how + " The rest of the page appears once one is picked, so for this tour, Pick an example chooses one for you.";
-      },
-      action: {
-        label: "Pick an example ►",
-        needed: () => !state.selectedAsset,
-        run: () => pickTourExampleAsset(`${API}/tour-example`),
-      },
+      body: () =>
+        state.asset
+          ? `Showing ${state.asset}. Its sub-assets' work orders are in reach too.`
+          : "Choose the asset to analyse. Next picks an example if you haven't.",
+      action: TOUR_EXAMPLE_ACTION,
     },
     {
       target: "#lda-type-field",
-      title: "Choose the analysis",
-      body: () =>
-        "Weibull Analysis fits a life distribution to one failure mode or mechanism. Failure Mode " +
-        "Trend counts it month by month, Downtime Driver shows where its downtime comes from, and " +
-        "PM Effectiveness how soon it fails after a PM. Repeat Fix Rate shows how often each mechanism comes " +
-        "straight back after a repair. Switching keeps the mechanism you last picked. " +
-        `The rest of this tour is about ${state.analysisType}; choose another and take the tour again for its panels.`,
-    },
-  ];
-
-  // The Documentation page. Its Analysis tab explains every part of the Weibull
-  // results at length, and a fragment naming anything on it opens it there, so
-  // each card about a part links to the section about it.
-  const DOCS_URL = "/standards-and-documentation/documentation";
-  const docsLink = (fragment, text) => ({ href: `${DOCS_URL}#${fragment}`, text });
-
-  // The Weibull fit on screen, for the cards about it to quote. Null while there
-  // is none -- there was no saved fit to show -- when they describe the parts
-  // instead.
-  function tourFit() {
-    return state.analysisType === ANALYSIS_TYPES.WEIBULL ? state.latestResult : null;
-  }
-
-  const countOf = (count, one, many) => `${count} ${Number(count) === 1 ? one : many}`;
-
-  // A beta in the interpretation summary's words, by its bands.
-  function betaReading(beta) {
-    if (beta < 0.9) return "early-life or defect-driven failures";
-    if (beta <= 1.1) return "random failures";
-    return "wear-out";
-  }
-
-  // The fit's intervals read by the interpretation summary's rules: beta's is
-  // stable no wider than 70% of beta and not crossing 1, eta's no wider than 40%
-  // of eta. Empty when the fit has neither.
-  function intervalReading(fit) {
-    const beta = Number(fit.beta_mle);
-    const eta = Number(fit.eta_mle);
-    const parts = [];
-    if (fit.beta_lower_ci != null && fit.beta_upper_ci != null && beta > 0) {
-      const lower = Number(fit.beta_lower_ci);
-      const upper = Number(fit.beta_upper_ci);
-      const share = Math.round(((upper - lower) / beta) * 100);
-      const reading =
-        lower < 1 && upper > 1
-          ? "it crosses 1, so the pattern is still uncertain"
-          : share <= 70
-            ? "no wider than 70% of beta, so the reading is stable"
-            : "wider than 70% of beta, so the reading is to be treated with caution";
-      parts.push(`beta's interval runs from ${fmt(lower)} to ${fmt(upper)}, ${share}% as wide as beta itself: ${reading}`);
-    }
-    if (fit.eta_lower_ci != null && fit.eta_upper_ci != null && eta > 0) {
-      const share = Math.round(((Number(fit.eta_upper_ci) - Number(fit.eta_lower_ci)) / eta) * 100);
-      parts.push(
-        `eta's is ${share}% as wide as eta, ` +
-          (share <= 40 ? "tight enough to plan with" : "so eta is a direction rather than a decision point")
-      );
-    }
-    return parts.length ? `Here ${parts.join("; ")}.` : "";
-  }
-
-  // The card about each part of the Weibull results, in the order they are on
-  // the page, for the tour to take one at a time once it has shown a fit. Their
-  // targets are drawn by renderAnalysisResult, so none is on the page until a fit
-  // is; `editorOnly` marks the parts a viewer doesn't get.
-  const WEIBULL_RESULT_PARTS = [
-    {
-      target: "#lda-result-params",
-      title: "Beta and eta",
-      body: () => {
-        const fit = tourFit();
-        const what =
-          "The two numbers the fit is made of. Both are maximum-likelihood estimates: the pair that makes the " +
-          "lives this population actually had the likeliest, counting a life a PM reset or the cutoff ended as " +
-          "having lasted at least that long. ";
-        if (!fit) return what + "Beta is the shape and eta the scale:";
-        return (
-          what +
-          `Here beta is ${fmt(fit.beta_mle)}, which the interpretation summary reads as ` +
-          `${betaReading(Number(fit.beta_mle))}, and eta is ${fmt(fit.eta_mle)} life hours.`
-        );
-      },
-      points: [
-        ["Beta below 1", "The risk falls with age: failures come early, from defects, setup or a poor repair. A part that has run a while is safer than a new one, so renewing it on a schedule doesn't help."],
-        ["Beta around 1", "The risk is the same at every age, so failures come at random. A fixed replacement age can't lower it; inspections or condition checks can catch a failure starting."],
-        ["Beta above 1", "Wear-out: the risk climbs with age, which an age-based PM or planned replacement can get ahead of. The higher beta, the more tightly lives bunch just below eta."],
-        ["Eta", "The age by which 63.2% of lives are expected to have ended in a failure, whatever beta is. It sets the scale: double it and every age doubles, while the curves keep their shape."],
-      ],
-      more: [
-        docsLink("weibull-distribution", "The Weibull distribution"),
-        docsLink("weibull-fit", "Fitting by maximum likelihood"),
-      ],
+      title: "Analysis type",
+      body: "Decides which views appear under the Pareto. The population stays the same when you switch, so each one reads the same work orders.",
     },
     {
-      target: "#lda-result-ci",
-      title: "How far to trust them",
-      body: () => {
-        const fit = tourFit();
-        const what =
-          "Approximate 95% confidence intervals: how far beta and eta could reasonably be from the fitted values " +
-          "on this many lives. They come from how sharply the likelihood falls away from its best, so more " +
-          "failures narrow them. ";
-        return what + ((fit && intervalReading(fit)) || "What to read in them:");
-      },
-      points: [
-        ["Does beta's cross 1?", "Then the lives fit a falling risk and a rising one alike, and the pattern isn't settled. Check whether the population mixes mechanisms, or wait for more failures, before choosing a strategy."],
-        ["How wide are they?", "Beta's is stable when it is no wider than 70% of beta, eta's when it is no wider than 40% of eta. Wider makes the reading a direction rather than a decision."],
-        ["What narrows them", "More failures. The width falls roughly with the square root of their number, so halving it takes about four times as many; about 20 make beta's stable at any beta."],
-        ["Not available", "The likelihood's curvature couldn't be worked out. Read beta and eta as directions only."],
-      ],
-      more: docsLink("weibull-ci", "Confidence intervals"),
-    },
-    {
-      target: "#lda-result-life",
-      title: "B10, B50 and MTTF",
+      target: "#lda-population-selector",
+      title: "The population",
       body:
-        "Ages read off the fitted curve, each in life hours and in the calendar weeks they take on the asset's " +
-        "schedule. A week holds five scheduled days: 100 life hours on 20 hours Monday-Friday, 120 on 24 hours " +
-        "Monday-Friday, and 168 on continuous.",
-      points: [
-        ["B10 life", "The age by which 10% are expected to have failed. For a mechanism that is wearing out, past it is where the risk climbs."],
-        ["B50 (median) life", "The age by which half are expected to have failed."],
-        ["MTTF", "The mean life, for budgeting, manpower and spares rather than for timing a PM on its own: replacing at the average life of a mechanism that isn't wearing out adds work without removing failures."],
-      ],
-      more: docsLink("weibull-metrics", "MTTF, B10, B50 and fit statistics"),
+        "Tick values to narrow it; leave a list unticked for no restriction. Location and component choose which items' " +
+        "lives are pooled -- a Weibull life is measured on one kind of item -- and mechanism, mode, cause and action choose " +
+        "which of their failures count.",
     },
     {
-      target: "#lda-result-fit-check",
-      title: "One population, or several?",
-      body: () => {
-        const fit = tourFit();
-        const what =
-          "The probability plot's R²: how straight the failure points lie on it, 1 when they sit exactly on a " +
-          "line. It checks the model rather than being part of the fit" +
-          (CAN_EDIT ? ", so trying other values of beta and eta leaves it where it is." : ".");
-        if (!fit || fit.probability_plot_r_squared == null || fit.probability_plot_r_squared_threshold == null) return what;
-        const r2 = Number(fit.probability_plot_r_squared);
-        const threshold = Number(fit.probability_plot_r_squared_threshold);
-        if (!isFinite(r2) || !isFinite(threshold)) return what;
-        return (
-          what +
-          ` Here it is ${r2.toFixed(3)}, ${fit.probability_plot_review ? "below" : "meeting"} the ` +
-          `${threshold.toFixed(3)} threshold for ${countOf(fit.failure_count, "failure", "failures")}.`
-        );
-      },
-      points: [
-        ["The review threshold", "The R² that 90% of genuine Weibull samples with as many failures reach. Few points lie less straight by chance alone, so it rises with the failure count: 0.806 at 5 failures, 0.893 at 20, 0.938 at 50."],
-        ["Below it", "Less straight than chance explains, and the result carries a notice saying so. Review the population before acting on beta: mixed mechanisms, a life missing its real start point, or a duplicate work order are the usual causes."],
-        ["At or above it", "No sign of a mixed population, but read the plot as well: a bend, or two different slopes, matters even then."],
-      ],
-      more: [
-        docsLink("weibull-r-squared", "How straight is straight enough: R²"),
-        docsLink("weibull-plot-patterns", "Shapes to look for"),
-      ],
+      target: "#lda-categories-field",
+      title: "Categories",
+      body: "Which dispositions the pattern views count: failures by default. The Weibull has its own rules for each category and ignores this.",
     },
     {
-      // With the notes under the lines, when the fit has any.
-      target: "#lda-result-context, .lda-result-notice",
-      title: "What the lives are",
-      body: () => {
-        const fit = tourFit();
-        let text = "What the fit counted, over which dates, and how each life ended.";
-        if (fit) {
-          text +=
-            ` Here there are ${countOf(fit.total_observation_count, "life", "lives")}: ` +
-            `${countOf(fit.failure_count, "ends", "end")} in a failure and ` +
-            `${countOf(fit.censored_count, "is", "are")} right-censored.`;
-        }
-        if (fit && document.querySelector(".lda-result-notice")) {
-          text += " The notes under them say what to check before relying on this fit, and why.";
-        }
-        return text;
-      },
-      points: () => {
-        const fit = tourFit();
-        const points = [
-          ["Life basis", "Schedule-adjusted hours on the asset's Weibull schedule, an exposure proxy rather than run-meter hours. A weekend adds nothing on a weekday schedule, and each weekday counts at its scheduled hours, with days split at the plant's midnight."],
-          ["Window", "All history, or the start and cutoff dates the run was given, and where the cutoff came from: the last completed Limble import, the date entered, or the time of the run."],
-          ["Lives", "Each stretch between two events is one life, and the first event only starts the clock. A life that ends in a failure is complete. One a PM reset ended, and the current life still running at the cutoff, are right-censored: known only to have lasted at least that long, which the fit counts rather than drops."],
-        ];
-        if (!fit || fit.grouping_level === "FAILURE_MODE") {
-          points.push(["Grouping", "Shown for a failure mode, the fallback when the records can't support one mechanism. It pools every mechanism under the mode, which can blur beta."]);
-        }
-        return points;
-      },
-      more: [
-        docsLink("weibull-intervals", "Events, life intervals and censoring"),
-        docsLink("weibull-life-hours", "Schedule-adjusted life hours"),
-        docsLink("weibull-window", "The analysis window"),
-      ],
+      target: "#lda-dates",
+      title: "From and To",
+      body: "Every view counts only work orders found in the range, and a Weibull run takes the dates as its start and cutoff.",
     },
     {
-      target: "#lda-adjust-row",
-      title: "Try other values",
-      editorOnly: true,
-      body:
-        "Type another beta or eta and the charts and the reliability at an age redraw as you type; the arrows " +
-        "step beta by 0.2 and eta by 100 hours. Save Adjusted Parameters keeps the pair, with the reason you " +
-        "give, beside the fitted result, never in its place. A saved pair lasts until the group is run again, " +
-        "these boxes always open on the fitted values, and the report is always at the fitted values too.",
-      more: docsLink("weibull-saving", "Adjusting, saving and reporting"),
+      target: "#lda-drill",
+      title: "Where you are",
+      body: "Each narrowing as a chip that takes it back out, Back to undo the last drill, and Start over.",
     },
     {
-      target: "#lda-result-legend",
-      title: "Four views of one fit",
-      body:
-        "The four charts under this key, the probability plot, the CDF, the probability density and the " +
-        "hazard rate, are the same fitted curve drawn four ways, so they always agree; each makes a different " +
-        "question easy to answer. The key holds for all four:",
-      points: [
-        ["Green", "The fitted curve, at the maximum-likelihood beta and eta" + (CAN_EDIT ? ", or at the values you are trying." : ".")],
-        ["Yellow", "The curve at the low ends of both 95% intervals, and again at the high ends: how far it could reasonably move on this much data. On the probability plot and the CDF only."],
-        ["White points", "Kaplan-Meier estimates, one where each complete life ends: what the lives themselves say, not the fit."],
-        ["Red points", "Lives a PM reset ended, on the CDF only, placed on the curve at their age."],
-        ["Red line", "The current life: the scheduled hours from the last event to the analysis cutoff."],
-        ["Hover and click", "Hover a point or the red line for its work order, and click it to jump to its row in the data table further down."],
-      ],
-      more: docsLink("weibull-charts", "The four charts"),
+      target: "#lda-pop-string",
+      title: "The population definition",
+      body: "The population as one line, the way a saved Weibull run keeps it, so a result can always be traced to exactly what it read.",
     },
     {
-      target: "#lda-chart-prob",
-      title: "Weibull Probability Plot",
-      body:
-        "The fitted curve straightened: ln(−ln R) against ln(life hours), on which any Weibull is a straight " +
-        "line. It is where to judge whether one Weibull describes these lives at all.",
-      points: [
-        ["The slope is beta", "Steep means failures bunched in a narrow band of ages, shallow means spread from very early to very late. The axes aren't drawn to equal scales, so read beta from the result rather than the angle."],
-        ["Eta", "Where the line crosses zero, which is 63.2% failed."],
-        ["The points", "The check on the model. Points scattered either side of one straight line support one population; the first few wander most, each being one failure among few lives."],
-        ["Shapes to look for", "Two steep lines with a jump between them: two mechanisms pooled. One point far to the left dragging the line flat: a duplicate work order. Points bending over, steep then flatter: a failure-free period the two-parameter fit can't describe."],
-      ],
-      more: [
-        docsLink("weibull-probability-plot", "Weibull Probability Plot"),
-        docsLink("weibull-plot-patterns", "Shapes to look for"),
-      ],
-    },
-    {
-      target: "#lda-chart-cdf",
-      title: "CDF",
-      body:
-        "The share of lives expected to have ended in a failure by each age, rising from 0 toward 1. Read up " +
-        "from an age to the green curve and across for that share; read across from a share and down for an " +
-        "age: 10% gives B10, 50% gives B50, and 63.2% gives eta.",
-      points: [
-        ["White points", "The Kaplan-Meier share failed at each failure age, a step up at each failure. The green curve should run through the middle of them."],
-        ["Red points", "Where in the distribution the PM resets came. They estimate nothing: a PM reset is not a failure."],
-        ["Red line", "The green curve's height where it crosses is the share that would have failed by the age the current life has reached. Most likely to fail soon turns that into the chance of a failure in the next few weeks."],
-      ],
-      more: [
-        docsLink("weibull-cdf", "CDF"),
-        docsLink("weibull-km-points", "The points: Kaplan-Meier estimates"),
-      ],
-    },
-    {
-      target: "#lda-chart-pdf",
-      title: "Probability Density (PDF)",
-      body:
-        "How thickly failures fall at each age. The area under it between two ages is the share of lives that " +
-        "end in a failure between them, and its peak is the commonest age at failure. It is drawn from the fit " +
-        "alone, with no points and no interval curves.",
-      points: [
-        ["Beta below 1", "Highest at age 0 and falling steeply, with a long tail of lives that run long."],
-        ["Beta of 1", "Highest at 0 too, falling away exponentially."],
-        ["Beta above 1", "A hump. The higher beta, the narrower it is and the closer its peak comes to eta."],
-        ["Narrow or wide", "A narrow hump means most lives end within a narrow band of ages, which is what makes a fixed PM interval worth setting. A wide one means any fixed interval either renews many parts long before they would fail or lets many fail first."],
-      ],
-      more: docsLink("weibull-pdf", "Probability Density (PDF)"),
-    },
-    {
-      target: "#lda-chart-hazard",
-      title: "Hazard Rate",
-      body:
-        "For a part that has run so many hours without failing, how fast failure is coming at it now. It is " +
-        "the chart that answers the PM question directly:",
-      points: [
-        ["Falling", "Beta below 1: the longer a part has run, the safer it is. Renewing it on a schedule restarts the risky early hours; removing the defects behind them is the better aim."],
-        ["Level", "Beta of 1: the same risk at every age. A schedule can't lower it; inspection or condition monitoring that catches a failure starting can."],
-        ["Rising", "Beta above 1: renewing the part before the risk climbs too far lowers it, and where the curve starts to climb steeply is where an interval is worth weighing against downtime and cost."],
-        ["Compare shapes", "Its height depends on eta as well as beta, so between two fits compare its shape, not its scale."],
-      ],
-      more: docsLink("weibull-hazard", "Hazard Rate"),
-    },
-    {
-      target: "#lda-age-panel",
-      title: "Reliability at an age",
-      body:
-        "Enter an age in life hours, such as a PM interval you're weighing, for R, the share expected to " +
-        "survive to it, and F, the share expected to fail by it: with a PM at that interval, F is the share " +
-        "expected to fail before the PM comes round." +
-        (CAN_EDIT ? " It uses the fitted values, or the beta and eta you are trying, and says which." : ""),
-      more: docsLink("weibull-metrics", "Reliability at an age"),
-    },
-    {
-      target: "#lda-interpretation-panel",
-      title: "What it means",
-      body:
-        "Beta, eta, MTTF, the two intervals and R², each turned into a reading and a suggested direction by " +
-        "fixed rules: beta below 0.9 is early-life, 0.9 to 1.1 random, above 1.1 wear-out. It reads each " +
-        "number on its own, so put them together by asking, in order:",
-      points: [
-        ["Is it one population?", "R² against its threshold, and the shape of the probability plot. If not, fix the population, by fitting a mechanism or reviewing a duplicate, before reading anything else."],
-        ["Which side of 1 is beta?", "And does its interval stay there? That chooses the strategy: removing defects below 1, detection at 1, renewal by age above it."],
-        ["How wide are the intervals?", "Wide ones make the reading a direction rather than a decision."],
-        ["Where is the current life?", "Against B10 and eta on the CDF: a wear-out mechanism whose current life is past B10 is already where its risk climbs."],
-        ["How soon is a failure likely?", "Most likely to fail soon ranks this asset's mechanisms by the chance of one in the next few weeks."],
-      ],
-      more: [
-        docsLink("weibull-interpretation", "Reading the result"),
-        docsLink("weibull-lab", "Try it in the Weibull lab"),
-      ],
-    },
-    {
-      target: "#lda-weibull-data-panel",
-      title: "The lives behind it",
-      body: () => {
-        const fit = tourFit();
-        const flagged = fit ? (fit.observations || []).filter((obs) => obs.data_quality_assumption_flag).length : 0;
-        return (
-          "One row per life in the fit: what ended it, its life hours, the raw elapsed hours between its two " +
-          "events and the weekend and non-run hours taken out of them, and the work order that closed it." +
-          (flagged ? ` Here ${countOf(flagged, "life is", "lives are")} flagged in the Check column.` : "")
-        );
-      },
-      points: () => [
-        ["Check", "Flags a life that ends within an hour of the event before it, which is what two work orders for one breakdown look like. A near-zero life pulls beta below 1, so look at each one: it is flagged, not removed."],
-        ["Rows and points", "Click a row to ring its point on the chart that plots it, and a point to come back to its row."],
-        ...(CAN_EDIT
-          ? [["Task ID", "Opens that work order's disposition. Saving a change runs the analysis again with it."]]
-          : []),
-        ["▾", "Every column header sorts or filters the rows."],
-      ],
-      more: docsLink("weibull-chart-links", "From a point to its work order"),
-    },
-    {
-      target: "#lda-event-table",
-      title: "Every event, used or not",
-      body:
-        "Closed until opened: every event this group's dispositions put forward, in date order, with a note " +
-        "saying how it was used. The first only starts the clock, and each later one ends a life and starts " +
-        "the next. One with no completed date, a date that can't be read, or a date outside the analysis " +
-        "window is listed but left out, and its note says which.",
-      more: docsLink("weibull-intervals", "Events, life intervals and censoring"),
-    },
-    {
-      target: "#lda-report-bar",
-      title: "Generate Weibull Report",
-      editorOnly: true,
-      body:
-        "A Word report numbered REL-WBL-RPT, the asset number and a running number, at the fitted values: the " +
-        "population, the life basis and window, beta, eta, MTTF, B10 and B50 with their intervals and the " +
-        "reliability at the age entered above, the four charts, the interpretation summary, the limitations, " +
-        "and every life it rests on. A fit saved under an earlier method or schedule, or resting on fewer than " +
-        "five lives that end in a failure, has to be run again first, and the bar says so.",
-      more: docsLink("weibull-saving", "Adjusting, saving and reporting"),
-    },
-  ];
-
-  // The parts this account gets, numbered among themselves on each card. Each
-  // is for Weibull Analysis, being part of its results.
-  const WEIBULL_RESULT_TOUR_STEPS = WEIBULL_RESULT_PARTS.filter((part) => CAN_EDIT || !part.editorOnly).map(
-    (part, index, parts) => ({
-      ...part,
-      label: `Reading the fit, ${index + 1} of ${parts.length}`,
+      target: "#lda-summary-grid",
+      title: "Readiness",
+      body: "How far the work orders in reach have got: how many are dispositioned, how many failures the population has, and how many still have no component, which keeps them out of every life.",
       when: forType(ANALYSIS_TYPES.WEIBULL),
-    })
-  );
-
-  const ANALYSIS_RESULTS_TOUR_STEPS = [
-    {
-      target: "#lda-weibull-summary",
-      title: "Is there enough to fit?",
-      when: forType(ANALYSIS_TYPES.WEIBULL),
-      body:
-        "How many records this asset has, how many work orders and PMs a Weibull fit can use, and " +
-        "how many are still to be dispositioned. A record is only usable once it has been " +
-        "dispositioned as an included failure or an approved PM reset, and a fit needs at least five " +
-        "lives that end in a failure.",
-      more: docsLink("common-readiness", "The Weibull readiness summary"),
-    },
-    {
-      target: "#lda-trend-summary",
-      title: "Trends at a glance",
-      when: forType(ANALYSIS_TYPES.TREND),
-      body:
-        "The mechanisms with the most work orders and the most downtime on this asset, and the ones " +
-        "growing fastest and improving most. Growth compares the last three months with the three " +
-        "before, so it needs at least six months of data.",
-    },
-    {
-      target: "#lda-pm-summary",
-      title: "PM effectiveness at a glance",
-      when: forType(ANALYSIS_TYPES.PM),
-      // These cards are empty until a mechanism is picked, so the example is
-      // shown here rather than on the chart further down.
-      action: TOUR_MECHANISM_ACTION,
-      body: () =>
-        tourMechanismLead("shows") +
-        "For the selected mechanism: how many PMs were done, how many were followed by a failure, " +
-        "the average days from a PM to that failure, and a rating for how well the PM holds it off.",
-    },
-    {
-      target: "#lda-downtime-summary",
-      title: "Downtime at a glance",
-      when: forType(ANALYSIS_TYPES.DOWNTIME),
-      // Empty until a mechanism is picked, as PM's are.
-      action: TOUR_MECHANISM_ACTION,
-      body: () =>
-        tourMechanismLead("shows") +
-        "For the selected mechanism: its total, average, median and longest downtime, and how many " +
-        "work orders it came from.",
-    },
-    {
-      target: "#lda-repeat-summary",
-      title: "Repeat fixes at a glance",
-      when: forType(ANALYSIS_TYPES.REPEAT),
-      body:
-        "How often a failure on this asset came back within the repeat window of the last one of the same " +
-        "mechanism, which says the repair did not hold. Highest Rate only ranks mechanisms with enough gaps " +
-        "between failures for the rate to mean something, and a possible duplicate is a repeat that closed " +
-        "within an hour, worth checking is not the same breakdown recorded twice.",
+      more: docsLink("common-readiness", "Readiness, in the documentation"),
     },
     {
       target: "#lda-beta-panel",
-      title: "Highest-beta mechanisms",
+      title: "Highest beta",
+      body: "Saved fits of one-component populations, strongest wear-out first: where an age-based PM is most likely to pay off. Click one to open it.",
       when: forType(ANALYSIS_TYPES.WEIBULL),
-      body:
-        "Where an age-based PM is most likely to pay off: the five mechanisms with the highest beta in their " +
-        "last saved Weibull fit, counting only fits with at least five failure lives. A beta above 1 means " +
-        "failures get likelier with age, which a PM can get ahead of; below 1 points to early-life failures.",
-      more: docsLink("common-beta", "Highest-beta mechanisms"),
+      more: docsLink("common-beta", "Beta rankings, in the documentation"),
     },
     {
       target: "#lda-risk-panel",
       title: "Most likely to fail soon",
+      body: "The same fits by the chance one of their items in service fails within the weeks you choose, given how long each has run.",
       when: forType(ANALYSIS_TYPES.WEIBULL),
-      body:
-        "What needs attention before the next planning cycle: the same saved fits, ranked by the chance the " +
-        "current life ends in a failure within the weeks in the box (four unless you change it), given how " +
-        "long it has already run.",
-      more: docsLink("common-risk", "Most likely to fail soon"),
+      more: docsLink("common-risk", "Risk rankings, in the documentation"),
     },
     {
       target: "#lda-pareto-panel",
-      title: "Failure Pareto",
-      body: () =>
-        (state.paretoGroupBy === "mode"
-          ? "Each bar is a failure mode, with every mechanism under it added up; Group by Failure mechanism " +
-            "splits them out. "
-          : "Each bar is a failure mechanism; Group by Failure mode adds up the mechanisms under each mode. ") +
-        "Bars run largest first by downtime hours or failure count, whichever Rank by is set to, and the " +
-        "line is the running share of the total. From and To narrow it, and the analysis below, to the " +
-        "failures whose work order date falls between them. Hover a bar for its numbers, and click it to " +
-        paretoClickHint(state.paretoGroupBy === "mode") +
-        ".",
-    },
-    {
-      target: "#lda-actions",
-      title: "Run it, or tidy the data first",
+      title: "Pareto",
       body:
-        "Perform Analysis picks a failure mode or mechanism from a list rather than the chart. " +
-        "Disposition Work Orders and Disposition PMs open this asset's records on the Disposition " +
-        "page, to classify them before analysing.",
-      // The bar stays on screen for a viewer, with its buttons hidden.
-      when: () => CAN_EDIT,
+        "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a bar to " +
+        "narrow the population to it: a location opens into its components, a component into its mechanisms.",
     },
     {
-      target: "#lda-workspace",
-      title: "Weibull results",
-      when: forType(ANALYSIS_TYPES.WEIBULL),
-      action: TOUR_MECHANISM_ACTION,
-      body: () => {
-        if (TOUR_MECHANISM_ACTION.needed()) {
-          return (
-            "Clicking a bar on the Pareto opens its Weibull fit here, under the chart. Show an example opens " +
-            `the fit already saved for ${tourMechanismName()}.`
-          );
-        }
-        if (!state.latestResult) {
-          return (
-            "Clicking a bar on the Pareto " +
-            (CAN_EDIT ? "runs a Weibull fit on it" : "opens the fit last saved for it") +
-            ", and the results appear under the chart: beta and eta with their confidence bounds, the " +
-            "fitted curves, what they mean, and the data behind them. A fit needs at least five lives " +
-            "that end in a failure. The next cards describe each part of them."
-          );
-        }
-        return (
-          `The fit for ${state.latestResult.analysis_label || tourMechanismName()}: what was fitted and how ` +
-          "well, the four charts, what it all means, and the data behind it, down to every event left out " +
-          "and why. The next cards take each part in turn, and each links to where the Weibull " +
-          "documentation explains it in full."
-        );
-      },
-      more: docsLink("analysis-weibull", "Weibull life data analysis"),
+      target: "#lda-matrix-panel",
+      title: "Where it happens",
+      body: "The population by location and component. Click a cell to narrow to that item at that location.",
     },
-    ...WEIBULL_RESULT_TOUR_STEPS,
     {
       target: "#lda-trend-chart-panel",
-      title: "The trend",
+      title: "Failure trend",
+      body: "Work orders per month in the population; click a month to list its work orders below. The cards above name what grew and what improved.",
       when: forType(ANALYSIS_TYPES.TREND),
-      action: TOUR_MECHANISM_ACTION,
-      body: () =>
-        tourMechanismLead("charts") +
-        "Work orders a month for the selected mechanism. From and To narrow the months. The table " +
-        "under it has the same numbers, and clicking a month there lists only that month's work " +
-        "orders in the table after it.",
+    },
+    {
+      target: "#lda-trend-wo-panel",
+      title: "The work orders behind it",
+      body: () => "Every work order the trend counts." + RECORD_EDIT_HINT,
+      when: forType(ANALYSIS_TYPES.TREND),
     },
     {
       target: "#lda-pm-chart-panel",
-      title: "Failures following PM",
+      title: "Failures following a PM",
+      body: "Each completed PM at the population's locations paired with the next failure found there. Short gaps mean the PM is not preventing that failure.",
       when: forType(ANALYSIS_TYPES.PM),
-      action: TOUR_MECHANISM_ACTION,
-      body: () =>
-        tourMechanismLead("shows") +
-        "Failures of the selected mechanism that came after a completed PM, month by month. From " +
-        "and To narrow the months, and the table under it pairs each PM with the failure that " +
-        "followed it.",
+    },
+    {
+      target: "#lda-pm-table-panel",
+      title: "PM-to-failure detail",
+      body: () => "One row per PM followed by a failure, with the days between." + RECORD_EDIT_HINT,
+      when: forType(ANALYSIS_TYPES.PM),
     },
     {
       target: "#lda-repeat-rate-panel",
-      title: "Repeat fix rate by mechanism",
+      title: "Repeat fix rate",
+      body: "Item by item, how often a failure came back within the window of the previous repair being finished: the fix did not hold.",
       when: forType(ANALYSIS_TYPES.REPEAT),
-      body:
-        "Each mechanism's failures, the gaps between them, and how many of those gaps were within the " +
-        "window, in scheduled hours on the asset's Weibull schedule just as a Weibull life is counted, so a " +
-        "weekend does not hide a repeat. Change the hours in the box to widen or narrow it. The table under " +
-        "it lists every repeat with the failure before it; click a row here or a Pareto bar to see one " +
-        "mechanism's.",
+    },
+    {
+      target: "#lda-repeat-pairs-panel",
+      title: "The repeats",
+      body: "Each repeat with the fix before it. A gap under an hour is flagged: it is what a duplicate work order looks like.",
+      when: forType(ANALYSIS_TYPES.REPEAT),
     },
     {
       target: "#lda-downtime-trend-panel",
-      title: "Where the downtime comes from",
+      title: "Downtime over time",
+      body: "The population's downtime hours per month.",
       when: forType(ANALYSIS_TYPES.DOWNTIME),
-      action: TOUR_MECHANISM_ACTION,
+    },
+    {
+      target: "#lda-downtime-dist-panel",
+      title: "Short stops or long ones",
+      body: "Work orders by length of stop: many short stops call for a different fix than a few long ones.",
+      when: forType(ANALYSIS_TYPES.DOWNTIME),
+    },
+    {
+      target: "#lda-downtime-events-panel",
+      title: "The biggest stops",
+      body: () => "The ten work orders with the most downtime." + RECORD_EDIT_HINT,
+      when: forType(ANALYSIS_TYPES.DOWNTIME),
+    },
+    {
+      target: "#lda-perform",
+      title: CAN_EDIT ? "Perform Analysis" : "Preview the fit",
+      body: CAN_EDIT
+        ? "Builds the population's lives item by item, fits a 2-parameter Weibull, and saves the run with its population definition. Pick one component, and a mechanism, first."
+        : "Builds and fits the population's lives without saving anything. An editor saves runs, which the rankings and reports read.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+    },
+    {
+      target: "#lda-workspace",
+      title: "The Weibull results",
       body: () =>
-        tourMechanismLead("breaks down") +
-        "Downtime a month for the selected mechanism. Below it: how long its outages run, which " +
-        "assets or locations they hit, and the ten work orders with the most downtime.",
-    },
-  ];
-
-  const ANALYSIS_TOUR_END_STEPS = [
-    {
-      target: "#analysis-tour-btn",
-      title: "Come back any time",
-      body: () => {
-        const again = "The tour only opens by itself once. Press Show me around to take it again.";
-        const docs =
-          state.analysisType === ANALYSIS_TYPES.WEIBULL
-            ? " The Weibull documentation goes through every number on these cards, and its lab fits lives you type in."
-            : "";
-        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
-          return `${tourExampleAsset} stays selected from the tour; pick your own in the Asset Number box whenever you like. ${again}${docs}`;
-        }
-        if (state.selectedAsset) return again + docs;
-        return "Pick an asset and press Show me around again to see each of those parts on the page." + docs;
-      },
-      more: () =>
-        state.analysisType === ANALYSIS_TYPES.WEIBULL
-          ? [docsLink("analysis-weibull", "Weibull life data analysis"), docsLink("weibull-lab", "The Weibull lab")]
-          : null,
-    },
-  ];
-
-  const ANALYSIS_TOUR_SEEN_KEY = "gremlin.analysis.tour-seen";
-  const ANALYSIS_RESULTS_TOUR_SEEN_KEY = "gremlin.analysis.results-tour-seen";
-  // Set while the tour hands focus back to the Asset Number box, which would
-  // otherwise open its list over the page as if it had been clicked into.
-  let quietAssetFocus = false;
-
-  function onAssetFocus() {
-    if (!quietAssetFocus) openAssetDropdown();
-  }
-
-  function tourReturnFocus(node) {
-    quietAssetFocus = node === $("lda-asset");
-    try {
-      node.focus();
-    } finally {
-      quietAssetFocus = false;
-    }
-  }
-
-  // Anything on screen a tour mustn't open over by itself: another tour or a
-  // dialog, this page's own modals, the loading veil, or the asset list open
-  // under somebody who is still choosing.
-  function analysisTourBlocked() {
-    return (
-      window.gremlinTour.busy() ||
-      Boolean(document.querySelector(".lda-modal-backdrop")) ||
-      !$("lda-loading").hidden ||
-      state.assetDropdownOpen
-    );
-  }
-
-  function startAnalysisTour(steps, seenKey) {
-    if (window.gremlinTour.isOpen()) return;
-    closeAssetDropdown();
-    tourRun += 1;
-    tourExampleAsset = null;
-    tourNoExample = false;
-    tourMechanismTried = false;
-    window.gremlinTour.start(steps.concat(ANALYSIS_TOUR_END_STEPS), {
-      seenKey,
-      pinned: [".topbar", "#lda-step1-card"],
-      returnFocus: tourReturnFocus,
-      // A page tour that got as far as the results, with an asset to show them
-      // on, has covered what the results tour would, so that one needn't offer
-      // itself as well.
-      onEnd: (reached) => {
-        if (state.selectedAsset && reached.some((step) => ANALYSIS_RESULTS_TOUR_STEPS.includes(step))) {
-          window.gremlinTour.remember(ANALYSIS_RESULTS_TOUR_SEEN_KEY);
-        }
-      },
-    });
-  }
-
-  function startAnalysisPageTour() {
-    startAnalysisTour(ANALYSIS_SETUP_TOUR_STEPS.concat(ANALYSIS_RESULTS_TOUR_STEPS), ANALYSIS_TOUR_SEEN_KEY);
-  }
-
-  // First visit on this browser, once the Asset Numbers are in, so the hint
-  // under the box says how many there are rather than that they're loading. Not
-  // if somebody has already started picking one: the tour would take the box
-  // from under them. It stays unseen for next time.
-  function offerAnalysisPageTour() {
-    if (window.gremlinTour.seen(ANALYSIS_TOUR_SEEN_KEY)) return;
-    const input = $("lda-asset");
-    if (input.value.trim() || document.activeElement === input) return;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (!analysisTourBlocked()) startAnalysisPageTour();
-      })
-    );
-  }
-
-  // The first time an asset's numbers land, on a browser that has seen neither
-  // this nor a page tour with an asset picked. Two frames, so the Pareto has
-  // taken its size before the spotlight goes round it. Anything in the way
-  // just means it offers itself again the next time numbers land.
-  function offerAnalysisResultsTour() {
-    if (!window.gremlinTour || window.gremlinTour.seen(ANALYSIS_RESULTS_TOUR_SEEN_KEY)) return;
-    if (tourExampleLoading) return;
-    if (analysisTourBlocked()) return;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (!state.selectedAsset || analysisTourBlocked()) return;
-        startAnalysisTour(ANALYSIS_RESULTS_TOUR_STEPS, ANALYSIS_RESULTS_TOUR_SEEN_KEY);
-      })
-    );
-  }
-
-  function wireAnalysisTour() {
-    const button = $("analysis-tour-btn");
-    if (!button || !window.gremlinTour) return;
-    button.addEventListener("click", startAnalysisPageTour);
-  }
-
-  // The Disposition page's "Show me around", on the same engine: the page's
-  // purpose and the Step 1 controls, then the editor under them -- what the table
-  // holds, how a row is filled in, and the ways to save it. The editor is only
-  // drawn once an asset is picked, so the tour does the picking, as it does on
-  // Perform an Analysis: with no asset chosen, Next on the Asset Number step
-  // picks an example, the asset with the most rows for the Record Type, Rows and
-  // search showing, and draws its editor. That only reads; nothing is saved. The
-  // editor part offers itself the first time an editor is drawn on a browser that
-  // hasn't seen it, which is also when the whole tour offers itself if the page
-  // was opened with an asset already picked -- the Disposition buttons on Perform
-  // an Analysis do that.
-
-  // The records the table shows, as Record Type, Rows and the search have it,
-  // for the cards that name them.
-  function dispositionRecordWords() {
-    const records =
-      (state.dispositionScope === "new" ? "undispositioned " : "") +
-      (state.dispositionKind === "pm" ? "PM reset events" : "work orders");
-    return state.dispositionSearch ? `${records} matching "${state.dispositionSearch}"` : records;
-  }
-
-  // Applies a search still waiting out its debounce; initDispositionPage sets it.
-  // The example is chosen for the search in the box, and one landing after it
-  // would reload the example's table for rows it wasn't chosen for.
-  let flushDispositionSearch = () => Promise.resolve();
-
-  // Where the tour asks for its example: the Step 1 controls as they stand, so
-  // the table it draws has rows in it.
-  function dispositionTourExampleUrl() {
-    const params = new URLSearchParams({ kind: state.dispositionKind, scope: state.dispositionScope });
-    if (state.dispositionSearch) params.set("search", state.dispositionSearch);
-    return `${API}/disposition-tour-example?${params.toString()}`;
-  }
-
-  const DISPOSITION_SETUP_TOUR_STEPS = [
-    {
-      target: "#lda-disp-intro",
-      title: "What dispositioning is for",
-      body:
-        "Dispositioning says what each of an asset's work orders and PMs was, and whether a Weibull " +
-        "fit may use it. Perform an Analysis only counts records dispositioned here. Skip or Esc ends " +
-        "this tour at any time.",
+        state.result
+          ? `The fit of ${state.result.analysis_label}: ${state.result.failure_count} failures among ${state.result.total_observation_count} lives.`
+          : "A saved fit of the population shows here, with everything it rests on.",
+      action: TOUR_FIT_ACTION,
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      more: docsLink("analysis-weibull", "The Weibull analysis, in the documentation"),
     },
     {
-      target: "#lda-asset-field",
-      title: "Pick an asset",
-      body: () => {
-        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
-          return (
-            `The tour has picked ${tourAssetLabel(tourExampleAsset)} as its example, being the asset with the ` +
-            `most ${dispositionRecordWords()} to show, and the rest of it is about that one's records. To ` +
-            "disposition your own, type part of its Asset Number or name here and choose it from the list."
-          );
-        }
-        const how =
-          "Type part of an Asset Number or an asset's name and choose it from the list. The Disposition " +
-          "buttons on Perform an Analysis open this page with their asset already picked.";
-        if (state.selectedAsset) return how;
-        if (tourNoExample) {
-          return (
-            how +
-            ` There's no asset with ${dispositionRecordWords()} to use as an example, so the rest of the tour ` +
-            "describes the page instead."
-          );
-        }
-        return how + " Its records appear below once one is picked, so for this tour, Pick an example chooses one for you.";
-      },
-      action: {
-        label: "Pick an example ►",
-        needed: () => !state.selectedAsset,
-        run: async () => {
-          // No asset is picked, so there are no unsaved rows for it to ask about.
-          await flushDispositionSearch();
-          return pickTourExampleAsset(dispositionTourExampleUrl());
-        },
-      },
+      target: "#lda-result-pop",
+      title: "What it read",
+      body: "The population definition this run kept: the same line in the report, so the result can be reproduced.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
     },
     {
-      target: "#lda-disp-kind-field",
-      title: "Work orders or PMs",
-      body:
-        "Work Orders are the corrective jobs: say whether each was a failure, and of which failure " +
-        "mode and mechanism. PM Reset Events are completed PMs: say whether each one renewed the " +
-        "asset against a failure mode, which starts that mode's clock again in the fit.",
+      target: "#lda-result-warnings",
+      title: "Validity warnings",
+      body: "What could make the fit mislead: mixed components or mechanisms, too few failures, unknown mechanisms, induced failures, records still to code.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
     },
     {
-      target: "#lda-disp-scope-field",
-      title: "Everything, or just the backlog",
+      target: "#lda-result-params",
+      title: "Beta and eta",
+      body: "Beta is the failure pattern -- below 1 early-life, about 1 random, above 1 wear-out -- and eta the life by which 63% have failed.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      more: docsLink("weibull-fit", "The fit, in the documentation"),
+    },
+    {
+      target: "#lda-chart-prob",
+      title: "The graphs",
+      body: "The probability plot, CDF, PDF and hazard rate of the fit, with each life plotted. Hover a point for its work order.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+      more: docsLink("weibull-charts", "The graphs, in the documentation"),
+    },
+    {
+      target: "#lda-age-panel",
+      title: "Reliability at an age",
+      body: "Enter an age -- a PM interval, say -- for the chance of surviving to it and of failing by it.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+    },
+    {
+      target: "#lda-streams-panel",
+      title: "Items pooled",
+      body: "Every item the fit rests on, with its failures and suspensions. A recurrent item had a failure that did not renew it.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+    },
+    {
+      target: "#lda-weibull-data-panel",
+      title: "The lives",
+      body: () => "Each life: which work order started it and which ended it, its life hours, and why it ended as it did." + RECORD_EDIT_HINT,
+      when: forType(ANALYSIS_TYPES.WEIBULL),
+    },
+    {
+      target: "#lda-adjust-row",
+      title: "Adjusting beta and eta",
+      body: "Try other values and save them, with why, beside the MLE: the fit itself is never overwritten.",
+      when: () => CAN_EDIT && state.analysisType === ANALYSIS_TYPES.WEIBULL,
+    },
+    {
+      target: "#lda-report-bar",
+      title: "The report",
+      body: "A numbered Word report of the saved run: its population, warnings, graphs and every life.",
+      when: () => CAN_EDIT && state.analysisType === ANALYSIS_TYPES.WEIBULL,
+    },
+    {
+      target: null,
+      title: "That's the page",
       body: () =>
-        "All eligible rows shows every record. Only new / undispositioned shows the ones still without " +
-        (state.dispositionKind === "pm" ? "a reset target failure mode or mechanism" : "a failure mode or mechanism") +
-        ", which is where to start when catching up.",
-    },
-    {
-      target: "#lda-disp-search-field",
-      title: "Find a record",
-      body:
-        "Narrows the table to rows with this text or number in any column: a task ID, a date, a word " +
-        "from the notes. It searches the whole selection, not just the page on screen.",
+        `The rest of this tour was about ${state.analysisType}; choose another type and take the tour again for its views.` +
+        (CAN_EDIT ? " Disposition, in the sidebar, is where the work orders it reads are coded." : ""),
     },
   ];
 
-  // "Filling in a row", in depth: a card on how the disposition columns are
-  // decided, then one card per column saying what it means and what to put in
-  // it, with the column lit. The rules are Reliability Engineering's, from the
-  // two documents named below, and follow the order the Failure Definition
-  // Document says a record is reviewed in rather than the order the columns sit
-  // in; the save rules the cards mention are _save_disposition_with_conn's.
-  const FAILURE_DEFINITION = "REL-WBL-DAT-002 Failure Definition";
-  const DATA_REQUIREMENTS = "REL-WBL-PLN-003 Data Requirements";
-
-  // Per record type, each editable column in the order the cards take them.
-  // Each entry is a card for the column `key`, titled with its label in
-  // DISPOSITION_EDIT_COLUMNS, so the card and the header can't disagree.
-  const DISPOSITION_COLUMN_GUIDE = {
-    wo: [
-      {
-        key: "effective_record_class",
-        body:
-          "What kind of job this record really was. The import guessed it from the record's own text, so " +
-          "check the guess against the title, the notes and what was done, and correct it when it's wrong. " +
-          "It describes the job; whether the fit uses the row is up to Disposition Category.",
-        points: [
-          ["CORRECTIVE_WO", "Unplanned work to restore a function that was lost or degraded: a repair, a replacement because the part failed, an emergency or reactive call-out."],
-          ["PM", "Planned preventive work, or a scheduled replacement or overhaul, that ended up among the work orders."],
-          ["INSPECTION", "A check or audit that found no defect and no loss of function."],
-          ["PARTS_ORDER", "Ordering, fetching or stocking parts, with no repair done."],
-          ["ADMINISTRATIVE", "Paperwork, or a record with no technical event behind it."],
-          ["PROJECT_WORK", "Upgrades, installs and scheduled project jobs."],
-          ["UNKNOWN", "Not enough in the record to tell what the job was."],
-        ],
-        cite: `${FAILURE_DEFINITION} §4, Table 1; §7.4.7`,
-      },
-      {
-        key: "disposition_category",
-        body:
-          "The decision itself: the standard's Yes, Review or No. Only INCLUDED_FAILURE puts a work order " +
-          "into the fit. Anything vague, mixed or conflicting is held or excluded, never forced in to " +
-          "raise the count.",
-        points: [
-          ["INCLUDED_FAILURE", "Yes. The item couldn't do its job, or did it unacceptably, and needed unplanned corrective action. It counts with or without logged downtime, including a bypass, workaround or manual recovery. Needs a Failure Mode."],
-          ["HELD_AMBIGUOUS", "Review. Probably a real failure, but the record is too vague (\"machine down\", \"issue resolved\"), contradicts itself, or doesn't show which population it belongs to. Kept out until resolved; the note says what evidence is missing or what review is needed."],
-          ["EXCLUDED_NON_FAILURE", "No. Not a failure: preventive or scheduled work, an inspection with no defect, cosmetic, housekeeping, documentation or administrative jobs, or out of scope for this analysis."],
-          ["EXCLUDED_MIXED_CONTAMINATING", "No. A real event, but it mixes more than one failure story or conflicts with the population's definition, so it would muddy the fit. The note says why."],
-          ["INCLUDED_CENSORED_ASSET_EVENT", "Survival with no recurrence through the cutoff date. Needs a Failure Mode, but is never counted as a failure, and the fit already adds the censored life from the last failure or reset to the cutoff by itself, so it's rarely needed."],
-          ["UNKNOWN", "Not dispositioned yet. Leave it only on rows you haven't reviewed."],
-        ],
-        cite: `${FAILURE_DEFINITION} §4, §5, §7.4 Table 5, §7.4.3, §7.4.4, §9`,
-      },
-      {
-        key: "failure_mode",
-        body:
-          "The failure behavior this record shows: a specific, repeatable symptom or effect. Rows sharing " +
-          "a mode are fitted together, so name a behavior, not a department or a system.",
-        points: [
-          ["Good", "\"Hydraulic clamp not reaching position\", \"Pallet translator positioning / homing fault\": one coherent symptom family."],
-          ["Too broad", "\"Controls faults\", \"Motion faults\", \"Laser head faults\", \"General electrical issues\": each mixes several behaviors, and the fit would describe none of them."],
-          ["Where to look", "The failure or cause code, then the title and request, the alarm or fault code, the component named, the technician's notes, and what was actually done or replaced. When they disagree, take the most defensible technical reading and say why in the notes."],
-          ["Reuse or add", "Pick an existing mode when it is the same behavior, so the population stays together. Type a new name only for a genuinely different one; it's added to this asset's list when you save."],
-          ["Leave it blank", "On excluded and held rows. INCLUDED_FAILURE won't save without one, and a vague description alone isn't grounds for one."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.3, §7 Tables 2–3, §7.4.5, §8, §9.2`,
-      },
-      {
-        key: "failure_mechanism",
-        body:
-          "The specific physical, functional or adjustment-driven cause under the failure mode. It is the " +
-          "preferred grouping, as the narrower population fits more cleanly, but only when this record's " +
-          "own evidence supports it.",
-        points: [
-          ["Fill it in when", "The request, notes, alarm, findings and corrective action all point to one cause, and the fix is specific and repeatable: the same bracket adjusted, the same sensor replaced, the same drift corrected. For example \"SQ87 bracket / switch out of adjustment\"."],
-          ["Not from", "A shared alarm code or symptom alone: bracket drift and jammed hardware can raise the same alarm and still be different mechanisms. Nor from an assumed root cause, a guess at what the technician meant, or hindsight from later records."],
-          ["Leave it blank when", "The record doesn't isolate one mechanism. The row then sits in the failure-mode population, the controlled fallback; say why in the notes."],
-          ["How it counts", "A mechanism belongs to the failure mode beside it. A row with one is fitted in that mechanism's population and its mode's; a row without one, only in the mode's."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.4, §7.1–7.3, §7.4.6`,
-      },
-      {
-        key: "modeled_population_name",
-        body:
-          "The set of records one Weibull fit is run on. You don't type it: saving names it from the " +
-          "asset, the failure mode and the mechanism, and it reads \"Auto-create…\" until then. With a " +
-          "mechanism it is a mechanism-level population; without one, the failure-mode fallback.",
-        points: [
-          ["Read it back", "Would a reviewer know what beta and eta describe from the name alone? If not, the mode or mechanism name needs work."],
-          ["Check the bucket", "Its rows should share one symptom (and, at mechanism level, one cause), with fixes, parts and machine areas that hang together. Short repeat intervals should be the same problem coming back, not unrelated stories."],
-          ["If it doesn't hold together", "Split it, merge it up to the mode, hold the doubtful rows, or leave it out of this analysis. Don't force a fit."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.6, §7, §7.5`,
-      },
-      {
-        key: "include_in_weibull_candidate",
-        body:
-          "Lets the fit use this row. A work order is used only as INCLUDED_FAILURE, with a failure mode, " +
-          "and this ticked.",
-        points: [
-          ["Tick it yourself", "Choosing INCLUDED_FAILURE doesn't tick it. Tick it on every row the fit should use, or use Check all for the page."],
-          ["Cleared on save", "For both EXCLUDED_ categories, whatever the box says."],
-          ["Ignored", "On every other category: only INCLUDED_FAILURE rows reach the fit."],
-        ],
-        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
-      },
-      {
-        key: "disposition_notes",
-        body:
-          "Your reasoning, kept with the record so a later reviewer can see why it was included, excluded, " +
-          "or grouped at the mechanism or the mode level. Required for HELD_AMBIGUOUS and " +
-          "EXCLUDED_MIXED_CONTAMINATING, and worth a line on any call that isn't obvious.",
-        points: [
-          ["Included", "The evidence that puts it in this bucket: \"Tech re-set SQ87 bracket, same fix as the previous events.\" At mode level, why no mechanism could be isolated."],
-          ["Held", "What's missing, or who needs to look: \"Only says 'machine down'; ask second shift what was reset.\""],
-          ["Mixed", "Which failure stories it mixes, or why the bucket itself needs revising."],
-          ["Excluded", "Why it isn't a failure: \"Inspection only, no defect found.\""],
-          ["Reclassified", "When the record's fields disagreed, which one you went with and why."],
-        ],
-        cite: `${FAILURE_DEFINITION} §7.4.7, §8, §10`,
-      },
-    ],
-    pm: [
-      {
-        key: "effective_record_class",
-        body:
-          "What kind of job this record really was. The import guessed it from the record's own text; " +
-          "correct it when it's wrong. CORRECTIVE_WO isn't offered: a PM is never counted as a failure here.",
-        points: [
-          ["PM", "A routine preventive task: an inspection round, lubrication, cleaning, a route PM."],
-          ["PM_RESET_CANDIDATE", "A PM that may restore a specific item, such as a scheduled replacement, an overhaul or a re-set to spec, and so is worth weighing as a reset."],
-          ["INSPECTION", "A check or audit only, with nothing restored."],
-          ["PARTS_ORDER", "Ordering, fetching or stocking parts."],
-          ["ADMINISTRATIVE", "Paperwork, or a record with no technical event behind it."],
-          ["PROJECT_WORK", "Upgrades, installs and scheduled project jobs."],
-          ["UNKNOWN", "Not enough in the record to tell what the job was."],
-        ],
-        cite: `${FAILURE_DEFINITION} §4, Table 1`,
-      },
-      {
-        key: "pm_reset_inclusion_decision",
-        body:
-          "Whether this PM renewed the asset against one specific failure mode or mechanism. An approved " +
-          "reset starts that population's clock again; it is never counted as a failure.",
-        points: [
-          ["APPROVED_RESET", "Its scope credibly restored the item or function behind one named failure mode or mechanism: it replaced the wearing part, re-set the adjustment to spec, rebuilt the assembly. Needs a reset target and a rationale; goes with INCLUDED_PM_RESET_EVENT."],
-          ["REJECTED_RESET", "Weighed as a reset and turned down: its scope doesn't restore the target, as with a general inspection, a broad route PM or housekeeping. Goes with REJECTED_PM_RESET."],
-          ["CONTEXT_ONLY", "A routine PM kept only as history around the failures. Goes with PM_CONTEXT_ONLY."],
-          ["NEEDS_REVIEW", "Not decided yet, or the record can't show what the PM restored. Goes with HELD_AMBIGUOUS and a note, or UNKNOWN until it's reviewed."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.8, §6, §7.3; ${DATA_REQUIREMENTS} §8`,
-      },
-      {
-        key: "disposition_category",
-        body:
-          "The disposition itself, which has to agree with the PM Reset Decision. Only " +
-          "INCLUDED_PM_RESET_EVENT puts a PM into the fit, as the start of a new life rather than a failure.",
-        points: [
-          ["INCLUDED_PM_RESET_EVENT", "A valid reset for the population. Needs APPROVED_RESET, a Reset Target Failure Mode and a renewal rationale."],
-          ["PM_CONTEXT_ONLY", "Kept for traceability only. Goes with CONTEXT_ONLY."],
-          ["REJECTED_PM_RESET", "Reviewed and refused as a reset. Goes with REJECTED_RESET."],
-          ["HELD_AMBIGUOUS", "Can't tell yet whether it restored the target. Kept out until resolved; the note says what's missing."],
-          ["EXCLUDED_NON_FAILURE", "No part in the analysis at all: parts handling, administration, housekeeping."],
-          ["UNKNOWN", "Not dispositioned yet. Leave it only on rows you haven't reviewed."],
-        ],
-        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
-      },
-      {
-        key: "reset_target_failure_mode",
-        body:
-          "The failure mode this PM resets: the population in which it marks the start of a new life.",
-        points: [
-          ["From the list", "Only modes this asset's work orders already use are offered, since a PM can't create one. If the mode you need isn't there, disposition the work orders first."],
-          ["One explicit target", "The mode the PM's scope actually restores. A general PM that can't be tied to one mode shouldn't be approved as a reset."],
-          ["Required", "For INCLUDED_PM_RESET_EVENT. Leave it blank on context-only, rejected and excluded PMs."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.8, §7.3; ${DATA_REQUIREMENTS} §8`,
-      },
-      {
-        key: "reset_target_failure_mechanism",
-        body:
-          "The mechanism under the target mode that the PM restores, when it is that specific: re-setting " +
-          "the SQ87 bracket to spec resets \"SQ87 bracket / switch out of adjustment\".",
-        points: [
-          ["From the list", "It offers the mechanisms already dispositioned under the chosen Reset Target Failure Mode."],
-          ["Leave it blank when", "The PM restores the whole mode: every mechanism under it, not one in particular."],
-          ["How it counts", "A PM restarts only what it restores. With a mechanism, the reset counts in that mechanism's population alone, not its mode's. Left blank, it counts in the mode's population and in every mechanism's under it."],
-        ],
-        cite: `${FAILURE_DEFINITION} §3.4, §3.8, §7.3`,
-      },
-      {
-        key: "pm_reset_renewal_rationale",
-        body:
-          "Why this PM is technically capable of resetting the target: the part of its scope that restores " +
-          "the item or function, and the evidence that it was done.",
-        points: [
-          ["Required", "For APPROVED_RESET and INCLUDED_PM_RESET_EVENT."],
-          ["Good", "\"Task replaces the clamp cylinder seals and re-sets pressure to spec; completion notes confirm both.\""],
-          ["Not enough", "\"PM completed\", or a general inspection, housekeeping or route PM with no targeted restoration written down."],
-        ],
-        cite: `${FAILURE_DEFINITION} §7.3; ${DATA_REQUIREMENTS} §7, §8`,
-      },
-      {
-        key: "modeled_population_name",
-        body:
-          "The population this reset belongs to, named on save from the asset and the reset target's mode " +
-          "and mechanism; it reads \"Auto-create…\" until then. Check that it is the population whose " +
-          "failures this PM prevents, named just as on those work orders.",
-        cite: `${FAILURE_DEFINITION} §3.6, §7`,
-      },
-      {
-        key: "include_in_weibull_candidate",
-        body:
-          "Lets the fit use this PM as a reset. A PM is used only as INCLUDED_PM_RESET_EVENT with " +
-          "APPROVED_RESET, a reset target, a rationale, and this ticked.",
-        points: [
-          ["Tick it yourself", "Choosing INCLUDED_PM_RESET_EVENT and APPROVED_RESET doesn't tick it. Tick it on every reset the fit should use."],
-          ["Cleared on save", "For REJECTED_RESET, CONTEXT_ONLY and EXCLUDED_NON_FAILURE, whatever the box says."],
-          ["Ignored", "On every other category: only INCLUDED_PM_RESET_EVENT rows reach the fit."],
-        ],
-        cite: `${FAILURE_DEFINITION} §7.4 Table 5`,
-      },
-      {
-        key: "disposition_notes",
-        body:
-          "Your reasoning, kept with the record for later review. Required for HELD_AMBIGUOUS. The evidence " +
-          "for an approved reset goes under PM Reset Renewal Rationale instead.",
-        points: [
-          ["Held", "What's missing: \"Task list doesn't say whether the seals were replaced; check with the planner.\""],
-          ["Rejected or context only", "Why the scope restores nothing specific: \"Route inspection, no parts replaced or adjustments made.\""],
-          ["Reclassified", "When the record's fields disagreed, which one you went with and why."],
-        ],
-        cite: `${FAILURE_DEFINITION} §8, §10`,
-      },
-    ],
-  };
-
-  // The in-depth "Filling in a row": its opening card, which lights the header
-  // of every column there is to fill in, then a card per column of the record
-  // type showing. The Record Type can't change while the tour is open, so each
-  // card is kept or dropped for the whole tour as it starts.
-  const DISPOSITION_COLUMN_TOUR_STEPS = [
-    {
-      target: "#lda-disp-table th[data-disp-col]",
-      title: "Filling in a row",
-      body: () =>
-        state.dispositionKind === "pm"
-          ? "The columns after Failure Narrative are the disposition. A PM is never a failure: the one " +
-            "question is whether it renewed the asset against one specific failure mode or mechanism, which " +
-            "restarts that population's clock in the fit. The next cards take each column in this order:"
-          : "The columns after Failure Narrative are the disposition: what this record was, and whether the " +
-            "Weibull fit may use it. The next cards take each column in the order the standard reviews a " +
-            "record in:",
-      points: () =>
-        state.dispositionKind === "pm"
-          ? [
-              ["What was it?", "Confirm it really is a PM, and not an inspection, a parts run or a project."],
-              ["Did it restore something specific?", "Only a PM whose scope credibly restores the item or function behind one failure mode or mechanism can reset it. Route PMs, general inspections and housekeeping don't, unless that restoration is written down."],
-              ["Decision and category", "They come in matching pairs."],
-              ["Name the target", "The failure mode, and the mechanism if there is one, that it resets."],
-              ["Show the evidence", "Why its scope renews that target, in words a reviewer can check."],
-            ]
-          : [
-              ["Is it a failure?", "A real loss or degradation of function that needed unplanned correction, downtime or not. Not PM, inspection, admin or housekeeping."],
-              ["Does it belong?", "It has to fit one repeatable failure behavior, not a catch-all label."],
-              ["How narrow?", "The narrowest level the record itself supports: a failure mechanism first, the failure mode as the fallback."],
-              ["Yes, Review or No?", "Include it, hold it, or exclude it. Weak records are held, never forced in to raise the count."],
-              ["Why?", "Write it down wherever the call isn't obvious, so a later reviewer can follow it."],
-            ],
-      cite: () =>
-        state.dispositionKind === "pm"
-          ? `${FAILURE_DEFINITION} §3.8, §6, §7.3; ${DATA_REQUIREMENTS} §8`
-          : `${FAILURE_DEFINITION} §6, §7.4.7, §7.4.8`,
-    },
-  ].concat(
-    ...["wo", "pm"].map((kind) => {
-      const labels = new Map(DISPOSITION_EDIT_COLUMNS[kind].map((column) => [column.key, column.label]));
-      const guide = DISPOSITION_COLUMN_GUIDE[kind];
-      return guide.map((entry, index) => ({
-        target: `#lda-disp-table [data-disp-col="${entry.key}"]`,
-        title: labels.get(entry.key),
-        label: `Column ${index + 1} of ${guide.length}`,
-        body: entry.body,
-        points: entry.points,
-        cite: entry.cite,
-        when: () => state.dispositionKind === kind,
-      }));
-    })
-  );
-
-  const DISPOSITION_EDITOR_TOUR_STEPS = [
-    {
-      target: "#lda-disp-meta",
-      title: "What the table holds",
-      body: () =>
-        "Which asset this is, how many records the selection has and which of them are on screen. " +
-        (state.dispositionKind === "pm"
-          ? "A PM only reaches a Weibull fit as INCLUDED_PM_RESET_EVENT with APPROVED_RESET, a reset " +
-            "target, a rationale, and Include in Weibull Candidate ticked."
-          : "A work order only reaches a Weibull fit as INCLUDED_FAILURE with a failure mode and " +
-            "Include in Weibull Candidate ticked."),
-    },
-    {
-      target: "#lda-disp-table",
-      title: "One row per record",
-      body:
-        "The columns up to Failure Narrative are what was recorded in the CMMS, and can't be changed " +
-        "here. The ones after it, off to the right, are yours to fill in, apart from Modeled Population, " +
-        "which fills itself in when you save. The ▾ on any column header sorts the whole selection by " +
-        "it, or filters this page to the values you pick.",
-    },
-    ...DISPOSITION_COLUMN_TOUR_STEPS,
-    {
-      target: "#lda-disp-check-all",
-      title: "Include a whole page",
-      body:
-        "Ticks Include in Weibull Candidate on every row showing, after asking you to confirm. Rows a " +
-        "column filter hides are left as they are, and nothing is kept until you save.",
-    },
-    {
-      target: "#lda-disp-pager",
-      title: "Fifty rows to a page",
-      body:
-        "Changing page reloads the table, and so do sorting, searching and the Step 1 controls. Each " +
-        "asks before throwing away unsaved changes, but it's simplest to save a page before moving on.",
-    },
-    {
-      target: "#lda-disp-save",
-      title: "Save as you go",
-      body:
-        "Writes every row you changed on this page, and leaves the rest alone. The rows are saved " +
-        "together: if one is refused, say a HELD_AMBIGUOUS row with no note, none are, and the " +
-        "message says which rule it broke.",
-    },
-    {
-      target: "#lda-disp-actions",
-      title: "Or do it in Excel",
-      body:
-        "Download Excel gets this asset's records as a workbook with the same dropdowns, to fill in " +
-        "offline: all of them, or only the new ones if that's what Rows says. Disposition via Excel " +
-        "uploads it back and saves every row that changed. How dispositioning on Excel works explains " +
-        "the rest.",
-    },
-  ];
-
-  const DISPOSITION_TOUR_END_STEPS = [
-    {
-      target: "#disposition-tour-btn",
-      title: "Come back any time",
-      body: () => {
-        const again = "The tour only opens by itself once. Press Show me around to take it again.";
-        if (state.selectedAsset && state.selectedAsset === tourExampleAsset) {
-          return (
-            `${tourExampleAsset} stays selected from the tour. Its records are real, so anything you save on ` +
-            `them is kept; pick your own in the Asset Number box whenever you like. ${again}`
-          );
-        }
-        if (state.selectedAsset) return again;
-        return "Pick an asset and press Show me around again to see each of those parts on the page.";
-      },
-    },
-  ];
-
-  const DISPOSITION_TOUR_SEEN_KEY = "gremlin.disposition.tour-seen";
-  const DISPOSITION_EDITOR_TOUR_SEEN_KEY = "gremlin.disposition.editor-tour-seen";
-
-  // Anything a tour mustn't open over by itself: the same as on the analysis
-  // page, plus a column's ▾ menu or a failure mode list open in the table,
-  // somebody typing a search -- each search draws the editor again -- and a
-  // mouse button or finger still down. A click elsewhere closes a list, or
-  // takes the focus from the search box, as it goes down, so a tour opened
-  // then would be under the pointer when it comes up and take the click.
-  let pointerHeld = false;
-
-  function dispositionTourBlocked() {
-    return (
-      analysisTourBlocked() ||
-      pointerHeld ||
-      Boolean(document.querySelector(".lda-col-menu, body > .lda-portal-list")) ||
-      document.activeElement === $("lda-disp-search")
-    );
+  function startAnalysisTour() {
+    if (!window.gremlinTour || window.gremlinTour.isOpen()) return;
+    tourExampleTried = false;
+    tourFitTried = false;
+    window.gremlinTour.start(ANALYSIS_TOUR_STEPS, { seenKey: ANALYSIS_TOUR_SEEN_KEY, pinned: [".topbar", "#lda-step1-card"] });
   }
 
-  function startDispositionTour(steps, seenKey) {
-    if (window.gremlinTour.isOpen()) return;
-    closeAssetDropdown();
-    tourRun += 1;
-    tourExampleAsset = null;
-    tourNoExample = false;
-    window.gremlinTour.start(steps.concat(DISPOSITION_TOUR_END_STEPS), {
-      seenKey,
-      returnFocus: tourReturnFocus,
-      // A page tour that got as far as the editor, with one drawn to show it on,
-      // has covered what the editor tour would, so that one needn't offer itself
-      // as well. Without one -- there was no example to pick -- its steps were
-      // cards pointing at nothing, and the first real editor still offers it.
-      onEnd: (shown) => {
-        if ($("lda-disp-meta") && shown.some((step) => DISPOSITION_EDITOR_TOUR_STEPS.includes(step))) {
-          window.gremlinTour.remember(DISPOSITION_EDITOR_TOUR_SEEN_KEY);
-        }
-        startOwedDispositionTour();
-      },
-    });
+  // ---- start -------------------------------------------------------------------------
+  let combobox = null;
+
+  function redrawCharts() {
+    if (state.summary) drawPareto();
+    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
+    if (state.analysisType === ANALYSIS_TYPES.PM && state.pm) renderPm();
+    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) renderDowntimeCharts();
+    if (state.analysisRedraw) state.analysisRedraw();
   }
 
-  function startDispositionPageTour() {
-    startDispositionTour(
-      DISPOSITION_SETUP_TOUR_STEPS.concat(DISPOSITION_EDITOR_TOUR_STEPS),
-      DISPOSITION_TOUR_SEEN_KEY
-    );
-  }
-
-  // Set when the tour has offered itself and hasn't been able to start yet:
-  // something was in the way, or the editor it waits for isn't drawn. The
-  // places those clear -- the loading veil going down, a list, menu, dialog or
-  // modal closing, the search box losing focus, a click being let go, another
-  // tour ending -- each call startOwedDispositionTour, which runs it once
-  // nothing stands in the way.
-  let dispositionTourOwed = false;
-
-  // Called once the Asset Numbers are in and each time the editor is drawn --
-  // except the editor the tour draws for its example, which it is already
-  // showing, or which somebody skipped past before it landed.
-  function offerDispositionTour() {
-    if (!window.gremlinTour || state.pageMode !== "disposition") return;
-    if (tourExampleLoading) return;
-    if (
-      window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY) &&
-      window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY)
-    ) {
-      return;
-    }
-    dispositionTourOwed = true;
-    startOwedDispositionTour();
-  }
-
-  // The whole tour, if this browser hasn't had it; otherwise the editor part,
-  // the first time there is an editor to show. Not while an asset is still being
-  // chosen, since the tour would take the box from under them -- unless one is
-  // picked already, when it waits for that asset's editor instead. Two frames,
-  // so the table has taken its size before the spotlight goes round anything.
-  // Anything in the way leaves it owed.
-  function startOwedDispositionTour() {
-    if (!dispositionTourOwed) return;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (!dispositionTourOwed || dispositionTourBlocked()) return;
-        const editorDrawn = Boolean($("lda-disp-meta"));
-        if (!window.gremlinTour.seen(DISPOSITION_TOUR_SEEN_KEY)) {
-          const input = $("lda-asset");
-          const choosing = !state.selectedAsset && (input.value.trim() || document.activeElement === input);
-          if (choosing || (state.selectedAsset && !editorDrawn)) return;
-          dispositionTourOwed = false;
-          stopScrolling();
-          startDispositionPageTour();
-          return;
-        }
-        // Without an editor there is nothing more to show; the next one drawn
-        // offers the tour again.
-        dispositionTourOwed = false;
-        if (window.gremlinTour.seen(DISPOSITION_EDITOR_TOUR_SEEN_KEY) || !state.selectedAsset || !editorDrawn) return;
-        stopScrolling();
-        startDispositionTour(DISPOSITION_EDITOR_TOUR_STEPS, DISPOSITION_EDITOR_TOUR_SEEN_KEY);
-      })
-    );
-  }
-
-  // A freshly drawn editor is still gliding into view when the tour starts. The
-  // tour moves the page to each step itself, and leaves it alone when the step
-  // is already on screen -- which the page tour's first step, at the top, still
-  // is as the glide begins, so the glide would then carry it off the top with
-  // the card following. A scroll to where the page is now cuts the glide short.
-  function stopScrolling() {
-    window.scrollTo({ top: window.pageYOffset, behavior: "auto" });
-  }
-
-  function wireDispositionTour() {
-    const button = $("disposition-tour-btn");
-    if (!button || !window.gremlinTour) return;
-    button.addEventListener("click", startDispositionPageTour);
-    // Captured, so a control that stops the event can't hide it from here.
-    document.addEventListener("pointerdown", () => { pointerHeld = true; }, true);
-    ["pointerup", "pointercancel"].forEach((type) =>
-      document.addEventListener(type, () => {
-        pointerHeld = false;
-        startOwedDispositionTour();
-      }, true)
-    );
-  }
-
-  // ---- wiring ---------------------------------------------------------------
   function init() {
-    const assetInput = $("lda-asset");
-    if (!assetInput) return;
-    // Asset combobox wiring is shared by the Perform Analysis page and the
-    // dedicated disposition page.
-    assetInput.addEventListener("input", onAssetInput);
-    assetInput.addEventListener("keydown", onAssetKeydown);
-    assetInput.addEventListener("focus", onAssetFocus);
-    // Commit a manually edited value synchronously on blur so actions clicked
-    // immediately after typing run against the current asset rather than the
-    // previous one still held by the input debounce.
-    assetInput.addEventListener("blur", evaluateAssetSelection);
-    // Close the dropdown when clicking anywhere outside the combobox.
-    document.addEventListener("mousedown", (event) => {
-      const combobox = $("lda-asset-combobox");
-      if (combobox && !combobox.contains(event.target)) closeAssetDropdown();
+    if (!$("lda-asset")) return;
+    combobox = window.GremlinStandard.assetCombobox({
+      input: $("lda-asset"),
+      list: $("lda-asset-list"),
+      hint: $("lda-asset-hint"),
+      onChoose: (asset) => chooseAsset(asset),
     });
-
-    if ($("lda-disposition-root")) initDispositionPage();
-    else initAnalysisPage();
-  }
-
-  function initAnalysisPage() {
-    state.pageMode = "analysis";
-    // Only wire the writing controls for an account that may write. Un-hiding
-    // the buttons in the developer tools then leaves them inert, rather than
-    // sending a request the server is about to refuse.
-    if (CAN_EDIT) {
-      $("lda-perform").addEventListener("click", performAnalysis);
-      $("lda-disposition-wo").addEventListener("click", () => gotoDisposition("wo"));
-      $("lda-disposition-pm").addEventListener("click", () => gotoDisposition("pm"));
+    const typeSelect = $("lda-analysis-type");
+    // ?analysis= preselects the type, which the topbar's search links to.
+    const params = new URLSearchParams(window.location.search);
+    const requested = (params.get("analysis") || "").trim().toLowerCase();
+    if (requested) {
+      const match = Array.from(typeSelect.options).find((option) => option.value.toLowerCase() === requested);
+      if (match) typeSelect.value = match.value;
     }
-    // The Pareto's Group by and Rank by switches, and the way back out of a mode
-    // opened into its mechanisms.
-    $("lda-pareto-group").addEventListener("click", (event) => {
-      const button = event.target.closest("[data-group]");
-      if (button) setParetoGroupBy(button.dataset.group);
+    state.analysisType = typeSelect.value || ANALYSIS_TYPES.WEIBULL;
+    typeSelect.addEventListener("change", () => setAnalysisType(typeSelect.value));
+    const group = $("lda-pareto-group");
+    group.addEventListener("change", () => {
+      state.groupBy = group.value;
+      loadSummary();
     });
     $("lda-pareto-metric").addEventListener("click", (event) => {
       const button = event.target.closest("[data-metric]");
-      if (button) setParetoMetric(button.dataset.metric);
+      if (!button || button.dataset.metric === state.metric) return;
+      state.metric = button.dataset.metric;
+      drawPareto();
     });
-    $("lda-pareto-focus-clear").addEventListener("click", () => setParetoGroupBy("mechanism"));
-    // From/To dates, for the Pareto and every analysis.
     $("lda-date-from").addEventListener("change", onDateRangeChange);
     $("lda-date-to").addEventListener("change", onDateRangeChange);
     $("lda-date-reset").addEventListener("click", resetDateRange);
-    const riskWeeksBox = $("lda-risk-weeks");
-    if (riskWeeksBox) riskWeeksBox.addEventListener("change", onRiskWeeksChange);
-    const typeSelect = $("lda-analysis-type");
-    if (typeSelect) {
-      // ?analysis= preselects the Analysis Type, which is what the topbar's
-      // global search links to for each of them. Matched against the option
-      // values themselves so the four names live in one place -- the markup --
-      // and an unrecognised value simply leaves the default selected.
-      const requested = (new URLSearchParams(window.location.search).get("analysis") || "").trim().toLowerCase();
-      if (requested) {
-        const match = Array.from(typeSelect.options).find(
-          (option) => option.value.toLowerCase() === requested
-        );
-        if (match) typeSelect.value = match.value;
-      }
-      state.analysisType = typeSelect.value || ANALYSIS_TYPES.WEIBULL;
-      typeSelect.addEventListener("change", () => setAnalysisType(typeSelect.value));
-    }
-    // Failure Mode Trend date-range filter.
-    const trendFrom = $("lda-trend-from");
-    const trendTo = $("lda-trend-to");
-    const trendReset = $("lda-trend-reset");
-    if (trendFrom) trendFrom.addEventListener("change", onTrendRangeChange);
-    if (trendTo) trendTo.addEventListener("change", onTrendRangeChange);
-    if (trendReset) trendReset.addEventListener("click", resetTrendRange);
-    // PM Effectiveness date-range filter.
-    const pmFrom = $("lda-pm-from");
-    const pmTo = $("lda-pm-to");
-    const pmReset = $("lda-pm-reset");
-    if (pmFrom) pmFrom.addEventListener("change", onPmRangeChange);
-    if (pmTo) pmTo.addEventListener("change", onPmRangeChange);
-    if (pmReset) pmReset.addEventListener("click", resetPmRange);
-    // Repeat Fix Rate window and mechanism filter.
-    const repeatWindow = $("lda-repeat-window");
-    const repeatClear = $("lda-repeat-filter-clear");
-    if (repeatWindow) repeatWindow.addEventListener("change", onRepeatWindowChange);
-    if (repeatClear) repeatClear.addEventListener("click", clearRepeatFilter);
-    // Set the initial secondary-panel visibility for the default analysis type.
+    $("lda-exclude-induced").addEventListener("change", (event) => {
+      state.excludeInduced = event.target.checked;
+      onPopulationChange();
+    });
+    $("lda-risk-weeks").addEventListener("change", onRiskWeeksChange);
+    $("lda-repeat-window").addEventListener("change", onRepeatWindowChange);
+    $("lda-repeat-filter-clear").addEventListener("click", () => {
+      state.repeatFilter = null;
+      renderRepeat();
+    });
+    $("lda-perform").addEventListener("click", performAnalysis);
+    $("analysis-tour-btn").addEventListener("click", startAnalysisTour);
     applyAnalysisTypeUI();
     window.addEventListener("resize", redrawCharts);
-
-    // A canvas keeps the pixels it was painted with, so a theme change cannot
-    // reach these the way it reaches everything else: they have to be drawn
-    // again. Same redraw as a resize -- what changed is the palette rather than
-    // the width, and every chart on the page reads both at draw time.
-    // chart_theme.js has already dropped its cached read by the time this runs,
-    // so picking the palette back up here gets the new values.
+    // A canvas keeps the pixels it was painted with, so a theme change has to
+    // redraw every chart with the new palette.
     window.gremlinOnThemeChange(() => {
       C = window.gremlinChartPalette();
       redrawCharts();
     });
-
-    wireAnalysisTour();
-    assetsLoaded = loadAssets();
-    assetsLoaded.then(() => {
-      if (window.gremlinTour) offerAnalysisPageTour();
-    });
-  }
-
-  // Every chart currently on screen, redrawn. Which ones those are depends on
-  // the analysis type showing, so the checks are the same ones the initial
-  // render made.
-  function redrawCharts() {
-    if (state.paretoRows.length) drawPareto();
-    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
-    if (state.analysisType === ANALYSIS_TYPES.PM) renderPmChart();
-    if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) {
-      renderDowntimeTrendChart();
-      renderDowntimeDistChart();
-      renderDowntimeAssetChart();
-    }
-    if (state.analysisRedraw) state.analysisRedraw();
-  }
-
-  function initDispositionPage() {
-    state.pageMode = "disposition";
-    wireExcelHelpDialog();
-    const params = new URLSearchParams(window.location.search);
-    state.dispositionKind = (params.get("kind") || "wo").toLowerCase() === "pm" ? "pm" : "wo";
-    state.dispositionScope = "all";
-    state.dispositionPageIndex = 0;
-    state.dispositionSearch = "";
-    state.dispositionSort = { key: "", dir: "asc" };
-    state.dispositionFilters = {};
-    state.dispositionFilterSelection = "";
-
-    const kindSelect = $("lda-disp-kind");
-    if (kindSelect) {
-      kindSelect.value = state.dispositionKind;
-      kindSelect.addEventListener("change", async () => {
-        const requested = kindSelect.value === "pm" ? "pm" : "wo";
-        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
-          kindSelect.value = state.dispositionKind;
-          return;
-        }
-        state.dispositionKind = requested;
-        state.dispositionPageIndex = 0;
-        reloadDispositionForSelection();
-      });
-    }
-    const scopeSelect = $("lda-disp-scope");
-    if (scopeSelect) {
-      scopeSelect.value = state.dispositionScope;
-      scopeSelect.addEventListener("change", async () => {
-        const requested = scopeSelect.value === "new" ? "new" : "all";
-        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
-          scopeSelect.value = state.dispositionScope;
-          return;
-        }
-        state.dispositionScope = requested;
-        state.dispositionPageIndex = 0;
-        reloadDispositionForSelection();
-      });
-    }
-
-    // Free-text search box: filters the disposition table server-side (so matches
-    // span every page, not just the visible 50 rows) for both WO and PM records.
-    // Debounced like the asset search, and guarded by the same unsaved-edit
-    // confirmation the Record Type / Rows selectors use, since reloading the
-    // editor discards in-progress edits.
-    const searchInput = $("lda-disp-search");
-    if (searchInput) {
-      let searchDebounce = null;
-      let lastSearch = "";
-      const applySearch = async () => {
-        const value = searchInput.value.trim();
-        if (value === lastSearch) return;
-        if (!(await confirmDiscardUnsavedChanges(state.dispositionChangedFn))) {
-          searchInput.value = lastSearch;
-          return;
-        }
-        lastSearch = value;
-        state.dispositionSearch = value;
-        state.dispositionPageIndex = 0;
-        reloadDispositionForSelection();
-      };
-      searchInput.addEventListener("input", () => {
-        if (searchDebounce) clearTimeout(searchDebounce);
-        searchDebounce = setTimeout(applySearch, 300);
-      });
-      // For the tour, which picks its example for what is in the box now.
-      // applySearch does nothing if the search has been applied already.
-      flushDispositionSearch = () => {
-        clearTimeout(searchDebounce);
-        return applySearch();
-      };
-      // Somebody typing a search is one of the things an owed tour waits out.
-      searchInput.addEventListener("blur", startOwedDispositionTour);
-    }
-
-    wireDispositionTour();
-
-    // Preselect the asset passed from the Perform Analysis page once the asset
-    // list has loaded, then open its disposition editor.
-    const requestedAsset = (params.get("asset") || "").trim();
-    assetsLoaded = loadAssets();
-    assetsLoaded.then(() => {
-      if (requestedAsset && state.assetByNumber.has(requestedAsset)) {
-        $("lda-asset").value = requestedAsset;
-        evaluateAssetSelection();
+    combobox.load().then(async () => {
+      // The Pareto's dimensions come with the first options; offered until then
+      // as the drill-down's.
+      const asset = (params.get("asset") || "").trim();
+      if (asset) combobox.select(asset);
+      else if (window.gremlinTour && !window.gremlinTour.seen(ANALYSIS_TOUR_SEEN_KEY) && !window.gremlinTour.busy()) {
+        startAnalysisTour();
       }
-      offerDispositionTour();
     });
+    group.innerHTML = "";
+    [
+      ["location", "Location"],
+      ["component", "Component"],
+      ["failure_mechanism", "Failure mechanism"],
+      ["failure_mode", "Failure mode"],
+      ["failure_cause", "Failure cause"],
+      ["action", "Action"],
+      ["category", "Disposition category"],
+      ["detection_method", "Detection method"],
+      ["asset", "Asset"],
+    ].forEach(([value, label]) => group.appendChild(el("option", { value, text: label })));
+    group.value = state.groupBy;
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
+  init();
 })();

@@ -903,64 +903,6 @@ class IntervalRuleTests(unittest.TestCase):
         self.assertIn("directional guidance only", self.service._eta_ci_recommendation(700.0, 1200.0, 1000.0))
 
 
-def test_the_run_endpoint_takes_a_window_and_rejects_a_bad_date(monkeypatch, tmp_path):
-    monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
-    monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
-    monkeypatch.setenv("GREMLIN_ADMIN_USERNAME", "root")
-    monkeypatch.setenv("GREMLIN_ADMIN_PIN", "secret")
-    import app
-
-    module = importlib.reload(app)
-    seeded = _Seeded("run")
-    seeded.service = module.get_life_data_service()
-    seeded._raw_id = 0
-    with seeded.service.write_connection() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
-        conn.execute("INSERT OR IGNORE INTO import_batch (import_batch_id, status) VALUES (1, 'COMPLETED')")
-        conn.execute("CREATE TABLE IF NOT EXISTS raw_cmms_record (raw_record_id INTEGER PRIMARY KEY, import_batch_id INTEGER NOT NULL DEFAULT 1, raw_json TEXT NOT NULL)")
-        seeded.mode_id = int(conn.execute("INSERT INTO failure_mode (failure_mode_name) VALUES ('Clamp')").lastrowid)
-        seeded.mechanism_id = int(
-            conn.execute(
-                "INSERT INTO failure_mechanism (failure_mechanism_name, failure_mode_id) VALUES ('Seal wear', ?)",
-                (seeded.mode_id,),
-            ).lastrowid
-        )
-    seeded._add_all(MONTHLY)
-    client = module.app.test_client()
-    assert client.post("/auth/login", json={"username": "root", "pin": "secret"}).status_code == 200
-    body = {
-        "asset": "A-1",
-        "grouping_level": "FAILURE_MECHANISM",
-        "failure_mode_id": seeded.mode_id,
-        "failure_mechanism_id": seeded.mechanism_id,
-    }
-
-    bad = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_cutoff": "31/07/2025"})
-    assert bad.status_code == 400
-    assert "YYYY-MM-DD" in bad.get_json()["error"]
-    # A window too narrow to fit is refused, and says nothing was removed.
-    narrow = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_start": "2025-05-01"})
-    assert narrow.status_code == 400
-    assert narrow.get_json()["result_removed"] is False
-
-    ran = client.post("/life-data-analysis/api/perform-analysis", json={**body, "analysis_cutoff": "2025-07-31", "analysis_start": ""})
-    assert ran.status_code == 200
-    result = ran.get_json()["result"]
-    assert result["analysis_cutoff_source"] == "USER"
-    assert result["analysis_start"] is None
-    # The rankings carry it too, so the page can name the cutoff's own day.
-    ranked = client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=4").get_json()["rankings"][0]
-    assert (ranked["analysis_cutoff"], ranked["analysis_cutoff_source"]) == (result["analysis_cutoff"], "USER")
-    assert result["events"] and result["life_basis"]["time_zone"] == "America/Chicago"
-
-    # The summary carries both rankings; the risk list takes its own window.
-    summary = client.get("/life-data-analysis/api/summary?asset=A-1&weeks=8").get_json()
-    assert summary["rankings"] and summary["risk_rankings"][0]["window_weeks"] == 8
-    risk = client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=6").get_json()
-    assert risk["weeks"] == 6 and risk["rankings"][0]["window_weeks"] == 6
-    assert client.get("/life-data-analysis/api/risk-rankings?asset=A-1&weeks=0").status_code == 400
-
-
 def test_the_schedule_register_endpoint_needs_an_editor_and_keeps_who(monkeypatch, tmp_path):
     monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
     monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))

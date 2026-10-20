@@ -69,6 +69,7 @@ _STATEMENTS = (
         item_detail TEXT,
         linked_mapped_record_id INTEGER,
         disposition_note TEXT,
+        record_class TEXT,
         legacy_disposition_category TEXT,
         legacy_failure_mode TEXT,
         legacy_failure_mechanism TEXT,
@@ -105,6 +106,22 @@ _STATEMENTS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_population_weibull_definition ON population_weibull_analysis(population_definition, run_at)",
+    # An editor's adjusted beta and eta for a saved run, kept beside the MLE rather
+    # than over it, with who and why; the newest is the current one.
+    """
+    CREATE TABLE IF NOT EXISTS population_weibull_adjustment (
+        population_weibull_adjustment_id INTEGER PRIMARY KEY,
+        population_weibull_analysis_id INTEGER NOT NULL,
+        adjusted_beta REAL NOT NULL,
+        adjusted_eta REAL NOT NULL,
+        adjustment_reason TEXT,
+        adjusted_by TEXT,
+        adjusted_at TEXT NOT NULL DEFAULT (datetime('now')),
+        is_current INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (population_weibull_analysis_id) REFERENCES population_weibull_analysis(population_weibull_analysis_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_population_weibull_adjustment ON population_weibull_adjustment(population_weibull_analysis_id, is_current)",
     # Sub-assets are found by their parent's asset id, which nothing indexed before.
     "CREATE INDEX IF NOT EXISTS idx_mapped_cmms_parent_asset ON mapped_cmms_record(immediate_parent_asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_mapped_cmms_asset_id ON mapped_cmms_record(asset_id_raw)",
@@ -116,8 +133,28 @@ def ensure_standard_disposition_schema(conn: sqlite3.Connection) -> None:
 
     for statement in _STATEMENTS:
         conn.execute(statement)
+    _add_missing_columns(conn)
     seed_code_lists(conn)
     sync_migrated_dispositions(conn)
+
+
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS leaves an
+# existing table as it is, so anything missing is ALTERed in.
+_ADDED_COLUMNS = {
+    "wo_disposition": {"record_class": "TEXT"},
+    # A numbered report on a population analysis says which run it reports.
+    "weibull_report_log": {"population_weibull_analysis_id": "INTEGER"},
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not present:
+            continue
+        for column, ddl in columns.items():
+            if column not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def seed_code_lists(conn: sqlite3.Connection) -> int:
@@ -257,10 +294,10 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
             INSERT INTO wo_disposition(
                 mapped_record_id, disposition_category, sub_asset, component_code, failure_mechanism_code,
                 failure_mode_code, action_code, evidence, failure_cause_code, renewed_items_json, qty, item_detail,
-                linked_mapped_record_id, disposition_note, legacy_disposition_category, legacy_failure_mode,
-                legacy_failure_mechanism, source, migrated_from_event_disposition_id, review_flag, decided_by,
-                is_current
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                linked_mapped_record_id, disposition_note, record_class, legacy_disposition_category,
+                legacy_failure_mode, legacy_failure_mechanism, source, migrated_from_event_disposition_id,
+                review_flag, decided_by, is_current
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 mapped_record_id,
@@ -277,6 +314,7 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
                 values.get("item_detail"),
                 values.get("linked_mapped_record_id"),
                 values.get("disposition_note"),
+                values.get("record_class"),
                 values.get("legacy_disposition_category"),
                 values.get("legacy_failure_mode"),
                 values.get("legacy_failure_mechanism"),

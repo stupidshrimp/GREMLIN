@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 PAGE_TOUR_JS = ROOT / "static" / "js" / "page_tour.js"
 HOME_JS = ROOT / "static" / "js" / "home.js"
 ANALYSIS_JS = ROOT / "static" / "js" / "life_data_analysis.js"
+DISPOSITION_JS = ROOT / "static" / "js" / "disposition.js"
+DISPOSITION_FORM_JS = ROOT / "static" / "js" / "disposition_form.js"
 
 
 def _app(monkeypatch, tmp_path):
@@ -29,6 +31,13 @@ def _app(monkeypatch, tmp_path):
     import app
 
     return importlib.reload(app)
+
+
+def _steps(path, declaration):
+    source = path.read_text(encoding="utf-8")
+    steps = re.search(rf"{re.escape(declaration)} = \[(.*?)\n  \];", source, re.S)
+    assert steps, f"{declaration} was not found in {path.name}"
+    return re.split(r"\n    \{\n", steps.group(1))[1:]
 
 
 def _targets(path, declaration):
@@ -42,22 +51,12 @@ def _home_targets():
     return _targets(HOME_JS, "var STEPS")
 
 
-def _disposition_page_targets():
-    return _targets(ANALYSIS_JS, "const DISPOSITION_SETUP_TOUR_STEPS") + _targets(
-        ANALYSIS_JS, "const DISPOSITION_TOUR_END_STEPS"
-    )
-
-
-def _disposition_editor_targets():
-    return _targets(ANALYSIS_JS, "const DISPOSITION_EDITOR_TOUR_STEPS")
-
-
 def _analysis_targets():
-    return (
-        _targets(ANALYSIS_JS, "const ANALYSIS_SETUP_TOUR_STEPS")
-        + _targets(ANALYSIS_JS, "const ANALYSIS_RESULTS_TOUR_STEPS")
-        + _targets(ANALYSIS_JS, "const ANALYSIS_TOUR_END_STEPS")
-    )
+    return _targets(ANALYSIS_JS, "const ANALYSIS_TOUR_STEPS")
+
+
+def _disposition_targets():
+    return _targets(DISPOSITION_JS, "const DISPOSITION_TOUR_STEPS")
 
 
 def _on_page(page, selector):
@@ -67,6 +66,14 @@ def _on_page(page, selector):
     if kind == "#":
         return f'id="{name}"' in page
     return re.search(rf'class="[^"]*(?<![\w-]){re.escape(name)}(?![\w-])', page) is not None
+
+
+def _drawn_by_script(source, selector):
+    """Whether a script gives an element this id or class when it draws it."""
+    kind, name = re.fullmatch(r"([#.])([\w-]+)", selector).groups()
+    if kind == "#":
+        return f'id: "{name}"' in source or f'"{name}"),' in source or f'"{name}")' in source
+    return re.search(rf'class: "[^"]*(?<![\w-]){re.escape(name)}(?![\w-])', source) is not None
 
 
 @pytest.fixture
@@ -109,123 +116,56 @@ def test_every_home_step_points_at_something_on_the_page(home_page, selector):
 
 
 def test_the_analysis_tour_has_steps():
-    assert len(_targets(ANALYSIS_JS, "const ANALYSIS_SETUP_TOUR_STEPS")) >= 2
-    assert len(_targets(ANALYSIS_JS, "const ANALYSIS_RESULTS_TOUR_STEPS")) >= 5
+    assert len(_analysis_targets()) >= 25
 
 
 @pytest.mark.parametrize("selector", _analysis_targets())
-def test_every_analysis_step_points_at_something_on_the_page(analysis_page, selector):
-    assert _on_page(analysis_page, selector)
-
-
-def _analysis_steps(declaration):
+def test_every_analysis_step_points_at_something_on_the_page_or_the_results(analysis_page, selector):
+    """The results card is drawn by the script once a fit is shown, so a step
+    about one of its parts points at an id renderAnalysisResult and the builders
+    it calls give; every other target is in the served page."""
     source = ANALYSIS_JS.read_text(encoding="utf-8")
-    steps = re.search(rf"{re.escape(declaration)} = \[(.*?)\n  \];", source, re.S)
-    assert steps, f"{declaration} was not found in {ANALYSIS_JS.name}"
-    return re.split(r"\n    \{\n", steps.group(1))[1:]
+    assert _on_page(analysis_page, selector) or _drawn_by_script(source, selector), selector
 
 
 def _panels_shown_by_analysis_type():
     """The ids applyAnalysisTypeUI shows for one Analysis Type and hides for the rest."""
     source = ANALYSIS_JS.read_text(encoding="utf-8")
-    shown = dict(re.findall(r'setHidden\(\$\("([\w-]+)"\), !is(\w+)\);', source))
+    body = re.search(r"\n  function applyAnalysisTypeUI\(\) \{\n(.*?)\n  \}\n", source, re.S).group(1)
+    shown = {}
+    for ids, kind in re.findall(r'\[([^\]]+)\]\.forEach\(\(id\) => setHidden\(\$\(id\), !is\(ANALYSIS_TYPES\.(\w+)\)\)\)', body):
+        for name in re.findall(r'"([\w-]+)"', ids):
+            shown[name] = kind
+    for name, kind in re.findall(r'setHidden\(\$\("([\w-]+)"\), !is\(ANALYSIS_TYPES\.(\w+)\)\)', body):
+        shown[name] = kind
     assert shown, "applyAnalysisTypeUI no longer toggles panels by type; update this test"
     return shown
 
 
 def test_each_analysis_type_panel_step_says_which_type_it_is_for():
-    """The tour can't rely on what is drawn to tell it which panels apply.
-
-    With no asset picked none of them is, and the tour keeps its steps anyway so
-    the example it picks has something to be shown on. So a step for one Analysis
-    Type's panel has to say so, or it would appear, pointing at nothing, in every
-    other type's tour.
-    """
-    types = {"Weibull": "WEIBULL", "Trend": "TREND", "Pm": "PM", "Downtime": "DOWNTIME", "Repeat": "REPEAT"}
+    """With no asset picked none of the panels is drawn, and the tour keeps its
+    steps anyway, so a step for one type's panel has to say so or it would
+    appear, pointing at nothing, in every other type's tour."""
     shown = _panels_shown_by_analysis_type()
     checked = 0
-    for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS"):
-        target = re.search(r'target: "#([\w-]+)"', step).group(1)
-        if target not in shown:
+    for step in _steps(ANALYSIS_JS, "const ANALYSIS_TOUR_STEPS"):
+        target = re.search(r'target: "#([\w-]+)"', step)
+        if not target or target.group(1) not in shown:
             continue
         checked += 1
-        assert f"when: forType(ANALYSIS_TYPES.{types[shown[target]]})" in step, target
+        assert f"forType(ANALYSIS_TYPES.{shown[target.group(1)]})" in step, target.group(1)
     assert checked >= 8
 
 
-def test_no_analysis_step_describes_a_mechanism_before_the_tour_shows_one():
-    """A step about "the selected mechanism" needs one on screen to point at.
-
-    Started with none picked, the tour only shows one at the first step carrying
-    the mechanism action, so a step before it would light empty cards while
-    describing their numbers.
-    """
-    steps = _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS")
-
-    def type_of(step):
-        match = re.search(r"when: forType\(ANALYSIS_TYPES\.(\w+)\)", step)
-        return match.group(1) if match else None
-
-    for analysis_type in ("WEIBULL", "TREND", "PM", "DOWNTIME"):
-        own = [step for step in steps if type_of(step) in (analysis_type, None)]
-        shows = [i for i, step in enumerate(own) if "action: TOUR_MECHANISM_ACTION" in step]
-        describes = [i for i, step in enumerate(own) if "selected mechanism" in step]
-        if describes:
-            assert shows and shows[0] <= describes[0], analysis_type
-
-
-def _weibull_result_targets():
-    """Each selector the Weibull result cards light, a selector list split up."""
-    return [
-        part.strip()
-        for selector in _targets(ANALYSIS_JS, "const WEIBULL_RESULT_PARTS")
-        for part in selector.split(",")
-    ]
-
-
-def test_the_weibull_results_are_taken_part_by_part():
-    assert len(_weibull_result_targets()) >= 12
-
-
-@pytest.mark.parametrize("selector", _weibull_result_targets())
-def test_every_weibull_result_step_points_at_something_the_results_draw(selector):
-    """The results card is built by the script once a fit is shown, so its
-    targets aren't in the served page: they are what renderAnalysisResult and
-    the builders it calls give their parts."""
-    source = "\n".join(
-        _function_body(name)
-        for name in (
-            "renderAnalysisResult",
-            "legend",
-            "buildTargetAgePanel",
-            "buildAnalysisCharts",
-            "buildEventProcessingTable",
-            "buildReportBar",
-        )
-    )
-    match = re.fullmatch(r"([#.])([\w-]+)", selector)
-    assert match, f"{selector!r} is not a single id or class; this test can't check it"
-    kind, name = match.groups()
-    if kind == "#":
-        # Given as an attribute, or as the id argument that ends a panel() call.
-        assert f'id: "{name}"' in source or f'"{name}"),' in source, selector
-    else:
-        assert re.search(rf'class: "[^"]*(?<![\w-]){re.escape(name)}(?![\w-])', source), selector
-
-
-def test_the_weibull_result_steps_follow_the_one_that_shows_a_fit():
-    """None of them has anything to light until the tour has opened a fit, so
-    they go straight after the step whose Next opens one, and only in a
-    Weibull tour."""
-    [results_step] = [
-        step for step in _analysis_steps("const ANALYSIS_RESULTS_TOUR_STEPS") if '"#lda-workspace"' in step
-    ]
-    assert "action: TOUR_MECHANISM_ACTION" in results_step
-    assert results_step.rstrip().endswith("...WEIBULL_RESULT_TOUR_STEPS,")
+def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
+    """Performing an analysis saves a run; showing somebody around must not."""
     source = ANALYSIS_JS.read_text(encoding="utf-8")
-    steps = re.search(r"const WEIBULL_RESULT_TOUR_STEPS = (.*?);\n", source, re.S)
-    assert steps, "WEIBULL_RESULT_TOUR_STEPS was not found"
-    assert "when: forType(ANALYSIS_TYPES.WEIBULL)" in steps.group(1)
+    for action in ("TOUR_EXAMPLE_ACTION", "TOUR_FIT_ACTION"):
+        body = re.search(rf"const {action} = \{{(.*?)\n  \}};", source, re.S)
+        assert body, f"{action} was not found"
+        assert "performAnalysis" not in body.group(1)
+        assert "weibull/save" not in body.group(1)
+        assert "openRankedFit" in body.group(1)
 
 
 def test_every_documentation_link_in_the_analysis_tour_opens_a_part_of_it(client):
@@ -238,110 +178,40 @@ def test_every_documentation_link_in_the_analysis_tour_opens_a_part_of_it(client
     assert response.status_code == 200
     page = response.get_data(as_text=True)
     fragments = sorted(set(re.findall(r'docsLink\("([\w-]+)"', source)))
-    assert len(fragments) >= 15
+    assert len(fragments) >= 5
     for fragment in fragments:
         assert f'id="{fragment}"' in page, f"#{fragment} isn't on the Documentation page"
 
 
-def test_the_analysis_tour_opens_saved_fits_rather_than_running_them():
-    """An editor's Pareto click runs and stores a fit; the tour's must not."""
-    source = ANALYSIS_JS.read_text(encoding="utf-8")
-    action = re.search(r"const TOUR_MECHANISM_ACTION = \{(.*?)\n  \};", source, re.S)
-    assert action, "TOUR_MECHANISM_ACTION was not found"
-    assert "runParetoMechanism(row, { savedOnly: true })" in action.group(1)
-
-
 def test_the_disposition_tour_has_steps():
-    assert len(_targets(ANALYSIS_JS, "const DISPOSITION_SETUP_TOUR_STEPS")) >= 3
-    assert len(_disposition_editor_targets()) >= 5
+    assert len(_disposition_targets()) >= 8
 
 
-@pytest.mark.parametrize("selector", _disposition_page_targets())
-def test_every_disposition_step_points_at_something_on_the_page(disposition_page, selector):
-    assert _on_page(disposition_page, selector)
+@pytest.mark.parametrize("selector", _disposition_targets())
+def test_every_disposition_step_points_at_something_on_the_page_or_the_form(disposition_page, selector):
+    """The disposition window's form is built by disposition_form.js once a work
+    order is picked, so a step about one of its parts points at a class the form
+    gives; every other target is in the served page."""
+    source = DISPOSITION_FORM_JS.read_text(encoding="utf-8")
+    assert _on_page(disposition_page, selector) or _drawn_by_script(source, selector), selector
 
 
-def _function_body(name):
-    source = ANALYSIS_JS.read_text(encoding="utf-8")
-    body = re.search(rf"\n  function {name}\([^)]*\) \{{\n(.*?)\n  \}}\n", source, re.S)
-    assert body, f"{name} was not found in life_data_analysis.js"
-    return body.group(1)
-
-
-def _disposition_editor_source():
-    return _function_body("renderDispositionEditor")
-
-
-@pytest.mark.parametrize("selector", _disposition_editor_targets())
-def test_every_disposition_editor_step_points_at_something_the_editor_draws(selector):
-    """The editor is built by the script once an asset is picked, so its targets
-    aren't in the served page: they are the ids renderDispositionEditor gives."""
-    match = re.fullmatch(r"#([\w-]+)", selector)
-    assert match, f"{selector!r} is not a single id; this test can't check it"
-    assert f'id: "{match.group(1)}"' in _disposition_editor_source()
-
-
-def test_the_disposition_editor_offers_its_tour_once_drawn():
-    assert "offerDispositionTour();" in _disposition_editor_source()
-
-
-def test_the_disposition_tour_picks_an_example_for_the_rows_showing():
-    """With no asset picked the editor steps have nothing to point at, so the
-    Asset Number step picks one -- whose table has rows for the Record Type, Rows
-    and search the page is set to, or the tour would light an empty one."""
-    [asset_step] = [
-        step for step in _analysis_steps("const DISPOSITION_SETUP_TOUR_STEPS") if '"#lda-asset-field"' in step
-    ]
-    assert 'label: "Pick an example ►"' in asset_step
-    # A search still in its debounce is applied first, or the example would be
-    # picked for the last search and its table reloaded for the new one.
-    assert asset_step.index("await flushDispositionSearch();") < asset_step.index(
-        "return pickTourExampleAsset(dispositionTourExampleUrl());"
-    )
-    assert "flushDispositionSearch = () => {" in _function_body("initDispositionPage")
-    url = _function_body("dispositionTourExampleUrl")
-    assert "/disposition-tour-example?" in url
-    for control in ("state.dispositionKind", "state.dispositionScope", "state.dispositionSearch"):
-        assert control in url, control
-
-
-def test_the_disposition_editor_leaves_the_scrolling_to_an_open_tour():
-    """The tour draws the editor for its example, then shows the Asset Number
-    step again; the editor's own glide into view would carry that step away."""
-    source = _disposition_editor_source()
-    guard = source.index("if (!(window.gremlinTour && window.gremlinTour.isOpen())) {")
-    assert guard < source.index("card.scrollIntoView(")
+def test_the_disposition_tour_picks_an_example_before_the_windows():
+    """With no asset picked the two windows are hidden, so the asset step picks one."""
+    [asset_step] = [step for step in _steps(DISPOSITION_JS, "const DISPOSITION_TOUR_STEPS") if '"#lda-asset-field"' in step]
+    assert "action: TOUR_PICK_EXAMPLE" in asset_step
+    assert "/disposition-tour-example" in DISPOSITION_JS.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
-    "function",
+    "page_name, button, own_script",
     [
-        "endLoading",  # the loading veil
-        "openModal",  # the unsaved-changes question
-        "closeAssetDropdown",  # the Asset Number list
-        "buildTaxonomyCombobox",  # a failure mode / mechanism list in the table
-        "closeColumnMenu",  # a column's menu
-        "wireExcelHelpDialog",  # the Excel explainer
-        "initDispositionPage",  # the search box
-        "wireDispositionTour",  # a pointer held down
-        "startDispositionTour",  # another tour
+        ("home_page", "home-tour-btn", "js/home.js"),
+        ("analysis_page", "analysis-tour-btn", "js/life_data_analysis.js"),
+        ("disposition_page", "disposition-tour-btn", "js/disposition.js"),
     ],
 )
-def test_an_owed_disposition_tour_is_tried_again_when_its_way_clears(function):
-    """A tour that offers itself while something is in its way is owed, not
-    dropped, and only starts if what cleared the way asks for it again."""
-    assert "startOwedDispositionTour" in _function_body(function)
-
-
-@pytest.mark.parametrize(
-    "page_name, button",
-    [
-        ("home_page", "home-tour-btn"),
-        ("analysis_page", "analysis-tour-btn"),
-        ("disposition_page", "disposition-tour-btn"),
-    ],
-)
-def test_each_tour_can_be_reopened_and_has_its_overlay(request, page_name, button):
+def test_each_tour_can_be_reopened_and_has_its_overlay(request, page_name, button, own_script):
     """It opens by itself only once, so the button is the only way back in."""
     page = request.getfixturevalue(page_name)
     assert f'id="{button}"' in page
@@ -350,7 +220,6 @@ def test_each_tour_can_be_reopened_and_has_its_overlay(request, page_name, butto
     assert "css/page_tour.css" in page
     # The steps are handed over by the page's own script, so the engine has to
     # be loaded ahead of it.
-    own_script = "js/home.js" if page_name == "home_page" else "js/life_data_analysis.js"
     assert page.index("js/page_tour.js") < page.index(own_script)
 
 

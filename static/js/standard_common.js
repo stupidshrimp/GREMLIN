@@ -1,13 +1,13 @@
-/* What the work-order disposition standard's two pages share: the DOM and network
- * helpers, the banner, toast and loading veil (styled by life_data_analysis.css),
- * and the Asset Number combobox. Exposed as window.GremlinStandard, loaded before
- * wo_disposition.js and population_analysis.js.
+/* What Life Data Analysis's two pages share: the DOM and network helpers, the
+ * banner, toast and loading veil (styled by life_data_analysis.css), and the
+ * Asset Number combobox. Exposed as window.GremlinStandard, loaded before
+ * disposition_form.js and the page's own script (disposition.js or
+ * life_data_analysis.js).
  */
 (function () {
   "use strict";
 
   const API = "/life-data-analysis/api";
-  const STANDARD_API = `${API}/standard`;
   // Whether this browser session may write. Rendered by the server; the API
   // enforces the same rule on its own, this only keeps the page from offering an
   // action that would be refused.
@@ -56,11 +56,13 @@
     }
     if (!response.ok) {
       const message = (data && data.error) || `Request failed (${response.status}).`;
-      if ((response.status === 401 || response.status === 403) && window.gremlinToast) {
-        window.gremlinToast(message);
-      }
       const error = new Error(message);
       error.payload = data;
+      if ((response.status === 401 || response.status === 403) && window.gremlinToast) {
+        // Said once, by the site's own toast: the caller need not say it again.
+        window.gremlinToast(message);
+        error.toastShown = true;
+      }
       throw error;
     }
     return data;
@@ -72,6 +74,32 @@
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body || {}),
     });
+
+  // GET a file and hand it to the browser as a download, named as the server names it.
+  async function download(url, fallbackName, options) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      let message = `Request failed (${response.status}).`;
+      try {
+        const data = await response.json();
+        if (data && data.error) message = data.error;
+      } catch (err) {
+        /* not JSON: keep the generic message */
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = (match && match[1]) || fallbackName || "download";
+    const href = URL.createObjectURL(blob);
+    const link = el("a", { href, download: filename });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(href);
+    return filename;
+  }
 
   function showBanner(message, kind) {
     const banner = $("lda-status");
@@ -244,13 +272,14 @@
 
   window.GremlinStandard = {
     API,
-    STANDARD_API,
     CAN_EDIT,
     $,
     el,
     svg,
+    requestJson,
     getJson,
     postJson,
+    download,
     showBanner,
     clearBanner,
     showToast,

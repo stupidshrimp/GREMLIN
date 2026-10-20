@@ -4001,11 +4001,19 @@ class LifeDataService:
         token = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(asset_number)).strip("_")
         return token or "asset"
 
-    def next_weibull_report_number(self, asset_number: str, *, analysis_label: str = "", weibull_result_id: int | None = None) -> tuple[str, int]:
+    def next_weibull_report_number(
+        self,
+        asset_number: str,
+        *,
+        analysis_label: str = "",
+        weibull_result_id: int | None = None,
+        population_weibull_analysis_id: int | None = None,
+    ) -> tuple[str, int]:
         """Reserve the next ``REL-WBL-RPT-<asset>-00x`` report number for an asset.
 
         The sequence increments per asset so repeat reports get -001, -002, … The
-        reservation is recorded in ``weibull_report_log`` so numbers are never reused.
+        reservation is recorded in ``weibull_report_log`` so numbers are never reused,
+        with the run it reports.
         """
 
         token = self._safe_asset_token(asset_number)
@@ -4018,10 +4026,12 @@ class LifeDataService:
             report_number = f"REL-WBL-RPT-{token}-{sequence_number:03d}"
             conn.execute(
                 """
-                INSERT INTO weibull_report_log(asset_number, report_number, sequence_number, analysis_label, weibull_result_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO weibull_report_log(asset_number, report_number, sequence_number, analysis_label, weibull_result_id,
+                    population_weibull_analysis_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (asset_number, report_number, sequence_number, analysis_label or None, weibull_result_id),
+                (asset_number, report_number, sequence_number, analysis_label or None, weibull_result_id,
+                 population_weibull_analysis_id),
             )
         return report_number, sequence_number
 
@@ -4169,6 +4179,7 @@ class LifeDataService:
         charts: list[dict[str, Any]],
         *,
         target_age_hours: float | None = None,
+        population: dict[str, Any] | None = None,
     ) -> str:
         """Build the ``word/document.xml`` body XML for a Weibull report.
 
@@ -4176,6 +4187,10 @@ class LifeDataService:
         population and grouping level, the life basis and censoring, the fitted values
         and reliability outputs, the recommendation, and the limitations -- plus the lives
         themselves, so the report can be checked without GREMLIN to hand.
+
+        ``population`` is a renewal-stream run of the disposition standard: the report
+        then states its population definition string, the streams it pooled and its
+        validity warnings in place of a grouping level.
         """
 
         def fmt(value: Any, suffix: str = "") -> str:
@@ -4255,16 +4270,28 @@ class LifeDataService:
         )
         parts.append(self._docx_paragraph(f"Asset Number: {asset_number}", bold=True))
         parts.append(self._docx_paragraph(f"Failure population: {analysis_label}"))
-        parts.append(
-            self._docx_paragraph(
-                "Grouping level: "
-                + (
-                    "Failure mode, the fallback grouping used when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1)"
-                    if is_mode
-                    else "Failure mechanism"
+        if population is not None:
+            parts.append(self._docx_paragraph(f"Population definition: {population.get('population_definition') or 'Not recorded'}"))
+            streams = population.get("streams") or []
+            parts.append(self._docx_paragraph(
+                "Renewal streams pooled: "
+                + ("; ".join(
+                    f"{stream.get('location')} · {stream.get('component_name') or stream.get('component')} "
+                    f"({stream.get('failures', 0)} failures, {stream.get('suspensions', 0)} suspensions)"
+                    for stream in streams
+                ) or "None")
+            ))
+        if population is None:
+            parts.append(
+                self._docx_paragraph(
+                    "Grouping level: "
+                    + (
+                        "Failure mode, the fallback grouping used when the records cannot support one mechanism (REL-WBL-DAT-002 §7.1)"
+                        if is_mode
+                        else "Failure mechanism"
+                    )
                 )
             )
-        )
         if is_mode:
             parts.append(self._docx_paragraph(f"Why a failure mode rather than a mechanism: {result.get('fallback_rationale') or 'Not recorded'}"))
         parts.append(self._docx_paragraph(f"Report generated: {generated_on} {zone_name}"))
@@ -4282,8 +4309,13 @@ class LifeDataService:
             ["Analysis cutoff", f"{cutoff_text()}, {cutoff_source}"],
             [
                 "Lives",
-                f"{total} in total: {failures} end in a failure, {censored} right-censored "
-                f"({result.get('pm_reset_censored_count', 0)} at a PM reset, {result.get('current_life_censored_count', 0)} current life)",
+                f"{total} in total: {failures} end in a failure, {censored} suspended "
+                + (
+                    f"({result.get('suspension_count', 0)} renewed by other work, "
+                    f"{result.get('current_life_censored_count', 0)} still in service at the cutoff)"
+                    if population is not None
+                    else f"({result.get('pm_reset_censored_count', 0)} at a PM reset, {result.get('current_life_censored_count', 0)} current life)"
+                ),
             ],
         ]
         parts.append(self._docx_table(["Item", "Value"], basis_rows))
@@ -4312,6 +4344,20 @@ class LifeDataService:
                     ]
                 )
         parts.append(self._docx_table(["Parameter", "Value"], parameter_rows))
+
+        if population is not None:
+            sensitivity = population.get("sensitivity_fit") or {}
+            if sensitivity.get("fitted"):
+                parts.append(self._docx_paragraph(
+                    f"Sensitivity: with failures of unknown mechanism counted as failures rather than suspensions, "
+                    f"beta = {fmt(sensitivity.get('beta'))} and eta = {fmt(sensitivity.get('eta'), ' hours')} "
+                    f"({sensitivity.get('failure_count')} failures)."
+                ))
+            warnings = population.get("warnings") or []
+            if warnings:
+                parts.append(self._docx_heading("Validity Warnings", level=2))
+                for warning in warnings:
+                    parts.append(self._docx_paragraph(f"• {warning.get('title')}: {warning.get('message')}"))
 
         if charts:
             parts.append(self._docx_heading("Analysis Graphs", level=2))
@@ -4360,13 +4406,15 @@ class LifeDataService:
             ends_in = {
                 "COMPLETED_FAILURE_LIFE": "Failure",
                 "PM_RESET_CENSORED_LIFE": "PM reset (censored)",
+                "SUSPENDED_LIFE": "Renewed by other work (suspension)",
                 "RIGHT_CENSORED_LIFE": "Cutoff (current life)",
             }.get(str(obs.get("observation_type") or ""), str(obs.get("observation_type") or ""))
             note = str(obs.get("weibull_life_note") or "")
             if obs.get("data_quality_assumption_flag"):
                 note = f"{note}. {obs['data_quality_assumption_flag']}" if note else str(obs["data_quality_assumption_flag"])
             observation_rows.append(
-                [
+                ([str(obs.get("stream") or "—")] if population is not None else [])
+                + [
                     str(index),
                     str(obs.get("source_task_id") or "—"),
                     ends_in,
@@ -4378,20 +4426,20 @@ class LifeDataService:
                     note,
                 ]
             )
+        observation_headers = ["#", "Task ID", "Ends in", "Start", "End or cutoff", "Raw h", "Life h", "δ", "Note"]
+        if population is not None:
+            observation_headers = ["Stream", *observation_headers]
         if not observation_rows:
-            observation_rows = [["—"] * 8 + ["No observations were saved with this result."]]
-        parts.append(
-            self._docx_table(
-                ["#", "Task ID", "Ends in", "Start", "End or cutoff", "Raw h", "Life h", "δ", "Note"],
-                observation_rows,
-                font_half_points=16,
-            )
-        )
+            observation_rows = [["—"] * (len(observation_headers) - 1) + ["No observations were saved with this result."]]
+        parts.append(self._docx_table(observation_headers, observation_rows, font_half_points=16))
 
         parts.append(self._docx_heading("Traceability", level=2))
         parts.append(
             self._docx_paragraph(
-                f"Weibull result {result.get('result_id')}, run {when(result.get('run_datetime'))}, method "
+                f"{'Population analysis' if population is not None else 'Weibull result'} {result.get('result_id')}, "
+                f"run {when(result.get('run_datetime') or result.get('run_at'))}"
+                + (f" by {result['run_by']}" if population is not None and result.get("run_by") else "")
+                + ", method "
                 f"{result.get('method_version') or 'not recorded'}, {result.get('software_version') or 'software version not recorded'}."
             )
         )

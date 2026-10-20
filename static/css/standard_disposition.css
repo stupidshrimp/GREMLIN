@@ -1,5 +1,7 @@
-/* The work-order disposition standard's two pages: the editor and Analysis
-   Population. Built on life_data_analysis.css (fields, tables, banners, the
+/* Life Data Analysis's two pages, read from the work-order disposition standard:
+   Disposition (the list and the disposition window side by side) and Perform an
+   Analysis (the population selector, matrix, warnings and the record editor that
+   opens over it). Built on life_data_analysis.css (fields, tables, banners, the
    loading veil), which both pages load first; only what is new lives here. Every
    colour is a theme token, so both pages follow the light and dark themes. */
 
@@ -121,7 +123,7 @@ table.lda-table td.std-nowrap { white-space: nowrap; }
 .std-code-table tr.is-retired td { opacity: 0.6; }
 .std-code-table td.std-code-name { min-width: 220px; }
 
-/* ---- Analysis Population ------------------------------------------------- */
+/* ---- Perform an Analysis: the population --------------------------------- */
 .std-selector {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
@@ -237,4 +239,45 @@ table.lda-table td.std-suspension { color: var(--success-ink); font-weight: 600;
 @media (max-width: 720px) {
   .std-controls,
   .std-form { grid-template-columns: 1fr; }
+  .lda-modal.lda-record-modal { padding: 1rem; }
 }
+
+/* ---- Disposition page --------------------------------------------------- */
+.std-excel { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; align-items: center; }
+
+.lda-population-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+  align-items: flex-end;
+  margin-top: 0.9rem;
+}
+.lda-population-row #lda-categories-field { flex: 1 1 340px; }
+.lda-population-row .std-checklist { max-height: none; }
+.lda-drill { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.8rem 0 0.6rem; }
+.lda-drill .lda-hint { margin: 0; }
+button.lda-drill-chip { cursor: pointer; font: inherit; font-size: 0.78rem; font-weight: 600; }
+button.lda-drill-chip:hover { background: var(--forest-100); }
+
+.lda-matrix-panel > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+.lda-matrix-panel[open] > summary { margin-bottom: 0.4rem; }
+
+.lda-rankings .lda-ranking-link {
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.lda-rankings .lda-ranking-link:hover { text-decoration-style: solid; }
+
+/* The disposition form opened over Perform an Analysis: the same form as the
+   Disposition page's right-hand window, given room. */
+.lda-modal.lda-record-modal { width: min(920px, 100%); max-height: 92vh; position: relative; }
+.lda-record-modal .lda-record-close { position: absolute; top: 0.7rem; right: 0.8rem; }
+.lda-record-modal .std-record-text h3 { padding-right: 2.4rem; }
+.lda-empty-result h2 { margin-top: 0; }

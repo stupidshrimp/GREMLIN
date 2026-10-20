@@ -13,14 +13,12 @@
 * it is report-only: the Weibull fit's lives do not change.
 """
 
-import importlib
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
 
 from services.life_data_service import REPEAT_FIX_MIN_INTERVALS, LifeDataService
 
@@ -237,35 +235,6 @@ class RepeatFixRateTests(unittest.TestCase):
 
 
 # ---- the endpoint --------------------------------------------------------
-
-
-def _client(monkeypatch, tmp_path):
-    monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
-    monkeypatch.setenv("GREMLIN_ACCESS_DB_PATH", str(tmp_path / "accesscontrol.db"))
-    import app
-
-    module = importlib.reload(app)
-    return module, module.app.test_client()
-
-
-def test_the_endpoint_returns_the_analysis_with_the_window_asked_for(monkeypatch, tmp_path):
-    module, client = _client(monkeypatch, tmp_path)
-    seed = _Seeded(module.get_life_data_service())
-    seed.add("1", _utc(2025, 3, 3, 8), seed.seal)
-    seed.add("2", _utc(2025, 3, 4, 8), seed.seal)
-
-    payload = client.get("/life-data-analysis/api/repeat-fixes?asset=A-1").get_json()["repeat_fixes"]
-    assert (payload["window_hours"], payload["repeats"]) == (24.0, 1)
-    payload = client.get("/life-data-analysis/api/repeat-fixes?asset=A-1&window_hours=8").get_json()["repeat_fixes"]
-    assert (payload["window_hours"], payload["repeats"]) == (8.0, 0)
-
-
-@pytest.mark.parametrize("window", ["abc", "0", "-4", "721", "nan", "inf"])
-def test_the_endpoint_refuses_a_window_it_cannot_use(monkeypatch, tmp_path, window):
-    _, client = _client(monkeypatch, tmp_path)
-    response = client.get(f"/life-data-analysis/api/repeat-fixes?asset=A-1&window_hours={window}")
-    assert response.status_code == 400
-    assert "repeat window" in response.get_json()["error"]
 
 
 def test_the_standards_example_is_what_gremlin_counts(tmp_path):

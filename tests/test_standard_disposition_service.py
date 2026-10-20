@@ -14,6 +14,7 @@ from pathlib import Path
 
 from services import disposition_standard as std
 from services.life_data_service import LifeDataService
+from services.population_analysis_service import PopulationAnalysisService
 from services.standard_disposition_service import StandardDispositionService
 
 PFS = "4002"
@@ -73,6 +74,7 @@ class StandardDispositionFixture(unittest.TestCase):
         self.db_path = Path(tmp.name) / "gremlin.db"
         self.life = LifeDataService(self.db_path, refresh_on_startup=False)
         self.std = StandardDispositionService(self.life)
+        self.analysis = PopulationAnalysisService(self.life, self.std)
         with self.life.write_connection() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
             conn.execute(
@@ -115,7 +117,7 @@ class StandardDispositionFixture(unittest.TestCase):
 
     def weibull(self, **selection):
         selection.setdefault("assets", [PFS])
-        return self.std.run_weibull(selection, analysis_cutoff=date(2024, 12, 31))
+        return self.analysis.run_weibull(selection, analysis_cutoff=date(2024, 12, 31))
 
     def roles(self, result, component="Filter"):
         return {
@@ -199,7 +201,7 @@ class FittingTests(StandardDispositionFixture):
     def test_a_population_with_enough_failures_is_fitted_saved_and_read_back(self):
         self.monthly_failures(8)
 
-        result = self.std.run_weibull(
+        result = self.analysis.run_weibull(
             {"assets": [PFS], "locations": [S09], "components": ["Filter"], "failure_mechanisms": ["CONT"]},
             analysis_cutoff=date(2024, 12, 31),
             save=True,
@@ -211,19 +213,21 @@ class FittingTests(StandardDispositionFixture):
         self.assertEqual(fit["failure_count"], 8)
         self.assertGreater(fit["beta"], 0)
         self.assertIsNotNone(result["analysis_id"])
-        saved = self.std.load_saved_analysis(result["analysis_id"])
+        saved = self.analysis.load_saved(result["analysis_id"])
         self.assertEqual(saved["population_definition"], result["population_definition"])
         self.assertEqual(saved["fit"]["beta"], fit["beta"])
-        listed = self.std.saved_analyses(asset_number=PFS)
+        self.assertEqual(saved["beta_mle"], fit["beta"])
+        self.assertTrue(saved["method_current"] and saved["schedule_current"] and saved["time_zone_current"])
+        listed = self.analysis.saved_analyses(asset_number=PFS)
         self.assertEqual([row["analysis_id"] for row in listed], [result["analysis_id"]])
-        self.assertEqual(self.std.saved_analyses(asset_number="3101"), [])
+        self.assertEqual(self.analysis.saved_analyses(asset_number="3101"), [])
 
     def test_too_few_failures_lists_the_intervals_but_fits_nothing(self):
         self.monthly_failures(3)
         result = self.weibull(locations=[S09], components=["Filter"], failure_mechanisms=["CONT"])
         self.assertFalse(result["fit"]["fitted"])
         self.assertIn("at least 5 lives", result["fit"]["reason"])
-        self.assertEqual(sum(1 for i in result["intervals"] if i["end_type"] == "FAILURE"), 3)
+        self.assertEqual(sum(row["failure_indicator"] for row in result["observations"]), 3)
         self.assertIn("SMALL_N", {warning["code"] for warning in result["warnings"]})
 
     def test_an_unknown_mechanism_is_fitted_both_ways(self):
@@ -240,8 +244,9 @@ class FittingTests(StandardDispositionFixture):
         self.life.set_asset_weibull_schedule(PFS, "CONTINUOUS", reason="Runs weekends", changed_by="tim")
         result = self.weibull(locations=[S09], components=["Filter"], failure_mechanisms=["CONT"])
         self.assertEqual(result["streams"][0]["schedule_name"], "Continuous, every clock hour")
-        interval = result["intervals"][0]
-        self.assertAlmostEqual(interval["life_hours"], interval["raw_days"] * 24, places=3)
+        life = result["observations"][0]
+        self.assertAlmostEqual(life["life_hours_for_weibull"], life["life_hours_raw_elapsed"], places=3)
+        self.assertEqual(result["life_basis"]["schedule_name"], "Continuous, every clock hour")
 
     def test_a_repair_logged_later_moves_the_renewal_to_its_completion(self):
         # Bearings found bad on Feb 1, replaced on a WO finished Feb 11: the next
@@ -256,9 +261,10 @@ class FittingTests(StandardDispositionFixture):
             {"mapped_record_id": 700003, **coded(**bearing)},
         ])
         result = self.weibull(locations=[S09], components=["Bearing"])
-        [life] = [i for i in result["intervals"] if i["end_type"] == "FAILURE"]
-        self.assertEqual(life["start"][:10], "2024-02-11")
-        self.assertEqual(round(life["raw_days"]), 30)
+        [life] = [row for row in result["observations"] if row["failure_indicator"]]
+        self.assertEqual(life["start_datetime"][:10], "2024-02-11")
+        self.assertEqual(round(life["life_hours_raw_elapsed"] / 24), 30)
+        self.assertEqual(life["start_task_id"], "700001")
         self.assertEqual(self.std.disposition_record(700002)["disposition"]["linked_task_id"], "700001")
 
 
@@ -422,9 +428,9 @@ class MigrationTests(StandardDispositionFixture):
     def test_migrated_failures_are_left_out_of_the_life_engine_and_counted(self):
         self.add_record(1, PFS, "One", "2024-01-01", "2024-01-01")
         self.legacy(1, "INCLUDED_FAILURE", mode="M", mechanism="Burner fault")
-        result = self.reopen().run_weibull({"assets": [PFS]}, analysis_cutoff=date(2024, 12, 31))
+        result = PopulationAnalysisService(self.reopen().life).run_weibull({"assets": [PFS]}, analysis_cutoff=date(2024, 12, 31))
         self.assertIn("UNCODED_RECORDS", {warning["code"] for warning in result["warnings"]})
-        self.assertEqual(result["intervals"], [])
+        self.assertEqual(result["observations"], [])
 
 
 class PatternViewTests(StandardDispositionFixture):
@@ -432,59 +438,71 @@ class PatternViewTests(StandardDispositionFixture):
         super().setUp()
         self.load_acceptance()
 
+    def summary(self, selection, **options):
+        return self.analysis.summary({"assets": [PFS], **selection}, **options)
+
     def test_the_pareto_counts_and_sums_downtime_with_cause_underneath(self):
-        patterns = self.std.patterns({"assets": [PFS], "categories": ["FAILURE"]}, group_by="location")
-        rows = {row["key"]: row for row in patterns["pareto"]["rows"]}
+        summary = self.summary({"categories": ["FAILURE"]}, group_by="location")
+        rows = {row["key"]: row for row in summary["pareto"]["rows"]}
         self.assertEqual(rows[S09]["count"], 5)
         self.assertEqual(rows[S09]["downtime_hours"], 3.0 + 2.0 + 6.0 + 1.5 + 2.5)
         self.assertEqual({cause["key"]: cause["count"] for cause in rows[S09]["causes"]}, {"EXP-WEAR": 4, "UNK": 1})
-        self.assertEqual(patterns["pareto"]["next_group_by"], "component")
+        self.assertEqual(summary["pareto"]["next_group_by"], "component")
+        self.assertEqual(summary["pareto"]["selection_key"], "locations")
 
     def test_drilling_into_a_location_then_a_component(self):
-        patterns = self.std.patterns(
-            {"assets": [PFS], "locations": [S09], "components": ["Filter"], "categories": ["FAILURE"]},
-            group_by="failure_mechanism",
+        summary = self.summary(
+            {"locations": [S09], "components": ["Filter"], "categories": ["FAILURE"]}, group_by="failure_mechanism"
         )
-        self.assertEqual({row["key"]: row["count"] for row in patterns["pareto"]["rows"]}, {"CONT": 4, "DEFM": 1})
+        self.assertEqual({row["key"]: row["count"] for row in summary["pareto"]["rows"]}, {"CONT": 4, "DEFM": 1})
 
     def test_the_default_categories_leave_out_unreviewed_and_duplicates(self):
-        patterns = self.std.patterns({"assets": [PFS]}, group_by="category")
-        categories = {row["key"] for row in patterns["pareto"]["rows"]}
+        summary = self.summary({}, group_by="category")
+        categories = {row["key"] for row in summary["pareto"]["rows"]}
         self.assertEqual(categories, {"FAILURE", "PM_RESET", "NON_FAILURE", "EXTERNAL"})
 
     def test_a_held_record_reads_as_not_coded(self):
         self.add_record(1, PFS, "Something", "2024-08-01", "2024-08-01")
         self.std.save_dispositions([{"mapped_record_id": 1, **coded("HELD", disposition_note="No notes on the WO")}])
-        patterns = self.std.patterns({"assets": [PFS], "categories": ["HELD"]}, group_by="component")
-        self.assertEqual([row["label"] for row in patterns["pareto"]["rows"]], ["Not coded"])
+        summary = self.summary({"categories": ["HELD"]}, group_by="component")
+        self.assertEqual([row["label"] for row in summary["pareto"]["rows"]], ["Not coded"])
 
-    def test_the_trend_is_continuous_and_stacks_the_top_components(self):
-        patterns = self.std.patterns({"assets": [PFS], "categories": ["FAILURE"]}, period="quarter", top_n=1)
-        trend = patterns["trend"]
-        self.assertEqual(trend["periods"], ["2024-Q1", "2024-Q2", "2024-Q3"])
-        self.assertEqual(trend["series"][0]["key"], "Filter")
-        self.assertEqual(trend["series"][0]["counts"], [2, 2, 1])
-        self.assertTrue(trend["series"][-1]["label"].startswith("Other components"))
+    def test_the_trend_is_continuous_and_reads_the_pareto_dimension(self):
+        trend = self.summary({"categories": ["FAILURE"]}, group_by="component")["trend"]
+        self.assertEqual(trend["months"], ["2024-02", "2024-03", "2024-04", "2024-05", "2024-06", "2024-07"])
+        self.assertEqual(trend["monthly_counts"], [2, 2, 0, 1, 1, 1])
+        groups = {group["key"]: group for group in trend["groups"]}
+        self.assertEqual(groups["Filter"]["monthly_counts"], [1, 1, 0, 1, 1, 1])
+        self.assertTrue(trend["has_growth_window"])
+        self.assertEqual(trend["summary"]["most_frequent"]["key"], "Filter")
+        self.assertEqual(trend["summary"]["highest_downtime"]["key"], "Filter")
 
     def test_the_matrix_crosses_location_and_component(self):
-        matrix = self.std.patterns({"assets": [PFS], "categories": ["FAILURE"]})["matrix"]
+        matrix = self.summary({"categories": ["FAILURE"]})["matrix"]
         rows = [row["key"] for row in matrix["rows"]]
         columns = [column["key"] for column in matrix["columns"]]
         self.assertEqual(matrix["cells"][rows.index(S09)][columns.index("Filter")]["count"], 5)
         self.assertEqual(matrix["cells"][rows.index(S11)][columns.index("Nozzle")]["count"], 1)
 
     def test_the_date_window_reads_the_detection_date(self):
-        patterns = self.std.patterns(
-            {"assets": [PFS], "categories": ["FAILURE"]}, start=date(2024, 5, 1), end=date(2024, 6, 30)
-        )
-        self.assertEqual(sorted(record["mapped_record_id"] for record in patterns["records"]), [220477, 224611])
+        summary = self.summary({"categories": ["FAILURE"]}, start=date(2024, 5, 1), end=date(2024, 6, 30))
+        self.assertEqual(sorted(record["mapped_record_id"] for record in summary["trend"]["records"]), [220477, 224611])
+        self.assertTrue(summary["population_definition"].endswith("window=2024-05-01..2024-06-30"))
+
+    def test_readiness_counts_what_the_analyses_can_use(self):
+        readiness = self.summary({})["readiness"]
+        self.assertEqual(readiness["failures"], 7)
+        self.assertEqual(readiness["pm_resets"], 3)
+        self.assertEqual(readiness["not_reviewed"], 3)
+        self.assertEqual(readiness["uncoded"], 0)
 
     def test_options_list_what_is_there_to_choose(self):
-        options = self.std.population_options([PFS])
+        options = self.analysis.options([PFS])
         locations = {option["value"] for option in options["dimensions"]["locations"]}
         self.assertEqual(locations, {PFS, S05, S09, S11})
         components = {option["value"] for option in options["dimensions"]["components"]}
         self.assertTrue({"Filter", "Burner", "Electrical", "Nozzle"} <= components)
+        self.assertEqual([c["value"] for c in options["categories"] if c["default"]], ["FAILURE"])
 
 
 if __name__ == "__main__":

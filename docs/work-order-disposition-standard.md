@@ -10,17 +10,64 @@ confirm or change those choices.
 | Part | File |
 |---|---|
 | The rules: categories, seed code lists, field validation, derived fields, legacy migration map, the renewal-stream life engine, validity warnings, the population definition string | `services/disposition_standard.py` (no database; unit-tested in `tests/test_disposition_standard_engine.py`) |
-| Tables and migration: `disposition_code`, `wo_disposition`, `population_weibull_analysis`; seeding; carrying REL dispositions over | `services/standard_disposition_schema.py` (called from `LifeDataService.ensure_schema` and after every save on the old Disposition screen) |
-| Reads and writes against GREMLIN.db: code-list editing, the editor's rows and saves, the analysis population, Pareto / trend / matrix, the Weibull run, saved runs | `services/standard_disposition_service.py` (tested in `tests/test_standard_disposition_service.py`, including the spec §8 acceptance cases) |
-| API | `app.py`, `/life-data-analysis/api/standard/...` (tested in `tests/test_standard_disposition_api.py`) |
-| Work-Order Disposition page (editors) | `/life-data-analysis/disposition/standard` — `templates/wo_disposition.html`, `static/js/wo_disposition.js` |
-| Analysis Population page (any account) | `/life-data-analysis/population-analysis` — `templates/population_analysis.html`, `static/js/population_analysis.js` |
+| Tables and migration: `disposition_code`, `wo_disposition`, `population_weibull_analysis`, `population_weibull_adjustment`; seeding; carrying REL dispositions over | `services/standard_disposition_schema.py` (called from `LifeDataService.ensure_schema`) |
+| Code lists, the Disposition page's rows and saves (with the record class), and its Excel workbook | `services/standard_disposition_service.py` (tested in `tests/test_standard_disposition_service.py`, including the spec §8 acceptance cases, and `tests/test_population_analysis_service.py`) |
+| Perform an Analysis: the population, readiness, Pareto, matrix, trend, downtime drivers, PM effectiveness, repeat fixes, the renewal-stream Weibull, saved runs, adjustments, rankings, the numbered report | `services/population_analysis_service.py` (tested in `tests/test_population_analysis_service.py`) |
+| API | `app.py`, `/life-data-analysis/api/...` (tested in `tests/test_standard_disposition_api.py`) |
+| **Disposition** (editors) | `/life-data-analysis/disposition` — `templates/disposition.html`, `static/js/disposition.js` |
+| **Perform an Analysis** (any account that may see Life Data Analysis) | `/life-data-analysis/perform-analysis` — `templates/perform_analysis.html`, `static/js/life_data_analysis.js` |
+| The disposition form both pages use | `static/js/disposition_form.js` (the Disposition page's right-hand window, and the editor that opens over Perform an Analysis from any task ID in its tables) |
 
-Both pages are linked from the existing Disposition and Perform an Analysis pages
-and follow Life Data Analysis's access rules: reads for anyone who may see Life
-Data Analysis, every write (a disposition, a code, a saved Weibull run) for
-editors, recorded against the account. A Weibull fit can be previewed by any
-reader; saving it needs an editor.
+There is one page for each job. **Disposition** shows an asset's work orders on
+the left and the one picked on the right, in the disposition form; Save & next
+moves down the list. The same records can be dispositioned offline in a workbook
+(Download Excel / Upload Excel), and the code lists are edited from there.
+**Perform an Analysis** analyses one population: an asset, narrowed by location,
+component, mechanism, mode, cause and action (in the selector, or by clicking a
+Pareto bar or a matrix cell, which drills down location → component →
+mechanism), by disposition category and by date. Every view on it — Pareto,
+failure trend, downtime drivers, PM effectiveness, repeat fixes and the Weibull —
+reads that same population.
+
+Both pages follow Life Data Analysis's access rules: reads for anyone who may see
+Life Data Analysis, every write (a disposition, a code, a saved Weibull run, an
+adjustment, a numbered report) for editors, recorded against the account. A
+Weibull fit can be previewed by any reader; saving it needs an editor.
+
+### The analyses, on the population
+
+* **Readiness** counts the work orders in reach: dispositioned, not reviewed,
+  migrated and still to confirm, failures and PM resets in the population, and
+  failures or PM resets with no component (which no life can use).
+* **Pareto** — one bar per value of the dimension chosen (location, component,
+  mechanism, mode, cause, action, category, detection method, asset), ranked by
+  count or downtime, each bar split by failure cause.
+* **Failure trend** — the population's work orders per month (continuous axis),
+  with most frequent / highest downtime / fastest growing / most improved read
+  for the Pareto's dimension (growth: last three months against the three
+  before, once there are six).
+* **Downtime drivers** — total, average, median and longest stop; downtime per
+  month; the distribution of stop lengths (0–1, 1–4, 4–8, 8–24, 24+ h); downtime
+  by location; the ten longest stops.
+* **PM effectiveness** — each completed PM at a location of the population (a
+  PM_RESET that renewed one of its components, or PM-class work there that renewed
+  nothing) paired with the next failure of the population found at that location.
+  Ratings as before: Excellent ≥ 180 days, Good ≥ 90, Fair ≥ 30, else Poor.
+* **Repeat fix rate** — item by item (location + component), a failure is a
+  repeat when it is found within the window (24 scheduled hours by default) of the
+  previous failure's repair being finished, on that location's Weibull schedule.
+* **Weibull** — the renewal-stream fit below, shown with its population
+  definition, validity warnings, the items pooled, the sensitivity fit, the
+  charts, the interpretation summary, the lives and the event processing table.
+  The latest saved fit of exactly the population on screen opens by itself;
+  Perform Analysis (editors) fits and saves a new run, Preview the fit (viewers)
+  fits without saving. Adjusted beta and eta are kept beside a saved run, with the
+  reason. **Generate Weibull Report** writes the numbered Word report of a saved
+  run with its population definition, items pooled and warnings.
+* **Rankings** — the latest saved fit of each one-component population the
+  asset reaches, with at least 5 failure lives: by beta, and by the chance that
+  one of its items in service fails in the next N weeks
+  (1 − Π R(tᵢ + Δᵢ) / R(tᵢ) over the items still in service at the run's cutoff).
 
 ## Data model
 
@@ -49,6 +96,11 @@ reader; saving it needs an editor.
 * **`population_weibull_analysis`** — every saved run with its population
   definition string (spec §5.4), the selection, window, method version and the full
   result as it was shown.
+* **`population_weibull_adjustment`** — an editor's adjusted beta and eta for a
+  saved run, with who and why, kept beside the MLE rather than over it.
+* `wo_disposition.record_class` keeps the record class each disposition was
+  made with, and `weibull_report_log.population_weibull_analysis_id` the run a
+  numbered report was made of.
 
 The categories are fixed in code rather than a table: the engine's rules are
 written against them.
@@ -126,17 +178,32 @@ written against them.
 16. **What an asset includes.** Selecting an asset reaches the work orders logged
     on it, those logged on its sub-assets, and those dispositioned to a location
     under it.
-17. **Pattern views** default to the categories §2.1 marks "pattern views: yes"
-    (FAILURE, PM_RESET, EXTERNAL, NON_FAILURE, HELD) and can be narrowed. They date
-    a record by its event date in the plant time zone. A HELD record's coded fields
-    read as "Not coded".
+17. **Pattern views** read the categories ticked on Perform an Analysis, which
+    starts at FAILURE alone; a request that names none gets the categories §2.1
+    marks "pattern views: yes" (FAILURE, PM_RESET, EXTERNAL, NON_FAILURE, HELD).
+    They date a record by its event date in the plant time zone. A HELD record's
+    coded fields read as "Not coded".
+18. **Record class.** The disposition form carries the work order's record class
+    (corrective, PM, inspection, …). A correction is kept on the work order itself
+    (`mapped_cmms_record.record_class_final`, where every screen reads it) and on
+    the disposition; it decides the detection method (periodic maintenance).
+19. **Excel.** The workbook holds the work orders *Show* is set to, one row each,
+    with the record columns read-only and the disposition columns (category,
+    record class, sub-asset, the five codes, evidence, renewed items, qty, item
+    detail, linked WO, note) as dropdowns where they come from a list. On upload,
+    only rows whose disposition columns differ from what is saved are saved,
+    through the same checks as the form; one refused row refuses the upload,
+    named by sheet row and task.
+20. **Rankings** take only one-component populations, so a beta is about one kind
+    of item, and only the latest saved run of each population.
 
-## The old screens
+## The REL screens
 
-The REL Disposition page and Perform an Analysis are unchanged and keep working,
-including their saved fits and reports. Nothing reads the standard's tables but the
-two new pages. When the code lists are signed off and the migrated records
-confirmed, the old screens can be retired.
+The REL Disposition table and the failure-mode/mechanism Perform an Analysis
+have been replaced by the two pages above. Their tables are kept: every REL
+disposition was carried over as a migrated standard disposition (decision 7),
+flagged for confirmation, and their saved fits and report log stay in the
+database. Nothing in the application writes them any more.
 
 ## Open questions (spec §9 and from the above)
 

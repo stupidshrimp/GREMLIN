@@ -1,15 +1,15 @@
-"""The work-order disposition standard's endpoints and pages.
+"""Life Data Analysis's endpoints and pages, read from the work-order disposition standard.
 
-Reads are open to whoever may see Life Data Analysis, as the rest of its API is;
-every write -- a disposition, a code, a saved Weibull run -- needs an editor, and
-records who made it.
+Reads are open to whoever may see Life Data Analysis; every write -- a
+disposition, a code, a saved Weibull run, an adjustment, a numbered report --
+needs an editor, and records who made it.
 """
 
 import importlib
 
 from tests.test_standard_disposition_service import ACCEPTANCE, ASSET_IDS, PFS, S09
 
-API = "/life-data-analysis/api/standard"
+API = "/life-data-analysis/api"
 
 
 def _app(monkeypatch, tmp_path):
@@ -84,27 +84,84 @@ def test_an_editor_dispositions_analyses_and_saves(monkeypatch, tmp_path):
     assert response.status_code == 200, response.get_json()
     assert response.get_json()["saved"] == len(known)
 
+    # The Disposition tour's example is the asset with the most work orders.
+    assert editor.get(f"{API}/disposition-tour-example").get_json() == {"asset_number": PFS}
+
     record = editor.get(f"{API}/dispositions/record?mapped_record_id=175552").get_json()
     assert record["record"]["disposition"]["decided_by"] == "editor1"
     assert record["history"][0]["is_current"] == 1
 
     selection = {"assets": [PFS], "locations": [S09], "components": ["Filter"], "failure_mechanisms": ["CONT"]}
-    patterns = editor.post(f"{API}/patterns", json={"selection": selection, "group_by": "failure_mode"}).get_json()
-    # The filter PM is in the pattern views too, as found on inspection.
-    assert {row["key"] for row in patterns["pareto"]["rows"]} == {"FTS", "UST", "LOO", "DEG"}
+    summary = editor.post(f"{API}/summary", json={"selection": selection, "group_by": "failure_mode"}).get_json()
+    # The pattern views default to every category the spec marks for them, so the
+    # filter PM shows too, as found on inspection.
+    assert {row["key"] for row in summary["pareto"]["rows"]} == {"FTS", "UST", "LOO", "DEG"}
+    failures_only = {"selection": {**selection, "categories": ["FAILURE"]}}
+    assert editor.post(f"{API}/downtime-drivers", json=failures_only).get_json()["summary"]["work_order_count"] == 4
+    assert editor.post(f"{API}/pm-effectiveness", json=failures_only).get_json()["pms_performed"] == 1
+    assert editor.post(f"{API}/repeat-fixes", json={**failures_only, "window_hours": 24}).get_json()["window_hours"] == 24
 
     preview = editor.post(f"{API}/weibull", json={"selection": selection, "analysis_cutoff": "2024-12-31"}).get_json()
     assert preview["result"]["analysis_id"] is None
     assert preview["result"]["population_definition"].startswith("POP: asset=4002; location=4002-S09")
+    assert editor.post(f"{API}/saved-analysis", json={"selection": selection}).get_json()["result"] is None
 
     saved = editor.post(f"{API}/weibull/save", json={"selection": selection, "analysis_cutoff": "2024-12-31"}).get_json()
     analysis_id = saved["result"]["analysis_id"]
     assert analysis_id is not None
-    listed = editor.get(f"{API}/weibull/saved?asset={PFS}").get_json()["analyses"]
+    listed = editor.get(f"{API}/saved-analyses?asset={PFS}").get_json()["analyses"]
     assert [row["analysis_id"] for row in listed] == [analysis_id]
     assert listed[0]["run_by"] == "editor1"
-    read_back = editor.get(f"{API}/weibull/saved/{analysis_id}").get_json()["result"]
+    read_back = editor.get(f"{API}/saved-analysis/{analysis_id}").get_json()["result"]
     assert read_back["population_definition"] == saved["result"]["population_definition"]
+    latest = editor.post(f"{API}/saved-analysis", json={"selection": {**selection, "categories": ["FAILURE"]}}).get_json()
+    assert latest["result"]["analysis_id"] == analysis_id
+    # Four filter failures are too few to fit, so there is nothing to adjust or report.
+    assert editor.post(f"{API}/parameter-adjustment", json={
+        "analysis_id": analysis_id, "beta": 2, "eta": 900, "reason": "why"}).status_code == 400
+    report = editor.post(f"{API}/weibull-report", json={"analysis_id": analysis_id})
+    assert report.status_code == 400
+    assert "needs at least 5" in report.get_json()["error"]
+
+
+def test_a_viewer_reads_every_analysis_but_cannot_save_one(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    viewer = _client(module, role="viewer")
+    selection = {"selection": {"assets": [PFS]}}
+    for path in ("summary", "downtime-drivers", "pm-effectiveness", "repeat-fixes", "weibull", "saved-analysis"):
+        assert viewer.post(f"{API}/{path}", json=selection).status_code == 200, path
+    assert viewer.get(f"{API}/population-options?asset={PFS}").status_code == 200
+    assert viewer.get(f"{API}/tour-example").status_code == 200
+    for path in ("parameter-adjustment", "weibull-report"):
+        assert viewer.post(f"{API}/{path}", json={"analysis_id": 1}).status_code == 403, path
+    assert viewer.get(f"{API}/dispositions/excel?asset={PFS}").status_code == 200
+
+
+def test_the_workbook_round_trips_through_the_api(monkeypatch, tmp_path):
+    import io
+
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    editor = _client(module, role="editor")
+    workbook = editor.get(f"{API}/dispositions/excel?asset={PFS}&scope=not_reviewed")
+    assert workbook.status_code == 200
+    assert "not_reviewed" in workbook.headers["Content-Disposition"]
+    with editor.session_transaction() as session:
+        session["csrf_token"] = token = "form-token"
+    response = editor.post(
+        f"{API}/dispositions/excel?asset={PFS}",
+        data={"file": (io.BytesIO(workbook.data), "dispositions.xlsx"), "csrf_token": token},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json() == {"saved": 0, "unchanged": len(ACCEPTANCE)}
+    garbage = editor.post(
+        f"{API}/dispositions/excel?asset={PFS}",
+        data={"file": (io.BytesIO(b"not a workbook"), "dispositions.xlsx"), "csrf_token": token},
+        content_type="multipart/form-data",
+    )
+    assert garbage.status_code == 400
 
 
 def test_a_refused_save_says_which_record_and_why(monkeypatch, tmp_path):
@@ -127,27 +184,35 @@ def test_the_endpoints_refuse_malformed_requests(monkeypatch, tmp_path):
     assert client.get(f"{API}/dispositions/record?mapped_record_id=abc").status_code == 400
     assert client.get(f"{API}/dispositions/record?mapped_record_id={2**70}").status_code == 404
     assert client.get(f"{API}/population-options").status_code == 400
-    assert client.post(f"{API}/patterns", json={}).status_code == 400
-    assert client.post(f"{API}/patterns", json={"selection": {}, "group_by": "colour"}).status_code == 400
-    assert client.post(f"{API}/patterns", json={"selection": {}, "date_from": "May 1"}).status_code == 400
+    assert client.post(f"{API}/summary", json={}).status_code == 400
+    assert client.post(f"{API}/summary", json={"selection": {}, "group_by": "colour"}).status_code == 400
+    assert client.post(f"{API}/summary", json={"selection": {}, "date_from": "May 1"}).status_code == 400
+    assert client.post(f"{API}/summary", json={"selection": {}, "weeks": 99}).status_code == 400
+    assert client.post(f"{API}/repeat-fixes", json={"selection": {}, "window_hours": 9999}).status_code == 400
     assert client.post(f"{API}/dispositions/save", json={"dispositions": []}).status_code == 400
-    assert client.get(f"{API}/weibull/saved/9999").status_code == 404
+    assert client.get(f"{API}/saved-analysis/9999").status_code == 404
+    assert client.post(f"{API}/parameter-adjustment", json={"analysis_id": 9999, "beta": 1, "eta": 1, "reason": "x"}).status_code == 404
+    assert client.post(f"{API}/weibull-report", json={"analysis_id": 9999}).status_code == 404
+    assert client.post(f"{API}/weibull-report", json={}).status_code == 400
 
 
-def test_the_pages_follow_the_life_data_analysis_rules(monkeypatch, tmp_path):
+def test_one_disposition_page_and_one_analysis_page(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     anonymous = _client(module)
     viewer = _client(module, role="viewer")
     editor = _client(module, role="editor")
 
-    # Analysis Population needs an account, like Perform an Analysis.
-    assert anonymous.get("/life-data-analysis/population-analysis").status_code == 403
-    assert viewer.get("/life-data-analysis/population-analysis").status_code == 200
-    # The disposition editor needs an editor, like Disposition.
-    assert viewer.get("/life-data-analysis/disposition/standard").status_code == 403
-    page = editor.get("/life-data-analysis/disposition/standard")
+    assert anonymous.get("/life-data-analysis/perform-analysis").status_code == 403
+    analysis = viewer.get("/life-data-analysis/perform-analysis")
+    assert analysis.status_code == 200
+    assert b"life_data_analysis.js" in analysis.data
+    assert b"disposition_form.js" in analysis.data
+    assert viewer.get("/life-data-analysis/disposition").status_code == 403
+    page = editor.get("/life-data-analysis/disposition")
     assert page.status_code == 200
-    assert b"wo_disposition.js" in page.data
-    # The existing pages link to the new ones.
-    assert b"/life-data-analysis/disposition/standard" in editor.get("/life-data-analysis/disposition").data
-    assert b"/life-data-analysis/population-analysis" in editor.get("/life-data-analysis/perform-analysis").data
+    assert b"disposition.js" in page.data
+    assert b"life_data_analysis.js" not in page.data
+    # The pages that came before are gone, not left beside these.
+    for retired in ("/life-data-analysis/population-analysis", "/life-data-analysis/disposition/standard"):
+        assert editor.get(retired).status_code == 404, retired
+    assert editor.get(f"{API}/standard/code-lists").status_code == 404
