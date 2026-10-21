@@ -284,57 +284,102 @@ def parent_code(code: str | None) -> str | None:
 class AssetTree:
     """The plant's assets, by GREMLIN asset number: which are sub-assets of which.
 
-    Work orders are filed under the curated Asset Number the plant uses --
-    "4002" for the Panel Finishing System, "4002-S09" for its dry-off oven --
-    which a sub-asset takes from its parent with a suffix. Limble numbers the
-    same assets by its own ids (13042, 4109), and the Limble sync files a new
-    work order under the curated number its asset's history uses. So an
-    asset's parent is read, in this order, from:
+    Built the way the PM calendar builds its asset picker
+    (``PmCalendarService._asset_hierarchy``, ``_parent_links`` and
+    ``_with_descendants``): from Limble's asset list, each asset's parent is
+    its ``parentAssetID`` -- never ``parentID`` -- when that parent is on the
+    list; an asset's children are every asset that names it, walked down
+    level by level, each level in name order. The list is the one the Limble
+    sync keeps in GREMLIN.db (every asset), else the PM calendar's copy
+    (only assets that lead to a PM).
 
-    1. **Its number.** "4002-S09" (or an asset named "4002-S09 ...") is a
-       sub-asset of "4002", wherever "4002" is known. This is the plant's own
-       rule and needs no hierarchy at all.
-    2. **Limble's hierarchy**, by ``parentAssetID``: the asset list the Limble
-       sync keeps in GREMLIN.db, then the PM calendar's copy. A Limble asset is
-       the Asset Number the code in its name is, so "4002-S09 Dry-off oven" is
-       4002-S09 -- never 4002, even where work orders on it were filed under
-       4002 with its name. One no work order is filed under yet goes by its
-       code too (by its id where work orders go by ids).
-    3. **The work orders' own parent**, as they were imported. Last, because
-       those imported before the sync stopped reading ``parentID`` as a
-       parent can name another top-level machine.
+    The one thing the PM calendar does not need is to say which of those
+    Limble assets a GREMLIN Asset Number is: the calendar files everything by
+    Limble id, while work orders here are filed under the plant's own numbers
+    ("4002", "4002-S09"), which a Limble asset carries at the start of its
+    name ("4002 Panel Finishing System"). So an Asset Number is the Limble
+    asset its work orders carry as their own id, else the one whose name it
+    starts, else the one its work orders' ids name. And a Limble asset no work
+    order is filed under yet is offered by the number its name starts with.
 
-    Every asset any of these knows is in the tree, so a sub-asset with no work
-    orders of its own is still offered.
+    An Asset Number Limble's list does not have at all takes its parent from
+    the plant's numbering (4002-S09 under 4002), else from the parent its work
+    orders were imported with.
     """
 
     def __init__(
-        self, parent: Mapping[str, str], names: Mapping[str, str], aliases: Mapping[str, str] | None = None
+        self,
+        parent: Mapping[str, str],
+        names: Mapping[str, str],
+        aliases: Mapping[str, str] | None = None,
+        *,
+        on_limble_list: Iterable[str] = (),
+        source: str | None = None,
     ) -> None:
         self.parent = dict(parent)
         self.names = dict(names)
-        # A Limble id some work orders are filed under, for the curated Asset
-        # Number the rest of its work orders use: the same asset.
+        # The Asset Numbers Limble's list has, and which list that was:
+        # "gremlin" (the sync's copy), "pm_calendar", or None for neither.
+        self.on_limble_list = set(on_limble_list)
+        self.source = source
+        # Another Asset Number some work orders are filed under for the same
+        # asset (its bare Limble id beside the plant's number for it).
         self.aliases = dict(aliases or {})
         self.children: dict[str, list[str]] = {}
         for child, parent_number in self.parent.items():
             self.children.setdefault(parent_number, []).append(child)
         for kids in self.children.values():
-            kids.sort(key=lambda number: _natural_key(self.names.get(number) or number))
+            kids.sort(key=lambda number: ((self.names.get(number) or number).casefold(), number))
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, hierarchy: Iterable[Mapping[str, Any]] | None = None) -> "AssetTree":
-        """The tree from the work orders, Limble's asset list and (when given) the PM calendar's.
+        """The tree from Limble's asset list (or the PM calendar's), and the work orders.
 
         ``hierarchy`` is the PM calendar's asset rows: ``asset_id``,
         ``asset_name`` and ``parent_asset_id`` (None at the top).
         """
 
+        # ---- Limble's hierarchy, as the PM calendar builds it: one lookup by
+        # id, and each asset's parent only when the parent is on the list.
+        by_id: dict[str, Mapping[str, Any]] = {}
+        sources = []
+        for source, rows in (("gremlin", _stored_limble_assets(conn)), ("pm_calendar", list(hierarchy or ()))):
+            if rows:
+                sources.append(source)
+            for row in rows:
+                asset_id = _id_text(row.get("asset_id"))
+                if asset_id is not None and asset_id not in by_id:
+                    by_id[asset_id] = row
+        limble_parent: dict[str, str] = {}
+        for asset_id, row in by_id.items():
+            parent_id = _id_text(row.get("parent_asset_id"))
+            if parent_id is not None and parent_id != asset_id and parent_id in by_id:
+                limble_parent[asset_id] = parent_id
+
+        def limble_name(asset_id: str) -> str:
+            row = by_id.get(asset_id)
+            return ((row.get("asset_name") if row else None) or "").strip()
+
+        # The Limble asset each number names, for "4002" -> 4002 Panel Finishing
+        # System: of several named with one number ("4002-S09 Dry-off oven",
+        # "4002-S09 Burner"), the one not under another of them.
+        named: dict[str, list[str]] = {}
+        for asset_id in by_id:
+            code = asset_code(limble_name(asset_id))
+            if code:
+                named.setdefault(code, []).append(asset_id)
+        asset_named = {
+            code: min(ids, key=lambda asset_id: (
+                asset_code(limble_name(limble_parent.get(asset_id, ""))) == code, _natural_key(asset_id),
+            ))
+            for code, ids in named.items()
+        }
+
         # ---- The work orders: the Asset Numbers they are filed under, the
         # names and Limble ids they carry, and the parent they were imported with.
         wo_numbers: set[str] = set()
         wo_names: dict[str, dict[str, int]] = {}
-        ids_of: dict[str, set[str]] = {}
+        ids_of: dict[str, dict[str, int]] = {}
         parent_votes: dict[str, dict[str, int]] = {}
         for row in conn.execute(
             """
@@ -348,178 +393,144 @@ class AssetTree:
             number = row["asset_number"]
             count = int(row["record_count"] or 0)
             wo_numbers.add(number)
-            asset_id = _id_text(row["asset_id_raw"])
-            if asset_id is not None:
-                ids_of.setdefault(number, set()).add(asset_id)
-            name = (row["asset_name"] or "").strip()
-            if name:
-                tally = wo_names.setdefault(number, {})
-                tally[name] = tally.get(name, 0) + count
-            parent_id = _id_text(row["immediate_parent_asset_id"])
-            if parent_id is not None:
-                tally = parent_votes.setdefault(number, {})
-                tally[parent_id] = tally.get(parent_id, 0) + count
+            for tally, key in (
+                (wo_names.setdefault(number, {}), (row["asset_name"] or "").strip()),
+                (ids_of.setdefault(number, {}), _id_text(row["asset_id_raw"])),
+                (parent_votes.setdefault(number, {}), _id_text(row["immediate_parent_asset_id"])),
+            ):
+                if key:
+                    tally[key] = tally.get(key, 0) + count
 
-        # Limble's hierarchy: GREMLIN's own copy of the asset list first, then
-        # whatever the PM calendar knows that it does not.
-        limble_rows: dict[str, Mapping[str, Any]] = {}
-        for rows in (_stored_limble_assets(conn), hierarchy or ()):
-            for row in rows:
-                asset_id = _id_text(row.get("asset_id"))
-                if asset_id is not None and asset_id not in limble_rows:
-                    limble_rows[asset_id] = row
-
-        def limble_name(asset_id: str) -> str:
-            row = limble_rows.get(asset_id)
-            return ((row.get("asset_name") if row else None) or "").strip()
-
-        # ---- Two kinds of Asset Number. One a work order carries as its own
-        # Limble id (13042) names that Limble asset. Any other is the plant's
-        # curated number (4002, 4002-S09), and is its own code.
-        by_id = {number for number in wo_numbers if number in ids_of.get(number, ())}
-        curated = wo_numbers - by_id
-        names: dict[str, str] = {}
-        code_of: dict[str, str] = {}
-        for number in curated:
+        # ---- Which Limble asset each Asset Number is.
+        def limble_asset_of(number: str) -> str | None:
+            ids = ids_of.get(number, {})
             code = asset_code(number)
-            if code == number.upper():
-                code_of[number] = code
-            # A work order filed under 4002 can carry the name of the sub-asset
-            # it was on ("4002-S09 Dry-off oven"); only a name that is this
-            # number's own is its name.
-            own = {
-                name: count for name, count in wo_names.get(number, {}).items()
-                if code_of.get(number) is None or _names_number(name, number)
-            }
-            if own:
-                names[number] = max(own, key=lambda name: (own[name], name))
-        for number in by_id:
-            tally = wo_names.get(number, {})
-            name = limble_name(number) or (max(tally, key=lambda name: (tally[name], name)) if tally else "")
-            if name:
-                names[number] = name
-            code = asset_code(name)
-            if code:
-                code_of[number] = code
-        curated_by_code = {code_of[number]: number for number in curated if number in code_of}
+            if number in ids and number in by_id:
+                return number  # its work orders carry it as their own Limble id
+            if code == number.upper() and code in asset_named:
+                return asset_named[code]  # the asset whose name it starts
+            if number in by_id and not ids and asset_code(limble_name(number)) in (None, code):
+                return number
+            for asset_id in sorted(ids, key=lambda asset_id: -ids[asset_id]):
+                if asset_id in by_id and asset_code(limble_name(asset_id)) in (None, code):
+                    return asset_id
+            return None
 
-        # ---- Each Limble asset as an Asset Number.
-        number_of_id: dict[str, str] = {number: number for number in by_id}
-        # A curated number whose work orders carry a Limble id named with its
-        # code is that Limble asset.
-        for number in curated:
-            for asset_id in ids_of.get(number, ()):
-                if asset_id not in number_of_id and code_of.get(number) and asset_code(limble_name(asset_id)) == code_of[number]:
-                    number_of_id[asset_id] = number
-        # The rest by the code in their name. Several can carry one ("4002-S09
-        # Dry-off oven" and "4002-S09 Burner"): the one not under another of
-        # them in Limble is the asset that code numbers; the others are parts
-        # of it, each by its own id.
-        prefer_codes = len(curated) >= len(by_id)
-        taken = {number.upper() for number in wo_numbers} | {number.upper() for number in number_of_id.values()}
-
-        def under_same_code(asset_id: str, code: str) -> bool:
-            parent_id = _id_text((limble_rows.get(asset_id) or {}).get("parent_asset_id"))
-            return parent_id is not None and asset_code(limble_name(parent_id)) == code
-
-        for asset_id in sorted(limble_rows, key=lambda asset_id: under_same_code(asset_id, asset_code(limble_name(asset_id)) or "")):
+        number_of_id: dict[str, str] = {}
+        aliases: dict[str, str] = {}
+        # The plant's own numbers claim their Limble asset before a bare id does,
+        # so 4002, not 13042, is the number the asset is offered by.
+        for number in sorted(wo_numbers, key=lambda number: (number in ids_of.get(number, {}), _natural_key(number))):
+            asset_id = limble_asset_of(number)
+            if asset_id is None:
+                continue
+            if asset_id in number_of_id:
+                aliases[number] = number_of_id[asset_id]
+            else:
+                number_of_id[asset_id] = number
+        # A Limble asset no work order is filed under: by the number its name
+        # starts with, as the plant files it, unless work orders here go by
+        # Limble ids, or that number is taken.
+        taken = {number.upper() for number in wo_numbers}
+        by_ids = sum(1 for number in wo_numbers if number in ids_of.get(number, {}))
+        for asset_id in sorted(by_id, key=_natural_key):
             if asset_id in number_of_id:
                 continue
             code = asset_code(limble_name(asset_id))
-            primary = code is not None and not under_same_code(asset_id, code)
-            if primary and code in curated_by_code and curated_by_code[code] not in number_of_id.values():
-                number = curated_by_code[code]
-            elif primary and prefer_codes and code not in taken:
+            if code and asset_named.get(code) == asset_id and code not in taken and by_ids * 2 <= len(wo_numbers):
                 number = code
             elif asset_id.upper() not in taken:
                 number = asset_id
             elif code and code not in taken:
                 number = code
             else:
-                continue  # its id and its code are both other assets' numbers
+                continue  # its id and its number are both other assets' Asset Numbers
             number_of_id[asset_id] = number
             taken.add(number.upper())
-        in_limble: set[str] = set()
-        for asset_id, number in number_of_id.items():
-            name = limble_name(asset_id)
-            if asset_id not in limble_rows:
+
+        # Without Limble's word: a bare id some work orders are filed under,
+        # named for a number the plant files work orders under, is that asset.
+        for number in sorted(wo_numbers):
+            if number in aliases or number in number_of_id.values() or number not in ids_of.get(number, {}):
                 continue
-            in_limble.add(number)
-            # Limble's current name for it, over the one a work order was imported with.
-            if name:
-                names[number] = name
-                code = asset_code(name)
-                if code and number not in curated:
-                    code_of.setdefault(number, code)
+            tally = wo_names.get(number, {})
+            code = asset_code(max(tally, key=tally.get)) if tally else None
+            if code and code != number.upper() and code in {other.upper(): other for other in wo_numbers}:
+                aliases[number] = {other.upper(): other for other in wo_numbers}[code]
 
-        limble_parent: dict[str, str] = {}
-        for asset_id, row in limble_rows.items():
-            parent_id = _id_text(row.get("parent_asset_id"))
-            child, parent_number = number_of_id.get(asset_id), number_of_id.get(parent_id or "")
-            if child and parent_number and child != parent_number:
-                limble_parent[child] = parent_number
-
-        # A bare Limble id some work orders are filed under, beside the curated
-        # number the plant files its asset under (13042 beside 4002), is that
-        # asset again, not a sub-asset of it.
-        aliases = {
-            number: curated_by_code[code_of[number]]
-            for number in by_id
-            if code_of.get(number) in curated_by_code and curated_by_code[code_of[number]] != number
-        }
-        for alias, number in aliases.items():
-            if alias in limble_parent:
-                limble_parent.setdefault(number, limble_parent.pop(alias))
-            if alias in in_limble:
-                in_limble.add(number)
-        known = (wo_numbers | set(number_of_id.values())) - set(aliases)
-
-        # ---- The asset each code numbers: the one numbered by it, else the
-        # one that is not under another of them in Limble.
-        sharing: dict[str, list[str]] = {}
-        for number in known:
-            if number in code_of:
-                sharing.setdefault(code_of[number], []).append(number)
-        number_of_code = {
-            code: min(numbers, key=lambda number: (
-                number.upper() != code,
-                code_of.get(limble_parent.get(number, "")) == code,
-                _natural_key(number),
-            ))
-            for code, numbers in sharing.items()
-        }
-
-        def imported_parent(number: str) -> str | None:
-            # Limble's word on an asset it knows is final, "top level" included,
-            # and a parent id is believed only as an asset it is known to be.
-            tally = parent_votes.get(number)
-            if not tally or number in in_limble:
+        # The Asset Number a Limble id stands for when Limble's list does not
+        # have it: the number filed under that id itself, else the one whose
+        # work orders carry it and the fewest other ids -- work orders filed
+        # under 4002 can carry the id of the sub-asset they were on.
+        def number_for_id(asset_id: str) -> str | None:
+            if asset_id in number_of_id:
+                return number_of_id[asset_id]
+            if asset_id in wo_numbers:
+                return aliases.get(asset_id, asset_id)
+            carrying = [number for number in wo_numbers if asset_id in ids_of.get(number, {})]
+            if not carrying:
                 return None
-            return number_of_id.get(max(tally, key=tally.get))
+            best = min(carrying, key=lambda number: (len(ids_of[number]), -ids_of[number][asset_id], _natural_key(number)))
+            return aliases.get(best, best)
+
+        # ---- Names: Limble's for an asset on its list; otherwise a work-order
+        # name that is the number's own (a work order filed under 4002 can be
+        # named for the sub-asset it was on, "4002-S09 Dry-off oven").
+        names: dict[str, str] = {}
+        for number in wo_numbers - set(aliases):
+            own = {
+                name: count for name, count in wo_names.get(number, {}).items()
+                if asset_code(number) != number.upper() or _names_number(name, number)
+            }
+            if own:
+                names[number] = max(own, key=lambda name: (own[name], name))
+        for asset_id, number in number_of_id.items():
+            if limble_name(asset_id):
+                names[number] = limble_name(asset_id)
+
+        # ---- Parents. Limble decides for every asset on its list, "top level"
+        # included; the rest follow the plant's numbering, then their work orders.
+        known = (wo_numbers | set(number_of_id.values())) - set(aliases)
+        id_of_number = {number: asset_id for asset_id, number in number_of_id.items()}
+        number_of_code = {number.upper(): number for number in known if asset_code(number) == number.upper()}
+        for asset_id, number in number_of_id.items():
+            code = asset_code(limble_name(asset_id))
+            if code and asset_named.get(code) == asset_id:
+                number_of_code.setdefault(code, number)
 
         parent: dict[str, str] = {}
         for number in known:
-            code = code_of.get(number)
-            owner = number_of_code.get(code) if code else None
-            if owner is not None and owner != number:
-                # Another asset carries its code: it is a part of that one,
-                # unless Limble hangs it somewhere more precise.
-                candidate = limble_parent.get(number) or owner
+            if number in id_of_number:
+                parent_id = limble_parent.get(id_of_number[number])
+                candidate = number_of_id.get(parent_id) if parent_id else None
             else:
-                # 1. Its number: the nearest code above it that is a known asset.
-                above = parent_code(code)
+                above = parent_code(asset_code(number) if asset_code(number) == number.upper() else asset_code(names.get(number)))
                 while above and above not in number_of_code:
                     above = parent_code(above)
-                # 2. Limble's hierarchy, then 3. the work orders' imported parent.
-                candidate = (
-                    (number_of_code[above] if above else None)
-                    or limble_parent.get(number)
-                    or imported_parent(number)
-                )
-            candidate = aliases.get(candidate, candidate) if candidate else None
+                candidate = number_of_code[above] if above else None
+                if candidate is None:
+                    tally = parent_votes.get(number) or {}
+                    parent_id = max(tally, key=tally.get) if tally else None
+                    candidate = number_for_id(parent_id) if parent_id else None
             if candidate and candidate != number:
                 parent[number] = candidate
-        return cls(parent, names, aliases)
+        return cls(
+            parent, names, aliases, on_limble_list=id_of_number, source=sources[0] if sources else None
+        )
+
+    def hierarchy_note(self, number: str) -> str:
+        """Where an asset's sub-assets come from, in a line for under the dropdown."""
+
+        number = self.aliases.get(number, number)
+        if self.source is None:
+            return (
+                "No Limble asset list yet (the next Limble sync stores one), so these follow the Asset Numbers: "
+                f"every {number}-… asset."
+            )
+        where = "Limble's asset list" if self.source == "gremlin" else "the PM calendar's copy of Limble's asset list"
+        if number in self.on_limble_list:
+            return f"As {where} has them: every asset under {self.label(number)}, by parentAssetID."
+        return f"{where[0].upper()}{where[1:]} does not have {number}, so these follow the Asset Numbers: every {number}-… asset."
 
     def name(self, number: str | None) -> str:
         return self.names.get(number or "", "")

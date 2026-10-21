@@ -277,7 +277,8 @@ class StandardDispositionService:
 
         with self.life.connect() as conn:
             codebook = load_codebook(conn)
-            sub_assets = self.asset_tree(conn).descendants(asset_number)
+            tree = self.asset_tree(conn)
+            sub_assets = tree.descendants(asset_number)
         return {
             "asset_number": asset_number,
             "categories": [
@@ -292,6 +293,7 @@ class StandardDispositionService:
                 for code_list in std.CODE_LISTS
             },
             "sub_assets": sub_assets,
+            "sub_asset_note": tree.hierarchy_note(asset_number),
             "record_classes": list(self._record_classes()),
             "scopes": list(DISPOSITION_SCOPES),
         }

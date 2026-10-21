@@ -99,10 +99,10 @@ class AssetTreeTests(unittest.TestCase):
         with self.life.connect() as conn:
             tree = AssetTree.load(conn, PM_HIERARCHY)
         # Every level down, in name order; the oven has no work orders of its own
-        # yet and is still offered, with the burner under it. The boiler and the
-        # compressor are top-level in Limble, which outranks their work orders;
-        # the water system is too, but it is numbered 4002-S18.
-        self.assertEqual(self.numbers(tree, PFS), [(SANDER, 1), (OVEN, 1), (BURNER, 2), (WATER, 1)])
+        # yet and is still offered, with the burner under it. The boiler, the
+        # compressor and the water system are top-level in Limble, which -- as
+        # on the PM calendar -- outranks their work orders and their numbers.
+        self.assertEqual(self.numbers(tree, PFS), [(SANDER, 1), (OVEN, 1), (BURNER, 2)])
         self.assertEqual(self.numbers(tree, WATER), [])
         self.assertEqual(tree.label(OVEN), "4002-S09 Dry-off oven (4109)")
         self.assertEqual(tree.ancestors(BURNER), [OVEN, PFS])
@@ -115,13 +115,13 @@ class AssetTreeTests(unittest.TestCase):
     def test_the_editor_and_the_analysis_read_the_corrected_tree(self):
         records = StandardDispositionService(self.life, asset_hierarchy=lambda: PM_HIERARCHY)
         offered = [option["asset_number"] for option in records.editor_options(PFS)["sub_assets"]]
-        self.assertEqual(offered, [SANDER, OVEN, BURNER, WATER])
+        self.assertEqual(offered, [SANDER, OVEN, BURNER])
         # The boiler's work order is not in reach of the paint line any more.
         analysis = PopulationAnalysisService(self.life, records)
         downtime = analysis.downtime({"assets": [PFS], "categories": ["NOT_REVIEWED"]})
         self.assertEqual(downtime["summary"]["work_order_count"], 3)
         options = analysis.options([PFS])
-        self.assertEqual([option["asset_number"] for option in options["sub_assets"]], [SANDER, OVEN, BURNER, WATER])
+        self.assertEqual([option["asset_number"] for option in options["sub_assets"]], [SANDER, OVEN, BURNER])
 
     def test_a_broken_calendar_falls_back_to_the_work_orders(self):
         def unreadable():
@@ -226,6 +226,8 @@ class CuratedNumberTests(unittest.TestCase):
         # No Limble list at all: 4002-S01, -S05 and -S09 by their numbers, and
         # nothing that only looks alike (40021, 3101 under 3101-3107).
         self.assertEqual(self.offered(), [("4002-S01", 1), ("4002-S05", 1), ("4002-S09", 1)])
+        note = StandardDispositionService(self.life).editor_options("4002")["sub_asset_note"]
+        self.assertTrue(note.startswith("No Limble asset list yet"), note)
         self.assertEqual(self.offered("3101-3107"), [])
         self.assertEqual(self.offered("40021"), [])
 
@@ -317,6 +319,85 @@ class CuratedNumberTests(unittest.TestCase):
         self.assertEqual([option["asset_number"] for option in tree.descendants(PFS)], ["4002-S01", "4002-S05", "4002-S09"])
 
 
+class SameAsThePmCalendarTests(unittest.TestCase):
+    """The dropdown offers exactly the assets the PM calendar puts under the asset."""
+
+    ASSETS = [
+        {"assetID": 914, "name": "Dept 914 Machinery Maint", "parentAssetID": 0},
+        {"assetID": 706, "name": "Building 706", "parentAssetID": 914},
+        {"assetID": 13042, "name": "4002 Panel Finishing System", "parentAssetID": 706, "parentID": 900},
+        {"assetID": 5001, "name": "4002-S01 Chemical Spray", "parentAssetID": 13042, "parentID": 900},
+        {"assetID": 4109, "name": "4002-S09 Dry-off oven", "parentAssetID": 13042},
+        {"assetID": 4201, "name": "4002-S09 Burner", "parentAssetID": 4109},
+        {"assetID": 4111, "name": "4002-S11 Riser bank", "parentAssetID": 13042},
+        {"assetID": 900, "name": "4002-S18 Deionized Water System", "parentAssetID": 0, "parentID": 0},
+        {"assetID": 6274, "name": "6274 Sullair Air Compressor", "parentAssetID": 0, "parentID": 900},
+    ]
+
+    def test_the_children_are_the_pm_calendars(self):
+        from services.pm_calendar_service import PmCalendarService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calendar = PmCalendarService(Path(tmp) / "pm.db")
+            calendar._ensure_schema()
+            ids = {str(asset["assetID"]) for asset in self.ASSETS}
+            calendar.repo.replace_assets(PmCalendarService._asset_hierarchy(self.ASSETS, ids))
+            # The PM calendar's picker: tree order, each parent then its children.
+            picker = calendar.asset_options()
+            start = next(index for index, option in enumerate(picker) if option["asset_id"] == "13042")
+            under_4002 = []
+            for option in picker[start + 1:]:
+                if option["depth"] <= picker[start]["depth"]:
+                    break
+                under_4002.append((option["asset_id"], option["depth"] - picker[start]["depth"]))
+            self.assertEqual({asset_id for asset_id, _ in under_4002}, set(calendar._with_descendants(["13042"])[1:]))
+
+            # GREMLIN files the line's work orders under 4002, the oven's under
+            # 4002-S09, and some of the oven's under 4002 with its id and name.
+            life = LifeDataService(Path(tmp) / "gremlin.db", refresh_on_startup=False)
+            with life.write_connection() as conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS raw_cmms_record ("
+                    "raw_record_id INTEGER PRIMARY KEY, import_batch_id INTEGER NOT NULL DEFAULT 1, raw_json TEXT NOT NULL)"
+                )
+                conn.execute("INSERT INTO import_batch (import_batch_id, status) VALUES (1, 'COMPLETED')")
+                for record_id, number, name, asset_id in (
+                    (1, "4002", "4002 Panel Finishing System", "13042"),
+                    (2, "4002", "4002-S09 Dry-off oven", "4109"),
+                    (3, "4002", "4002-S09 Dry-off oven", "4109"),
+                    (4, "4002-S09", "4002-S09 Dry-off oven", "4109"),
+                ):
+                    conn.execute("INSERT INTO raw_cmms_record (raw_record_id, raw_json) VALUES (?, '{}')", (record_id,))
+                    conn.execute(
+                        """
+                        INSERT INTO mapped_cmms_record (mapped_record_id, raw_record_id, import_batch_id, asset_number,
+                            asset_name, asset_id_raw, task_id, task_name, created_date_final, completed_date_final,
+                            record_class_auto, mapping_version)
+                        VALUES (?, ?, 1, ?, ?, ?, ?, 'Work', '2024-01-01', '2024-01-01', 'CORRECTIVE_WO', 'v4')
+                        """,
+                        (record_id, record_id, number, name, asset_id, str(record_id)),
+                    )
+            records = StandardDispositionService(life, asset_hierarchy=calendar.repo.fetch_assets)
+            options = records.editor_options("4002")
+            offered = options["sub_assets"]
+        self.assertEqual(
+            options["sub_asset_note"],
+            "As the PM calendar's copy of Limble's asset list has them: every asset under "
+            "4002 Panel Finishing System, by parentAssetID.",
+        )
+
+        names = {str(asset["assetID"]): asset["name"] for asset in self.ASSETS}
+        self.assertEqual(
+            [(option["asset_name"], option["depth"]) for option in offered],
+            [(names[asset_id], depth) for asset_id, depth in under_4002],
+        )
+        self.assertEqual(
+            [(option["asset_number"], option["depth"]) for option in offered],
+            [("4002-S01", 1), ("4002-S09", 1), ("4201", 2), ("4002-S11", 1)],
+        )
+
+
 class IngestionParentTests(unittest.TestCase):
     def test_only_parent_asset_id_is_read_as_the_parent(self):
         assets = [
@@ -387,4 +468,4 @@ def test_the_api_reads_the_pm_calendars_hierarchy(monkeypatch, tmp_path):
     assert not (tmp_path / "pm.db").exists()
     module.pm_calendar_service.repo.ensure_schema()
     module.pm_calendar_service.repo.replace_assets(PM_HIERARCHY)
-    assert offered() == [SANDER, OVEN, BURNER, WATER]
+    assert offered() == [SANDER, OVEN, BURNER]

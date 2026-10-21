@@ -263,25 +263,28 @@
             "renewal date (diagnose now, repair later). Leave blank for a work order logged against the wrong asset.",
         }));
       } else {
+        // Every asset under this one, as the PM calendar's picker has them: each
+        // level indented under its parent. Shown even with none, so the note
+        // says where the list came from.
         const subAssets = (options && options.sub_assets) || [];
-        if (subAssets.length) {
-          // Every asset under this one in Limble's hierarchy, each level indented
-          // under its parent.
-          const select = el("select", { id: id("sub-asset"), class: "lda-select" }, [
-            el("option", { value: "", text: `${row.asset_number} (whole asset)` }),
-            ...subAssets.map((option) => el("option", {
-              value: option.asset_number,
-              text: `${"\u00a0\u00a0\u00a0".repeat(Math.max(0, (option.depth || 1) - 1))}${(option.depth || 1) > 1 ? "└ " : ""}` +
-                (option.label || option.asset_number),
-            })),
-          ]);
-          select.value = draft.sub_asset || "";
-          select.addEventListener("change", update("sub_asset"));
-          form.appendChild(field("sub-asset", "Sub-asset", select, {
-            hint: `Where it failed: every asset numbered ${row.asset_number}-… or under it in Limble. Leave at the whole ` +
-              "asset when the work order does not say.",
-          }));
+        const select = el("select", { id: id("sub-asset"), class: "lda-select" }, [
+          el("option", { value: "", text: `${row.asset_number} (whole asset)` }),
+          ...subAssets.map((option) => el("option", {
+            value: option.asset_number,
+            text: `${"\u00a0\u00a0\u00a0".repeat(Math.max(0, (option.depth || 1) - 1))}${(option.depth || 1) > 1 ? "└ " : ""}` +
+              (option.label || option.asset_number),
+          })),
+        ]);
+        if (draft.sub_asset && !subAssets.some((option) => option.asset_number === draft.sub_asset)) {
+          // Saved before the hierarchy said otherwise: still shown, so the record reads true.
+          select.appendChild(el("option", { value: draft.sub_asset, text: `${draft.sub_asset} (no longer under ${row.asset_number})` }));
         }
+        select.value = draft.sub_asset || "";
+        select.addEventListener("change", update("sub_asset"));
+        form.appendChild(field("sub-asset", "Sub-asset", select, {
+          hint: "Where it failed; leave at the whole asset when the work order does not say. " +
+            ((options && options.sub_asset_note) || ""),
+        }));
         const component = codeSelect("component", "COMPONENT", draft.component_code);
         component.addEventListener("change", (event) => {
           draft.component_code = event.target.value;

@@ -186,28 +186,26 @@ written against them.
     default. Each life also shows its calendar days.
 16. **What an asset includes.** Selecting an asset reaches the work orders logged
     on it, those logged on its sub-assets, and those dispositioned to a
-    sub-asset under it. An asset's sub-assets are, every level down:
-    * **by its number** — the plant numbers a sub-asset from its parent:
-      4002-S09 (or an asset named "4002-S09 …") is under 4002, 4002-S09-01 under
-      4002-S09. Two plain numbers of one length are a range of machines
-      ("3101-3107"), not a parent and its sub-asset. An asset that shares
-      another's number ("4002-S09 Burner" beside "4002-S09 Dry-off oven") is a
-      part of that one;
-    * **by Limble's hierarchy** — `parentAssetID`, never `parentID` (which
-      Limble also sends on top-level assets), from the asset list each Limble
-      sync now stores in GREMLIN.db (`limble_asset`), else the PM calendar's
-      copy. A Limble asset is the Asset Number the code in its name is
-      ("4002-S09 Dry-off oven" is 4002-S09), never the number some of its work
-      orders were filed under: work orders on the oven filed under 4002 with
-      the oven's name do not make the oven 4002, nor 4002 the oven. One with no
-      work orders yet goes by its code (by its id where work orders go by
-      Limble ids). Limble's ids and the plant's numbers share a range, so an
-      id that is another machine's Asset Number is never merged into it. An
-      Asset Number's name is a name led by its code or naming it whole, so
-      4002 is "4002 Panel Finishing System" whatever most of its work orders
-      are named;
-    * **by the work orders' imported parent**, only for an asset Limble's list
-      does not have.
+    sub-asset under it. An asset's sub-assets are picked the way the PM
+    calendar picks them (`PmCalendarService._asset_hierarchy`, `_parent_links`,
+    `_with_descendants`): from Limble's asset list, each asset's parent is its
+    `parentAssetID` (never `parentID`, which Limble also sends on top-level
+    assets) when that parent is on the list, and an asset's sub-assets are
+    every asset under it, level by level, in name order. The list is the one
+    each Limble sync now stores in GREMLIN.db (`limble_asset`, every asset),
+    else the PM calendar's copy (only assets that lead to a PM).
+    * The PM calendar files by Limble id; work orders here are filed under the
+      plant's numbers ("4002", "4002-S09"), which a Limble asset's name starts
+      with ("4002 Panel Finishing System"). So an Asset Number is the Limble
+      asset its work orders carry as their own id, else the one whose name it
+      starts, else the one its work orders' ids name. A work order filed under
+      4002 can carry the name and id of the sub-asset it was on; that never
+      makes the sub-asset 4002, nor renames 4002. A Limble asset no work order
+      is filed under yet is offered by the number its name starts with.
+    * An Asset Number Limble's list does not have follows the plant's
+      numbering (4002-S09 under 4002; a range like 3101-3107 is not a parent
+      and child), else the parent its work orders were imported with.
+    * The dropdown says which of these it read.
 17. **Pattern views** read the categories ticked on Perform an Analysis, which
     starts at FAILURE alone; a request that names none gets the categories §2.1
     marks "pattern views: yes" (FAILURE, PM_RESET, EXTERNAL, NON_FAILURE, HELD).
