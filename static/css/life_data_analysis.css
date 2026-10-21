@@ -207,7 +207,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 }
 .lda-subgrid.is-single { grid-template-columns: 1fr; }
 
-/* Date-range filter row for the Failure Mode Trend chart. */
+/* Date-range filter row for the Triage trend chart. */
 .lda-trend-controls {
   display: flex;
   flex-wrap: wrap;
@@ -217,7 +217,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-trend-controls .lda-field { min-width: 150px; gap: 0.3rem; }
 .lda-trend-controls .btn-secondary { padding: 0.5rem 0.95rem; }
 
-/* Failure Mode Trend summary cards lead with the analysis-type label, then the
+/* Triage trend summary cards lead with the analysis-type label, then the
    headline mechanism name (kept smaller than the big numeric readiness metrics so
    longer mechanism names stay readable), then the supporting metric. */
 .lda-trend-metric .lda-trend-metric-value {
@@ -363,7 +363,7 @@ table.lda-table tbody tr.lda-trend-total:nth-child(even) td {
   background: rgba(85, 116, 143, 0.14);
 }
 
-/* Clickable Failure Mode Trend Detail month rows: drill the Work Orders in Trend
+/* Clickable Triage trend detail month rows: drill the Work Orders in Trend
    table into a single month. The active month is highlighted to show the filter. */
 table.lda-table tbody tr.lda-trend-month-row { cursor: pointer; }
 table.lda-table tbody tr.lda-trend-month-row:hover td { background: rgba(85, 116, 143, 0.08); }

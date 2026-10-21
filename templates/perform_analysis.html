@@ -10,10 +10,10 @@
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Life Data Analysis</p>
   <h1>Perform an Analysis</h1>
-  <p>Choose an asset and narrow it to the population you want to understand: a sub-asset, a component, a
-     failure mechanism. Every analysis on this page reads that same population from the work-order
-     dispositions, so a Pareto bar, the trend under it, its downtime and its Weibull life always count
-     the same work orders.</p>
+  <p>Choose an asset and narrow it to the population you want to understand. The Weibull narrows by
+     sub-asset, component and failure mechanism, and each bar of its Pareto is one of each, ready to fit.
+     Triage and the other analyses narrow by mode, cause, action and category as well, and every view under
+     them reads that same population from the work-order dispositions.</p>
   <button type="button" class="page-tour-btn" id="analysis-tour-btn">Show me around</button>
 </section>
 
@@ -36,7 +36,7 @@
       <label for="lda-analysis-type">Analysis Type</label>
       <select id="lda-analysis-type" name="analysis_type">
         <option value="Weibull Analysis" selected>Weibull Analysis</option>
-        <option value="Failure Mode Trend Analysis">Failure Mode Trend Analysis</option>
+        <option value="Triage Analysis">Triage Analysis</option>
         <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
         <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
         <option value="Repeat Fix Rate Analysis">Repeat Fix Rate Analysis</option>
@@ -49,14 +49,16 @@
 <section class="glass-card slide-in lda-card" id="lda-population-card" aria-labelledby="lda-step-2" hidden>
   <p class="eyebrow">Step 2</p>
   <h2 id="lda-step-2">Analysis population</h2>
-  <p class="lda-hint">Leave a list unticked for no restriction on it. For the Weibull, sub-asset and component
-     choose which items' lives are pooled and mechanism chooses which of their failures count; mode, cause and
-     action narrow the pattern views only. The sub-asset list follows the asset's hierarchy; clicking a Pareto bar
-     or a matrix cell below narrows it for you too.</p>
+  <p class="lda-hint" id="lda-population-hint-weibull">Leave a list unticked for no restriction on it. Sub-asset and
+     component choose which items' lives are pooled, and mechanism which of their failures count. The sub-asset list
+     follows the asset's hierarchy; clicking a Pareto bar below picks one of each and fits it.</p>
+  <p class="lda-hint" id="lda-population-hint-triage" hidden>Leave a list unticked for no restriction on it. The
+     sub-asset list follows the asset's hierarchy; clicking a Pareto bar or a matrix cell below narrows it for you
+     too.</p>
   <div class="std-selector" id="lda-population-selector"></div>
   <div class="lda-population-row">
     <div class="lda-field" id="lda-categories-field">
-      <span class="lda-field-label">Disposition categories (pattern views)</span>
+      <span class="lda-field-label">Disposition categories</span>
       <div class="std-checklist" id="lda-categories" role="group" aria-label="Disposition categories"></div>
     </div>
     <div class="lda-trend-controls" id="lda-dates">
@@ -124,7 +126,7 @@
       <div class="lda-pareto-head">
         <h3 id="lda-pareto-title">Pareto by sub-asset</h3>
         <div class="lda-pareto-toolbar">
-          <div class="lda-pareto-option">
+          <div class="lda-pareto-option" id="lda-pareto-group-field">
             <label class="lda-pareto-option-label" for="lda-pareto-group">Group by</label>
             <select id="lda-pareto-group" class="lda-select"></select>
           </div>
@@ -143,6 +145,9 @@
         <canvas id="lda-pareto-chart" class="lda-canvas" height="340"></canvas>
       </div>
       <div class="std-legend" id="lda-pareto-legend"></div>
+      <p class="lda-hint" id="lda-pareto-weibull-hint">The population's failures, one bar per sub-asset, component and
+         mechanism: each is one kind of item failing one way, the population a Weibull is best run on. Click a bar to
+         fit it.</p>
       <p class="lda-hint" id="lda-pareto-empty" hidden>No work orders in this population yet.</p>
       <p class="lda-hint" id="lda-pareto-not-coded" hidden></p>
     </div>
@@ -150,8 +155,8 @@
 
   <details class="lda-panel lda-matrix-panel" id="lda-matrix-panel">
     <summary>Where it happens: sub-asset × component</summary>
-    <p class="lda-hint">Work orders in the population by where (rows) and what (columns). Click a cell to narrow
-       the population to that sub-asset and component.</p>
+    <p class="lda-hint">Work orders in the population by where (rows) and what (columns), failures only on the
+       Weibull. Click a cell to narrow the population to that sub-asset and component.</p>
     <div class="std-matrix-scroll" id="lda-matrix-wrap"></div>
   </details>
 

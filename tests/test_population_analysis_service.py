@@ -33,6 +33,38 @@ class PopulationViewTests(StandardDispositionFixture):
         self.assertEqual(downtime["top_events"][0]["mapped_record_id"], 220477)
         self.assertEqual(downtime["months"][0], "2024-02")
 
+    def test_the_weibull_pareto_has_a_bar_per_sub_asset_component_and_mechanism(self):
+        # Mode and categories are the other views'; the Weibull's summary ignores them.
+        summary = self.analysis.summary(
+            {"assets": [PFS], "failure_modes": ["UST"], "categories": ["PM_RESET"]}, weibull=True
+        )
+        pareto = summary["pareto"]
+        self.assertEqual(pareto["group_by"], "weibull_population")
+        bars = {row["label"]: (row["count"], row["downtime_hours"]) for row in pareto["rows"]}
+        self.assertEqual(bars, {
+            "4002-S09 · Filter · CONT": (4, 9.0),
+            "4002-S09 · Filter · DEFM": (1, 6.0),
+            "4002-S05 · Electrical · ELEC": (1, 1.0),
+            "4002-S11 · Nozzle · PLUG": (1, 2.0),
+        })
+        top = pareto["rows"][0]
+        self.assertEqual(top["selection"], {"locations": [S09], "components": ["Filter"], "failure_mechanisms": ["CONT"]})
+        self.assertEqual([part["label"] for part in top["parts"]], ["Sub-asset", "Component", "Failure mechanism"])
+        self.assertEqual(pareto["not_coded"]["count"], 0)
+        self.assertEqual(summary["readiness"]["failures"], 7)
+        self.assertNotIn("failure_mode", summary["population_definition"])
+        self.assertIsNone(summary["trend"])
+        # The same selection on the other views narrows by the mode it names.
+        triage = self.analysis.summary({"assets": [PFS], "failure_modes": ["UST"], "categories": ["FAILURE"]})
+        self.assertEqual([(row["key"], row["count"]) for row in triage["pareto"]["rows"]], [(S09, 1)])
+
+    def test_a_weibull_pareto_bar_runs_the_fit_of_exactly_that_population(self):
+        [top, *_] = self.analysis.summary({"assets": [PFS]}, weibull=True)["pareto"]["rows"]
+        result = self.analysis.run_weibull({"assets": [PFS], **top["selection"]}, analysis_cutoff=date(2024, 12, 31))
+        self.assertEqual(result["streams"][0]["location"], S09)
+        self.assertEqual([stream["component"] for stream in result["streams"]], ["Filter"])
+        self.assertEqual(result["fit"]["failure_count"], 4)
+
     def test_downtime_follows_a_drill_into_one_location(self):
         downtime = self.analysis.downtime({"assets": [PFS], "locations": [S11], "categories": ["FAILURE"]})
         self.assertEqual(downtime["summary"]["work_order_count"], 1)

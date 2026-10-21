@@ -29,14 +29,24 @@ each under its own heading, with an empty part marked rather than left out. The
 same records can be dispositioned offline in a workbook (Download Excel / Upload
 Excel), which holds the rows the list shows, and the code lists are edited from
 there.
-**Perform an Analysis** analyses one population: an asset, narrowed by
-sub-asset, component, mechanism, mode, cause and action (in the selector, or by
-clicking a Pareto bar or a matrix cell, which drills down sub-asset → component
-→ mechanism; the sub-asset list shows the asset, then each sub-asset under its
-parent), by disposition category and by date. Every view on it — Pareto,
-failure trend, downtime drivers, PM effectiveness, repeat fixes and the Weibull —
-reads that same population, except that the Weibull ignores the categories, modes,
-causes and actions, which narrow the pattern views only (item 13 below).
+**Perform an Analysis** analyses one population: an asset, narrowed in the
+selector (the sub-asset list shows the asset, then each sub-asset under its
+parent) and by date. What the selector offers depends on the Analysis Type:
+
+* **Weibull Analysis** narrows by sub-asset, component and mechanism only, plus
+  the induced-failures switch (item 13 below). Its Pareto has one bar per
+  sub-asset + component + mechanism among the population's failures, ranked by
+  count or downtime; clicking a bar narrows the population to exactly that and
+  previews its fit.
+* **Triage Analysis** (formerly Failure Mode Trend Analysis), **Downtime Driver**,
+  **PM Effectiveness** and **Repeat Fix Rate** narrow by all six coded fields —
+  sub-asset, component, mechanism, mode, cause and action — and by disposition
+  category. Their Pareto is grouped by the dimension chosen, and a bar or matrix
+  cell drills down sub-asset → component → mechanism.
+
+Sub-asset, component and mechanism carry across a switch between the two; the
+mode, cause, action and categories ticked for the second group wait there while
+the Weibull shows.
 
 Both pages follow Life Data Analysis's access rules: reads for anyone who may see
 Life Data Analysis, every write (a disposition, a code, a saved Weibull run, an
@@ -53,7 +63,9 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   cause, action, category, detection method), ranked by count or downtime, each
   bar split by failure cause. Work orders not coded on that dimension make no bar
   (nor a value in the trend's summary cards); the chart says how many were left out.
-* **Failure trend** — the population's work orders per month (continuous axis),
+  On the Weibull, one bar per sub-asset + component + mechanism among the
+  failures instead (`view: "weibull"` on the summary request).
+* **Triage** — the population's work orders per month (continuous axis),
   with most frequent / highest downtime / fastest growing / most improved read
   for the Pareto's dimension (growth: last three months against the three
   before, once there are six).
@@ -179,7 +191,8 @@ written against them.
     excluded, they end a life as a suspension (the item was still renewed), and the
     POP string records `induced=suspensions`.
 13. **The Weibull reads sub-asset, component and mechanism only.** Failure mode,
-    cause and action narrow the pattern views but not the life analysis: one
+    cause and action narrow Triage and the other views but not the life analysis,
+    and the Weibull's selector does not offer them: one
     mechanism presents as several modes, so a mode filter turned same-mechanism
     failures into suspensions (acceptance case 168996); a cause beyond "induced"
     (its own checkbox, item 12) restates the mechanism; and the action is what was

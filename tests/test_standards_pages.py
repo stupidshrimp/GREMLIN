@@ -168,7 +168,7 @@ def test_every_analysis_type_on_offer_has_its_own_card(documentation):
     offered = re.findall(r'<option value="([^"]+)"', picker.split('id="lda-analysis-type"', 1)[1].split("</select>", 1)[0])
     assert offered == [
         "Weibull Analysis",
-        "Failure Mode Trend Analysis",
+        "Triage Analysis",
         "Downtime Driver Analysis",
         "PM Effectiveness Analysis",
         "Repeat Fix Rate Analysis",

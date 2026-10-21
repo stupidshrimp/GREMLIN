@@ -24,23 +24,29 @@
   const RECORD_EDIT_HINT = CAN_EDIT ? " Click a task ID to review or change its disposition." : "";
   const ANALYSIS_TYPES = {
     WEIBULL: "Weibull Analysis",
-    TREND: "Failure Mode Trend Analysis",
+    TRIAGE: "Triage Analysis",
     DOWNTIME: "Downtime Driver Analysis",
     PM: "PM Effectiveness Analysis",
     REPEAT: "Repeat Fix Rate Analysis",
   };
   // What a population can be narrowed by, in the order it is narrowed: where on
   // the asset, what, how. The sub-asset list follows the asset's hierarchy, and a
-  // Pareto bar or matrix cell narrows it too. Mode, cause and action narrow the
-  // pattern views only; the Weibull reads sub-asset, component and mechanism.
+  // Pareto bar or matrix cell narrows it too. The Weibull offers only the first
+  // three, the ones that say which item fails which way; the other views offer all
+  // six, and the categories.
   const DIMENSIONS = [
-    ["locations", "Sub-asset"],
-    ["components", "Component"],
-    ["failure_mechanisms", "Failure mechanism"],
-    ["failure_modes", "Failure mode", true],
-    ["failure_causes", "Failure cause", true],
-    ["actions", "Action", true],
+    ["locations", "Sub-asset", true],
+    ["components", "Component", true],
+    ["failure_mechanisms", "Failure mechanism", true],
+    ["failure_modes", "Failure mode", false],
+    ["failure_causes", "Failure cause", false],
+    ["actions", "Action", false],
   ];
+  const isWeibull = () => state.analysisType === ANALYSIS_TYPES.WEIBULL;
+  // The dimensions the analysis type showing offers.
+  function shownDimensions() {
+    return DIMENSIONS.filter(([, , weibull]) => weibull || !isWeibull());
+  }
   const READINESS_FIELDS = [
     ["in_reach", "Work orders in reach"],
     ["dispositioned", "Dispositioned"],
@@ -473,14 +479,17 @@
   // viewport without this.
 
   // ---- the population -------------------------------------------------------
-  // What every request is sent: the population and the From/To days.
+  // What every request is sent: the population and the From/To days. The Weibull
+  // is sent only what it offers; the mode, cause, action and categories ticked on
+  // the other views wait there for them.
   function selectionPayload() {
-    return {
-      assets: state.asset ? [state.asset] : [],
-      ...state.selection,
-      categories: state.categories.slice(),
-      exclude_induced: state.excludeInduced,
-    };
+    const selection = { assets: state.asset ? [state.asset] : [] };
+    shownDimensions().forEach(([key]) => {
+      selection[key] = state.selection[key].slice();
+    });
+    if (!isWeibull()) selection.categories = state.categories.slice();
+    selection.exclude_induced = state.excludeInduced;
+    return selection;
   }
   function populationBody(extra) {
     return {
@@ -545,7 +554,7 @@
     const wrap = $("lda-population-selector");
     wrap.innerHTML = "";
     const dimensions = (state.options && state.options.dimensions) || {};
-    DIMENSIONS.forEach(([key, label, patternOnly]) => {
+    shownDimensions().forEach(([key, label]) => {
       const values = (dimensions[key] || []).slice();
       const chosen = state.selection[key];
       chosen.forEach((value) => {
@@ -572,7 +581,7 @@
       });
       wrap.appendChild(el("div", { class: "lda-field", id: `lda-dim-${key}` }, [
         el("div", { class: "std-multi-head" }, [
-          el("span", { class: "lda-field-label", text: patternOnly ? `${label} (pattern views)` : label }),
+          el("span", { class: "lda-field-label", text: label }),
           chosen.length
             ? el("button", { type: "button", text: "Clear", onclick: () => {
                 state.selection[key] = [];
@@ -619,7 +628,7 @@
     const wrap = $("lda-drill");
     wrap.innerHTML = "";
     const chips = [];
-    DIMENSIONS.forEach(([key, label]) => {
+    shownDimensions().forEach(([key, label]) => {
       state.selection[key].forEach((value) => {
         const named = valueLabel(key, value);
         chips.push(el("button", {
@@ -664,18 +673,24 @@
     populationDebounce = setTimeout(refresh, 250);
   }
 
-  // Narrow the population by one value of a dimension, remembering where it was.
-  function drillInto(changes, nextGroupBy) {
+  // Where the population was, for Back to return to.
+  function rememberDrill() {
     state.drillHistory.push({
       selection: JSON.parse(JSON.stringify(state.selection)),
       categories: state.categories.slice(),
       groupBy: state.groupBy,
     });
+  }
+
+  // Narrow the population by one value of a dimension, remembering where it was.
+  function drillInto(changes, nextGroupBy) {
+    rememberDrill();
     Object.entries(changes).forEach(([key, value]) => {
       if (key === "categories") state.categories = [value];
       else state.selection[key] = [value];
     });
-    if (nextGroupBy) {
+    // The Weibull's Pareto is always by sub-asset, component and mechanism.
+    if (nextGroupBy && !isWeibull()) {
       state.groupBy = nextGroupBy;
       $("lda-pareto-group").value = nextGroupBy;
     }
@@ -709,7 +724,10 @@
     const token = ++state.summaryToken;
     const riskToken = ++state.riskToken;
     try {
-      const data = await postJson(`${API}/summary`, populationBody({ group_by: state.groupBy, weeks: riskWeeks() }));
+      const data = await postJson(
+        `${API}/summary`,
+        populationBody({ group_by: state.groupBy, weeks: riskWeeks(), view: isWeibull() ? "weibull" : "triage" }),
+      );
       if (token !== state.summaryToken || asset !== state.asset) return;
       clearBanner();
       state.summary = data;
@@ -744,7 +762,7 @@
     renderRankings(summary.rankings || []);
     drawPareto();
     renderMatrix();
-    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
+    if (state.analysisType === ANALYSIS_TYPES.TRIAGE) renderTrend();
     renderPerformHint();
   }
 
@@ -924,6 +942,10 @@
 
   function paretoClick(row) {
     const pareto = state.summary.pareto;
+    if (row.selection) {
+      fitBar(row);
+      return;
+    }
     if (!pareto.selection_key) {
       showToast(`${pareto.label} can't narrow the population; group by another dimension to drill down.`, "info");
       return;
@@ -934,7 +956,12 @@
   function drawPareto() {
     const canvas = $("lda-pareto-chart");
     const pareto = state.summary && state.summary.pareto;
-    $("lda-pareto-title").textContent = pareto ? `Pareto by ${pareto.label.toLowerCase()}` : "Pareto";
+    // The Weibull's bars are populations to fit: failures, by sub-asset, component and mechanism.
+    const fitting = Boolean(pareto && pareto.group_by === "weibull_population");
+    const counted = fitting ? "Failures" : "Work orders";
+    $("lda-pareto-title").textContent = pareto
+      ? `${fitting ? "Failures" : "Pareto"} by ${pareto.label.toLowerCase()}`
+      : "Pareto";
     document.querySelectorAll("#lda-pareto-metric [data-metric]").forEach((button) => {
       const active = button.dataset.metric === state.metric;
       button.classList.toggle("is-active", active);
@@ -947,13 +974,16 @@
     const notCoded = (pareto && pareto.not_coded) || { count: 0 };
     const notCodedNote = $("lda-pareto-not-coded");
     notCodedNote.hidden = !notCoded.count;
+    const notCodedWhat = fitting
+      ? `failure${notCoded.count === 1 ? "" : "s"} with no component or mechanism`
+      : `work order${notCoded.count === 1 ? "" : "s"} not coded on ${pareto.label.toLowerCase()}`;
     notCodedNote.textContent = notCoded.count
-      ? `${notCoded.count} work order${notCoded.count === 1 ? "" : "s"} not coded on ${pareto.label.toLowerCase()} ` +
+      ? `${notCoded.count} ${notCodedWhat} ` +
         `(${fmt(notCoded.downtime_hours)} h downtime) ${notCoded.count === 1 ? "is" : "are"} left out of the bars; ` +
         "disposition them to bring them in."
       : "";
     const metric = state.metric;
-    const { ctx, width: W, height: H } = setupCanvas(canvas, 340);
+    const { ctx, width: W, height: H } = setupCanvas(canvas, fitting ? 360 : 340);
     ctx.clearRect(0, 0, W, H);
     canvas.onclick = null;
     canvas.onmousemove = null;
@@ -972,7 +1002,10 @@
     const left = 64;
     const right = W - 56;
     const top = 24;
-    const bottom = H - 80;
+    // Room under the axis for the slanted names; a sub-asset, component and
+    // mechanism together need more than one value does.
+    const nameLength = fitting ? 28 : 20;
+    const bottom = H - (fitting ? 100 : 80);
     const plotH = bottom - top;
     const slot = (right - left) / rows.length;
     const maxVal = Math.max(...rows.map((r) => Number(r[metric]) || 0), 1);
@@ -1031,7 +1064,7 @@
       ctx.translate(x + barW / 2, bottom + 6);
       ctx.rotate(Math.PI / 5);
       const name = String(row.label || "—");
-      ctx.fillText(name.length > 20 ? `${name.slice(0, 19)}…` : name, 0, 0);
+      ctx.fillText(name.length > nameLength ? `${name.slice(0, nameLength - 1)}…` : name, 0, 0);
       ctx.restore();
       if (value > 0) {
         ctx.fillStyle = C.ink;
@@ -1062,7 +1095,7 @@
     ctx.save();
     ctx.translate(13, (top + bottom) / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(metric === "count" ? "Work orders" : "Downtime (hours)", 0, 0);
+    ctx.fillText(metric === "count" ? counted : "Downtime (hours)", 0, 0);
     ctx.restore();
     ctx.save();
     ctx.translate(W - 9, (top + bottom) / 2);
@@ -1078,7 +1111,7 @@
       const py = event.clientY - rect.top;
       return hitboxes.find((box) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h);
     };
-    const canDrill = Boolean(pareto.selection_key);
+    const canDrill = fitting || Boolean(pareto.selection_key);
     canvas.onclick = (event) => {
       const hit = barAt(event);
       if (hit) paretoClick(hit.row);
@@ -1088,15 +1121,18 @@
       canvas.style.cursor = hit ? "pointer" : "";
       if (!hit) return hidePointTooltip();
       const row = hit.row;
+      let clickTo = "—";
+      if (fitting) clickTo = `fit ${row.label}`;
+      else if (canDrill && row.key != null) {
+        clickTo = `narrow to ${row.label}${pareto.next_group_by ? ` and show it by ${pareto.next_group_by.replace("_", " ")}` : ""}`;
+      }
       showTooltipRows(event.clientX, event.clientY, [
-        [pareto.label, row.label],
-        ["Work orders", String(row.count)],
+        ...(fitting ? (row.parts || []).map((part) => [part.label, part.value]) : [[pareto.label, row.label]]),
+        [counted, String(row.count)],
         ["Downtime", `${fmt(row.downtime_hours)} h`],
         ["Cumulative", `${fmt(row._cumulative_percent, 3)}%`],
         ...row.causes.slice(0, 4).map((cause) => [cause.label, `${cause.count} (${fmt(cause.downtime_hours)} h)`]),
-        ["Click to", canDrill && row.key != null
-          ? `narrow to ${row.label}${pareto.next_group_by ? ` and show it by ${pareto.next_group_by.replace("_", " ")}` : ""}`
-          : "—"],
+        ["Click to", clickTo],
       ]);
     };
     canvas.onmouseleave = () => {
@@ -1148,12 +1184,25 @@
   }
 
   function setAnalysisType(value, { skipLoad } = {}) {
+    const wasWeibull = isWeibull();
     state.analysisType = value || ANALYSIS_TYPES.WEIBULL;
-    applyAnalysisTypeUI();
-    if (!skipLoad && state.asset && state.summary) {
-      if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrend();
-      loadAnalysis();
+    // The Weibull and the other views read different populations and draw
+    // different Pareto bars, so going between them reads the summary again.
+    const viewChanged = wasWeibull !== isWeibull();
+    if (viewChanged) {
+      state.drillHistory = [];
+      if (state.options) renderSelector();
     }
+    applyAnalysisTypeUI();
+    if (skipLoad || !state.asset || !state.summary) return;
+    if (viewChanged) {
+      resetAnalyses();
+      clearWorkspace();
+      refresh();
+      return;
+    }
+    if (state.analysisType === ANALYSIS_TYPES.TRIAGE) renderTrend();
+    loadAnalysis();
   }
 
   function applyAnalysisTypeUI() {
@@ -1161,7 +1210,7 @@
     const is = (other) => type === other;
     $("lda-step-3").textContent = {
       [ANALYSIS_TYPES.WEIBULL]: "Weibull readiness",
-      [ANALYSIS_TYPES.TREND]: "Failure trend",
+      [ANALYSIS_TYPES.TRIAGE]: "Triage",
       [ANALYSIS_TYPES.PM]: "PM effectiveness",
       [ANALYSIS_TYPES.DOWNTIME]: "Downtime drivers",
       [ANALYSIS_TYPES.REPEAT]: "Repeat fix rate",
@@ -1171,7 +1220,15 @@
     setHidden($("lda-risk-panel"), !is(ANALYSIS_TYPES.WEIBULL));
     setHidden($("lda-actions"), !is(ANALYSIS_TYPES.WEIBULL));
     setHidden($("lda-perform-hint"), !is(ANALYSIS_TYPES.WEIBULL));
-    ["lda-trend-summary", "lda-trend-chart-panel", "lda-trend-table-panel", "lda-trend-wo-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.TREND)));
+    // The Weibull narrows by sub-asset, component and mechanism only, and its
+    // Pareto is always by all three.
+    setHidden($("lda-categories-field"), is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-pareto-group-field"), is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-pop-string"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-population-hint-weibull"), !is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-population-hint-triage"), is(ANALYSIS_TYPES.WEIBULL));
+    setHidden($("lda-pareto-weibull-hint"), !is(ANALYSIS_TYPES.WEIBULL));
+    ["lda-trend-summary", "lda-trend-chart-panel", "lda-trend-table-panel", "lda-trend-wo-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.TRIAGE)));
     ["lda-pm-summary", "lda-pm-chart-panel", "lda-pm-table-panel"].forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.PM)));
     ["lda-downtime-summary", "lda-downtime-trend-panel", "lda-downtime-dist-panel", "lda-downtime-asset-panel", "lda-downtime-events-panel"]
       .forEach((id) => setHidden($(id), !is(ANALYSIS_TYPES.DOWNTIME)));
@@ -1629,6 +1686,7 @@
       CAN_EDIT
         ? "Perform Analysis builds the population's lives item by item, fits them, and saves the run with its population definition."
         : "Preview the fit builds and fits the population's lives without saving anything; an editor saves a run.",
+      "Clicking a Pareto bar previews the fit of that one sub-asset, component and mechanism.",
     ];
     if (readiness.uncoded) pieces.push(`${readiness.uncoded} failures or PM resets have no component yet and are left out until dispositioned.`);
     if (readiness.not_reviewed) pieces.push(`${readiness.not_reviewed} work orders in reach are not reviewed yet.`);
@@ -1651,8 +1709,9 @@
           el("p", {
             class: "lda-hint",
             text: CAN_EDIT
-              ? "Perform Analysis fits it and saves the run. Narrow the population to one component (and mechanism) first: a Weibull life is measured on one kind of item."
-              : "An editor has to save a fit of this population before it can be opened here; Preview the fit shows one without saving.",
+              ? "Click a Pareto bar to preview the fit of one sub-asset, component and mechanism, then Perform Analysis to save it. " +
+                "A Weibull life is measured on one kind of item, so pick one component at least."
+              : "An editor has to save a fit of this population before it can be opened here. Click a Pareto bar, or Preview the fit, to see one without saving.",
           }),
         ]));
       }
@@ -1661,19 +1720,40 @@
     }
   }
 
-  async function performAnalysis() {
+  // Perform Analysis saves the run for an editor; anybody else previews it.
+  function performAnalysis() {
+    return runFit(CAN_EDIT);
+  }
+
+  // A bar of the Weibull's Pareto is one sub-asset's one component failing by one
+  // mechanism. Clicking it narrows the population to exactly that and previews
+  // its fit; an editor saves it with Perform Analysis.
+  async function fitBar(row) {
+    rememberDrill();
+    Object.entries(row.selection).forEach(([key, values]) => {
+      state.selection[key] = values.slice();
+    });
+    clearTimeout(populationDebounce);
+    renderSelector();
+    resetAnalyses();
+    clearWorkspace();
+    await loadSummary();
+    await runFit(false);
+  }
+
+  async function runFit(save) {
     if (!state.asset) {
       showBanner("Select an Asset Number first.", "error");
       return undefined;
     }
-    if (state.analysisType !== ANALYSIS_TYPES.WEIBULL) return undefined;
+    if (!isWeibull()) return undefined;
     const token = ++state.analysisToken;
-    beginLoading(CAN_EDIT ? "Fitting and saving the population's lives…" : "Fitting the population's lives…");
+    beginLoading(save ? "Fitting and saving the population's lives…" : "Fitting the population's lives…");
     try {
-      const data = await postJson(`${API}/${CAN_EDIT ? "weibull/save" : "weibull"}`, populationBody(weibullDateWindow()));
+      const data = await postJson(`${API}/${save ? "weibull/save" : "weibull"}`, populationBody(weibullDateWindow()));
       if (token !== state.analysisToken) return undefined;
       renderAnalysisResult(data.result, { scroll: true });
-      if (CAN_EDIT) loadSummary();
+      if (save) loadSummary();
     } catch (err) {
       if (token === state.analysisToken && !err.toastShown) showBanner(err.message, "error");
     } finally {
@@ -3789,8 +3869,9 @@
       target: null,
       title: "Perform an Analysis",
       body:
-        "Pick an asset, narrow it to a population, and every analysis on this page reads that same population from the " +
-        "work-order dispositions: the Pareto, the trend, downtime, PM effectiveness, repeat fixes and the Weibull fit.",
+        "Pick an asset, narrow it to a population, and the analysis chosen reads that population from the work-order " +
+        "dispositions. The Weibull narrows by sub-asset, component and mechanism, the three that say which item fails " +
+        "which way; Triage and the other views narrow by mode, cause, action and category as well.",
     },
     {
       target: "#lda-asset-field",
@@ -3804,20 +3885,25 @@
     {
       target: "#lda-type-field",
       title: "Analysis type",
-      body: "Decides which views appear under the Pareto. The population stays the same when you switch, so each one reads the same work orders.",
+      body:
+        "Decides which views appear under the Pareto. The sub-asset, component and mechanism ticked stay when you switch; " +
+        "the mode, cause, action and categories ticked for Triage and the others wait there while the Weibull is showing.",
     },
     {
       target: "#lda-population-selector",
       title: "The population",
-      body:
-        "Tick values to narrow it; leave a list unticked for no restriction. For the Weibull, sub-asset and component " +
-        "choose which items' lives are pooled -- a life is measured on one kind of item -- and mechanism chooses which of " +
-        "their failures count. Mode, cause and action narrow the pattern views only.",
+      body: () =>
+        isWeibull()
+          ? "Tick values to narrow it; leave a list unticked for no restriction. Sub-asset and component choose which " +
+            "items' lives are pooled -- a life is measured on one kind of item -- and mechanism which of their failures count."
+          : "Tick values to narrow it; leave a list unticked for no restriction. Every view under the Pareto reads the " +
+            "work orders matching all six lists.",
     },
     {
       target: "#lda-categories-field",
       title: "Categories",
-      body: "Which dispositions the pattern views count: failures by default. The Weibull has its own rules for each category and ignores this.",
+      body: "Which dispositions the views count: failures by default.",
+      when: () => !isWeibull(),
     },
     {
       target: "#lda-dates",
@@ -3833,6 +3919,7 @@
       target: "#lda-pop-string",
       title: "The population definition",
       body: "The population as one line, the way a saved Weibull run keeps it, so a result can always be traced to exactly what it read.",
+      when: forType(ANALYSIS_TYPES.WEIBULL),
     },
     {
       target: "#lda-summary-grid",
@@ -3858,9 +3945,12 @@
     {
       target: "#lda-pareto-panel",
       title: "Pareto",
-      body:
-        "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a bar to " +
-        "narrow the population to it: a sub-asset opens into its components, a component into its mechanisms.",
+      body: () =>
+        isWeibull()
+          ? "The population's failures, one bar per sub-asset, component and mechanism, each split by failure cause and " +
+            "ranked by count or downtime. Each bar is one kind of item failing one way; click it to fit it."
+          : "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a " +
+            "bar to narrow the population to it: a sub-asset opens into its components, a component into its mechanisms.",
     },
     {
       target: "#lda-matrix-panel",
@@ -3871,13 +3961,13 @@
       target: "#lda-trend-chart-panel",
       title: "Failure trend",
       body: "Work orders per month in the population; click a month to list its work orders below. The cards above name what grew and what improved.",
-      when: forType(ANALYSIS_TYPES.TREND),
+      when: forType(ANALYSIS_TYPES.TRIAGE),
     },
     {
       target: "#lda-trend-wo-panel",
       title: "The work orders behind it",
       body: () => "Every work order the trend counts." + RECORD_EDIT_HINT,
-      when: forType(ANALYSIS_TYPES.TREND),
+      when: forType(ANALYSIS_TYPES.TRIAGE),
     },
     {
       target: "#lda-pm-chart-panel",
@@ -3925,7 +4015,7 @@
       target: "#lda-perform",
       title: CAN_EDIT ? "Perform Analysis" : "Preview the fit",
       body: CAN_EDIT
-        ? "Builds the population's lives item by item, fits a 2-parameter Weibull, and saves the run with its population definition. Pick one component, and a mechanism, first."
+        ? "Builds the population's lives item by item, fits a 2-parameter Weibull, and saves the run with its population definition. A Pareto bar previews one; this saves it."
         : "Builds and fits the population's lives without saving anything. An editor saves runs, which the rankings and reports read.",
       when: forType(ANALYSIS_TYPES.WEIBULL),
     },
@@ -4017,7 +4107,7 @@
 
   function redrawCharts() {
     if (state.summary) drawPareto();
-    if (state.analysisType === ANALYSIS_TYPES.TREND) renderTrendChart();
+    if (state.analysisType === ANALYSIS_TYPES.TRIAGE) renderTrendChart();
     if (state.analysisType === ANALYSIS_TYPES.PM && state.pm) renderPm();
     if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) renderDowntimeCharts();
     if (state.analysisRedraw) state.analysisRedraw();
@@ -4034,7 +4124,9 @@
     const typeSelect = $("lda-analysis-type");
     // ?analysis= preselects the type, which the topbar's search links to.
     const params = new URLSearchParams(window.location.search);
-    const requested = (params.get("analysis") || "").trim().toLowerCase();
+    let requested = (params.get("analysis") || "").trim().toLowerCase();
+    // Triage was called Failure Mode Trend Analysis; old links still open it.
+    if (requested === "failure mode trend analysis") requested = ANALYSIS_TYPES.TRIAGE.toLowerCase();
     if (requested) {
       const match = Array.from(typeSelect.options).find((option) => option.value.toLowerCase() === requested);
       if (match) typeSelect.value = match.value;
