@@ -30,9 +30,8 @@
     REPEAT: "Repeat Fix Rate Analysis",
   };
   // What a population can be narrowed by, in the order it is narrowed: where on
-  // the asset, what, how. The sub-asset has no list of its own on the card -- the
-  // asset is already chosen above it -- and is narrowed to from the Pareto or the
-  // matrix; it still shows as a chip once it is.
+  // the asset, what, how. The sub-asset list follows the asset's hierarchy, and a
+  // Pareto bar or matrix cell narrows it too.
   const DIMENSIONS = [
     ["locations", "Sub-asset"],
     ["components", "Component"],
@@ -545,7 +544,7 @@
     const wrap = $("lda-population-selector");
     wrap.innerHTML = "";
     const dimensions = (state.options && state.options.dimensions) || {};
-    DIMENSIONS.filter(([key]) => key !== "locations").forEach(([key, label]) => {
+    DIMENSIONS.forEach(([key, label]) => {
       const values = (dimensions[key] || []).slice();
       const chosen = state.selection[key];
       chosen.forEach((value) => {
@@ -566,7 +565,9 @@
             onPopulationChange();
           },
         });
-        list.appendChild(el("label", {}, [box, el("span", { text: option.label }), el("span", { class: "std-count", text: String(option.count) })]));
+        // A sub-asset sits indented under its parent, as in the Disposition page's dropdown.
+        const indent = option.depth > 1 ? `${"\u00a0\u00a0\u00a0".repeat(option.depth - 1)}└ ` : "";
+        list.appendChild(el("label", {}, [box, el("span", { text: indent + option.label }), el("span", { class: "std-count", text: String(option.count) })]));
       });
       wrap.appendChild(el("div", { class: "lda-field", id: `lda-dim-${key}` }, [
         el("div", { class: "std-multi-head" }, [
@@ -3803,7 +3804,7 @@
       target: "#lda-population-selector",
       title: "The population",
       body:
-        "Tick values to narrow it; leave a list unticked for no restriction. Sub-asset (from the Pareto) and component choose which items' " +
+        "Tick values to narrow it; leave a list unticked for no restriction. Sub-asset and component choose which items' " +
         "lives are pooled -- a Weibull life is measured on one kind of item -- and mechanism, mode, cause and action choose " +
         "which of their failures count.",
     },

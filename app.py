@@ -2593,6 +2593,18 @@ def _disposition_list_view() -> dict:
     }
 
 
+@app.route("/life-data-analysis/api/code-lists/delete", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_delete_code():
+    """Remove a code nothing uses; one in use is refused, saying where."""
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise LifeDataApiError("Send the code as JSON.", status_code=400)
+    return jsonify({"code_lists": _standard_service().delete_code(payload.get("code_list"), payload.get("code"))})
+
+
 @app.route("/life-data-analysis/api/dispositions")
 @life_data_api
 def api_dispositions():
@@ -2639,6 +2651,10 @@ def api_disposition_record():
     except (TypeError, ValueError):
         raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400)
     service = _standard_service()
+    if (request.values.get("history_only") or "").strip() in ("1", "true"):
+        # The Disposition page already holds the record and its options; it asks
+        # only for what the record's history pane shows.
+        return jsonify({"history": service.disposition_history(mapped_record_id)})
     # An id SQLite cannot hold names no record, rather than a server error.
     record = service.disposition_record(mapped_record_id) if -(2**63) <= mapped_record_id < 2**63 else None
     if record is None:
@@ -2660,8 +2676,13 @@ def api_save_dispositions():
         raise LifeDataApiError("No dispositions were provided to save.", status_code=400)
     if not all(isinstance(item, dict) for item in dispositions):
         raise LifeDataApiError("Each disposition must be an object.", status_code=400)
-    saved = _standard_service().save_dispositions(dispositions, decided_by=_username())
-    return jsonify({"saved": saved})
+    service = _standard_service()
+    saved = service.save_dispositions(dispositions, decided_by=_username())
+    # The saved records as the page's list shows them, so it can update those rows
+    # in place rather than reload the list.
+    ids = [item.get("mapped_record_id") for item in dispositions]
+    records = service.disposition_records(int(value) for value in ids if str(value).lstrip("-").isdigit())
+    return jsonify({"saved": saved, "records": records})
 
 
 @app.route("/life-data-analysis/api/dispositions/excel")

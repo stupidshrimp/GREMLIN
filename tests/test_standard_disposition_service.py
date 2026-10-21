@@ -373,6 +373,42 @@ class DispositionEditorTests(StandardDispositionFixture):
 
 
 class CodeListTests(StandardDispositionFixture):
+    def test_a_code_nothing_uses_is_deleted(self):
+        self.std.save_code({"code_list": "COMPONENT", "code": "Boiler", "name": "Boiler"})
+        lists = self.std.delete_code("component", "Boiler")
+        self.assertNotIn("Boiler", [entry["code"] for entry in lists["COMPONENT"]["codes"]])
+        with self.assertRaisesRegex(ValueError, "'Boiler' is not in the component list"):
+            self.std.delete_code("COMPONENT", "Boiler")
+
+    def test_a_code_in_use_is_refused_saying_where(self):
+        self.add_record(1, PFS, "One", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Two", "2024-01-02", "2024-01-02")
+        self.std.save_dispositions([
+            {"mapped_record_id": 1, **coded()},
+            {"mapped_record_id": 2, **coded("PM_RESET", component="Belt", mode="DEG", renewed_items=["Belt", "Filter"])},
+        ])
+        with self.assertRaisesRegex(ValueError, r"Filter is still used by 2 work orders' current dispositions.*retire"):
+            self.std.delete_code("COMPONENT", "Filter")
+        # A cause is in use as a mechanism's default too.
+        with self.assertRaisesRegex(ValueError, r"EXP-WEAR is still used by the default cause of mechanisms CONT, PLUG, WEAR"):
+            self.std.delete_code("FAILURE_CAUSE", "EXP-WEAR")
+        # Once no current disposition uses it, it can go; history keeps the text.
+        self.std.save_dispositions([{"mapped_record_id": 1, **coded(mode="UST")}])
+        self.std.delete_code("FAILURE_MODE", "FTS")
+        self.assertEqual(self.std.disposition_history(1)[-1]["failure_mode_code"], "FTS")
+
+    def test_a_code_a_saved_run_names_is_refused(self):
+        self.load_acceptance()
+        self.analysis.run_weibull(
+            {"assets": [PFS], "locations": [S09], "components": ["Filter"]}, analysis_cutoff=date(2024, 12, 31), save=True
+        )
+        self.std.save_dispositions([
+            {"mapped_record_id": record[0], **{**record[6], "component_code": "Belt"}}
+            for record in ACCEPTANCE if record[6].get("component_code") == "Filter"
+        ])
+        with self.assertRaisesRegex(ValueError, r"Filter is still used by .*1 saved Weibull run"):
+            self.std.delete_code("COMPONENT", "Filter")
+
     def test_the_lists_are_seeded_once_and_then_belong_to_the_team(self):
         lists = self.std.code_lists()
         self.assertEqual(len(lists["COMPONENT"]["codes"]), len(std.SEED_CODES[std.COMPONENT]))
@@ -579,8 +615,9 @@ class PatternViewTests(StandardDispositionFixture):
 
     def test_options_list_what_is_there_to_choose(self):
         options = self.analysis.options([PFS])
-        locations = {option["value"] for option in options["dimensions"]["locations"]}
-        self.assertEqual(locations, {PFS, S05, S09, S11})
+        # The sub-asset list reads as the hierarchy: the asset, then its sub-assets.
+        locations = [(option["value"], option["depth"]) for option in options["dimensions"]["locations"]]
+        self.assertEqual(locations, [(PFS, 0), (S05, 1), (S09, 1), (S11, 1)])
         components = {option["value"] for option in options["dimensions"]["components"]}
         self.assertTrue({"Filter", "Burner", "Electrical", "Nozzle"} <= components)
         self.assertEqual([c["value"] for c in options["categories"] if c["default"]], ["FAILURE"])

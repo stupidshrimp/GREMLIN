@@ -13,6 +13,7 @@ connection rules, search and spreadsheet writer.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sqlite3
@@ -188,6 +189,91 @@ class StandardDispositionService:
             }
             for code_list in std.CODE_LISTS
         }
+
+    # The wo_disposition column each list's codes are stored in.
+    _CODE_COLUMNS = {
+        std.COMPONENT: "component_code",
+        std.FAILURE_MECHANISM: "failure_mechanism_code",
+        std.FAILURE_MODE: "failure_mode_code",
+        std.ACTION: "action_code",
+        std.FAILURE_CAUSE: "failure_cause_code",
+    }
+    # The Population field a saved analysis keeps each list's codes in.
+    _SELECTION_KEYS = {
+        std.COMPONENT: "components",
+        std.FAILURE_MECHANISM: "failure_mechanisms",
+        std.FAILURE_MODE: "failure_modes",
+        std.ACTION: "actions",
+        std.FAILURE_CAUSE: "failure_causes",
+    }
+
+    def code_uses(self, conn: sqlite3.Connection, code_list: str, code: str) -> list[str]:
+        """Where a code is in use, in words, or [] when nothing uses it."""
+
+        uses = []
+        column = self._CODE_COLUMNS[code_list]
+        records = int(conn.execute(
+            f"SELECT COUNT(*) FROM wo_disposition WHERE is_current = 1 AND {column} = ?", (code,)
+        ).fetchone()[0])
+        if code_list == std.COMPONENT:
+            records += sum(
+                1 for (text,) in conn.execute(
+                    "SELECT renewed_items_json FROM wo_disposition WHERE is_current = 1 AND component_code IS NOT ? "
+                    "AND renewed_items_json LIKE ?",
+                    (code, f'%"{code}"%'),
+                )
+                if code in renewed_items_from_json(text)
+            )
+        if records:
+            uses.append("1 work order's current disposition" if records == 1 else f"{records} work orders' current dispositions")
+        if code_list == std.FAILURE_CAUSE:
+            mechanisms = [row[0] for row in conn.execute(
+                "SELECT code FROM disposition_code WHERE code_list = ? AND default_cause_code = ? ORDER BY code",
+                (std.FAILURE_MECHANISM, code),
+            )]
+            if mechanisms:
+                uses.append(f"the default cause of mechanism{'s' if len(mechanisms) != 1 else ''} {', '.join(mechanisms)}")
+        key = self._SELECTION_KEYS[code_list]
+        saved = 0
+        for (text,) in conn.execute("SELECT selection_json FROM population_weibull_analysis"):
+            try:
+                selection = json.loads(text or "{}")
+            except ValueError:
+                continue
+            if code in (selection.get(key) or ()):
+                saved += 1
+        if saved:
+            uses.append(f"{saved} saved Weibull run{'s' if saved != 1 else ''}")
+        return uses
+
+    def delete_code(self, code_list: str, code: str) -> dict[str, Any]:
+        """Remove a code nothing uses, and return every list.
+
+        A code a current disposition, a mechanism's default cause or a saved
+        Weibull run still names is refused, with where it is used: deleting it
+        would leave those reading a code no list has. Retire it instead, which
+        keeps them reading true and takes it off the dropdowns.
+        """
+
+        code_list = (_clean(code_list) or "").upper()
+        if code_list not in std.CODE_LISTS:
+            raise ValueError(f"Choose one of the code lists: {', '.join(std.CODE_LISTS)}.")
+        code = _clean(code)
+        label = std.CODE_LIST_LABELS[code_list].lower()
+        with self.life.write_connection() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM disposition_code WHERE code_list = ? AND code = ?", (code_list, code)
+            ).fetchone()
+            if code is None or exists is None:
+                raise ValueError(f"{code!r} is not in the {label} list.")
+            uses = self.code_uses(conn, code_list, code)
+            if uses:
+                raise ValueError(
+                    f"{code} is still used by {' and '.join(uses)}. Change those first, or retire the code "
+                    "(untick Active) to take it off the dropdowns while they keep reading it."
+                )
+            conn.execute("DELETE FROM disposition_code WHERE code_list = ? AND code = ?", (code_list, code))
+        return self.code_lists()
 
     def save_code(self, values: Mapping[str, Any], *, updated_by: str | None = None) -> dict[str, Any]:
         """Add a code to a list, or change one already there, and return every list.
@@ -610,18 +696,28 @@ class StandardDispositionService:
         }
 
     def disposition_record(self, mapped_record_id: int) -> dict[str, Any] | None:
+        records = self.disposition_records([mapped_record_id])
+        return records[0] if records else None
+
+    def disposition_records(self, mapped_record_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """Records as the Disposition page's list holds them, in the order asked for; missing ids are left out."""
+
+        ids = [int(mapped_record_id) for mapped_record_id in mapped_record_ids]
+        if not ids:
+            return []
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
-            row = conn.execute(
-                f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
-                (int(mapped_record_id),),
-            ).fetchone()
-            if row is None:
-                return None
-            record = self.record_dict(row, codebook)
-            self._add_plant_times(conn, [record])
-            self._add_labels(record, self.asset_tree(conn))
-            return record
+            rows = conn.execute(
+                f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id IN ({', '.join('?' * len(ids))})",
+                ids,
+            ).fetchall()
+            by_id = {int(row["mapped_record_id"]): self.record_dict(row, codebook) for row in rows}
+            records = [by_id[mapped_record_id] for mapped_record_id in ids if mapped_record_id in by_id]
+            self._add_plant_times(conn, records)
+            tree = self.asset_tree(conn)
+            for record in records:
+                self._add_labels(record, tree)
+            return records
 
     @staticmethod
     def _add_labels(record: dict[str, Any], tree: AssetTree) -> None:

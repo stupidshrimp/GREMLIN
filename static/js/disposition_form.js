@@ -68,6 +68,15 @@
     };
   }
 
+  // The field of a disposition each code list fills.
+  const CODE_FIELDS = {
+    COMPONENT: "component_code",
+    FAILURE_MECHANISM: "failure_mechanism_code",
+    FAILURE_MODE: "failure_mode_code",
+    ACTION: "action_code",
+    FAILURE_CAUSE: "failure_cause_code",
+  };
+
   let formSeq = 0;
 
   /* One record's form. `options` is what /dispositions hands back for the
@@ -504,6 +513,21 @@
       setHistory(entries) {
         historyEntries = entries;
         renderHistory();
+      },
+      // The code lists changed while this work order is open (a code added,
+      // renamed, retired or deleted): offer them now, keeping everything typed.
+      setCodeLists(codeLists) {
+        options = { ...options, code_lists: codeLists };
+        render();
+      },
+      // A code just added to a list: set it on this work order's field for that
+      // list, as an unsaved change. False when the category has no such field.
+      useCode(codeList, code) {
+        const field = CODE_FIELDS[codeList];
+        if (!field || draft.disposition_category === "DUPLICATE_MISFILED") return false;
+        draft[field] = code;
+        render();
+        return true;
       },
       focus() {
         const first = node.querySelector(".std-category.is-active") || node.querySelector("select, input");

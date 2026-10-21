@@ -391,24 +391,49 @@
   async function loadHistory(id, form) {
     const token = ++state.historyToken;
     try {
-      const data = await getJson(`${API}/dispositions/record?mapped_record_id=${id}`);
+      const data = await getJson(`${API}/dispositions/record?mapped_record_id=${id}&history_only=1`);
       if (token === state.historyToken) form.setHistory(data.history || []);
     } catch (err) {
       /* the history is a convenience; the editor works without it */
     }
   }
 
+  // A save hands back the record as the list holds it, so only that row changes:
+  // the list, its counts and the editor options stay as they are, rather than the
+  // whole page being read again. The next record opens from the list in memory.
   async function save(payload, nextId) {
     const row = currentRow();
     beginLoading("Saving…");
     try {
-      await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
+      const result = await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
       showToast(`Task ${row ? row.task_id : payload.mapped_record_id} saved.`, "success");
       state.form = null;
-      await load(nextId);
+      const saved = (result.records || []).find((record) => record.mapped_record_id === payload.mapped_record_id);
+      if (!saved || !replaceRow(saved)) {
+        await load(nextId);
+        return;
+      }
+      renderTable();
+      selectRecord(nextId === null ? saved.mapped_record_id : nextId, { force: true });
     } finally {
       endLoading();
     }
+  }
+
+  // Put a saved record in its row and keep the counts above the list true.
+  function replaceRow(record) {
+    const list = rows();
+    const index = list.findIndex((item) => item.mapped_record_id === record.mapped_record_id);
+    if (index < 0) return false;
+    const before = list[index].disposition;
+    const after = record.disposition;
+    const counts = state.data.counts || {};
+    const notReviewed = (d) => (d.disposition_category === "NOT_REVIEWED" ? 1 : 0);
+    const migrated = (d) => (d.source === "MIGRATION" ? 1 : 0);
+    counts.not_reviewed = Math.max(0, (counts.not_reviewed || 0) + notReviewed(after) - notReviewed(before));
+    counts.migrated = Math.max(0, (counts.migrated || 0) + migrated(after) - migrated(before));
+    list[index] = record;
+    return true;
   }
 
   // ---- Excel ----------------------------------------------------------------------
@@ -540,6 +565,7 @@
         class: "btn-secondary",
         text: isNew ? "Add" : "Save",
         onclick: async () => {
+          const code = inputs.code.value.trim();
           try {
             const data = await postJson(`${API}/code-lists`, {
               code_list: listKey,
@@ -555,8 +581,32 @@
             });
             codeState.lists = data.code_lists;
             renderCodeLists();
-            showToast(`${list.label} ${inputs.code.value.trim()} saved.`, "success");
-            if (state.asset && !isDirty()) load(state.selectedId);
+            const used = isNew && inputs.is_active.checked && applyCodeLists(data.code_lists, listKey, code);
+            showToast(
+              used
+                ? `${list.label} ${code} added and set on task ${currentRow().task_id}; save the work order to keep it.`
+                : `${list.label} ${code} saved.`,
+              "success"
+            );
+            if (!isNew) applyCodeLists(data.code_lists);
+          } catch (err) {
+            if (!err.toastShown) showToast(err.message, "error");
+          }
+        },
+      });
+      const remove = isNew ? null : el("button", {
+        type: "button",
+        class: "btn-secondary std-code-delete",
+        text: "Delete",
+        title: "Delete this code. A code in use can only be retired.",
+        onclick: async () => {
+          if (!window.confirm(`Delete ${list.label.toLowerCase()} code ${entry.code}? This cannot be undone.`)) return;
+          try {
+            const data = await postJson(`${API}/code-lists/delete`, { code_list: listKey, code: entry.code });
+            codeState.lists = data.code_lists;
+            renderCodeLists();
+            applyCodeLists(data.code_lists);
+            showToast(`${list.label} ${entry.code} deleted.`, "success");
           } catch (err) {
             if (!err.toastShown) showToast(err.message, "error");
           }
@@ -564,13 +614,27 @@
       });
       return el("tr", { class: entry.is_active === false ? "is-retired" : "" }, [
         ...cells.map((cell) => el("td", { class: cell === inputs.name ? "std-code-name" : null }, [cell])),
-        el("td", {}, [button]),
+        el("td", { class: "std-code-actions" }, [button, remove]),
       ]);
     };
     list.codes.forEach((entry) => body.appendChild(rowFor(entry, false)));
     const last = list.codes.length ? list.codes[list.codes.length - 1].sort_order : 0;
     body.appendChild(rowFor({ sort_order: (last || 0) + 10, is_active: true }, true));
     table.appendChild(body);
+  }
+
+  // A change to the code lists reaches the open work order at once: its
+  // dropdowns offer the lists as they now are, with everything typed kept, and a
+  // code just added is set on its field, ready to save. Returns whether it was.
+  function applyCodeLists(codeLists, addedList, addedCode) {
+    const active = {};
+    Object.entries(codeLists).forEach(([key, list]) => {
+      active[key] = list.codes.filter((entry) => entry.is_active);
+    });
+    if (state.options) state.options = { ...state.options, code_lists: active };
+    if (!state.form) return false;
+    state.form.setCodeLists(active);
+    return Boolean(addedList && state.form.useCode(addedList, addedCode));
   }
 
   // ---- Show me around ----------------------------------------------------------------

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from typing import Any, Iterable, Mapping
 
 from services import disposition_standard as std
@@ -337,13 +338,53 @@ class AssetTree:
 
         ``hierarchy`` is the PM calendar's asset rows: ``asset_id``,
         ``asset_name`` and ``parent_asset_id`` (None at the top).
+
+        Building it reads every asset any work order is filed under, which on a
+        plant's history is seconds of work, so a tree is kept for as long as what
+        it was built from reads the same: the same work-order rows, the same
+        asset lists. Any change to either builds it again.
         """
 
+        stored = tuple(_row_key(row) for row in _stored_limble_assets(conn))
+        calendar = tuple(_row_key(row) for row in (hierarchy or ()))
+        wo_rows = tuple(
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT TRIM(asset_number) AS asset_number, asset_id_raw, asset_name, immediate_parent_asset_id,
+                       COUNT(*) AS record_count
+                FROM mapped_cmms_record
+                WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
+                GROUP BY TRIM(asset_number), asset_id_raw, asset_name, immediate_parent_asset_id
+                """
+            )
+        )
+        key = (stored, calendar, wo_rows)
+        with _TREE_CACHE_LOCK:
+            tree = _TREE_CACHE.get(key)
+        if tree is None:
+            tree = cls._build(stored, calendar, wo_rows)
+            with _TREE_CACHE_LOCK:
+                _TREE_CACHE[key] = tree
+                while len(_TREE_CACHE) > _TREE_CACHE_SIZE:
+                    _TREE_CACHE.pop(next(iter(_TREE_CACHE)))
+        return tree
+
+    @classmethod
+    def _build(
+        cls,
+        stored: tuple[tuple[Any, Any, Any], ...],
+        calendar: tuple[tuple[Any, Any, Any], ...],
+        wo_rows: tuple[tuple[Any, ...], ...],
+    ) -> "AssetTree":
         # ---- Limble's hierarchy, as the PM calendar builds it: one lookup by
         # id, and each asset's parent only when the parent is on the list.
         by_id: dict[str, Mapping[str, Any]] = {}
         sources = []
-        for source, rows in (("gremlin", _stored_limble_assets(conn)), ("pm_calendar", list(hierarchy or ()))):
+        for source, rows in (
+            ("gremlin", [{"asset_id": a, "asset_name": n, "parent_asset_id": p} for a, n, p in stored]),
+            ("pm_calendar", [{"asset_id": a, "asset_name": n, "parent_asset_id": p} for a, n, p in calendar]),
+        ):
             if rows:
                 sources.append(source)
             for row in rows:
@@ -381,22 +422,13 @@ class AssetTree:
         wo_names: dict[str, dict[str, int]] = {}
         ids_of: dict[str, dict[str, int]] = {}
         parent_votes: dict[str, dict[str, int]] = {}
-        for row in conn.execute(
-            """
-            SELECT TRIM(asset_number) AS asset_number, asset_id_raw, asset_name, immediate_parent_asset_id,
-                   COUNT(*) AS record_count
-            FROM mapped_cmms_record
-            WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
-            GROUP BY TRIM(asset_number), asset_id_raw, asset_name, immediate_parent_asset_id
-            """
-        ):
-            number = row["asset_number"]
-            count = int(row["record_count"] or 0)
+        for number, asset_id_raw, asset_name, parent_raw, record_count in wo_rows:
+            count = int(record_count or 0)
             wo_numbers.add(number)
             for tally, key in (
-                (wo_names.setdefault(number, {}), (row["asset_name"] or "").strip()),
-                (ids_of.setdefault(number, {}), _id_text(row["asset_id_raw"])),
-                (parent_votes.setdefault(number, {}), _id_text(row["immediate_parent_asset_id"])),
+                (wo_names.setdefault(number, {}), (asset_name or "").strip()),
+                (ids_of.setdefault(number, {}), _id_text(asset_id_raw)),
+                (parent_votes.setdefault(number, {}), _id_text(parent_raw)),
             ):
                 if key:
                     tally[key] = tally.get(key, 0) + count
@@ -450,13 +482,15 @@ class AssetTree:
 
         # Without Limble's word: a bare id some work orders are filed under,
         # named for a number the plant files work orders under, is that asset.
+        claimed = set(number_of_id.values())
+        filed_upper = {other.upper(): other for other in wo_numbers}
         for number in sorted(wo_numbers):
-            if number in aliases or number in number_of_id.values() or number not in ids_of.get(number, {}):
+            if number in aliases or number in claimed or number not in ids_of.get(number, {}):
                 continue
             tally = wo_names.get(number, {})
             code = asset_code(max(tally, key=tally.get)) if tally else None
-            if code and code != number.upper() and code in {other.upper(): other for other in wo_numbers}:
-                aliases[number] = {other.upper(): other for other in wo_numbers}[code]
+            if code and code != number.upper() and code in filed_upper:
+                aliases[number] = filed_upper[code]
 
         # The Asset Number a Limble id stands for when Limble's list does not
         # have it: the number filed under that id itself, else the one whose
@@ -582,6 +616,16 @@ class AssetTree:
 
         walk(number, 1)
         return found
+
+
+# Built trees, by what they were built from (see AssetTree.load), newest last.
+_TREE_CACHE: dict[tuple, "AssetTree"] = {}
+_TREE_CACHE_SIZE = 4
+_TREE_CACHE_LOCK = threading.Lock()
+
+
+def _row_key(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    return (row.get("asset_id"), row.get("asset_name"), row.get("parent_asset_id"))
 
 
 def _stored_limble_assets(conn: sqlite3.Connection) -> list[Mapping[str, Any]]:

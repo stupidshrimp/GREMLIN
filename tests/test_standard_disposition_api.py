@@ -195,6 +195,37 @@ def test_the_list_sorts_filters_and_downloads_what_it_shows(monkeypatch, tmp_pat
     assert sheet.count("<row ") == page["displayed_count"] + 1
 
 
+def test_a_save_hands_back_the_saved_record_and_history_comes_alone(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    dispositions = _seed(module)
+    editor = _client(module, role="editor")
+    one = dispositions[0]
+    saved = editor.post(f"{API}/dispositions/save", json={"dispositions": [one]}).get_json()
+    assert saved["saved"] == 1
+    [record] = saved["records"]
+    # The record as the page's list holds it, labels and all.
+    assert record["mapped_record_id"] == one["mapped_record_id"]
+    assert record["disposition"]["disposition_category"] == one["disposition_category"]
+    assert {"asset_label", "location_label", "plant_times"} <= set(record)
+    history = editor.get(f"{API}/dispositions/record?mapped_record_id={one['mapped_record_id']}&history_only=1").get_json()
+    assert set(history) == {"history"} and len(history["history"]) == 1
+
+
+def test_an_editor_deletes_an_unused_code_and_a_viewer_cannot(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    editor = _client(module, role="editor")
+    assert editor.post(f"{API}/code-lists", json={"code_list": "COMPONENT", "code": "Boiler", "name": "Boiler"}).status_code == 200
+    viewer = _client(module, role="viewer")
+    assert viewer.post(f"{API}/code-lists/delete", json={"code_list": "COMPONENT", "code": "Boiler"}).status_code == 403
+    deleted = editor.post(f"{API}/code-lists/delete", json={"code_list": "COMPONENT", "code": "Boiler"})
+    assert deleted.status_code == 200
+    assert "Boiler" not in [entry["code"] for entry in deleted.get_json()["code_lists"]["COMPONENT"]["codes"]]
+    missing = editor.post(f"{API}/code-lists/delete", json={"code_list": "COMPONENT", "code": "Boiler"})
+    assert missing.status_code == 400 and "not in the component list" in missing.get_json()["error"]
+    assert editor.post(f"{API}/code-lists/delete", data="x").status_code == 400
+
+
 def test_a_refused_save_says_which_record_and_why(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     _seed(module)

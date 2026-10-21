@@ -199,6 +199,8 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .std-code-table td { vertical-align: middle; }
 .std-code-table tr.is-retired td { opacity: 0.6; }
 .std-code-table td.std-code-name { min-width: 220px; }
+.std-code-table td.std-code-actions { white-space: nowrap; display: flex; gap: 0.35rem; }
+.std-code-table .std-code-delete { color: var(--danger-ink); }
 
 /* ---- Perform an Analysis: the population --------------------------------- */
 .std-selector {

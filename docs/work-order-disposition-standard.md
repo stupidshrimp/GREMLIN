@@ -32,8 +32,8 @@ there.
 **Perform an Analysis** analyses one population: an asset, narrowed by
 sub-asset, component, mechanism, mode, cause and action (in the selector, or by
 clicking a Pareto bar or a matrix cell, which drills down sub-asset → component
-→ mechanism; the asset is already chosen, so its sub-assets have no list on the
-population card), by disposition category and by date. Every view on it — Pareto,
+→ mechanism; the sub-asset list shows the asset, then each sub-asset under its
+parent), by disposition category and by date. Every view on it — Pareto,
 failure trend, downtime drivers, PM effectiveness, repeat fixes and the Weibull —
 reads that same population.
 
@@ -85,9 +85,13 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   spec §3 the first time it is empty and is the team's from then on: a code they
   retire stays retired, a code they delete is not put back. A **code** is the
   stable key dispositions and saved populations store, so it cannot be renamed
-  once added; its name, ISO reference and the rest can. Codes are retired
-  (`is_active = 0`), not deleted, so records coded with them still read; a retired
-  code is accepted on re-save only while the record keeps it.
+  once added; its name, ISO reference and the rest can. A code nothing uses can be
+  deleted; one a current disposition, a mechanism's default cause or a saved
+  Weibull run names is refused, saying where, and is retired instead
+  (`is_active = 0`) so the records coded with it still read; a retired code is
+  accepted on re-save only while the record keeps it. A change to a list reaches
+  the work order open on the Disposition page at once, and a code added there is
+  set on its field, ready to save.
   What a code means *to the engine* is an attribute, not its spelling, so the team
   can rename and extend lists freely:
   * `renews_item` on actions (seeded on REPLACE, REPAIR, CLEAN_SERVICE);

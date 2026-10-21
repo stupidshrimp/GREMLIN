@@ -369,13 +369,29 @@ class PopulationAnalysisService:
             if attribute == "locations":
                 for value in values:
                     places.setdefault(value, self._place_label(tree, population, value))
+            ordered = sorted(values, key=lambda value: (-counts.get(value, 0), str(value)))
+            depth: dict[Any, int] = {}
+            if attribute == "locations":
+                # Where on the asset, as its hierarchy reads: the asset itself, then
+                # each sub-asset under its parent; anything else after them.
+                tree_order = []
+                for asset in sorted(population.assets):
+                    tree_order.append(asset)
+                    depth[asset] = 0
+                    for option in sub_assets[asset]:
+                        tree_order.append(option["asset_number"])
+                        depth[option["asset_number"]] = option["depth"]
+                ordered = [value for value in tree_order if value in values] + [
+                    value for value in ordered if value not in depth
+                ]
             dimensions[attribute] = [
                 {
                     "value": value,
                     "label": places[value] if attribute == "locations" else self._label(codebook, code_list, value),
                     "count": counts.get(value, 0),
+                    **({"depth": depth.get(value, 0)} if attribute == "locations" else {}),
                 }
-                for value in sorted(values, key=lambda value: (-counts.get(value, 0), str(value)))
+                for value in ordered
             ]
         return {
             "assets": sorted(population.assets),
