@@ -483,11 +483,23 @@ class PopulationAnalysisService:
         return self._label(codebook, code_list, self._pattern_value(record, field))
 
     def _pareto(self, records: list[dict[str, Any]], group_by: str, codebook: std.CodeBook) -> dict[str, Any]:
+        """One bar per value the population's work orders are coded with on ``group_by``.
+
+        Work orders not coded on it make no bar -- "Not coded" is not a component,
+        a mechanism or a cause, and as the tallest bar it hid the ones that are --
+        and are counted in ``not_coded`` instead, so the page can say how many.
+        """
+
         field, code_list, label = GROUP_BY_DIMENSIONS[group_by]
         groups: dict[Any, dict[str, Any]] = {}
         labels: dict[Any, str] = {}
+        not_coded = {"count": 0, "downtime_hours": 0.0}
         for record in records:
             key = self._pattern_value(record, field)
+            if key is None:
+                not_coded["count"] += 1
+                not_coded["downtime_hours"] += float(record["downtime_hours"] or 0)
+                continue
             labels.setdefault(key, self._value_label(record, field, code_list, codebook))
             cause = self._pattern_value(record, "failure_cause_effective")
             downtime = float(record["downtime_hours"] or 0)
@@ -525,6 +537,7 @@ class PopulationAnalysisService:
             "selection_key": GROUP_BY_SELECTION.get(group_by),
             "next_group_by": next_level,
             "rows": rows,
+            "not_coded": {"count": not_coded["count"], "downtime_hours": round(not_coded["downtime_hours"], 4)},
         }
 
     def _matrix(self, records: list[dict[str, Any]], codebook: std.CodeBook) -> dict[str, Any]:
@@ -605,21 +618,24 @@ class PopulationAnalysisService:
                 else None
             )
         ranked = sorted(groups.values(), key=lambda group: (-group["total_count"], str(group["label"])))
+        # The cards compare the values the Pareto draws, so work orders not coded
+        # on its dimension are left out of them as they are out of its bars.
+        coded = [group for group in ranked if group["key"] is not None]
 
         def entry(group: dict[str, Any] | None, value: Any) -> dict[str, Any] | None:
             return None if group is None else {"key": group["key"], "label": group["label"], "value": value}
 
         summary: dict[str, Any] = {"most_frequent": None, "highest_downtime": None, "fastest_growing": None, "most_improved": None}
-        if ranked:
-            most = max(ranked, key=lambda group: (group["total_count"], group["total_downtime_hours"]))
+        if coded:
+            most = max(coded, key=lambda group: (group["total_count"], group["total_downtime_hours"]))
             summary["most_frequent"] = entry(most, most["total_count"])
-            costly = max(ranked, key=lambda group: (group["total_downtime_hours"], group["total_count"]))
+            costly = max(coded, key=lambda group: (group["total_downtime_hours"], group["total_count"]))
             summary["highest_downtime"] = entry(costly, costly["total_downtime_hours"])
-            growing = [group for group in ranked if (group["growth"] or 0) > 0]
+            growing = [group for group in coded if (group["growth"] or 0) > 0]
             if growing:
                 fastest = max(growing, key=lambda group: (group["growth"], group["total_count"]))
                 summary["fastest_growing"] = entry(fastest, fastest["growth"])
-            declining = [group for group in ranked if (group["growth"] or 0) < 0]
+            declining = [group for group in coded if (group["growth"] or 0) < 0]
             if declining:
                 improved = min(declining, key=lambda group: (group["growth"], -group["total_count"]))
                 summary["most_improved"] = entry(improved, improved["growth"])

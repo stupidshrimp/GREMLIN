@@ -923,10 +923,6 @@
 
   function paretoClick(row) {
     const pareto = state.summary.pareto;
-    if (row.key === null || row.key === undefined) {
-      showToast("Not coded is not a value to narrow by: disposition those work orders first.", "info");
-      return;
-    }
     if (!pareto.selection_key) {
       showToast(`${pareto.label} can't narrow the population; group by another dimension to drill down.`, "info");
       return;
@@ -946,6 +942,15 @@
     const allRows = paretoRows();
     const rows = allRows.slice(0, PARETO_MAX_BARS);
     $("lda-pareto-empty").hidden = allRows.length > 0;
+    // Work orders not coded on the dimension make no bar; say how many there are.
+    const notCoded = (pareto && pareto.not_coded) || { count: 0 };
+    const notCodedNote = $("lda-pareto-not-coded");
+    notCodedNote.hidden = !notCoded.count;
+    notCodedNote.textContent = notCoded.count
+      ? `${notCoded.count} work order${notCoded.count === 1 ? "" : "s"} not coded on ${pareto.label.toLowerCase()} ` +
+        `(${fmt(notCoded.downtime_hours)} h downtime) ${notCoded.count === 1 ? "is" : "are"} left out of the bars; ` +
+        "disposition them to bring them in."
+      : "";
     const metric = state.metric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, 340);
     ctx.clearRect(0, 0, W, H);

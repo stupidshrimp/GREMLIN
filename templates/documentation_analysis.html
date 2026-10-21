@@ -220,7 +220,8 @@
       <ul>
         <li>At most 15 bars are drawn, but the line counts every value, so it can stop short of 100% at the last bar on screen.</li>
         <li>Hovering a bar shows its full name, count, downtime, cumulative percent and its largest causes.</li>
-        <li><strong>Clicking a bar narrows the population to it</strong> and steps down a level: a sub-asset bar shows that sub-asset by component, a component bar by failure mechanism. Every analysis below then reads the narrower population. A bar of work orders not coded on that dimension can't be narrowed to.</li>
+        <li><strong>Clicking a bar narrows the population to it</strong> and steps down a level: a sub-asset bar shows that sub-asset by component, a component bar by failure mechanism. Every analysis below then reads the narrower population.</li>
+        <li><strong>Work orders not coded on the dimension make no bar</strong> (a Held one, or one with no component when grouping by component): "Not coded" is not a value to rank. A note under the chart says how many were left out, and the summary cards over the trend leave them out too.</li>
         <li>Under it, <strong>Where it happens</strong> crosses sub-asset with component; clicking a cell narrows to that item on that sub-asset.</li>
       </ul>
       {% call std.figure("C1", "Four mechanisms with 120, 60, 15 and 5 hours of downtime. The first bar alone is 60% of the 200 hours; the first two together are 90%.") %}

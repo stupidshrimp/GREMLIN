@@ -582,7 +582,21 @@ class PatternViewTests(StandardDispositionFixture):
         self.add_record(1, PFS, "Something", "2024-08-01", "2024-08-01")
         self.std.save_dispositions([{"mapped_record_id": 1, **coded("HELD", disposition_note="No notes on the WO")}])
         summary = self.summary({"categories": ["HELD"]}, group_by="component")
-        self.assertEqual([row["label"] for row in summary["pareto"]["rows"]], ["Not coded"])
+        # Its codes read as not coded, so it makes no bar; the Pareto counts it aside.
+        self.assertEqual(summary["pareto"]["rows"], [])
+        self.assertEqual(summary["pareto"]["not_coded"]["count"], 1)
+
+    def test_work_orders_not_coded_on_the_dimension_make_no_bar(self):
+        self.add_record(1, PFS, "Uncoded failure", "2024-08-01", "2024-08-01", downtime=5.0)
+        self.std.save_dispositions([{"mapped_record_id": 1, **coded(sub_asset=None, component="Unknown")}])
+        with self.life.write_connection() as conn:
+            conn.execute("UPDATE wo_disposition SET component_code = NULL WHERE mapped_record_id = 1")
+        summary = self.summary({"categories": ["FAILURE"]}, group_by="component")
+        self.assertNotIn(None, [row["key"] for row in summary["pareto"]["rows"]])
+        self.assertEqual(summary["pareto"]["not_coded"], {"count": 1, "downtime_hours": 5.0})
+        # Nor is it a value the trend's cards compare.
+        cards = summary["trend"]["summary"]
+        self.assertTrue(all(card is None or card["key"] is not None for card in cards.values()))
 
     def test_the_trend_is_continuous_and_reads_the_pareto_dimension(self):
         trend = self.summary({"categories": ["FAILURE"]}, group_by="component")["trend"]

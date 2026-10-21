@@ -50,7 +50,8 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
 * **Pareto** — one bar per value of the dimension chosen (sub-asset by default,
   where the asset's own work orders are one bar; component, mechanism, mode,
   cause, action, category, detection method), ranked by count or downtime, each
-  bar split by failure cause.
+  bar split by failure cause. Work orders not coded on that dimension make no bar
+  (nor a value in the trend's summary cards); the chart says how many were left out.
 * **Failure trend** — the population's work orders per month (continuous axis),
   with most frequent / highest downtime / fastest growing / most improved read
   for the Pareto's dimension (growth: last three months against the three
