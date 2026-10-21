@@ -394,21 +394,46 @@ def test_the_life_hours_figure_is_what_gremlin_counts(documentation):
     assert "100 life hours on the 20-hour schedule" in documentation
 
 
-def test_the_pm_and_downtime_examples_match_the_service(documentation):
+def test_the_pm_and_downtime_examples_match_the_service(documentation, tmp_path):
     from services.life_data_service import LifeDataService
+    from services.population_analysis_service import PopulationAnalysisService
+    from services.standard_disposition_service import StandardDispositionService
 
-    pms = [(datetime(2026, month, day), {"task_id": f"PM{month}{day}"}) for month, day in [(1, 5), (1, 19), (3, 2), (7, 1)]]
-    failures = [
-        (datetime(2026, 2, 18), {"mapped_record_id": 1}),
-        (datetime(2026, 6, 10), {"mapped_record_id": 2}),
-    ]
-    pairs = LifeDataService._pair_pms_to_failures(pms, failures)
-    days = [round(pair[4]) for pair in pairs]
-    assert days == [44, 30, 100]
-    average = sum(pair[4] for pair in pairs) / len(pairs)
-    assert f"{average:.1f} days" in documentation
-    assert LifeDataService._pm_effectiveness_rating(average) == "Fair"
-    assert len({pair[3]["mapped_record_id"] for pair in pairs}) == 2
+    life = LifeDataService(tmp_path / "gremlin.db", refresh_on_startup=False)
+    with life.write_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS import_batch (import_batch_id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS raw_cmms_record ("
+            "raw_record_id INTEGER PRIMARY KEY, import_batch_id INTEGER NOT NULL DEFAULT 1, raw_json TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO import_batch (import_batch_id, status) VALUES (1, 'COMPLETED')")
+        # The example: four PMs and the two failures after them, on one asset.
+        work = [(1, "2026-01-05", "PM"), (2, "2026-01-19", "PM"), (3, "2026-03-02", "PM"), (4, "2026-07-01", "PM"),
+                (5, "2026-02-18", "CORRECTIVE_WO"), (6, "2026-06-10", "CORRECTIVE_WO")]
+        for record_id, day, record_class in work:
+            conn.execute("INSERT INTO raw_cmms_record (raw_record_id, raw_json) VALUES (?, '{}')", (record_id,))
+            conn.execute(
+                """
+                INSERT INTO mapped_cmms_record (mapped_record_id, raw_record_id, import_batch_id, asset_number, task_id,
+                    task_name, created_date_final, completed_date_final, record_class_auto, mapping_version)
+                VALUES (?, ?, 1, 'A-1', ?, 'Work', ?, ?, ?, 'v4')
+                """,
+                (record_id, record_id, f"T{record_id}", f"{day}T12:00:00+00:00", f"{day}T12:00:00+00:00", record_class),
+            )
+    records = StandardDispositionService(life)
+    coded = {"component_code": "Pump", "failure_mechanism_code": "WEAR", "action_code": "REPLACE", "evidence": "EXPLICIT"}
+    records.save_dispositions(
+        [{"mapped_record_id": record_id, "disposition_category": "NON_FAILURE", **coded, "failure_mode_code": "NFF"}
+         for record_id in (1, 2, 3, 4)]
+        + [{"mapped_record_id": record_id, "disposition_category": "FAILURE", **coded, "failure_mode_code": "UST"}
+           for record_id in (5, 6)]
+    )
+    pm = PopulationAnalysisService(life, records).pm_effectiveness({"assets": ["A-1"]})
+    days = sorted(round(row["days_to_failure"]) for row in pm["rows"])
+    assert days == [30, 44, 100]
+    assert f"{pm['average_days_to_failure']:.1f} days" in documentation
+    assert pm["effectiveness"] == "Fair"
+    assert pm["failures_after_pm"] == 2
 
     downtimes = [0.5, 2, 2, 6, 30]
     assert LifeDataService._median(downtimes) == 2

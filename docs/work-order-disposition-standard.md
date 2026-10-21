@@ -228,10 +228,14 @@ written against them.
 ## The REL screens
 
 The REL Disposition table and the failure-mode/mechanism Perform an Analysis
-have been replaced by the two pages above. Their tables are kept: every REL
-disposition was carried over as a migrated standard disposition (decision 7),
-flagged for confirmation, and their saved fits and report log stay in the
-database. Nothing in the application writes them any more.
+have been replaced by the two pages above, and the `LifeDataService` code behind
+them (the REL disposition table, its workbook, the mechanism Pareto, trend,
+downtime, PM and repeat-fix analyses, and the mechanism Weibull) is removed. Their
+tables are kept: every REL disposition was carried over as a migrated standard
+disposition (decision 7), flagged for confirmation, the migration still runs on
+start so a REL disposition changed directly in the database is carried over too,
+and their saved fits and report log stay in the database. Nothing in the
+application writes them any more.
 
 ## Open questions (spec §9 and from the above)
 

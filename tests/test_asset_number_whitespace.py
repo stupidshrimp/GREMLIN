@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 
 from services.life_data_service import _MAPPING_VERSION, LifeDataService
+from services.population_analysis_service import PopulationAnalysisService
+from services.standard_disposition_service import StandardDispositionService
 
 
 def _wo(task_id, asset_number, asset_name="Conveyor 3"):
@@ -71,31 +73,34 @@ class PaddedAssetNumberTests(unittest.TestCase):
         self.assertEqual(self.service.asset_number_options(), [{"asset_number": "C-3", "asset_name": "Conveyor 3"}])
         [picked] = self.service.asset_numbers()
 
-        self.assertEqual(self.service.summary_for_asset(picked).total_entries, 2)
-        self.assertEqual(self.service.disposition_row_count(picked, "wo"), 2)
-        rows = self.service.disposition_rows(picked, "wo")
-        self.assertEqual(sorted(row["taskID"] for row in rows), ["1", "2"])
+        page = StandardDispositionService(self.service).disposition_page(picked)
+        self.assertEqual(page["displayed_count"], 2)
+        self.assertEqual(sorted(row["task_id"] for row in page["rows"]), ["1", "2"])
+        analysis = PopulationAnalysisService(self.service)
+        downtime = analysis.downtime({"assets": [picked], "categories": ["NOT_REVIEWED"]})
+        self.assertEqual(downtime["summary"]["work_order_count"], 2)
 
     def test_the_tour_can_pick_a_padded_asset(self):
         self._import(_wo(1, " C-3 "))
-        [row] = self.service.disposition_rows("C-3", "wo")
-        self.service.save_disposition(
-            row["mapped_record_id"],
-            kind="wo",
-            disposition_category="INCLUDED_FAILURE",
-            failure_mode_text="Belt",
-            failure_mechanism_text="Tracking",
-        )
+        records = StandardDispositionService(self.service)
+        [row] = records.disposition_page("C-3")["rows"]
+        records.save_dispositions([{
+            "mapped_record_id": row["mapped_record_id"],
+            "disposition_category": "FAILURE",
+            "component_code": "Belt",
+            "failure_mechanism_code": "LOOS",
+            "failure_mode_code": "UST",
+            "action_code": "ADJUST",
+            "evidence": "EXPLICIT",
+        }])
 
-        example = self.service.tour_example_asset()
+        analysis = PopulationAnalysisService(self.service, records)
+        example = analysis.tour_example()["asset"]
 
         self.assertEqual(example, "C-3")
         self.assertIn(example, self.service.asset_numbers())
-        self.assertEqual(len(self.service.failure_mechanism_pareto(example)), 1)
-        # The population the disposition made is filed under the listed number too.
-        with self.service.connect() as conn:
-            populations = [r["asset_number"] for r in conn.execute("SELECT asset_number FROM modeled_population")]
-        self.assertEqual(populations, ["C-3"])
+        pareto = analysis.summary({"assets": [example]}, group_by="component")["pareto"]
+        self.assertEqual([bar["count"] for bar in pareto["rows"]], [1])
 
     def test_a_row_mapped_padded_before_the_fix_is_remapped_on_startup(self):
         raw_json = json.dumps(_wo(1, " C-3 "))
@@ -115,7 +120,9 @@ class PaddedAssetNumberTests(unittest.TestCase):
                 (raw_id, hashlib.sha256(raw_json.encode("utf-8")).hexdigest()),
             ).lastrowid
             conn.commit()
-        self.assertEqual(self.service.disposition_rows("C-3", "wo"), [])
+        with self.service.connect() as conn:
+            stale = conn.execute("SELECT asset_number FROM mapped_cmms_record WHERE mapped_record_id = ?", (mapped_id,)).fetchone()
+        self.assertEqual(stale[0], " C-3 ")
 
         service = LifeDataService(self.db_path, refresh_on_startup=False)
 
@@ -130,7 +137,8 @@ class PaddedAssetNumberTests(unittest.TestCase):
             tuple(row),
             (mapped_id, "C-3", "CORRECTIVE_WO", _MAPPING_VERSION),
         )
-        self.assertEqual([r["mapped_record_id"] for r in service.disposition_rows("C-3", "wo")], [mapped_id])
+        rows = StandardDispositionService(service).disposition_page("C-3")["rows"]
+        self.assertEqual([r["mapped_record_id"] for r in rows], [mapped_id])
 
 
 if __name__ == "__main__":

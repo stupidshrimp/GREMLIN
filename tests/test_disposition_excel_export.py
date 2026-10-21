@@ -1,24 +1,17 @@
-"""The disposition workbook: real Excel types, and the rows the screen asked for.
+"""The disposition workbook: real Excel types, and the reader's columns marked.
 
-Two things used to make the download less useful than the table it copies.
-
-Every cell was written as text, so Excel sorted it as text -- the same wrong
-order test_disposition_sorting pins the screen against ("10" ahead of "9", dates
-by the digits they start with), except that in a workbook there is no server to
-re-sort it. A text date cannot be filtered by month or reformatted either: to
-Excel the value is a sentence, not a day.
-
-And the Rows selector stopped at the screen. Setting it to "Only new /
-undispositioned" and clicking Download Excel handed back every eligible row,
-leaving the reader to find the backlog again in a spreadsheet -- which is the one
-job that setting exists to do.
+Every cell used to be written as text, so Excel sorted it as text ("10" ahead of
+"9", dates by the digits they start with), and a text date cannot be filtered by
+month or reformatted either: to Excel the value is a sentence, not a day. The
+Disposition page's workbook (StandardDispositionService.export_excel) writes ids
+and downtime as numbers and dates as dates, keeps what will not convert as the
+text it is, and highlights the columns the reader fills in.
 
 The workbook is written by hand (no openpyxl on the deployment), so these read
 the parts back out of the zip the same way.
 """
 
 import json
-import re
 import sqlite3
 import tempfile
 import unittest
@@ -30,18 +23,33 @@ from pathlib import Path
 from services.life_data_service import (
     COLUMN_TYPE_DATETIME,
     COLUMN_TYPE_NUMBER,
-    DISPLAY_COLUMN_SOURCES,
-    EXCEL_BASE_COLUMNS,
-    EXCEL_COLUMN_TYPES,
     EXCEL_DATE_EPOCH,
-    EXCEL_EDITABLE_COLUMNS,
-    EXCEL_PM_DISPOSITION_COLUMNS,
     EXCEL_STYLE_DATETIME,
-    EXCEL_WO_DISPOSITION_COLUMNS,
     LifeDataService,
 )
+from services.standard_disposition_service import (
+    EXCEL_COLUMNS,
+    EXCEL_DISPOSITION_COLUMNS,
+    EXCEL_RECORD_COLUMNS,
+    StandardDispositionService,
+)
+
+# The columns the reader fills in.
+EDITABLE = frozenset(EXCEL_DISPOSITION_COLUMNS)
 
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+# The Disposition workbook's headers, by the CMMS field each is read from.
+HEADERS = {
+    "taskID": "task_id",
+    "name": "task_name",
+    "createdDate_Final": "created_date",
+    "completedDate_Final": "completed_date",
+    "downtime": "downtime_hours",
+    "completionNotes": "completion_notes",
+    "requestTitle": "request_title",
+    "requestorDescription": "requestor_description",
+    "disposition_notes": "disposition_note",
+}
 NS = {"main": MAIN}
 
 
@@ -62,7 +70,7 @@ class Sheet:
         return node.text if node is not None and node.text else ""
 
     def column(self, header: str) -> list[ET.Element]:
-        index = self.headers.index(header)
+        index = self.headers.index(HEADERS.get(header, header))
         return [list(row)[index] for row in self.rows[1:]]
 
     def values(self, header: str) -> list:
@@ -128,32 +136,10 @@ class DispositionExcelTestCase(unittest.TestCase):
             conn.commit()
         self.service.refresh_mapped_cmms_records()
 
-    def export(self, name="wo.xlsx", kind="wo", **kwargs) -> Sheet:
+    def export(self, name="wo.xlsx", **kwargs) -> Sheet:
         path = self.workspace / name
-        self.service.export_disposition_excel(self.ASSET, kind, path, **kwargs)
+        StandardDispositionService(self.service).export_excel(self.ASSET, path, **kwargs)
         return Sheet(path)
-
-
-class ColumnTypeCoverageTests(unittest.TestCase):
-    """Every exported column is a column the writer knows the type of."""
-
-    def test_every_header_of_both_workbooks_has_a_type(self):
-        for headers in (EXCEL_WO_DISPOSITION_COLUMNS, EXCEL_PM_DISPOSITION_COLUMNS):
-            for header in headers:
-                with self.subTest(header=header):
-                    self.assertIn(header, EXCEL_COLUMN_TYPES)
-
-    def test_the_record_columns_carry_the_type_the_screen_sorts_them_by(self):
-        """A column has one type, not one per surface.
-
-        The table's ORDER BY and the workbook read the same columns out of the
-        same rows; typing them apart is how a workbook comes to disagree with the
-        screen that produced it about which record is oldest.
-        """
-
-        for header, (_, column_type) in DISPLAY_COLUMN_SOURCES.items():
-            with self.subTest(header=header):
-                self.assertEqual(EXCEL_COLUMN_TYPES[header], column_type)
 
 
 class DateColumnTests(DispositionExcelTestCase):
@@ -322,58 +308,6 @@ class NumberColumnTests(DispositionExcelTestCase):
 
         self.assertEqual(self.service._number_sort_key("1234567890123456"), 1234567890123456)
 
-    @staticmethod
-    def as_excel_would_sort(cells: list, descending: bool) -> list[str]:
-        """``cells`` in the order a spreadsheet puts them, as text.
-
-        Excel's rule for a mixed column: the numbers in one block, the text in
-        another, and the two swap ends with the direction -- text after the numbers
-        ascending, ahead of them descending. Blanks stay last either way.
-        """
-
-        numbers = sorted((v for v in cells if isinstance(v, (int, float))), reverse=descending)
-        text = sorted((v for v in cells if isinstance(v, str)), reverse=descending)
-        ordered = [*text, *numbers] if descending else [*numbers, *text]
-        return [v if isinstance(v, str) else str(int(v)) for v in ordered]
-
-    def test_the_screen_and_the_workbook_agree_on_what_is_a_number(self):
-        """The disagreement this shared rule exists to prevent.
-
-        Ordering used to read a value that is not a number as 0.0, so "A-14" came
-        first on the screen's ascending page while the workbook put it after every
-        number, the way a spreadsheet does. Both halves read _parse_number now.
-        """
-
-        self.add_wo("A-14")
-        cells = self.export("mixed.xlsx").values("taskID")
-        for descending in (False, True):
-            with self.subTest(descending=descending):
-                on_screen = [
-                    str(row["taskID"])
-                    for row in self.service.disposition_rows(
-                        self.ASSET, "wo", sort="taskID", sort_dir="desc" if descending else "asc"
-                    )
-                ]
-                self.assertEqual(self.as_excel_would_sort(cells, descending), on_screen)
-
-    def test_they_agree_descending_too_where_the_text_block_leads(self):
-        """The direction the first fix did not cover.
-
-        Pinning the text with the blanks made it last whichever way the column
-        pointed, so a descending sort read one way on the screen and the other way
-        in the file built from the same rows.
-        """
-
-        for task_id in ("A-14", "B-2"):
-            self.add_wo(task_id)
-        cells = self.export("desc.xlsx").values("taskID")
-        on_screen = [
-            str(row["taskID"])
-            for row in self.service.disposition_rows(self.ASSET, "wo", sort="taskID", sort_dir="desc")
-        ]
-        self.assertEqual(on_screen[:2], ["B-2", "A-14"])
-        self.assertEqual(self.as_excel_would_sort(cells, descending=True), on_screen)
-
     def test_an_id_keeps_its_own_spelling_in_the_cell(self):
         """What an identifier is written as is part of which record it names.
 
@@ -453,40 +387,6 @@ class NumberColumnTests(DispositionExcelTestCase):
         self.assertEqual(sorted(self.export().values("mapped_record_id")), [1.0, 2.0, 3.0])
 
 
-class InclusionFlagTests(DispositionExcelTestCase):
-    """The Weibull flag is written as the words its own dropdown offers.
-
-    A boolean cell and the dropdown's "TRUE" are different values to Excel: the
-    column would sort in two blocks, and every row nobody had touched would be
-    flagged against its own validation list.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.add_wo("1")
-
-    def test_the_flag_matches_the_dropdown_it_is_validated_against(self):
-        sheet = self.export()
-        self.assertEqual(sheet.values("include_in_weibull_candidate"), ["FALSE"])
-        lookup = Sheet(self.workspace / "wo.xlsx", "xl/worksheets/sheet2.xml")
-        offered = {Sheet._text(cell) for row in lookup.rows for cell in row}
-        self.assertIn("FALSE", offered)
-        self.assertIn("TRUE", offered)
-
-    def test_a_dispositioned_row_reads_true(self):
-        row = self.service.disposition_rows(self.ASSET, "wo")[0]
-        self.service.save_dispositions([{
-            "mapped_record_id": row["mapped_record_id"],
-            "kind": "wo",
-            "disposition_category": "INCLUDED_FAILURE",
-            "record_class_final": "CORRECTIVE_WO",
-            "failure_mode_text": "Bearing failure",
-            "failure_mechanism_text": "Fatigue",
-            "include_in_weibull_candidate": True,
-        }])
-        self.assertEqual(self.export("after.xlsx").values("include_in_weibull_candidate"), ["TRUE"])
-
-
 class WorkbookShapeTests(DispositionExcelTestCase):
     """The parts a typed workbook needs, and the header row that sorts it."""
 
@@ -539,154 +439,6 @@ class WorkbookShapeTests(DispositionExcelTestCase):
         self.assertEqual(notes, ["stopped the line  & restarted <it>"])
 
 
-class RoundTripIsLosslessTests(DispositionExcelTestCase):
-    """A workbook nobody edited must save nothing when it goes back.
-
-    The export strips characters XML cannot carry. Two of the columns it strips
-    them from are editable, so the import reads them back and compares them
-    against what is stored: sanitising on the way out alone made an untouched
-    workbook differ from its own source, and uploading it wrote a new disposition
-    with the character silently gone. They are cleaned on the way in now, so the
-    database only ever holds what the workbook can carry.
-    """
-
-    NOTE = "held for review\x07 see the log"
-
-    def setUp(self):
-        super().setUp()
-        self.add_wo("9")
-        self.record_id = self.service.disposition_rows(self.ASSET, "wo")[0]["mapped_record_id"]
-
-    def saved_note(self):
-        return self.service.disposition_rows(self.ASSET, "wo")[0]["disposition_notes"]
-
-    def test_the_character_never_reaches_the_database(self):
-        self.service.save_dispositions([{
-            "mapped_record_id": self.record_id, "kind": "wo",
-            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
-            "disposition_text": self.NOTE,
-        }])
-        self.assertEqual(self.saved_note(), "held for review see the log")
-
-    def test_an_untouched_workbook_saves_nothing(self):
-        self.service.save_dispositions([{
-            "mapped_record_id": self.record_id, "kind": "wo",
-            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
-            "disposition_text": self.NOTE,
-        }])
-        path = self.workspace / "round-trip.xlsx"
-        self.service.export_disposition_excel(self.ASSET, "wo", path)
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
-        # And still nothing the second time, rather than converging after one pass.
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
-        self.assertEqual(self.saved_note(), "held for review see the log")
-
-    def test_a_row_saved_before_the_cleaning_existed_is_left_alone(self):
-        """Cleaning on the way in only covers what is written from now on.
-
-        A database upgraded into this branch still holds rows with the character
-        in them, and those are the ones a reader is most likely to upload
-        untouched. The comparison reads both sides through the same cleaning, so
-        the row is recognised as unchanged and nothing is written -- no lost
-        character, and no version in the history attributed to whoever uploaded.
-
-        The stored value keeps its character until somebody actually edits that
-        row, since rewriting data nobody asked to change is the thing being
-        avoided.
-        """
-
-        self.service.save_dispositions([{
-            "mapped_record_id": self.record_id, "kind": "wo",
-            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
-            "disposition_text": "held for review",
-        }])
-        # Put the character back the way a row written before this branch holds it.
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE event_disposition SET disposition_text = ?, disposition_notes = ? WHERE is_current = 1",
-                (self.NOTE, self.NOTE),
-            )
-            conn.commit()
-        self.assertEqual(self.saved_note(), self.NOTE)
-
-        path = self.workspace / "legacy.xlsx"
-        self.service.export_disposition_excel(self.ASSET, "wo", path)
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
-        self.assertEqual(self.saved_note(), self.NOTE)
-        with sqlite3.connect(self.db_path) as conn:
-            versions = conn.execute(
-                "SELECT COUNT(*) FROM event_disposition WHERE mapped_record_id = ?", (self.record_id,)
-            ).fetchone()[0]
-        self.assertEqual(versions, 1)
-
-    def test_editing_such_a_row_does_clean_it(self):
-        """The stored value is left alone, not left uncleanable."""
-
-        self.service.save_dispositions([{
-            "mapped_record_id": self.record_id, "kind": "wo",
-            "disposition_category": "HELD_AMBIGUOUS", "record_class_final": "CORRECTIVE_WO",
-            "disposition_text": self.NOTE,
-        }])
-        self.assertEqual(self.saved_note(), "held for review see the log")
-
-    def test_a_separator_becomes_a_space_rather_than_disappearing(self):
-        r"""Six of the characters XML refuses are ones \s treats as whitespace.
-
-        Collapsing runs of whitespace turned each of them into a space long before
-        this branch existed, so "Bearing\x0bfailure" was the failure mode
-        "Bearing failure". Deleting them instead ran the words together into a
-        name that matches nothing and gets created alongside the real one -- the
-        duplicate this cleaning exists to prevent, reintroduced by the cleaning.
-        """
-
-        for separator in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f"):
-            with self.subTest(separator=separator):
-                self.assertEqual(
-                    self.service._normalize_taxonomy_text(f"Bearing{separator}failure"),
-                    "Bearing failure",
-                )
-
-    def test_cleaning_and_collapsing_can_run_in_either_order(self):
-        """Which is what stops the two from having to be kept in step.
-
-        A separator that is already a space by the time whitespace is collapsed
-        gives the same answer whichever step ran first, so no caller has to know.
-        """
-
-        import re
-
-        for raw in ("Bearing\x0bfailure", "a\x0b\x0cb", "x\x1cy", "  padded \x0b name  "):
-            with self.subTest(raw=raw):
-                cleaned_first = re.sub(r"\s+", " ", self.service._without_unrepresentable_characters(raw)).strip()
-                collapsed_first = self.service._without_unrepresentable_characters(re.sub(r"\s+", " ", raw)).strip()
-                self.assertEqual(cleaned_first, collapsed_first)
-
-    def test_a_taxonomy_name_with_one_in_it_is_created_once(self):
-        r"""The same trip, where getting it wrong duplicates a failure mode.
-
-        A name cleaned only on the way out comes back as a different name, and the
-        import creates that one too. _normalize_taxonomy_text collapses \s, which
-        does not cover \x07, so it needed the same treatment as the notes.
-        """
-
-        self.service.save_dispositions([{
-            "mapped_record_id": self.record_id, "kind": "wo",
-            "disposition_category": "INCLUDED_FAILURE", "record_class_final": "CORRECTIVE_WO",
-            "failure_mode_text": "Bearing\x07 failure", "failure_mechanism_text": "Fatigue",
-            "include_in_weibull_candidate": True,
-        }])
-        names = [row["failure_mode_name"] for row in self.service.get_asset_failure_mode_options(self.ASSET)]
-        self.assertEqual(names, ["Bearing failure"])
-        path = self.workspace / "taxonomy.xlsx"
-        self.service.export_disposition_excel(self.ASSET, "wo", path)
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
-        self.assertEqual(
-            [row["failure_mode_name"] for row in self.service.get_asset_failure_mode_options(self.ASSET)],
-            ["Bearing failure"],
-        )
-
-
 class EditableColumnHighlightTests(DispositionExcelTestCase):
     """The columns a reader fills in are highlighted, and the rest are marked read-only.
 
@@ -723,22 +475,18 @@ class EditableColumnHighlightTests(DispositionExcelTestCase):
         return {sheet._text(cell): self.fill(sheet, cell.attrib.get("s")) for cell in sheet.rows[0]}
 
     def test_the_editable_columns_are_the_disposition_columns(self):
-        """Everything after the record columns, and only that, in both workbooks."""
+        """Everything after the record columns, and only that."""
 
-        for headers in (EXCEL_WO_DISPOSITION_COLUMNS, EXCEL_PM_DISPOSITION_COLUMNS):
-            with self.subTest(first_disposition_column=headers[len(EXCEL_BASE_COLUMNS)]):
-                self.assertEqual(set(headers) & EXCEL_EDITABLE_COLUMNS, set(headers) - set(EXCEL_BASE_COLUMNS))
+        self.assertEqual(set(EXCEL_COLUMNS) & EDITABLE, set(EXCEL_COLUMNS) - set(EXCEL_RECORD_COLUMNS))
         # The key the import matches rows by is read back too, but it is not
         # the reader's to change.
-        self.assertNotIn("mapped_record_id", EXCEL_EDITABLE_COLUMNS)
+        self.assertNotIn("mapped_record_id", EDITABLE)
 
     def test_each_header_says_whether_its_column_is_editable(self):
-        for kind in ("wo", "pm"):
-            with self.subTest(kind=kind):
-                fills = self.header_fills(self.export(f"{kind}.xlsx", kind=kind))
-                for header, fill in fills.items():
-                    expected = self.EDITABLE_HEADER if header in EXCEL_EDITABLE_COLUMNS else self.READ_ONLY_HEADER
-                    self.assertEqual(fill, expected, header)
+        fills = self.header_fills(self.export())
+        for header, fill in fills.items():
+            expected = self.EDITABLE_HEADER if header in EDITABLE else self.READ_ONLY_HEADER
+            self.assertEqual(fill, expected, header)
 
     def test_every_cell_of_an_editable_column_is_highlighted_even_an_empty_one(self):
         """A blank disposition cell is exactly the one the reader has to find."""
@@ -747,9 +495,9 @@ class EditableColumnHighlightTests(DispositionExcelTestCase):
         for header in sheet.headers:
             with self.subTest(header=header):
                 fills = {self.fill(sheet, style) for style in sheet.styles(header)}
-                self.assertEqual(fills, {self.EDITABLE_CELL} if header in EXCEL_EDITABLE_COLUMNS else {None})
-        # Row 1 has not been dispositioned, so its failure mode is still empty.
-        self.assertIn(None, sheet.values("failure_mode"))
+                self.assertEqual(fills, {self.EDITABLE_CELL} if header in EDITABLE else {None})
+        # Neither row has been dispositioned, so its failure mode is still empty.
+        self.assertIn(None, sheet.values("failure_mode_code"))
 
     def test_the_read_only_columns_keep_their_number_formats(self):
         sheet = self.export()
@@ -773,89 +521,12 @@ class EditableColumnHighlightTests(DispositionExcelTestCase):
                 self.assertEqual(self.fill(sheet, cell.attrib.get("s")), self.EDITABLE_CELL)
                 self.assertEqual(self.style_xf(sheet, cell.attrib.get("s")).attrib["numFmtId"], number_format)
 
-    def test_the_highlight_is_what_the_import_reads(self):
-        """Writing over every grey column changes nothing; one yellow cell changes a row."""
-
-        path = self.workspace / "highlighted.xlsx"
-        self.service.export_disposition_excel(self.ASSET, "wo", path)
-        rows = [list(row) for row in self.service._read_xlsx(path)]
-        headers = rows[0]
-        for index, header in enumerate(headers):
-            if header not in EXCEL_EDITABLE_COLUMNS and header != "mapped_record_id":
-                for row in rows[1:]:
-                    row[index] = "edited in Excel"
-        read_only_edits = self.workspace / "read-only-edits.xlsx"
-        self.service._write_xlsx(read_only_edits, rows, "WO Dispositions")
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", read_only_edits), 0)
-
-        rows[1][headers.index("disposition_notes")] = "edited in Excel"
-        editable_edit = self.workspace / "editable-edit.xlsx"
-        self.service._write_xlsx(editable_edit, rows, "WO Dispositions")
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", editable_edit), 1)
-
     def test_the_lookup_lists_keep_their_plain_header(self):
         """A sheet told nothing about editable columns is not marked read-only."""
 
         self.export()
         lookup = Sheet(self.workspace / "wo.xlsx", "xl/worksheets/sheet2.xml")
         self.assertEqual(set(self.header_fills(lookup).values()), {None})
-
-
-class DownloadScopeTests(DispositionExcelTestCase):
-    """"Only new / undispositioned" narrows the workbook, not just the screen."""
-
-    def setUp(self):
-        super().setUp()
-        for task_id in ("1", "2", "3"):
-            self.add_wo(task_id, completedDate_Final=f"2026-01-0{task_id}T00:00:00+00:00")
-        self.dispositioned = self.service.disposition_rows(self.ASSET, "wo")[0]["mapped_record_id"]
-        self.service.save_dispositions([{
-            "mapped_record_id": self.dispositioned,
-            "kind": "wo",
-            "disposition_category": "INCLUDED_FAILURE",
-            "record_class_final": "CORRECTIVE_WO",
-            "failure_mode_text": "Bearing failure",
-            "failure_mechanism_text": "Fatigue",
-            "include_in_weibull_candidate": True,
-        }])
-
-    def test_the_default_download_is_still_every_eligible_row(self):
-        self.assertEqual(len(self.export("all.xlsx").rows) - 1, 3)
-
-    def test_the_new_scope_leaves_out_what_has_already_been_dispositioned(self):
-        sheet = self.export("new.xlsx", only_needing_disposition=True)
-        exported = sheet.values("mapped_record_id")
-        self.assertEqual(len(exported), 2)
-        self.assertNotIn(float(self.dispositioned), exported)
-
-    def test_the_workbook_holds_exactly_the_rows_the_table_shows(self):
-        """One WHERE clause, so the screen and the file cannot disagree about "new"."""
-
-        for only_new in (False, True):
-            with self.subTest(only_new=only_new):
-                on_screen = {
-                    row["mapped_record_id"]
-                    for row in self.service.disposition_rows(
-                        self.ASSET, "wo", only_needing_disposition=only_new
-                    )
-                }
-                sheet = self.export(f"scope-{only_new}.xlsx", only_needing_disposition=only_new)
-                self.assertEqual({int(value) for value in sheet.values("mapped_record_id")}, on_screen)
-
-    def test_the_count_it_reports_is_the_count_it_wrote(self):
-        path = self.workspace / "counted.xlsx"
-        written = self.service.export_disposition_excel(
-            self.ASSET, "wo", path, only_needing_disposition=True
-        )
-        self.assertEqual(written, len(Sheet(path).rows) - 1)
-
-    def test_a_narrowed_workbook_still_imports(self):
-        """The import checks ids against every eligible row, not against the file."""
-
-        path = self.workspace / "backlog.xlsx"
-        self.service.export_disposition_excel(self.ASSET, "wo", path, only_needing_disposition=True)
-        # Unchanged rows are no change at all, whichever scope produced them.
-        self.assertEqual(self.service.import_disposition_excel(self.ASSET, "wo", path), 0)
 
 
 class RelationshipTargetTests(unittest.TestCase):

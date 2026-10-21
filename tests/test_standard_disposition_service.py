@@ -418,12 +418,21 @@ class CodeListTests(StandardDispositionFixture):
 
 class MigrationTests(StandardDispositionFixture):
     def legacy(self, record_id, category, *, mode=None, mechanism=None, notes="", include=1):
+        """A REL disposition, as the old Disposition screen stored it."""
+
         with self.life.write_connection() as conn:
             mode_id = mechanism_id = None
             if mode:
-                mode_id = self.life._upsert_failure_mode_for_asset(conn, PFS, mode)
+                conn.execute("INSERT OR IGNORE INTO failure_mode (failure_mode_name) VALUES (?)", (mode,))
+                mode_id = conn.execute("SELECT failure_mode_id FROM failure_mode WHERE failure_mode_name = ?", (mode,)).fetchone()[0]
             if mechanism:
-                mechanism_id = self.life._upsert_failure_mechanism_for_asset(conn, PFS, mechanism, mode_id)
+                found = conn.execute(
+                    "SELECT failure_mechanism_id FROM failure_mechanism WHERE failure_mechanism_name = ? AND failure_mode_id IS ?",
+                    (mechanism, mode_id),
+                ).fetchone()
+                mechanism_id = found[0] if found else conn.execute(
+                    "INSERT INTO failure_mechanism (failure_mechanism_name, failure_mode_id) VALUES (?, ?)", (mechanism, mode_id)
+                ).lastrowid
             conn.execute("UPDATE event_disposition SET is_current = 0 WHERE mapped_record_id = ?", (record_id,))
             conn.execute(
                 """
@@ -466,18 +475,19 @@ class MigrationTests(StandardDispositionFixture):
         self.assertIsNone(disposition["failure_mode_code"])
         self.assertIn("read off the legacy mechanism name", disposition["review_flag"])
 
-    def test_a_migrated_row_follows_the_old_screen_until_an_engineer_saves(self):
+    def test_a_migrated_row_follows_its_rel_disposition_until_an_engineer_saves(self):
         self.add_record(1, PFS, "One", "2024-01-01", "2024-01-01")
         self.legacy(1, "UNKNOWN")
         service = self.reopen()
         self.assertEqual(service.disposition_record(1)["disposition"]["disposition_category"], std.NOT_REVIEWED)
-        # Saved on the old screen: the migrated row follows at once.
-        self.life.save_disposition(1, kind="wo", disposition_category="HELD_AMBIGUOUS", disposition_text="unclear")
+        # The REL disposition changed: the migrated row follows it on the next start.
+        self.legacy(1, "HELD_AMBIGUOUS", notes="unclear")
+        service = self.reopen()
         self.assertEqual(service.disposition_record(1)["disposition"]["disposition_category"], std.HELD)
-        # An engineer's standard disposition is not overwritten by the old screen,
-        # and keeps the legacy text.
+        # An engineer's standard disposition is not overwritten by a later REL
+        # change, and keeps the legacy text.
         service.save_dispositions([{"mapped_record_id": 1, **coded()}])
-        self.life.save_disposition(1, kind="wo", disposition_category="EXCLUDED_NON_FAILURE")
+        self.legacy(1, "EXCLUDED_NON_FAILURE")
         disposition = self.reopen().disposition_record(1)["disposition"]
         self.assertEqual(disposition["disposition_category"], std.FAILURE)
         self.assertEqual(disposition["source"], "ENGINEER")

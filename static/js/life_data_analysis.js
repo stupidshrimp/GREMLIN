@@ -3366,8 +3366,8 @@
 
   // A cell holding nothing of the column's type -- blank, or free text where a
   // number or a date belongs -- sits at the bottom whichever way the column is
-  // pointed, the way a spreadsheet leaves blanks last. Mirrors the ORDER BY the
-  // server builds for the disposition table (LifeDataService._disposition_order_by).
+  // pointed, the way a spreadsheet leaves blanks last, as the Disposition list's
+  // server-side sort does (StandardDispositionService._list_order).
   function columnIsBlank(type, text) {
     if (text === "") return true;
     if (type === "number" || type === "datetime") return !isFinite(columnTypedValue(type, text));
