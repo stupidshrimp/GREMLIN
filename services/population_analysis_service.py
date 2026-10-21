@@ -533,7 +533,10 @@ class PopulationAnalysisService:
         """One bar per sub-asset, component and mechanism the population's failures are coded with.
 
         Each is the population a Weibull is best run on, and carries the selection
-        that runs it. A failure with no component or mechanism makes no bar.
+        that runs it. A failure with no component or mechanism makes no bar. When
+        every bar is on the one place -- an asset with no sub-assets, or a
+        population narrowed to one -- the names leave it out and start at the
+        component.
         """
 
         def key_of(record: Mapping[str, Any]) -> tuple[str, str, str] | None:
@@ -551,8 +554,11 @@ class PopulationAnalysisService:
             return f"{location} · {component} · {mechanism}"
 
         rows, not_coded = self._bars(records, key_of, label_of, codebook)
+        one_place = len(places) == 1
         for row in rows:
             location, component, mechanism = row["key"]
+            if one_place:
+                row["label"] = f"{component} · {mechanism}"
             row["key"] = " | ".join(row["key"])
             row["selection"] = {"locations": [location], "components": [component], "failure_mechanisms": [mechanism]}
             row["parts"] = [

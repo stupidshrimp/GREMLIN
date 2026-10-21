@@ -51,7 +51,7 @@
   <h2 id="lda-step-2">Analysis population</h2>
   <p class="lda-hint" id="lda-population-hint-weibull">Leave a list unticked for no restriction on it. Sub-asset and
      component choose which items' lives are pooled, and mechanism which of their failures count. The sub-asset list
-     follows the asset's hierarchy; clicking a Pareto bar below picks one of each and fits it.</p>
+     follows the asset's hierarchy. A Pareto bar below is one of each: clicking it fits that one.</p>
   <p class="lda-hint" id="lda-population-hint-triage" hidden>Leave a list unticked for no restriction on it. The
      sub-asset list follows the asset's hierarchy; clicking a Pareto bar or a matrix cell below narrows it for you
      too.</p>
@@ -147,7 +147,7 @@
       <div class="std-legend" id="lda-pareto-legend"></div>
       <p class="lda-hint" id="lda-pareto-weibull-hint">The population's failures, one bar per sub-asset, component and
          mechanism: each is one kind of item failing one way, the population a Weibull is best run on. Click a bar to
-         fit it.</p>
+         fit it{% if auth_can_edit %} and save the run{% endif %}; the Pareto and the population above stay as they are.</p>
       <p class="lda-hint" id="lda-pareto-empty" hidden>No work orders in this population yet.</p>
       <p class="lda-hint" id="lda-pareto-not-coded" hidden></p>
     </div>

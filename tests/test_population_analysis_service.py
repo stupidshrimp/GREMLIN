@@ -54,6 +54,10 @@ class PopulationViewTests(StandardDispositionFixture):
         self.assertEqual(summary["readiness"]["failures"], 7)
         self.assertNotIn("failure_mode", summary["population_definition"])
         self.assertIsNone(summary["trend"])
+        # On one place, the names start at the component.
+        one_place = self.analysis.summary({"assets": [PFS], "locations": [S09]}, weibull=True)["pareto"]["rows"]
+        self.assertEqual([row["label"] for row in one_place], ["Filter · CONT", "Filter · DEFM"])
+        self.assertEqual(one_place[0]["selection"]["locations"], [S09])
         # The same selection on the other views narrows by the mode it names.
         triage = self.analysis.summary({"assets": [PFS], "failure_modes": ["UST"], "categories": ["FAILURE"]})
         self.assertEqual([(row["key"], row["count"]) for row in triage["pareto"]["rows"]], [(S09, 1)])

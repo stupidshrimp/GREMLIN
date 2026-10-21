@@ -279,6 +279,17 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .std-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 
 .std-matrix-scroll { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 12px; }
+/* A matrix wider than the window has to scroll inside its own box, not drag the
+   page sideways. A grid item's min-width resolves to its min-content size --
+   the whole matrix, straight through the scroll box -- so the cards between the
+   page and the matrix take a zero minimum. The panel itself is a block, not the
+   grid .lda-panel is: Chrome puts a <details>'s contents in a box of its own,
+   which as a grid item sized itself to the matrix whatever its child said. */
+#lda-summary-card,
+.lda-matrix-panel { min-width: 0; }
+.lda-matrix-panel { display: block; }
+.lda-matrix-panel > * + * { margin-top: 0.55rem; }
+.lda-matrix-panel > .lda-hint { margin-bottom: 0; }
 table.std-matrix { border-collapse: collapse; font-size: 0.8rem; min-width: 100%; }
 table.std-matrix th,
 table.std-matrix td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: center; }

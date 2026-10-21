@@ -134,9 +134,9 @@
         there while the Weibull shows. Leaving a list unticked puts no
         restriction on it. Clicking a Triage Pareto bar or a matrix cell narrows
         the population to it and steps down a level (sub-asset, then component,
-        then mechanism); clicking a Weibull Pareto bar narrows it to that bar's
-        sub-asset, component and mechanism and fits it. Each narrowing shows as a
-        chip that takes it back out. The Weibull's population is also written as one line,
+        then mechanism); each narrowing shows as a chip that takes it back out.
+        Clicking a Weibull Pareto bar fits that bar's sub-asset, component and
+        mechanism without narrowing anything. The Weibull's population is also written as one line,
         its definition, which every saved Weibull run keeps, for example
         <code>POP: asset=4002; location=4002-S09; component=Filter; failure_mech=CONT; suspensions=other renewals; window=2024-01-02..2025-09-30</code>.
       </p>
@@ -207,14 +207,17 @@
         <strong>Weibull</strong>, each bar is one sub-asset's one component failing by
         one mechanism (<code>4002-S09 · Filter · CONT</code>): the population's
         failures only, and exactly the population a Weibull is best run on.
-        Clicking a bar narrows the population to it and previews its fit;
-        Perform Analysis then saves it. A failure with no component or mechanism
-        makes no bar.
+        Clicking a bar fits exactly that, as Perform Analysis does (an editor's
+        run is saved, anybody else's is a preview), and leaves the Pareto and the
+        population as they are. A failure with no component or mechanism
+        makes no bar. When every bar is on one place (an asset with no
+        sub-assets) the names start at the component: <code>Filter · CONT</code>.
       </p>
       <p>
         On the other types, Group by picks
         what each bar is: sub-asset (the default: the asset's own work orders
-        are one bar, each sub-asset another), component, failure mechanism,
+        are one bar, each sub-asset another; component instead for an asset
+        with no sub-assets), component, failure mechanism,
         mode, cause, action, disposition category or detection method. Each bar counts
         the population's work orders with that value and adds up their downtime,
         and is split by failure cause:
@@ -247,7 +250,7 @@
       <ul>
         <li>At most 15 bars are drawn, but the line counts every value, so it can stop short of 100% at the last bar on screen.</li>
         <li>Hovering a bar shows its full name, count, downtime, cumulative percent and its largest causes.</li>
-        <li><strong>Clicking a bar narrows the population to it</strong>. On the Weibull it also fits it. On the other types it steps down a level: a sub-asset bar shows that sub-asset by component, a component bar by failure mechanism. Every analysis below then reads the narrower population.</li>
+        <li><strong>Clicking a bar</strong> on the Weibull fits it and changes nothing else. On the other types it narrows the population to the bar and steps down a level: a sub-asset bar shows that sub-asset by component, a component bar by failure mechanism. Every analysis below then reads the narrower population.</li>
         <li><strong>Work orders not coded on the dimension make no bar</strong> (a Held one, or one with no component when grouping by component): "Not coded" is not a value to rank. A note under the chart says how many were left out, and the summary cards over the trend leave them out too.</li>
         <li>Under it, <strong>Where it happens</strong> crosses sub-asset with component; clicking a cell narrows to that item on that sub-asset.</li>
       </ul>

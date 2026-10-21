@@ -517,7 +517,21 @@
     const link = $("lda-disposition-link");
     if (link) link.href = `/life-data-analysis/disposition?asset=${encodeURIComponent(asset)}`;
     await loadOptions();
+    if (asset !== state.asset) return;
+    setGroupBy(defaultGroupBy());
     await refresh();
+  }
+
+  // The Pareto's first dimension: sub-asset, unless the asset has none, when a
+  // sub-asset Pareto would be the one bar and it opens by component instead.
+  function defaultGroupBy() {
+    const places = state.options && state.options.dimensions && state.options.dimensions.locations;
+    return !places || places.length > 1 ? "sub_asset" : "component";
+  }
+
+  function setGroupBy(value) {
+    state.groupBy = value;
+    $("lda-pareto-group").value = value;
   }
 
   function resetAnalyses() {
@@ -657,8 +671,7 @@
       wrap.appendChild(el("button", { type: "button", class: "btn-secondary", text: "Start over", onclick: () => {
         state.selection = emptySelection();
         state.drillHistory = [];
-        state.groupBy = "sub_asset";
-        $("lda-pareto-group").value = "sub_asset";
+        setGroupBy(defaultGroupBy());
         onPopulationChange();
       } }));
     }
@@ -1686,7 +1699,9 @@
       CAN_EDIT
         ? "Perform Analysis builds the population's lives item by item, fits them, and saves the run with its population definition."
         : "Preview the fit builds and fits the population's lives without saving anything; an editor saves a run.",
-      "Clicking a Pareto bar previews the fit of that one sub-asset, component and mechanism.",
+      CAN_EDIT
+        ? "Clicking a Pareto bar fits and saves that one sub-asset, component and mechanism instead."
+        : "Clicking a Pareto bar previews the fit of that one sub-asset, component and mechanism instead.",
     ];
     if (readiness.uncoded) pieces.push(`${readiness.uncoded} failures or PM resets have no component yet and are left out until dispositioned.`);
     if (readiness.not_reviewed) pieces.push(`${readiness.not_reviewed} work orders in reach are not reviewed yet.`);
@@ -1709,8 +1724,8 @@
           el("p", {
             class: "lda-hint",
             text: CAN_EDIT
-              ? "Click a Pareto bar to preview the fit of one sub-asset, component and mechanism, then Perform Analysis to save it. " +
-                "A Weibull life is measured on one kind of item, so pick one component at least."
+              ? "Click a Pareto bar to fit and save one sub-asset, component and mechanism, or Perform Analysis to fit the " +
+                "population ticked. A Weibull life is measured on one kind of item, so pick one component at least."
               : "An editor has to save a fit of this population before it can be opened here. Click a Pareto bar, or Preview the fit, to see one without saving.",
           }),
         ]));
@@ -1726,22 +1741,16 @@
   }
 
   // A bar of the Weibull's Pareto is one sub-asset's one component failing by one
-  // mechanism. Clicking it narrows the population to exactly that and previews
-  // its fit; an editor saves it with Perform Analysis.
-  async function fitBar(row) {
-    rememberDrill();
-    Object.entries(row.selection).forEach(([key, values]) => {
-      state.selection[key] = values.slice();
-    });
-    clearTimeout(populationDebounce);
-    renderSelector();
-    resetAnalyses();
-    clearWorkspace();
-    await loadSummary();
-    await runFit(false);
+  // mechanism. Clicking it runs exactly that, as Perform Analysis would (saved for
+  // an editor, a preview for anybody else), and leaves the population on the card
+  // and the Pareto as they are.
+  function fitBar(row) {
+    return runFit(CAN_EDIT, row.selection);
   }
 
-  async function runFit(save) {
+  // ``narrowedTo`` puts a bar's sub-asset, component and mechanism in place of the
+  // card's; the dates and the induced switch are the card's either way.
+  async function runFit(save, narrowedTo) {
     if (!state.asset) {
       showBanner("Select an Asset Number first.", "error");
       return undefined;
@@ -1750,7 +1759,9 @@
     const token = ++state.analysisToken;
     beginLoading(save ? "Fitting and saving the population's lives…" : "Fitting the population's lives…");
     try {
-      const data = await postJson(`${API}/${save ? "weibull/save" : "weibull"}`, populationBody(weibullDateWindow()));
+      const body = populationBody(weibullDateWindow());
+      if (narrowedTo) body.selection = { ...body.selection, ...narrowedTo };
+      const data = await postJson(`${API}/${save ? "weibull/save" : "weibull"}`, body);
       if (token !== state.analysisToken) return undefined;
       renderAnalysisResult(data.result, { scroll: true });
       if (save) loadSummary();
@@ -3948,7 +3959,8 @@
       body: () =>
         isWeibull()
           ? "The population's failures, one bar per sub-asset, component and mechanism, each split by failure cause and " +
-            "ranked by count or downtime. Each bar is one kind of item failing one way; click it to fit it."
+            "ranked by count or downtime. Each bar is one kind of item failing one way; click it to fit it. The Pareto " +
+            "and the population stay as they are."
           : "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a " +
             "bar to narrow the population to it: a sub-asset opens into its components, a component into its mechanisms.",
     },
@@ -4015,7 +4027,7 @@
       target: "#lda-perform",
       title: CAN_EDIT ? "Perform Analysis" : "Preview the fit",
       body: CAN_EDIT
-        ? "Builds the population's lives item by item, fits a 2-parameter Weibull, and saves the run with its population definition. A Pareto bar previews one; this saves it."
+        ? "Builds the population ticked on the card item by item, fits a 2-parameter Weibull, and saves the run with its population definition. A Pareto bar does the same for its one sub-asset, component and mechanism."
         : "Builds and fits the population's lives without saving anything. An editor saves runs, which the rankings and reports read.",
       when: forType(ANALYSIS_TYPES.WEIBULL),
     },

@@ -36,13 +36,16 @@ parent) and by date. What the selector offers depends on the Analysis Type:
 * **Weibull Analysis** narrows by sub-asset, component and mechanism only, plus
   the induced-failures switch (item 13 below). Its Pareto has one bar per
   sub-asset + component + mechanism among the population's failures, ranked by
-  count or downtime; clicking a bar narrows the population to exactly that and
-  previews its fit.
+  count or downtime; clicking a bar fits exactly that (saved for an editor, a
+  preview otherwise) without narrowing the population or changing the Pareto.
+  When every bar is on one place, as on an asset with no sub-assets, the names
+  start at the component.
 * **Triage Analysis** (formerly Failure Mode Trend Analysis), **Downtime Driver**,
   **PM Effectiveness** and **Repeat Fix Rate** narrow by all six coded fields —
   sub-asset, component, mechanism, mode, cause and action — and by disposition
-  category. Their Pareto is grouped by the dimension chosen, and a bar or matrix
-  cell drills down sub-asset → component → mechanism.
+  category. Their Pareto is grouped by the dimension chosen (sub-asset at first,
+  or component for an asset with no sub-assets), and a bar or matrix cell drills
+  down sub-asset → component → mechanism.
 
 Sub-asset, component and mechanism carry across a switch between the two; the
 mode, cause, action and categories ticked for the second group wait there while
