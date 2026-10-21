@@ -31,14 +31,15 @@
   };
   // What a population can be narrowed by, in the order it is narrowed: where on
   // the asset, what, how. The sub-asset list follows the asset's hierarchy, and a
-  // Pareto bar or matrix cell narrows it too.
+  // Pareto bar or matrix cell narrows it too. Mode, cause and action narrow the
+  // pattern views only; the Weibull reads sub-asset, component and mechanism.
   const DIMENSIONS = [
     ["locations", "Sub-asset"],
     ["components", "Component"],
     ["failure_mechanisms", "Failure mechanism"],
-    ["failure_modes", "Failure mode"],
-    ["failure_causes", "Failure cause"],
-    ["actions", "Action"],
+    ["failure_modes", "Failure mode", true],
+    ["failure_causes", "Failure cause", true],
+    ["actions", "Action", true],
   ];
   const READINESS_FIELDS = [
     ["in_reach", "Work orders in reach"],
@@ -544,7 +545,7 @@
     const wrap = $("lda-population-selector");
     wrap.innerHTML = "";
     const dimensions = (state.options && state.options.dimensions) || {};
-    DIMENSIONS.forEach(([key, label]) => {
+    DIMENSIONS.forEach(([key, label, patternOnly]) => {
       const values = (dimensions[key] || []).slice();
       const chosen = state.selection[key];
       chosen.forEach((value) => {
@@ -571,7 +572,7 @@
       });
       wrap.appendChild(el("div", { class: "lda-field", id: `lda-dim-${key}` }, [
         el("div", { class: "std-multi-head" }, [
-          el("span", { class: "lda-field-label", text: label }),
+          el("span", { class: "lda-field-label", text: patternOnly ? `${label} (pattern views)` : label }),
           chosen.length
             ? el("button", { type: "button", text: "Clear", onclick: () => {
                 state.selection[key] = [];
@@ -3809,9 +3810,9 @@
       target: "#lda-population-selector",
       title: "The population",
       body:
-        "Tick values to narrow it; leave a list unticked for no restriction. Sub-asset and component choose which items' " +
-        "lives are pooled -- a Weibull life is measured on one kind of item -- and mechanism, mode, cause and action choose " +
-        "which of their failures count.",
+        "Tick values to narrow it; leave a list unticked for no restriction. For the Weibull, sub-asset and component " +
+        "choose which items' lives are pooled -- a life is measured on one kind of item -- and mechanism chooses which of " +
+        "their failures count. Mode, cause and action narrow the pattern views only.",
     },
     {
       target: "#lda-categories-field",

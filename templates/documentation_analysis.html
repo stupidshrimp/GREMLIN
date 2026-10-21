@@ -109,7 +109,8 @@
       </p>
       <ul>
         <li><strong>Sub-asset and component</strong> choose which items' lives are pooled in the Weibull, and which work orders the pattern views count. The sub-asset list shows the asset itself, then each of its sub-assets under its parent; a Pareto bar or matrix cell narrows to one as well.</li>
-        <li><strong>Failure mechanism, mode, cause and action</strong> choose which failures count. In the Weibull, a failure of the pooled items that does not match is a competing failure: it ends the life as a suspension when it renewed the item.</li>
+        <li><strong>Failure mechanism</strong> chooses which failures count. In the Weibull, a failure of the pooled items with another mechanism is a competing failure: it ends the life as a suspension when it renewed the item.</li>
+        <li><strong>Failure mode, cause and action</strong> narrow the pattern views only, and are labelled so. The Weibull counts failures by mechanism: one mechanism can present as several modes, a cause other than "induced" restates the mechanism, and the action is what was done after the failure, so none of them says which lives ended in the failure being studied. A run with any of them ticked says it left them out.</li>
         <li><strong>Disposition categories</strong> narrow the pattern views only (Failure, unless more are ticked); the Weibull has its own rule for each category.</li>
         <li><strong>Induced failures</strong> (installation or maintenance errors) can be counted as suspensions instead.</li>
         <li><strong>From and To</strong> narrow every view by date, and are a Weibull run's start and cutoff.</li>

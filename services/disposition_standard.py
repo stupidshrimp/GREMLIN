@@ -23,7 +23,7 @@ measures the gap between two different items' events, which is no life at all.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -682,6 +682,8 @@ POPULATION_DIMENSIONS = (
     ("failure_causes", "failure_cause_effective", "failure_cause"),
     ("actions", "action_code", "action"),
 )
+# The dimensions that narrow the pattern views but not the Weibull (see Population).
+PATTERN_ONLY_DIMENSIONS = ("failure_modes", "failure_causes", "actions")
 
 
 @dataclass(frozen=True)
@@ -689,11 +691,13 @@ class Population:
     """Which work orders an analysis reads.
 
     ``assets`` picks the records (an asset and its sub-assets); ``locations`` and
-    ``components`` pick the renewal streams that are pooled; ``failure_modes``,
-    ``failure_mechanisms``, ``failure_causes`` and ``actions`` pick which failures
-    in those streams count as failures. Empty means no restriction. ``categories``
-    narrows the pattern views only: the life engine has its own rules for what
-    each category does.
+    ``components`` pick the renewal streams that are pooled; ``failure_mechanisms``
+    picks which failures in those streams count as failures. Empty means no
+    restriction. ``failure_modes``, ``failure_causes``, ``actions`` and
+    ``categories`` narrow the pattern views only (``PATTERN_ONLY_DIMENSIONS``): a
+    mode is a symptom one mechanism shows several ways, a cause beyond "induced"
+    restates the mechanism, and an action is what was done after the failure, so
+    none of them says which lives end in the failure being studied.
     """
 
     assets: frozenset[str] = frozenset()
@@ -755,19 +759,23 @@ class Population:
             not self.components or component in self.components
         )
 
-    def _matches_other_than_mechanism(self, event: "StreamEvent") -> bool:
-        if self.exclude_induced and event.cause_induced:
-            return False
-        return (
-            (not self.failure_modes or event.mode in self.failure_modes)
-            and (not self.failure_causes or event.cause in self.failure_causes)
-            and (not self.actions or event.action in self.actions)
-        )
+    def for_life_analysis(self) -> "Population":
+        """This population as the Weibull reads it: without the pattern-only narrowing."""
+
+        return replace(self, **{attribute: frozenset() for attribute in PATTERN_ONLY_DIMENSIONS}, categories=frozenset())
+
+    def narrows_patterns_only(self) -> bool:
+        """Whether a mode, cause or action is ticked, which the Weibull does not read."""
+
+        return any(getattr(self, attribute) for attribute in PATTERN_ONLY_DIMENSIONS)
+
+    def _induced_left_out(self, event: "StreamEvent") -> bool:
+        return self.exclude_induced and event.cause_induced
 
     def counts_as_failure(self, event: "StreamEvent", unknown_mechanism_as: str) -> bool:
         """Whether a FAILURE in a pooled stream is a failure of this population."""
 
-        if not self._matches_other_than_mechanism(event):
+        if self._induced_left_out(event):
             return False
         if not self.failure_mechanisms or event.mechanism in self.failure_mechanisms:
             return True
@@ -780,7 +788,7 @@ class Population:
             bool(self.failure_mechanisms)
             and event.mechanism not in self.failure_mechanisms
             and event.mechanism_unknown
-            and self._matches_other_than_mechanism(event)
+            and not self._induced_left_out(event)
         )
 
 
@@ -794,6 +802,8 @@ def population_definition(population: Population, window_start: date | None, win
 
     parts = []
     for attribute, _, key in POPULATION_DIMENSIONS:
+        if attribute in PATTERN_ONLY_DIMENSIONS:
+            continue
         selected = getattr(population, attribute)
         if selected:
             parts.append(f"{key}={','.join(sorted(selected))}")
@@ -1141,13 +1151,14 @@ def validity_warnings(
             f"{len(components)} kinds of item are pooled into one fit ({', '.join(name(COMPONENT, c) for c in components)}). "
             "Narrow the population to one component before acting on beta.",
         )
-    if population.failure_modes:
+    if population.narrows_patterns_only():
         warn(
-            "MODE_KEYED",
-            "Population selected by failure mode",
-            "The same mechanism can present as different modes (e.g. FTS vs UST), so selecting by mode can drop "
-            "failures: a failure of the same mechanism with another mode is counted as a suspension. Select by "
-            "mechanism for life analysis.",
+            "PATTERN_ONLY_FILTERS",
+            "Mode, cause and action not used",
+            "The failure mode, cause and action ticked on the population narrow the pattern views only. The Weibull "
+            "counts failures by mechanism: one mechanism can present as several modes, a cause other than induced "
+            "(its own checkbox) restates the mechanism, and the action is what was done after the failure.",
+            level="info",
         )
     mechanisms = sorted({event.mechanism or "" for event in analysis.failure_events})
     if len(mechanisms) > 1:

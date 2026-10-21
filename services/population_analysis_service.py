@@ -109,15 +109,23 @@ def _month_range(keys: Iterable[str]) -> list[str]:
 
 
 def _selection_key(selection: Mapping[str, Any]) -> str:
-    """A population's selection as the Weibull reads it, to match saved runs by.
+    """A saved run's selection, to match runs by.
 
     The categories narrow the pattern views only -- the life engine has its own
     rules for each category -- so two selections that differ only in them are the
-    same Weibull population.
+    same Weibull population. A run saved before the Weibull stopped reading mode,
+    cause and action keeps them in its key, so it never stands for a population
+    picked today (``_life_selection_key``).
     """
 
     canonical = {key: value for key, value in std.Population.from_mapping(selection).to_mapping().items() if key != "categories"}
     return json.dumps(canonical, sort_keys=True)
+
+
+def _life_selection_key(selection: Mapping[str, Any]) -> str:
+    """The page's selection as the Weibull reads it, without the pattern-only narrowing."""
+
+    return _selection_key(std.Population.from_mapping(selection).for_life_analysis().to_mapping())
 
 
 class PopulationAnalysisService:
@@ -1280,10 +1288,11 @@ class PopulationAnalysisService:
         """Build a population's lives stream by stream, fit them, and (optionally) save the run.
 
         Reads every FAILURE and PM_RESET in reach; the population's location and
-        component choose the streams that are pooled, and its mode, mechanism, cause
-        and action choose which failures count (``build_renewal_intervals``). When a
-        failure with an unknown mechanism could be the selected one, both readings
-        are fitted. The category filter of the pattern views does not apply here.
+        component choose the streams that are pooled, and its mechanism chooses
+        which failures count (``build_renewal_intervals``). When a failure with an
+        unknown mechanism could be the selected one, both readings are fitted. The
+        pattern views' categories, modes, causes and actions do not apply here: the
+        run is saved without them, and a warning says when any were ticked.
 
         The result carries the fit flattened the way the result view reads it
         (``beta_mle``, ``observations``, ``life_basis`` and the rest) as well as the
@@ -1291,7 +1300,8 @@ class PopulationAnalysisService:
         warnings and the sensitivity fit.
         """
 
-        population = std.Population.from_mapping(selection)
+        asked = std.Population.from_mapping(selection)
+        population = asked.for_life_analysis()
         connection = self.life.write_connection() if save else self.life.read_transaction()
         with connection as conn:
             loaded = self._load(conn, population)
@@ -1339,7 +1349,7 @@ class PopulationAnalysisService:
             definition = std.population_definition(population, window_start, window_end)
             by_id = {record["mapped_record_id"]: record for record in records}
             warnings = std.validity_warnings(
-                main, population, sensitivity=sensitivity, codebook=codebook,
+                main, asked, sensitivity=sensitivity, codebook=codebook,
                 uncoded_count=uncoded, unreviewed_count=unreviewed,
             )
             if loaded["zone_warning"]:
@@ -1521,7 +1531,7 @@ class PopulationAnalysisService:
     def latest_saved(self, selection: Mapping[str, Any]) -> dict[str, Any] | None:
         """The newest saved run of exactly this population, whatever its window."""
 
-        key = _selection_key(selection)
+        key = _life_selection_key(selection)
         with self.life.read_transaction() as conn:
             for row in conn.execute(
                 "SELECT population_weibull_analysis_id, selection_json FROM population_weibull_analysis "
@@ -1650,6 +1660,9 @@ class PopulationAnalysisService:
             if key in seen:
                 continue
             seen.add(key)
+            if std.Population.from_mapping(selection).narrows_patterns_only():
+                # Saved before the Weibull stopped reading mode, cause and action.
+                continue
             if row["beta"] is None or int(row["failure_count"] or 0) < MIN_WEIBULL_FAILURE_LIVES:
                 continue
             if len(selection.get("components") or []) != 1:

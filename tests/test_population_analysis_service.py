@@ -6,11 +6,13 @@ an adjustment kept beside a fit, the numbered report, and the Disposition page's
 workbook round trip.
 """
 
+import json
 import tempfile
 import zipfile
 from datetime import date
 from pathlib import Path
 
+from services import disposition_standard as std
 from tests.test_standard_disposition_service import PFS, S09, S11, StandardDispositionFixture, coded
 
 
@@ -96,6 +98,29 @@ class SavedFitTests(StandardDispositionFixture):
         self.assertEqual(latest["analysis_id"], second["analysis_id"])
         self.assertNotEqual(first["analysis_id"], second["analysis_id"])
         self.assertIsNone(self.analysis.latest_saved({"assets": [PFS], "components": ["Belt"]}))
+
+    def test_mode_cause_and_action_neither_split_saved_fits_nor_are_saved(self):
+        pattern_only = {"failure_modes": ["FTS"], "failure_causes": ["OPERATE"], "actions": ["REPLACE"]}
+        saved = self.run_and_save(**pattern_only)
+        self.assertEqual(saved["selection"], {**std.Population().to_mapping(), **self.selection})
+        self.assertNotIn("failure_mode", saved["population_definition"])
+        self.assertEqual(self.analysis.latest_saved(self.selection)["analysis_id"], saved["analysis_id"])
+        self.assertEqual(
+            self.analysis.latest_saved({**self.selection, "failure_modes": ["UST"]})["analysis_id"], saved["analysis_id"]
+        )
+
+    def test_a_run_saved_by_mode_before_is_kept_but_stands_for_no_population(self):
+        current = self.run_and_save()
+        older = self.run_and_save()
+        with self.life.write_connection() as conn:
+            conn.execute(
+                "UPDATE population_weibull_analysis SET selection_json = ? WHERE population_weibull_analysis_id = ?",
+                (json.dumps({**older["selection"], "failure_modes": ["FTS"]}), older["analysis_id"]),
+            )
+        self.assertEqual(self.analysis.latest_saved(self.selection)["analysis_id"], current["analysis_id"])
+        self.assertEqual(self.analysis.load_saved(older["analysis_id"])["analysis_id"], older["analysis_id"])
+        [ranked] = self.analysis.summary({"assets": [PFS]})["rankings"]
+        self.assertEqual(ranked["analysis_id"], current["analysis_id"])
 
     def test_the_result_reads_as_the_weibull_view_reads_it(self):
         result = self.run_and_save()

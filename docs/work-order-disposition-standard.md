@@ -35,7 +35,8 @@ clicking a Pareto bar or a matrix cell, which drills down sub-asset → componen
 → mechanism; the sub-asset list shows the asset, then each sub-asset under its
 parent), by disposition category and by date. Every view on it — Pareto,
 failure trend, downtime drivers, PM effectiveness, repeat fixes and the Weibull —
-reads that same population.
+reads that same population, except that the Weibull ignores the categories, modes,
+causes and actions, which narrow the pattern views only (item 13 below).
 
 Both pages follow Life Data Analysis's access rules: reads for anyone who may see
 Life Data Analysis, every write (a disposition, a code, a saved Weibull run, an
@@ -177,9 +178,16 @@ written against them.
 12. **Induced failures** (cause semantic INDUCED) can be excluded with a checkbox;
     excluded, they end a life as a suspension (the item was still renewed), and the
     POP string records `induced=suspensions`.
-13. **Mode-keyed populations** warn whenever a failure mode is selected, with or
-    without a mechanism, since the mode filter alone can drop same-mechanism
-    failures (acceptance case 168996).
+13. **The Weibull reads sub-asset, component and mechanism only.** Failure mode,
+    cause and action narrow the pattern views but not the life analysis: one
+    mechanism presents as several modes, so a mode filter turned same-mechanism
+    failures into suspensions (acceptance case 168996); a cause beyond "induced"
+    (its own checkbox, item 12) restates the mechanism; and the action is what was
+    done after the failure, which the engine already reads to decide whether the
+    item was renewed. A run with any of them ticked says so in an info warning, and
+    is saved, named and keyed without them. Runs saved before this keep their
+    selection and can still be opened, but no longer match a population picked on
+    the page and are left out of the rankings.
 14. **Analysis window.** As on Perform an Analysis: the To date is the cutoff (end
     of that plant day); without one, the last completed Limble import when it is no
     earlier than every event, otherwise now. Events before the From date are left
@@ -228,7 +236,8 @@ written against them.
     through the same checks as the form; one refused row refuses the upload,
     named by sheet row and task.
 20. **Rankings** take only one-component populations, so a beta is about one kind
-    of item, and only the latest saved run of each population.
+    of item, and only the latest saved run of each population (none saved with a
+    mode, cause or action, item 13).
 
 ## The REL screens
 
