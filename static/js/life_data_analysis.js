@@ -1492,6 +1492,66 @@
 
   // The population's work orders as one table: what the trend counts, the
   // downtime list sorts, and a record can be opened from.
+  // ---- long tables, drawn a batch at a time -----------------------------------------
+  // A view's tables can list hundreds of work orders, and laying every row out is
+  // most of what drawing the view costs: the page froze for half a second each time
+  // one came in. The first batch is drawn at once and the rest as the table is
+  // scrolled toward its end, or all at once from "Show all". Anything that needs
+  // every row -- a column's sort or filter -- draws the rest first, through
+  // table.drawAllRows (enableTableColumnTools calls it), so it works on all of them.
+  const ROW_BATCH = 150;
+  function fillRows(table, tbody, items, makeRow) {
+    let next = 0;
+    let more = null;
+    let observer = null;
+    const countText = () =>
+      `Showing ${next.toLocaleString()} of ${items.length.toLocaleString()} rows. The rest appear as you scroll down.`;
+    function finish() {
+      if (observer) observer.disconnect();
+      observer = null;
+      if (more) more.remove();
+      more = null;
+      table.drawAllRows = null;
+    }
+    function draw(count) {
+      const end = Math.min(items.length, next + count);
+      const fragment = document.createDocumentFragment();
+      for (; next < end; next += 1) fragment.appendChild(makeRow(items[next]));
+      tbody.insertBefore(fragment, more);
+      if (next >= items.length) finish();
+      else if (more) more.querySelector(".lda-more-text").textContent = countText();
+    }
+    draw(ROW_BATCH);
+    if (next >= items.length) return;
+    const columns = table.tHead ? table.tHead.rows[table.tHead.rows.length - 1].cells.length : 1;
+    // One cell across the table, so the column tools never count it as a row.
+    more = el("tr", { class: "lda-more-row" }, [
+      el("td", { class: "lda-readonly lda-more-cell", colspan: String(columns) }, [
+        el("span", { class: "lda-more-text", text: countText() }),
+        " ",
+        el("button", { type: "button", class: "lda-more-all", text: "Show all", onclick: () => draw(items.length) }),
+      ]),
+    ]);
+    tbody.appendChild(more);
+    table.drawAllRows = () => draw(items.length);
+    if (!("IntersectionObserver" in window)) return;
+    // Watched once the table is on the page, against the box it scrolls in.
+    setTimeout(() => {
+      if (!more) return;
+      const root = table.closest(".lda-table-scroll, .lda-data-scroll");
+      observer = new window.IntersectionObserver((entries) => {
+        if (!more || !entries.some((entry) => entry.isIntersecting)) return;
+        draw(ROW_BATCH);
+        // Still in reach after a short batch: look again rather than wait for a scroll.
+        if (more && observer) {
+          observer.unobserve(more);
+          observer.observe(more);
+        }
+      }, { root, rootMargin: "0px 0px 600px 0px" });
+      observer.observe(more);
+    }, 0);
+  }
+
   function recordsTable(records, emptyText) {
     const columns = [
       { label: "Task ID", type: "number", get: (r) => String(r.task_id ?? ""), node: (r) => recordNumberCell(r.task_id, r.mapped_record_id) },
@@ -1514,10 +1574,9 @@
     if (!records.length) {
       body.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: emptyText })]));
     }
-    records.forEach((record) => {
-      body.appendChild(el("tr", {}, columns.map((c) => (c.node ? c.node(record) : el("td", { text: c.get(record), class: c.cls || null })))));
-    });
     table.appendChild(body);
+    fillRows(table, body, records, (record) =>
+      el("tr", {}, columns.map((c) => (c.node ? c.node(record) : el("td", { text: c.get(record), class: c.cls || null })))));
     if (records.length) enableTableColumnTools(table, { columns });
     return table;
   }
@@ -1615,13 +1674,11 @@
     if (!data.rows.length) {
       body.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: "No PM was followed by a failure of the population." })]));
     }
-    data.rows.forEach((row) => {
-      body.appendChild(el("tr", {}, columns.map((c) => {
-        if (c.node) return c.node(row);
-        return el("td", { text: c.get(row), class: c.label === "Days to failure" ? pmDaysClass(row.days_to_failure) : c.cls || null });
-      })));
-    });
     table.appendChild(body);
+    fillRows(table, body, data.rows, (row) => el("tr", {}, columns.map((c) => {
+      if (c.node) return c.node(row);
+      return el("td", { text: c.get(row), class: c.label === "Days to failure" ? pmDaysClass(row.days_to_failure) : c.cls || null });
+    })));
     if (data.rows.length) enableTableColumnTools(table, { columns });
     wrap.appendChild(table);
     $("lda-pm-table-hint").textContent =
@@ -1748,8 +1805,9 @@
     pairTable.appendChild(el("thead", {}, [el("tr", {}, columns.map((c) => el("th", { text: c.label })))]));
     const pairBody = el("tbody");
     if (!pairs.length) pairBody.appendChild(el("tr", {}, [el("td", { class: "lda-readonly lda-empty-row", colspan: String(columns.length), text: "No failure came back within the window." })]));
-    pairs.forEach((pair) => pairBody.appendChild(el("tr", {}, columns.map((c) => (c.node ? c.node(pair) : el("td", { text: c.get(pair), class: c.cls || null }))))));
     pairTable.appendChild(pairBody);
+    fillRows(pairTable, pairBody, pairs, (pair) =>
+      el("tr", {}, columns.map((c) => (c.node ? c.node(pair) : el("td", { text: c.get(pair), class: c.cls || null })))));
     if (pairs.length) enableTableColumnTools(pairTable, { columns });
     wrap.appendChild(pairTable);
     $("lda-repeat-pairs-hint").textContent = "Each failure that came back within the window, with the fix before it." + RECORD_EDIT_HINT;
@@ -3663,10 +3721,14 @@
       if (onFiltersChanged) onFiltersChanged(activeFilters());
     }
 
-    const dataRows = () =>
-      Array.from(tbody.rows).filter(
+    // A table drawn a batch at a time (fillRows) draws the rest first, so a sort
+    // or a filter takes in every row rather than the ones scrolled to so far.
+    const dataRows = () => {
+      if (typeof table.drawAllRows === "function") table.drawAllRows();
+      return Array.from(tbody.rows).filter(
         (tr) => tr.cells.length === ths.length && !tr.querySelector(".lda-empty-row")
       );
+    };
 
     // Shown when the filters hide every row on the page -- which a filter carried
     // across a reload can easily do, since it was picked from values the new page

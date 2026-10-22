@@ -24,6 +24,7 @@ Three tables:
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import sqlite3
@@ -87,6 +88,8 @@ _STATEMENTS = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_wo_disposition_one_current ON wo_disposition(mapped_record_id) WHERE is_current = 1",
     "CREATE INDEX IF NOT EXISTS idx_wo_disposition_current ON wo_disposition(is_current, mapped_record_id)",
     "CREATE INDEX IF NOT EXISTS idx_wo_disposition_linked ON wo_disposition(linked_mapped_record_id) WHERE linked_mapped_record_id IS NOT NULL",
+    # A population's records placed on one of its sub-assets.
+    "CREATE INDEX IF NOT EXISTS idx_wo_disposition_current_sub_asset ON wo_disposition(sub_asset) WHERE is_current = 1",
     """
     CREATE TABLE IF NOT EXISTS population_weibull_analysis (
         population_weibull_analysis_id INTEGER PRIMARY KEY,
@@ -329,11 +332,20 @@ class AssetTree:
         self.children: dict[str, list[str]] = {}
         for child, parent_number in self.parent.items():
             self.children.setdefault(parent_number, []).append(child)
+        # Which tree this is, for what is kept on top of it (a population's
+        # records): a number no other tree in this process has had.
+        self.serial = next(_TREE_SERIALS)
         for kids in self.children.values():
             kids.sort(key=lambda number: ((self.names.get(number) or number).casefold(), number))
 
     @classmethod
-    def load(cls, conn: sqlite3.Connection, hierarchy: Iterable[Mapping[str, Any]] | None = None) -> "AssetTree":
+    def load(
+        cls,
+        conn: sqlite3.Connection,
+        hierarchy: Iterable[Mapping[str, Any]] | None = None,
+        *,
+        token: Any = None,
+    ) -> "AssetTree":
         """The tree from Limble's asset list (or the PM calendar's), and the work orders.
 
         ``hierarchy`` is the PM calendar's asset rows: ``asset_id``,
@@ -343,10 +355,20 @@ class AssetTree:
         plant's history is seconds of work, so a tree is kept for as long as what
         it was built from reads the same: the same work-order rows, the same
         asset lists. Any change to either builds it again.
+
+        Even telling whether they read the same is a pass over every work order,
+        so ``token`` -- GREMLIN.db's ``LifeDataService.change_token``, read before
+        ``conn``'s transaction first queried -- answers it without one: while the
+        database and the PM calendar's list are unchanged, the tree is too.
         """
 
-        stored = tuple(_row_key(row) for row in _stored_limble_assets(conn))
         calendar = tuple(_row_key(row) for row in (hierarchy or ()))
+        if token is not None:
+            with _TREE_CACHE_LOCK:
+                tree = _TREE_BY_TOKEN.get((token, calendar))
+            if tree is not None:
+                return tree
+        stored = tuple(_row_key(row) for row in _stored_limble_assets(conn))
         wo_rows = tuple(
             tuple(row)
             for row in conn.execute(
@@ -354,7 +376,7 @@ class AssetTree:
                 SELECT TRIM(asset_number) AS asset_number, asset_id_raw, asset_name, immediate_parent_asset_id,
                        COUNT(*) AS record_count
                 FROM mapped_cmms_record
-                WHERE asset_number IS NOT NULL AND TRIM(asset_number) <> ''
+                WHERE TRIM(asset_number) <> ''
                 GROUP BY TRIM(asset_number), asset_id_raw, asset_name, immediate_parent_asset_id
                 """
             )
@@ -368,6 +390,11 @@ class AssetTree:
                 _TREE_CACHE[key] = tree
                 while len(_TREE_CACHE) > _TREE_CACHE_SIZE:
                     _TREE_CACHE.pop(next(iter(_TREE_CACHE)))
+        if token is not None:
+            with _TREE_CACHE_LOCK:
+                _TREE_BY_TOKEN[(token, calendar)] = tree
+                while len(_TREE_BY_TOKEN) > _TREE_CACHE_SIZE:
+                    _TREE_BY_TOKEN.pop(next(iter(_TREE_BY_TOKEN)))
         return tree
 
     @classmethod
@@ -622,6 +649,9 @@ class AssetTree:
 _TREE_CACHE: dict[tuple, "AssetTree"] = {}
 _TREE_CACHE_SIZE = 4
 _TREE_CACHE_LOCK = threading.Lock()
+# The same trees, by the database's change token and the PM calendar's rows.
+_TREE_BY_TOKEN: dict[tuple, "AssetTree"] = {}
+_TREE_SERIALS = itertools.count(1)
 
 
 def _row_key(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:

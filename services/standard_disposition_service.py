@@ -165,16 +165,24 @@ class StandardDispositionService:
         self.life = life
         self.asset_hierarchy = asset_hierarchy
 
-    def asset_tree(self, conn: sqlite3.Connection) -> AssetTree:
-        """Who hangs under whom, by asset number, read fresh for one request."""
+    def asset_tree(self, conn: sqlite3.Connection, *, token: Any = None) -> AssetTree:
+        """Who hangs under whom, by asset number, as ``conn`` reads the database.
 
+        ``token`` is GREMLIN.db's change token read before ``conn``'s transaction
+        first queried, if the caller has one; see ``AssetTree.load``. Outside a
+        transaction every query is its own read of the latest database, so one
+        read here, before the tree's own queries, is as good.
+        """
+
+        if token is None and not conn.in_transaction:
+            token = self.life.change_token()
         hierarchy = None
         if self.asset_hierarchy is not None:
             try:
                 hierarchy = self.asset_hierarchy()
             except Exception:  # noqa: BLE001 - the PM calendar's database is optional here
                 hierarchy = None
-        return AssetTree.load(conn, hierarchy)
+        return AssetTree.load(conn, hierarchy, token=token)
 
     # ------------------------------------------------------------------ #
     # Code lists
@@ -905,9 +913,10 @@ class StandardDispositionService:
         sort = sort if sort in LIST_COLUMNS else None
         direction = "desc" if (direction or "").lower() == "desc" else "asc"
         where, params = self._list_where(asset_number, scope, search, filters)
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
-            tree = self.asset_tree(conn)
+            tree = self.asset_tree(conn, token=token)
             self._register_labels(conn, tree)
             total = int(conn.execute(f"SELECT COUNT(*) {self.RECORD_FROM} {where}", params).fetchone()[0])
             counts = conn.execute(
@@ -975,9 +984,10 @@ class StandardDispositionService:
             scope = "all"
         where, params = self._list_where(asset_number, scope, search, self.clean_list_filters(filters), skip=column)
         value_sql = LIST_COLUMNS[column][0]
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
-            tree = self.asset_tree(conn)
+            tree = self.asset_tree(conn, token=token)
             rows = conn.execute(
                 f"""
                 SELECT COALESCE(NULLIF(TRIM({value_sql}), ''), '') AS value, COUNT(*) AS n
@@ -1027,6 +1037,7 @@ class StandardDispositionService:
         ids = [int(mapped_record_id) for mapped_record_id in mapped_record_ids]
         if not ids:
             return []
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
             rows = conn.execute(
@@ -1036,7 +1047,7 @@ class StandardDispositionService:
             by_id = {int(row["mapped_record_id"]): self.record_dict(row, codebook) for row in rows}
             records = [by_id[mapped_record_id] for mapped_record_id in ids if mapped_record_id in by_id]
             self._add_plant_times(conn, records)
-            tree = self.asset_tree(conn)
+            tree = self.asset_tree(conn, token=token)
             for record in records:
                 self._add_labels(record, tree)
             return records
@@ -1137,7 +1148,10 @@ class StandardDispositionService:
         record_classes = self._record_classes()
         with self.life.write_connection() as conn:
             codebook = load_codebook(conn)
-            tree = self.asset_tree(conn)
+            # Read inside the write transaction, before anything is written: no
+            # other write can land while this one holds the writer slot, so the
+            # token is the database this transaction reads.
+            tree = self.asset_tree(conn, token=self.life.change_token())
             children: dict[str, tuple[str, ...]] = {}
             for item in items:
                 try:
@@ -1220,9 +1234,10 @@ class StandardDispositionService:
         if scope not in DISPOSITION_SCOPES:
             scope = "all"
         where, params = self._list_where(asset_number, scope, search, self.clean_list_filters(filters))
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
-            self._register_labels(conn, self.asset_tree(conn))
+            self._register_labels(conn, self.asset_tree(conn, token=token))
             rows = conn.execute(
                 f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where} ORDER BY {self._list_order(sort, direction)}",
                 params,

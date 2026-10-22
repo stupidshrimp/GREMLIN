@@ -146,6 +146,45 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
 The categories are fixed in code rather than a table: the engine's rules are
 written against them.
 
+## Keeping it fast
+
+Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
+4002), each view of Perform an Analysis now answers in 15-85 ms where it took
+400-650 ms, and drawing a view no longer holds the page up for more than about
+0.1 s, where it froze for up to 0.6 s. What does it:
+
+* **The population is read once per database state.** Every view starts by
+  reading the asset's records (`PopulationAnalysisService._load`); that result
+  is kept, per asset and location reach, until GREMLIN.db changes. Whether it
+  has changed is `LifeDataService.change_token`: SQLite's file change counter
+  (header bytes 24-27, kept by the rollback journal every write here uses) with
+  the file's size and modification time, read straight from the file -- one
+  small read, nothing held open, and any process's commit moves it. It is read
+  before a transaction's first query, so what is kept under it is never older
+  than it says. The first view after a save reads the population again
+  (about 250 ms); the rest reuse it.
+* **The asset tree is kept by the same token** (`AssetTree.load(token=...)`),
+  so telling whether it changed no longer reads every work order's asset
+  columns; when it must, an index on `TRIM(asset_number)` and those columns
+  (`idx_mapped_cmms_asset_tree`) answers without the wide rows. A population's
+  records are found through that index and `idx_wo_disposition_current_sub_asset`
+  rather than a scan of every work order.
+* **Life hours are summed, not walked.** `_scheduled_life_hours` adds the days
+  wholly inside a life from per-zone running totals of each plant day's real
+  length (`_PlantDays`), so a life of years costs what a life of hours does.
+  The day-by-day walk is kept as the reference (and for a zone whose midnights
+  misbehave); the two agree to within floating-point rounding across zones
+  with half-hour, midnight and skipped-day clock changes
+  (`tests/test_analysis_speed.py`).
+* **Dates read directly.** A stored date with a time goes straight to ISO
+  parsing and an ISO date straight to the plant's midnight, instead of failing
+  through each date-only format first.
+* **Long tables draw a batch at a time.** The work orders behind a trend, the
+  PMs and the repeat pairs draw their first 150 rows at once and the rest as the
+  table is scrolled toward its end (or from Show all); a column's sort or filter
+  draws every row first. An off-screen table is not laid out until it is
+  scrolled near (`content-visibility: auto` on `.lda-table-scroll`).
+
 ## Decisions the spec left open
 
 1. **Which categories need the coded fields.** The spec says "all except

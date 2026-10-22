@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
+from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
@@ -132,6 +134,12 @@ def _life_selection_key(selection: Mapping[str, Any]) -> str:
     return _selection_key(std.Population.from_mapping(selection).for_life_analysis().to_mapping())
 
 
+# Populations already read (see PopulationAnalysisService._load), least recently used first.
+_LOADED: "OrderedDict[tuple, dict[str, Any]]" = OrderedDict()
+_LOADED_SIZE = 8
+_LOADED_LOCK = threading.Lock()
+
+
 class PopulationAnalysisService:
     """Perform an Analysis, over one ``LifeDataService``."""
 
@@ -161,8 +169,18 @@ class PopulationAnalysisService:
             ).fetchall()
         placeholders = ",".join("?" for _ in reach)
         values = sorted(reach)
+        # The two ways in, each found through its own index and united, rather
+        # than one OR across both tables, which can only be answered by reading
+        # every work order.
         return conn.execute(
-            f"SELECT {columns} {source} WHERE TRIM(m.asset_number) IN ({placeholders}) OR w.sub_asset IN ({placeholders})",
+            f"""
+            SELECT {columns} {source}
+            WHERE m.mapped_record_id IN (
+                SELECT mapped_record_id FROM mapped_cmms_record WHERE TRIM(asset_number) IN ({placeholders})
+                UNION
+                SELECT mapped_record_id FROM wo_disposition WHERE is_current = 1 AND sub_asset IN ({placeholders})
+            )
+            """,
             [*values, *values],
         ).fetchall()
 
@@ -242,15 +260,35 @@ class PopulationAnalysisService:
         return tree.label(number)
 
     def _load(self, conn: sqlite3.Connection, population: std.Population) -> dict[str, Any]:
+        """The population's records and what they were read with: codes, plant zone, asset tree.
+
+        Called first in its transaction. Reading an asset's records is most of
+        what every view costs, and the page asks for several views of one asset
+        at a time (the selector, the summary, the open tab, each filter changed),
+        so what was read is kept, per asset and location reach, until GREMLIN.db
+        changes: the change token is read before the transaction's first query,
+        so the records kept under it are never older than it says. Nothing that
+        reads the result changes it.
+        """
+
+        token = self.life.change_token()
         codebook = load_codebook(conn)
         zone, zone_name, zone_warning = self.life._plant_time_zone(conn)
-        tree = self.records.asset_tree(conn)
+        tree = self.records.asset_tree(conn, token=token)
+        key = None
+        if token is not None:
+            key = (token, tree.serial, zone_name, tuple(sorted(population.assets)), tuple(sorted(population.locations)))
+            with _LOADED_LOCK:
+                loaded = _LOADED.get(key)
+                if loaded is not None:
+                    _LOADED.move_to_end(key)
+                    return loaded
         records = self._population_records(conn, population, zone, codebook, tree)
         for record in records:
             record["induced"] = codebook.has_semantic(
                 std.FAILURE_CAUSE, record["derived"]["failure_cause_effective"], std.SEMANTIC_INDUCED
             )
-        return {
+        loaded = {
             "codebook": codebook,
             "zone": zone,
             "zone_name": zone_name,
@@ -259,6 +297,12 @@ class PopulationAnalysisService:
             "tree": tree,
             "places": {record["location"]: record["location_label"] for record in records},
         }
+        if key is not None:
+            with _LOADED_LOCK:
+                _LOADED[key] = loaded
+                while len(_LOADED) > _LOADED_SIZE:
+                    _LOADED.popitem(last=False)
+        return loaded
 
     @staticmethod
     def _pattern_value(record: Mapping[str, Any], field: str) -> Any:
@@ -449,7 +493,7 @@ class PopulationAnalysisService:
             population = population.for_life_analysis()
         with self.life.read_transaction() as conn:
             loaded = self._load(conn, population)
-            fits = self._ranked_fits(conn, population)
+            fits = self._ranked_fits(conn, population, loaded["tree"])
         codebook, records = loaded["codebook"], loaded["records"]
         selected = self._pattern_records(records, population, start, end, categories=[std.FAILURE] if weibull else None)
         window_start = start or min((record["event_day"] for record in selected if record["event_day"]), default=None)
@@ -1509,7 +1553,7 @@ class PopulationAnalysisService:
                     "UPDATE population_weibull_analysis SET result_json = ? WHERE population_weibull_analysis_id = ?",
                     (json.dumps(payload), analysis_id),
                 )
-            payload.update(self._currency(conn, payload))
+            payload.update(self._currency(conn, payload, loaded["tree"]))
         payload["saved"] = bool(save)
         return payload
 
@@ -1539,12 +1583,14 @@ class PopulationAnalysisService:
             "interpretation_summary": fit.get("interpretation_summary") or [],
         }
 
-    def _currency(self, conn: sqlite3.Connection, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _currency(
+        self, conn: sqlite3.Connection, payload: Mapping[str, Any], tree: AssetTree | None = None
+    ) -> dict[str, Any]:
         """Whether a run still reads as today's would: method, schedules and plant time zone."""
 
         basis = payload.get("life_basis") or {}
         counted_on = basis.get("schedules") or {}
-        tree = self.records.asset_tree(conn)
+        tree = tree or self.records.asset_tree(conn)
         current = self._stream_schedules(conn, [], counted_on, tree)
         changed = sorted(
             location for location, schedule in counted_on.items()
@@ -1577,7 +1623,13 @@ class PopulationAnalysisService:
     # ------------------------------------------------------------------ #
     # Saved runs
     # ------------------------------------------------------------------ #
-    def _saved_payload(self, conn: sqlite3.Connection, analysis_id: int) -> dict[str, Any] | None:
+    def _saved_payload(
+        self, conn: sqlite3.Connection, analysis_id: int, *, token: Any = None, tree: AssetTree | None = None
+    ) -> dict[str, Any] | None:
+        """A saved run as the page shows it. ``tree`` is the asset tree when the caller
+        has it already; else ``token`` is GREMLIN.db's change token, read before
+        ``conn``'s transaction first queried, when the caller has one."""
+
         row = conn.execute(
             "SELECT result_json FROM population_weibull_analysis WHERE population_weibull_analysis_id = ?",
             (int(analysis_id),),
@@ -1586,7 +1638,7 @@ class PopulationAnalysisService:
             return None
         payload = json.loads(row["result_json"] or "{}")
         payload["saved"] = True
-        payload.update(self._currency(conn, payload))
+        payload.update(self._currency(conn, payload, tree or self.records.asset_tree(conn, token=token)))
         adjustment = conn.execute(
             """
             SELECT adjusted_beta, adjusted_eta, adjustment_reason, adjusted_by, adjusted_at
@@ -1600,13 +1652,15 @@ class PopulationAnalysisService:
         return payload
 
     def load_saved(self, analysis_id: int) -> dict[str, Any] | None:
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
-            return self._saved_payload(conn, analysis_id)
+            return self._saved_payload(conn, analysis_id, token=token)
 
     def latest_saved(self, selection: Mapping[str, Any]) -> dict[str, Any] | None:
         """The newest saved run of exactly this population, whatever its window."""
 
         key = _life_selection_key(selection)
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
             for row in conn.execute(
                 "SELECT population_weibull_analysis_id, selection_json FROM population_weibull_analysis "
@@ -1617,7 +1671,7 @@ class PopulationAnalysisService:
                 except ValueError:
                     continue
                 if saved_key == key:
-                    return self._saved_payload(conn, int(row["population_weibull_analysis_id"]))
+                    return self._saved_payload(conn, int(row["population_weibull_analysis_id"]), token=token)
         return None
 
     def saved_analyses(self, *, asset_number: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -1705,7 +1759,9 @@ class PopulationAnalysisService:
     # ------------------------------------------------------------------ #
     # Rankings of the saved fits
     # ------------------------------------------------------------------ #
-    def _ranked_fits(self, conn: sqlite3.Connection, population: std.Population) -> list[dict[str, Any]]:
+    def _ranked_fits(
+        self, conn: sqlite3.Connection, population: std.Population, tree: AssetTree | None = None
+    ) -> list[dict[str, Any]]:
         """The latest saved fit of each single-component population the page's population reaches.
 
         Only fits resting on at least the minimum number of failure lives, and only
@@ -1717,7 +1773,7 @@ class PopulationAnalysisService:
 
         from services.life_data_service import MIN_WEIBULL_FAILURE_LIVES
 
-        tree = self.records.asset_tree(conn)
+        tree = tree or self.records.asset_tree(conn)
         reach = set(population.assets) | set(population.locations)
         for asset in population.assets:
             reach.update(option["asset_number"] for option in tree.descendants(asset))
@@ -1744,7 +1800,7 @@ class PopulationAnalysisService:
                 continue
             if reach and not (set(selection.get("assets") or []) | set(selection.get("locations") or [])) & reach:
                 continue
-            payload = self._saved_payload(conn, int(row["population_weibull_analysis_id"]))
+            payload = self._saved_payload(conn, int(row["population_weibull_analysis_id"]), tree=tree)
             if not payload or not payload.get("fitted"):
                 continue
             schedules = (payload.get("life_basis") or {}).get("schedules") or {}
@@ -1829,8 +1885,9 @@ class PopulationAnalysisService:
 
     def risk_rankings(self, selection: Mapping[str, Any], *, weeks: float = 4) -> list[dict[str, Any]]:
         population = std.Population.from_mapping(selection)
+        token = self.life.change_token()
         with self.life.read_transaction() as conn:
-            fits = self._ranked_fits(conn, population)
+            fits = self._ranked_fits(conn, population, self.records.asset_tree(conn, token=token))
         return self._risk_rankings(fits, weeks)
 
     # ------------------------------------------------------------------ #

@@ -333,6 +333,20 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-disp-search-field { margin-top: 1rem; }
 .lda-disp-search-field .lda-hint { margin: 0.1rem 0 0; }
 table.lda-table td.lda-empty-row { text-align: center; color: var(--muted); padding: 1.1rem 0.55rem; }
+/* The row under a table drawn a batch at a time: how many are showing, and Show all. */
+table.lda-table td.lda-more-cell { text-align: center; color: var(--muted); padding: 0.8rem 0.55rem; }
+.lda-more-all {
+  font: inherit;
+  font-weight: 600;
+  color: var(--forest-700);
+  background: none;
+  border: none;
+  padding: 0 0.2rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.lda-more-all:hover,
+.lda-more-all:focus-visible { color: var(--forest-900); }
 
 /* Disposition editor */
 /* Containerize the disposition table so long asset histories scroll inside this
@@ -344,6 +358,13 @@ table.lda-table td.lda-empty-row { text-align: center; color: var(--muted); padd
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
+  /* A view's tables can run to hundreds of rows of wrapped text (the work orders
+     behind a trend, every PM), and laying them out is most of what drawing the
+     view costs. Off screen, the browser leaves a table unlaid until it is
+     scrolled near, so a view draws at once and the table when it is reached. The
+     size stands in for it until then, and is remembered once it has been drawn. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 table.lda-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 table.lda-table th,

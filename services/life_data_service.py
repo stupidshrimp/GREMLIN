@@ -280,6 +280,96 @@ _DOWNTIME_SOURCE_UNIT_MINUTES = {"minutes": 1.0, "seconds": 1.0 / 60.0, "hours":
 # row was listed as C-3 and then found by nothing.
 _MAPPING_VERSION = "v4"
 
+class _PlantDays:
+    """Every plant day's real length, as running totals of weekday and weekend seconds.
+
+    A day runs from one midnight on the plant's clock to the next, taken between
+    UTC instants, so the day the clocks change is the 23 or 25 hours it was. The
+    totals let the days wholly inside a life be summed in one subtraction rather
+    than walked. Built for a span of days and widened when a life falls outside it.
+    """
+
+    _MARGIN_DAYS = 400
+
+    def __init__(self, zone: tzinfo) -> None:
+        self.zone = zone
+        self.first = None  # type: date | None
+        self.midnights: list[datetime] = []
+        self.weekday: list[int] = [0]
+        self.weekend: list[int] = [0]
+        self.sound = True
+        # Widening replaces the lists while another request may be reading them.
+        self.lock = threading.Lock()
+
+    def _midnight(self, day: date) -> datetime:
+        return datetime.combine(day, time.min, tzinfo=self.zone).astimezone(timezone.utc)
+
+    def _cover(self, low: date, high: date) -> None:
+        if self.first is not None and low >= self.first and (high - self.first).days + 1 < len(self.midnights):
+            return
+        first = low - timedelta(days=self._MARGIN_DAYS)
+        last = high + timedelta(days=self._MARGIN_DAYS)
+        if self.first is not None:
+            first = min(first, self.first)
+            last = max(last, self.first + timedelta(days=len(self.midnights) - 1))
+        count = (last - first).days + 1
+        midnights = [self._midnight(first + timedelta(days=offset)) for offset in range(count)]
+        weekday, weekend = [0], [0]
+        for offset in range(count - 1):
+            day = first + timedelta(days=offset)
+            seconds = int(round((midnights[offset + 1] - midnights[offset]).total_seconds()))
+            # A midnight that is not the day's first instant on the plant's clock,
+            # or a day of no length, is a zone the walk handles and the totals do not.
+            if seconds <= 0 or midnights[offset].astimezone(self.zone).date() != day:
+                self.sound = False
+            is_weekend = day.weekday() >= 5
+            weekday.append(weekday[-1] + (0 if is_weekend else seconds))
+            weekend.append(weekend[-1] + (seconds if is_weekend else 0))
+        self.first, self.midnights, self.weekday, self.weekend = first, midnights, weekday, weekend
+
+    def full_days(self, first_day: date, last_day: date, start: datetime) -> tuple[int, int, datetime, datetime] | None:
+        """Weekday and weekend seconds of the days after ``first_day`` and before ``last_day``,
+        with the midnights that end the first and begin the last; None to walk instead."""
+
+        if last_day < first_day:
+            return None
+        with self.lock:
+            self._cover(first_day, last_day)
+            if not self.sound:
+                return None
+            low = (first_day - self.first).days + 1
+            high = (last_day - self.first).days
+            first_midnight = self.midnights[low]
+            if first_midnight <= start:
+                return None
+            if high < low:
+                return 0, 0, first_midnight, first_midnight
+            return (
+                self.weekday[high] - self.weekday[low],
+                self.weekend[high] - self.weekend[low],
+                first_midnight,
+                self.midnights[high],
+            )
+
+
+_PLANT_DAYS: dict[Any, _PlantDays] = {}
+_PLANT_DAYS_LOCK = threading.Lock()
+
+
+def _plant_days(zone: tzinfo) -> _PlantDays | None:
+    """The running day totals for one zone, shared by every request; None for a zone that cannot key them."""
+
+    try:
+        key = (type(zone), getattr(zone, "key", None) or str(zone))
+    except Exception:  # noqa: BLE001 - an odd tzinfo is walked rather than refused
+        return None
+    with _PLANT_DAYS_LOCK:
+        days = _PLANT_DAYS.get(key)
+        if days is None:
+            days = _PLANT_DAYS[key] = _PlantDays(zone)
+        return days
+
+
 # What a workbook column holds. Every value reaches a sheet as text -- SQLite has
 # no date type, and the CMMS hands over task ids as strings -- so a column that is
 # not told its real type is validated and compared as text.
@@ -401,6 +491,37 @@ class LifeDataService:
         # And the tie-breaker behind it, for the integers it has to round.
         conn.create_function("gremlin_sort_integer", 1, self._integer_sort_key, deterministic=True)
         return conn
+
+    def change_token(self) -> tuple[Any, ...] | None:
+        """A value that changes whenever a write to GREMLIN.db is committed, by any process.
+
+        SQLite counts every committed write in the file's header -- the file change
+        counter, bytes 24-27, which the rollback-journal mode every write here runs
+        in keeps -- and the file's size and modification time sit beside it, as
+        does the WAL file's should the database ever be switched to one. Two reads
+        that return the same token read the same database, so what was worked out
+        from it can be kept until the token moves.
+
+        Read straight from the file rather than through SQLite, so it costs one
+        small read and holds nothing open. Read it before a transaction's first
+        query: what that transaction then reads is at least as new as the token it
+        is kept under. None when the file cannot be read, and then nothing is kept.
+        """
+
+        try:
+            with open(self.db_path, "rb") as handle:
+                header = handle.read(28)
+                stat = os.fstat(handle.fileno())
+        except OSError:
+            return None
+        if len(header) < 28:
+            return None
+        try:
+            wal = os.stat(f"{self.db_path}-wal")
+            wal_state = (wal.st_size, wal.st_mtime_ns)
+        except OSError:
+            wal_state = None
+        return (str(self.db_path), stat.st_ino, stat.st_size, stat.st_mtime_ns, header[24:28], wal_state)
 
     @contextmanager
     def write_connection(self) -> Iterator[sqlite3.Connection]:
@@ -557,6 +678,12 @@ class LifeDataService:
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_raw_hash ON mapped_cmms_record(raw_content_hash);
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_import_batch ON mapped_cmms_record(import_batch_id);
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_asset_number ON mapped_cmms_record(asset_number);
+                -- The asset tree's read and a population's: both name an Asset Number as
+                -- TRIM(asset_number), which the plain index above cannot answer, and the
+                -- tree reads these four columns of every work order, which this index
+                -- holds without touching the (wide) rows.
+                CREATE INDEX IF NOT EXISTS idx_mapped_cmms_asset_tree
+                    ON mapped_cmms_record(TRIM(asset_number), asset_id_raw, asset_name, immediate_parent_asset_id);
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_task_id ON mapped_cmms_record(task_id);
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_record_class_auto ON mapped_cmms_record(record_class_auto);
                 CREATE INDEX IF NOT EXISTS idx_mapped_cmms_record_class_final ON mapped_cmms_record(record_class_final);
@@ -3206,6 +3333,12 @@ class LifeDataService:
         the clock its machines run by -- and default to UTC. Each segment's length is
         taken between UTC instants, so the day the clocks change is the 23 or 25 hours
         it really was rather than a wall-clock 24.
+
+        The days wholly inside the life are summed from running totals of each
+        plant day's real length (``_PlantDays``), so a life of years costs what a
+        life of hours does; only its first and last part-days are measured here.
+        The answer is the day-by-day walk's (``_scheduled_life_hours_by_day``),
+        which is still what runs for a zone whose midnights do not behave.
         """
 
         zone = tz or timezone.utc
@@ -3218,6 +3351,49 @@ class LifeDataService:
         if stop <= current:
             return 0.0, 0.0, 0.0
         hours_per_day = max(0.0, min(24.0, float(hours_per_day)))
+        first_day = current.astimezone(zone).date()
+        last_day = stop.astimezone(zone).date()
+        days = _plant_days(zone)
+        totals = days.full_days(first_day, last_day, current) if days is not None else None
+        if totals is None:
+            return LifeDataService._scheduled_life_hours_by_day(current, stop, hours_per_day, exclude_weekends, zone)
+        weekday_seconds, weekend_seconds, first_midnight, last_midnight = totals
+        if not exclude_weekends:
+            weekday_seconds, weekend_seconds = weekday_seconds + weekend_seconds, 0
+        share = hours_per_day / 24.0
+        scheduled_hours = 0.0
+        excluded_weekend_hours = 0.0
+        excluded_non_run_hours = 0.0
+
+        def add(segment_start: datetime, segment_end: datetime, day: date) -> None:
+            nonlocal scheduled_hours, excluded_weekend_hours, excluded_non_run_hours
+            raw_hours = (segment_end - segment_start).total_seconds() / 3600.0
+            if raw_hours <= 0:
+                return
+            if exclude_weekends and day.weekday() >= 5:
+                excluded_weekend_hours += raw_hours
+            else:
+                segment_scheduled = raw_hours * share
+                scheduled_hours += segment_scheduled
+                excluded_non_run_hours += max(0.0, raw_hours - segment_scheduled)
+
+        if first_day == last_day:
+            add(current, stop, first_day)
+            return scheduled_hours, excluded_weekend_hours, excluded_non_run_hours
+        add(current, first_midnight, first_day)
+        weekday_hours = weekday_seconds / 3600.0
+        scheduled_hours += weekday_hours * share
+        excluded_non_run_hours += max(0.0, weekday_hours - weekday_hours * share)
+        excluded_weekend_hours += weekend_seconds / 3600.0
+        add(last_midnight, stop, last_day)
+        return scheduled_hours, excluded_weekend_hours, excluded_non_run_hours
+
+    @staticmethod
+    def _scheduled_life_hours_by_day(
+        current: datetime, stop: datetime, hours_per_day: float, exclude_weekends: bool, zone: tzinfo
+    ) -> tuple[float, float, float]:
+        """``_scheduled_life_hours`` one plant day at a time, between two UTC instants."""
+
         scheduled_hours = 0.0
         excluded_weekend_hours = 0.0
         excluded_non_run_hours = 0.0
@@ -3305,6 +3481,19 @@ class LifeDataService:
         """
 
         text = str(value).strip() if value is not None else ""
+        # The two shapes nearly every stored date has, read without trying each
+        # format in turn (a failed strptime costs as much as a parse): a value with
+        # a time cannot be a date-only one, and an ISO date reads directly. An
+        # empty one (a work order never started) is no date at all.
+        if not text:
+            return None
+        if ":" in text:
+            return self._parse_datetime(value)
+        if len(text) == 10 and text[4] == "-" and text[7] == "-":
+            try:
+                return self._plant_midnight(date.fromisoformat(text), zone)
+            except ValueError:
+                pass
         for fmt in DATE_ONLY_FORMATS:
             try:
                 day = datetime.strptime(text, fmt).date()
