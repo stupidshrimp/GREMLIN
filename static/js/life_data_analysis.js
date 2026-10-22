@@ -400,17 +400,76 @@
   }
 
   // ---- loading + banner -----------------------------------------------------
-  let loadingDepth = 0;
-  function beginLoading(message) {
-    loadingDepth += 1;
-    $("lda-loading-text").textContent = message || "Working…";
-    $("lda-loading").hidden = false;
+  // The veil over the page, a part of the page being read again, placeholders and
+  // entrances: the Disposition page's too (standard_common.js).
+  const { beginLoading, endLoading, busy, reveal, skeleton } = window.GremlinStandard;
+  const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  // What an asset shows while its first reads are on their way: placeholders in
+  // the selector, the readiness counts, the rankings, the Pareto and each view's
+  // cards, rather than an empty card.
+  function showLoadingSkeletons() {
+    const selector = $("lda-population-selector");
+    selector.innerHTML = "";
+    shownDimensions().forEach(() => {
+      selector.appendChild(el("div", { class: "lda-field" }, [...skeleton("lda-skeleton-label"), ...skeleton("lda-skeleton-list")]));
+    });
+    $("lda-drill").innerHTML = "";
+    const grid = $("lda-summary-grid");
+    grid.innerHTML = "";
+    grid.classList.remove("lda-reveal-stagger");
+    skeleton("lda-skeleton-metric", READINESS_FIELDS.length).forEach((node) => grid.appendChild(node));
+    ["lda-beta-rankings", "lda-risk-rankings"].forEach((id) => {
+      const list = $(id);
+      list.innerHTML = "";
+      ["", "is-short", ""].forEach((width) => list.appendChild(el("li", { class: "lda-skeleton-row" }, skeleton(`lda-skeleton-line ${width}`))));
+    });
+    [["lda-trend-cards", 4], ["lda-pm-cards", 4], ["lda-downtime-cards", 5], ["lda-repeat-cards", 4]].forEach(([id, count]) => {
+      const cards = $(id);
+      cards.innerHTML = "";
+      skeleton("lda-skeleton-metric", count).forEach((node) => cards.appendChild(node));
+    });
+    $("lda-matrix-wrap").innerHTML = "";
+    showParetoSkeleton(true);
   }
-  function endLoading() {
-    loadingDepth = Math.max(0, loadingDepth - 1);
-    if (loadingDepth === 0) {
-      $("lda-loading").hidden = true;
+
+  function showParetoSkeleton(shown) {
+    setHidden($("lda-pareto-skeleton"), !shown);
+    setHidden($("lda-pareto-chart"), shown);
+    if (shown) {
+      // The title the bars on their way will have.
+      const group = $("lda-pareto-group");
+      const by = group.selectedIndex >= 0 ? group.options[group.selectedIndex].text.toLowerCase() : "sub-asset";
+      $("lda-pareto-title").textContent = isWeibull() ? "Failures by sub-asset, component and mechanism" : `Pareto by ${by}`;
+      $("lda-pareto-legend").innerHTML = "";
+      setHidden($("lda-pareto-empty"), true);
+      setHidden($("lda-pareto-not-coded"), true);
     }
+  }
+
+  // A view's own read (PM effectiveness, downtime, repeat fixes): its panels dim
+  // while it runs, and its cards hold placeholders until its first result is in.
+  function viewLoading(panelIds, cardsId, cardCount, message, hasResult) {
+    if (!hasResult) {
+      const cards = $(cardsId);
+      cards.innerHTML = "";
+      skeleton("lda-skeleton-metric", cardCount).forEach((node) => cards.appendChild(node));
+    }
+    const ends = panelIds.map((id, index) => busy($(id), index === 0 ? message : null));
+    return () => ends.forEach((end) => end());
+  }
+
+  // The fit saved for a population is looked up whenever it changes: a
+  // placeholder result card holds its place meanwhile.
+  function showFitSkeleton(message) {
+    const workspace = $("lda-workspace");
+    workspace.innerHTML = "";
+    workspace.appendChild(el("section", { class: "glass-card lda-card lda-skeleton-card lda-reveal", id: "lda-fit-loading", "aria-busy": "true" }, [
+      el("p", { class: "lda-hint lda-skeleton-caption" }, [el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }), message]),
+      ...skeleton("lda-skeleton-line is-short"),
+      ...skeleton("lda-skeleton-line"),
+      el("div", { class: "lda-skeleton-pair" }, skeleton("lda-skeleton-block", 2)),
+    ]));
   }
 
   function showBanner(message, kind) {
@@ -513,7 +572,9 @@
     clearWorkspace();
     $("lda-population-card").hidden = !asset;
     $("lda-summary-card").hidden = !asset;
+    state.renderedReadiness = null;
     if (!asset) return;
+    showLoadingSkeletons();
     const link = $("lda-disposition-link");
     if (link) link.href = `/life-data-analysis/disposition?asset=${encodeURIComponent(asset)}`;
     await loadOptions();
@@ -550,13 +611,17 @@
   async function loadOptions() {
     if (!state.asset) return;
     const token = ++state.optionsToken;
+    const end = busy($("lda-population-card"), `Loading ${state.asset}'s sub-assets and codes…`);
     try {
       const data = await getJson(`${API}/population-options?asset=${encodeURIComponent(state.asset)}`);
       if (token !== state.optionsToken) return;
       state.options = data;
       renderSelector();
+      reveal($("lda-population-selector"));
     } catch (err) {
       showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -736,6 +801,7 @@
     const asset = state.asset;
     const token = ++state.summaryToken;
     const riskToken = ++state.riskToken;
+    const end = busy($("lda-summary-card"), isWeibull() ? "Counting the population's failures…" : "Reading the population…");
     try {
       const data = await postJson(
         `${API}/summary`,
@@ -749,6 +815,8 @@
       if (riskToken === state.riskToken) renderRiskRankings(data.risk_rankings || []);
     } catch (err) {
       if (token === state.summaryToken) showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -764,16 +832,24 @@
     const summary = state.summary;
     if (!summary) return;
     $("lda-pop-string").textContent = summary.population_definition;
+    // The counts rise in the first time an asset's are shown; after that a count
+    // that changed flashes once.
     const grid = $("lda-summary-grid");
+    const previous = state.renderedReadiness;
+    const values = Object.fromEntries(READINESS_FIELDS.map(([key]) => [key, String((summary.readiness || {})[key] ?? "—")]));
     grid.innerHTML = "";
+    grid.classList.toggle("lda-reveal-stagger", !previous);
     READINESS_FIELDS.forEach(([key, label]) => {
-      grid.appendChild(el("div", { class: "lda-metric" }, [
-        el("span", { class: "lda-metric-value", text: String((summary.readiness || {})[key] ?? "—") }),
+      const changed = Boolean(previous) && previous[key] !== values[key];
+      grid.appendChild(el("div", { class: "lda-metric" + (changed ? " is-changed" : "") }, [
+        el("span", { class: "lda-metric-value", text: values[key] }),
         el("span", { class: "lda-metric-label", text: label }),
       ]));
     });
+    state.renderedReadiness = values;
     renderRankings(summary.rankings || []);
-    drawPareto();
+    showParetoSkeleton(false);
+    animatePareto();
     renderMatrix();
     if (state.analysisType === ANALYSIS_TYPES.TRIAGE) renderTrend();
     renderPerformHint();
@@ -814,11 +890,18 @@
     ]);
   }
 
+  // A ranking list rises in again when what it says has changed.
+  function revealIfChanged(list, before) {
+    if (list.textContent !== before) reveal(list);
+  }
+
   function renderRankings(rankings) {
     const list = $("lda-beta-rankings");
+    const before = list.textContent;
     list.innerHTML = "";
     if (!rankings.length) {
       list.appendChild(el("li", { class: "is-empty", text: "No saved one-component Weibull fit on this asset has enough failures to rank yet." }));
+      revealIfChanged(list, before);
       return;
     }
     rankings.forEach((row) => {
@@ -828,10 +911,12 @@
           ? `, plot R² ${Number(row.probability_plot_r_squared).toFixed(2)}${row.probability_plot_review ? ", below its review threshold" : ""}`
           : "") + ")"));
     });
+    revealIfChanged(list, before);
   }
 
   function renderRiskRankings(rankings) {
     const list = $("lda-risk-rankings");
+    const before = list.textContent;
     list.innerHTML = "";
     if (!rankings.length) {
       const ranked = state.summary && (state.summary.rankings || []).length;
@@ -841,6 +926,7 @@
           ? "None of the ranked fits had an item still in service at its run's cutoff: each ended in a failure that did not renew the item."
           : "No saved one-component Weibull fit on this asset has enough failures to rank yet.",
       }));
+      revealIfChanged(list, before);
       return;
     }
     rankings.forEach((row) => {
@@ -851,6 +937,7 @@
         `(${row.items_in_service} item${row.items_in_service === 1 ? "" : "s"} in service, oldest ${fmt(row.current_life_hours)} h, ` +
         `beta ${fmt(row.beta_mle)}${asOf ? `, as of ${asOf}` : ""})`));
     });
+    revealIfChanged(list, before);
   }
 
   function riskWeekValue(box) {
@@ -873,11 +960,14 @@
     }
     if (!state.asset) return;
     const token = ++state.riskToken;
+    const end = busy($("lda-risk-panel"), "Ranking the saved fits…");
     try {
       const data = await postJson(`${API}/risk-rankings`, populationBody({ weeks: riskWeeks() }));
       if (token === state.riskToken) renderRiskRankings(data.rankings || []);
     } catch (err) {
       if (token === state.riskToken) showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -966,7 +1056,26 @@
     drillInto({ [pareto.selection_key]: row.key }, pareto.next_group_by);
   }
 
-  function drawPareto() {
+  // New bars grow up from the axis, and the cumulative line with them.
+  const PARETO_GROW_MS = 480;
+  let paretoFrame = null;
+  function animatePareto() {
+    cancelAnimationFrame(paretoFrame);
+    if (REDUCED_MOTION.matches) {
+      drawPareto();
+      return;
+    }
+    const started = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - started) / PARETO_GROW_MS);
+      drawPareto(1 - (1 - t) ** 3);
+      if (t < 1) paretoFrame = requestAnimationFrame(step);
+    };
+    paretoFrame = requestAnimationFrame(step);
+  }
+
+  // ``grown`` is how far the bars have risen, 0 to 1, while they animate in.
+  function drawPareto(grown = 1) {
     const canvas = $("lda-pareto-chart");
     const pareto = state.summary && state.summary.pareto;
     // The Weibull's bars are populations to fit: failures, by sub-asset, component and mechanism.
@@ -1065,7 +1174,7 @@
       // Each cause's share of the bar, stacked from the axis up.
       row.causes.forEach((cause) => {
         const part = metric === "count" ? Number(cause.count) : Number(cause.downtime_hours);
-        const height = (part / maxVal) * plotH;
+        const height = (part / maxVal) * plotH * grown;
         ctx.fillStyle = (colours.find((item) => item.key === cause.key) || { colour: C.bar }).colour;
         ctx.fillRect(x, y - height, barW, height);
         y -= height;
@@ -1080,10 +1189,12 @@
       ctx.fillText(name.length > nameLength ? `${name.slice(0, nameLength - 1)}…` : name, 0, 0);
       ctx.restore();
       if (value > 0) {
+        ctx.save();
+        ctx.globalAlpha = grown;
         ctx.fillStyle = C.ink;
         ctx.textAlign = "center";
-        ctx.fillText(tickLabel(value), x + barW / 2, bottom - (value / maxVal) * plotH - 4);
-        ctx.textAlign = "left";
+        ctx.fillText(tickLabel(value), x + barW / 2, bottom - (value / maxVal) * plotH * grown - 4);
+        ctx.restore();
       }
     });
 
@@ -1092,7 +1203,7 @@
     ctx.beginPath();
     rows.forEach((row, index) => {
       const x = left + index * slot + slot / 2;
-      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH;
+      const y = bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH * grown;
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -1100,7 +1211,7 @@
     ctx.fillStyle = C.highlight;
     rows.forEach((row, index) => {
       ctx.beginPath();
-      ctx.arc(left + index * slot + slot / 2, bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH, 3, 0, Math.PI * 2);
+      ctx.arc(left + index * slot + slot / 2, bottom - ((Number(row._cumulative_percent) || 0) / 100) * plotH * grown, 3, 0, Math.PI * 2);
       ctx.fill();
     });
     ctx.fillStyle = C.label;
@@ -1211,6 +1322,9 @@
     if (viewChanged) {
       resetAnalyses();
       clearWorkspace();
+      // The other view's bars are not this one's: a placeholder until these are in.
+      showParetoSkeleton(true);
+      $("lda-matrix-wrap").innerHTML = "";
       refresh();
       return;
     }
@@ -1278,6 +1392,7 @@
     const trend = state.summary && state.summary.trend;
     if (!trend) return;
     const grid = $("lda-trend-cards");
+    const before = grid.textContent;
     grid.innerHTML = "";
     const summary = trend.summary || {};
     const dimension = trend.label.toLowerCase();
@@ -1305,6 +1420,7 @@
         detailText ? el("span", { class: "lda-metric-label", text: detailText }) : null,
       ]));
     });
+    revealIfChanged(grid, before);
     renderTrendChart();
     renderTrendTable();
     renderTrendRecords();
@@ -1425,13 +1541,18 @@
   // ---- PM effectiveness ---------------------------------------------------------------
   async function loadPm() {
     const token = ++state.pmToken;
+    const end = viewLoading(["lda-pm-summary", "lda-pm-chart-panel", "lda-pm-table-panel"], "lda-pm-cards", 4,
+      "Pairing each PM with the next failure…", Boolean(state.pm));
     try {
       const data = await postJson(`${API}/pm-effectiveness`, populationBody());
       if (token !== state.pmToken) return;
       state.pm = data;
       renderPm();
+      reveal($("lda-pm-cards"));
     } catch (err) {
       if (token === state.pmToken) showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -1529,14 +1650,19 @@
 
   async function loadRepeat() {
     const token = ++state.repeatToken;
+    const end = viewLoading(["lda-repeat-summary", "lda-repeat-rate-panel", "lda-repeat-pairs-panel"], "lda-repeat-cards", 4,
+      "Finding failures that came back…", Boolean(state.repeat));
     try {
       const data = await postJson(`${API}/repeat-fixes`, populationBody({ window_hours: state.repeatWindow }));
       if (token !== state.repeatToken) return;
       state.repeat = data;
       if (state.repeatFilter && !data.groups.some((group) => group.key === state.repeatFilter)) state.repeatFilter = null;
       renderRepeat();
+      reveal($("lda-repeat-cards"));
     } catch (err) {
       if (token === state.repeatToken) showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -1632,13 +1758,20 @@
   // ---- downtime drivers ------------------------------------------------------------
   async function loadDowntime() {
     const token = ++state.downtimeToken;
+    const end = viewLoading(
+      ["lda-downtime-summary", "lda-downtime-trend-panel", "lda-downtime-dist-panel", "lda-downtime-asset-panel", "lda-downtime-events-panel"],
+      "lda-downtime-cards", 5, "Adding up the downtime…", Boolean(state.downtime),
+    );
     try {
       const data = await postJson(`${API}/downtime-drivers`, populationBody());
       if (token !== state.downtimeToken) return;
       state.downtime = data;
       renderDowntime();
+      reveal($("lda-downtime-cards"));
     } catch (err) {
       if (token === state.downtimeToken) showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 
@@ -1713,6 +1846,8 @@
   async function loadSavedFit() {
     const asset = state.asset;
     const token = ++state.analysisToken;
+    showFitSkeleton("Looking for a saved Weibull fit of this population…");
+    const end = busy(null, "Looking for a saved fit…");
     try {
       const data = await postJson(`${API}/saved-analysis`, populationBody());
       if (token !== state.analysisToken || asset !== state.asset || state.analysisType !== ANALYSIS_TYPES.WEIBULL) return;
@@ -1731,7 +1866,12 @@
         ]));
       }
     } catch (err) {
-      if (token === state.analysisToken) showBanner(err.message, "error");
+      if (token === state.analysisToken) {
+        clearWorkspace();
+        showBanner(err.message, "error");
+      }
+    } finally {
+      end();
     }
   }
 
@@ -4154,7 +4294,7 @@
       const button = event.target.closest("[data-metric]");
       if (!button || button.dataset.metric === state.metric) return;
       state.metric = button.dataset.metric;
-      drawPareto();
+      animatePareto();
     });
     $("lda-date-from").addEventListener("change", onDateRangeChange);
     $("lda-date-to").addEventListener("change", onDateRangeChange);

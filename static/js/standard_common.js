@@ -1,6 +1,6 @@
 /* What Life Data Analysis's two pages share: the DOM and network helpers, the
- * banner, toast and loading veil (styled by life_data_analysis.css), and the
- * Asset Number combobox. Exposed as window.GremlinStandard, loaded before
+ * banner, toast, loading veil and section loading states (styled by
+ * life_data_analysis.css), and the Asset Number combobox. Exposed as window.GremlinStandard, loaded before
  * disposition_form.js and the page's own script (disposition.js or
  * life_data_analysis.js).
  */
@@ -128,15 +128,95 @@
     setTimeout(remove, 5000);
   }
 
+  // The veil over the whole page while something the page waits on runs: a fit,
+  // a save, a list being read. It takes the clicks at once, so nothing is pressed
+  // twice, but only fades in after a moment (the stylesheet's delay), so a quick
+  // request never flashes it; a slow one says how long it has been going.
+  const STILL_WORKING_AFTER_S = 3;
   let loadingDepth = 0;
+  let loadingStarted = 0;
+  let loadingClock = null;
   function beginLoading(message) {
     loadingDepth += 1;
     $("lda-loading-text").textContent = message || "Working…";
-    $("lda-loading").hidden = false;
+    if (loadingDepth > 1) return;
+    loadingStarted = Date.now();
+    const veil = $("lda-loading");
+    veil.hidden = false;
+    veil.setAttribute("aria-busy", "true");
+    showElapsed();
+    clearInterval(loadingClock);
+    loadingClock = setInterval(showElapsed, 1000);
+  }
+  function showElapsed() {
+    const node = $("lda-loading-elapsed");
+    if (!node) return;
+    const seconds = Math.floor((Date.now() - loadingStarted) / 1000);
+    node.textContent = seconds >= STILL_WORKING_AFTER_S ? `Still working · ${seconds} s` : "";
   }
   function endLoading() {
     loadingDepth = Math.max(0, loadingDepth - 1);
-    if (loadingDepth === 0) $("lda-loading").hidden = true;
+    if (loadingDepth) return;
+    clearInterval(loadingClock);
+    const veil = $("lda-loading");
+    veil.hidden = true;
+    veil.removeAttribute("aria-busy");
+  }
+
+  // One part of a page being read again while the rest stays usable: it dims
+  // under a moving bar, after the same moment as the veil, and a status pill at
+  // the foot of the window says what is loading -- the part may be scrolled out of
+  // view. Overlapping reads of one part are counted, so the first to finish never
+  // clears a later one. Returns the function that ends this read.
+  const busyReads = [];
+  function busy(node, message) {
+    const read = { message: message || "Loading…" };
+    busyReads.push(read);
+    showBusyStatus();
+    if (node) {
+      node.gremlinBusy = (node.gremlinBusy || 0) + 1;
+      node.classList.add("is-busy");
+      node.setAttribute("aria-busy", "true");
+    }
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      busyReads.splice(busyReads.indexOf(read), 1);
+      showBusyStatus();
+      if (!node) return;
+      node.gremlinBusy -= 1;
+      if (node.gremlinBusy > 0) return;
+      node.classList.remove("is-busy");
+      node.removeAttribute("aria-busy");
+    };
+  }
+  function showBusyStatus() {
+    let status = $("lda-busy-status");
+    if (!status) {
+      status = el("div", { id: "lda-busy-status", class: "lda-busy-status", role: "status", "aria-live": "polite", hidden: true }, [
+        el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }),
+        el("span", { class: "lda-busy-text" }),
+      ]);
+      document.body.appendChild(status);
+    }
+    const latest = busyReads[busyReads.length - 1];
+    status.hidden = !latest;
+    if (latest) status.querySelector(".lda-busy-text").textContent = latest.message;
+  }
+
+  // Play an element's entrance again after its content changed.
+  function reveal(node, className) {
+    if (!node) return;
+    const name = className || "lda-reveal";
+    node.classList.remove(name);
+    void node.offsetWidth;
+    node.classList.add(name);
+  }
+
+  // Placeholder blocks that shimmer where content is on its way.
+  function skeleton(className, count) {
+    return Array.from({ length: count || 1 }, () => el("div", { class: `lda-skeleton ${className || ""}`.trim(), "aria-hidden": "true" }));
   }
 
   // A stored CMMS date as YYYY-MM-DD, without letting the browser's time zone
@@ -248,6 +328,8 @@
 
     return {
       async load() {
+        // A spinner beside the hint until the list is in.
+        hint.classList.add("is-loading");
         try {
           const data = await getJson(`${API}/assets`);
           assets = data.assets || [];
@@ -258,6 +340,8 @@
         } catch (err) {
           hint.textContent = "";
           showBanner(err.message, "error");
+        } finally {
+          hint.classList.remove("is-loading");
         }
       },
       select(number) {
@@ -285,6 +369,9 @@
     showToast,
     beginLoading,
     endLoading,
+    busy,
+    reveal,
+    skeleton,
     day,
     fmt,
     assetCombobox,
