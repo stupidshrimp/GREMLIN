@@ -14,7 +14,7 @@
   "use strict";
 
   const G = window.GremlinStandard;
-  const { $, el, getJson, postJson, showBanner, clearBanner, showToast, beginLoading, endLoading, day } = G;
+  const { $, el, getJson, postJson, showBanner, clearBanner, showToast, beginLoading, endLoading, busy, skeleton, day } = G;
   const API = G.API;
   const Form = window.GremlinDispositionForm;
 
@@ -241,7 +241,10 @@
 
     const search = el("input", { type: "search", class: "lda-col-menu-search", placeholder: "Search values…", "aria-label": `Search ${name} values` });
     const allBox = el("input", { type: "checkbox", checked: true });
-    const list = el("div", { class: "lda-col-menu-values" }, [el("p", { class: "lda-hint", text: "Loading values…" })]);
+    const list = el("div", { class: "lda-col-menu-values" }, [
+      el("p", { class: "lda-hint lda-skeleton-caption" }, [el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }), "Loading values…"]),
+      ...skeleton("lda-skeleton-line", 4),
+    ]);
     const apply = el("button", { type: "button", class: "btn-primary", text: "Apply", disabled: true });
     const clear = el("button", {
       type: "button",
@@ -495,12 +498,27 @@
 
   async function openCodeLists() {
     openDialog($("disp-code-dialog"));
+    // The lists are read afresh each time the dialog opens: the ones from last
+    // time dim meanwhile, and the first time placeholders hold their place.
+    if (!codeState.lists) {
+      const tabs = $("disp-code-tabs");
+      tabs.innerHTML = "";
+      skeleton("lda-skeleton-tab", CODE_LIST_ORDER.length).forEach((node) => tabs.appendChild(node));
+      const table = $("disp-code-table");
+      table.innerHTML = "";
+      table.appendChild(el("tbody", {}, Array.from({ length: 6 }, () => el("tr", {}, [
+        el("td", { colspan: "6" }, skeleton("lda-skeleton-line")),
+      ]))));
+    }
+    const end = busy($("disp-code-table").parentElement, "Loading the code lists…");
     try {
       const data = await getJson(`${API}/code-lists`);
       codeState.lists = data.code_lists;
       renderCodeLists();
     } catch (err) {
       showBanner(err.message, "error");
+    } finally {
+      end();
     }
   }
 

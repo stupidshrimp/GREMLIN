@@ -177,8 +177,14 @@
 </dialog>
 
 <div id="lda-loading" class="lda-loading" hidden>
-  <div class="lda-spinner" aria-hidden="true"></div>
-  <span id="lda-loading-text">Working…</span>
+  <div class="lda-loading-card" role="status" aria-live="polite">
+    <div class="lda-spinner" aria-hidden="true"></div>
+    <div class="lda-loading-words">
+      <span id="lda-loading-text">Working…</span>
+      <span id="lda-loading-elapsed" class="lda-loading-elapsed"></span>
+    </div>
+    <div class="lda-loading-bar" aria-hidden="true"></div>
+  </div>
 </div>
 
 {% include "page_tour.html" %}
