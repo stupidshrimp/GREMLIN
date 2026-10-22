@@ -24,7 +24,7 @@ import json
 import math
 import sqlite3
 from datetime import date, datetime, timedelta, timezone, tzinfo
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from services import disposition_standard as std
 from services.standard_disposition_schema import AssetTree, load_codebook
@@ -67,6 +67,10 @@ GROUP_BY_SELECTION = {
 }
 # The drill-down a Pareto click steps through (spec section 7.2).
 DRILL_DOWN = ("sub_asset", "component", "failure_mechanism")
+# The Weibull view's Pareto: one bar per population a Weibull is best run on,
+# one sub-asset's one component failing by one mechanism.
+WEIBULL_PARETO = "weibull_population"
+WEIBULL_PARETO_LABEL = "Sub-asset, component and mechanism"
 RECORDS_LIMIT = 500
 NOT_CODED = "Not coded"
 
@@ -109,15 +113,23 @@ def _month_range(keys: Iterable[str]) -> list[str]:
 
 
 def _selection_key(selection: Mapping[str, Any]) -> str:
-    """A population's selection as the Weibull reads it, to match saved runs by.
+    """A saved run's selection, to match runs by.
 
     The categories narrow the pattern views only -- the life engine has its own
     rules for each category -- so two selections that differ only in them are the
-    same Weibull population.
+    same Weibull population. A run saved before the Weibull stopped reading mode,
+    cause and action keeps them in its key, so it never stands for a population
+    picked today (``_life_selection_key``).
     """
 
     canonical = {key: value for key, value in std.Population.from_mapping(selection).to_mapping().items() if key != "categories"}
     return json.dumps(canonical, sort_keys=True)
+
+
+def _life_selection_key(selection: Mapping[str, Any]) -> str:
+    """The page's selection as the Weibull reads it, without the pattern-only narrowing."""
+
+    return _selection_key(std.Population.from_mapping(selection).for_life_analysis().to_mapping())
 
 
 class PopulationAnalysisService:
@@ -420,18 +432,26 @@ class PopulationAnalysisService:
         end: date | None = None,
         group_by: str = "sub_asset",
         weeks: float = 4,
+        weibull: bool = False,
     ) -> dict[str, Any]:
-        """What the page draws for a population before any one analysis is opened."""
+        """What the page draws for a population before any one analysis is opened.
+
+        ``weibull`` is the Weibull view's: the population as the fit reads it
+        (no mode, cause, action or categories), its failures only, and a Pareto
+        bar per sub-asset, component and mechanism whatever ``group_by`` says.
+        """
 
         self._check_dates(start, end)
-        if group_by not in GROUP_BY_DIMENSIONS:
+        if not weibull and group_by not in GROUP_BY_DIMENSIONS:
             raise ValueError(f"Group the Pareto by one of: {', '.join(GROUP_BY_DIMENSIONS)}.")
         population = std.Population.from_mapping(selection)
+        if weibull:
+            population = population.for_life_analysis()
         with self.life.read_transaction() as conn:
             loaded = self._load(conn, population)
             fits = self._ranked_fits(conn, population)
         codebook, records = loaded["codebook"], loaded["records"]
-        selected = self._pattern_records(records, population, start, end)
+        selected = self._pattern_records(records, population, start, end, categories=[std.FAILURE] if weibull else None)
         window_start = start or min((record["event_day"] for record in selected if record["event_day"]), default=None)
         window_end = end or datetime.now(loaded["zone"]).date()
         return {
@@ -441,9 +461,9 @@ class PopulationAnalysisService:
             "readiness": self._readiness(records, population, start, end, codebook),
             "record_count": len(selected),
             "downtime_hours": round(sum(float(record["downtime_hours"] or 0) for record in selected), 4),
-            "pareto": self._pareto(selected, group_by, codebook),
+            "pareto": self._weibull_pareto(selected, codebook) if weibull else self._pareto(selected, group_by, codebook),
             "matrix": self._matrix(selected, codebook),
-            "trend": self._trend(selected, group_by, codebook),
+            "trend": None if weibull else self._trend(selected, group_by, codebook),
             "rankings": self._beta_rankings(fits),
             "risk_rankings": self._risk_rankings(fits, weeks),
             "plant_time_zone": loaded["zone_name"],
@@ -491,16 +511,89 @@ class PopulationAnalysisService:
         """
 
         field, code_list, label = GROUP_BY_DIMENSIONS[group_by]
+        rows, not_coded = self._bars(
+            records,
+            lambda record: self._pattern_value(record, field),
+            lambda record: self._value_label(record, field, code_list, codebook),
+            codebook,
+        )
+        next_level = None
+        if group_by in DRILL_DOWN and DRILL_DOWN.index(group_by) + 1 < len(DRILL_DOWN):
+            next_level = DRILL_DOWN[DRILL_DOWN.index(group_by) + 1]
+        return {
+            "group_by": group_by,
+            "label": label,
+            "selection_key": GROUP_BY_SELECTION.get(group_by),
+            "next_group_by": next_level,
+            "rows": rows,
+            "not_coded": not_coded,
+        }
+
+    def _weibull_pareto(self, records: list[dict[str, Any]], codebook: std.CodeBook) -> dict[str, Any]:
+        """One bar per sub-asset, component and mechanism the population's failures are coded with.
+
+        Each is the population a Weibull is best run on, and carries the selection
+        that runs it. A failure with no component or mechanism makes no bar. When
+        every bar is on the one place -- an asset with no sub-assets, or a
+        population narrowed to one -- the names leave it out and start at the
+        component.
+        """
+
+        def key_of(record: Mapping[str, Any]) -> tuple[str, str, str] | None:
+            component = self._pattern_value(record, "component_code")
+            mechanism = self._pattern_value(record, "failure_mechanism_code")
+            if record["location"] is None or component is None or mechanism is None:
+                return None
+            return (record["location"], component, mechanism)
+
+        places: dict[str, str] = {}
+
+        def label_of(record: Mapping[str, Any]) -> str:
+            location, component, mechanism = key_of(record)
+            places.setdefault(location, record["location_label"])
+            return f"{location} · {component} · {mechanism}"
+
+        rows, not_coded = self._bars(records, key_of, label_of, codebook)
+        one_place = len(places) == 1
+        for row in rows:
+            location, component, mechanism = row["key"]
+            if one_place:
+                row["label"] = f"{component} · {mechanism}"
+            row["key"] = " | ".join(row["key"])
+            row["selection"] = {"locations": [location], "components": [component], "failure_mechanisms": [mechanism]}
+            row["parts"] = [
+                {"label": "Sub-asset", "value": places[location]},
+                {"label": "Component", "value": self._label(codebook, std.COMPONENT, component)},
+                {"label": "Failure mechanism", "value": self._label(codebook, std.FAILURE_MECHANISM, mechanism)},
+            ]
+        return {
+            "group_by": WEIBULL_PARETO,
+            "label": WEIBULL_PARETO_LABEL,
+            "selection_key": None,
+            "next_group_by": None,
+            "rows": rows,
+            "not_coded": not_coded,
+        }
+
+    def _bars(
+        self,
+        records: list[dict[str, Any]],
+        key_of: Callable[[Mapping[str, Any]], Any],
+        label_of: Callable[[Mapping[str, Any]], str],
+        codebook: std.CodeBook,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """The Pareto's bars, biggest first, each split by failure cause, and what made none."""
+
         groups: dict[Any, dict[str, Any]] = {}
         labels: dict[Any, str] = {}
         not_coded = {"count": 0, "downtime_hours": 0.0}
         for record in records:
-            key = self._pattern_value(record, field)
+            key = key_of(record)
             if key is None:
                 not_coded["count"] += 1
                 not_coded["downtime_hours"] += float(record["downtime_hours"] or 0)
                 continue
-            labels.setdefault(key, self._value_label(record, field, code_list, codebook))
+            labels.setdefault(key, label_of(record))
             cause = self._pattern_value(record, "failure_cause_effective")
             downtime = float(record["downtime_hours"] or 0)
             group = groups.setdefault(key, {"count": 0, "downtime_hours": 0.0, "causes": {}})
@@ -528,17 +621,7 @@ class PopulationAnalysisService:
             for key, group in groups.items()
         ]
         rows.sort(key=lambda row: (-row["count"], -row["downtime_hours"], str(row["label"])))
-        next_level = None
-        if group_by in DRILL_DOWN and DRILL_DOWN.index(group_by) + 1 < len(DRILL_DOWN):
-            next_level = DRILL_DOWN[DRILL_DOWN.index(group_by) + 1]
-        return {
-            "group_by": group_by,
-            "label": label,
-            "selection_key": GROUP_BY_SELECTION.get(group_by),
-            "next_group_by": next_level,
-            "rows": rows,
-            "not_coded": {"count": not_coded["count"], "downtime_hours": round(not_coded["downtime_hours"], 4)},
-        }
+        return rows, {"count": not_coded["count"], "downtime_hours": round(not_coded["downtime_hours"], 4)}
 
     def _matrix(self, records: list[dict[str, Any]], codebook: std.CodeBook) -> dict[str, Any]:
         """Event counts by sub-asset (rows) and component (columns)."""
@@ -1280,10 +1363,11 @@ class PopulationAnalysisService:
         """Build a population's lives stream by stream, fit them, and (optionally) save the run.
 
         Reads every FAILURE and PM_RESET in reach; the population's location and
-        component choose the streams that are pooled, and its mode, mechanism, cause
-        and action choose which failures count (``build_renewal_intervals``). When a
-        failure with an unknown mechanism could be the selected one, both readings
-        are fitted. The category filter of the pattern views does not apply here.
+        component choose the streams that are pooled, and its mechanism chooses
+        which failures count (``build_renewal_intervals``). When a failure with an
+        unknown mechanism could be the selected one, both readings are fitted. The
+        pattern views' categories, modes, causes and actions do not apply here: the
+        run is saved without them, and a warning says when any were ticked.
 
         The result carries the fit flattened the way the result view reads it
         (``beta_mle``, ``observations``, ``life_basis`` and the rest) as well as the
@@ -1291,7 +1375,8 @@ class PopulationAnalysisService:
         warnings and the sensitivity fit.
         """
 
-        population = std.Population.from_mapping(selection)
+        asked = std.Population.from_mapping(selection)
+        population = asked.for_life_analysis()
         connection = self.life.write_connection() if save else self.life.read_transaction()
         with connection as conn:
             loaded = self._load(conn, population)
@@ -1339,7 +1424,7 @@ class PopulationAnalysisService:
             definition = std.population_definition(population, window_start, window_end)
             by_id = {record["mapped_record_id"]: record for record in records}
             warnings = std.validity_warnings(
-                main, population, sensitivity=sensitivity, codebook=codebook,
+                main, asked, sensitivity=sensitivity, codebook=codebook,
                 uncoded_count=uncoded, unreviewed_count=unreviewed,
             )
             if loaded["zone_warning"]:
@@ -1521,7 +1606,7 @@ class PopulationAnalysisService:
     def latest_saved(self, selection: Mapping[str, Any]) -> dict[str, Any] | None:
         """The newest saved run of exactly this population, whatever its window."""
 
-        key = _selection_key(selection)
+        key = _life_selection_key(selection)
         with self.life.read_transaction() as conn:
             for row in conn.execute(
                 "SELECT population_weibull_analysis_id, selection_json FROM population_weibull_analysis "
@@ -1650,6 +1735,9 @@ class PopulationAnalysisService:
             if key in seen:
                 continue
             seen.add(key)
+            if std.Population.from_mapping(selection).narrows_patterns_only():
+                # Saved before the Weibull stopped reading mode, cause and action.
+                continue
             if row["beta"] is None or int(row["failure_count"] or 0) < MIN_WEIBULL_FAILURE_LIVES:
                 continue
             if len(selection.get("components") or []) != 1:

@@ -1475,11 +1475,14 @@ SEARCH_ENTRIES = [
         "keywords": ["beta", "eta", "b10", "b50", "mttf", "reliability curve", "distribution"],
     },
     {
-        "label": "Failure Mode Trend Analysis",
-        "url": "/life-data-analysis/perform-analysis?analysis=Failure+Mode+Trend+Analysis",
+        "label": "Triage Analysis",
+        "url": "/life-data-analysis/perform-analysis?analysis=Triage+Analysis",
         "kind": "function",
         "context": "Perform an Analysis",
-        "keywords": ["monthly trend", "fastest growing", "recurring", "failure mode"],
+        "keywords": [
+            "triage", "failure mode trend", "monthly trend", "fastest growing", "recurring", "failure mode",
+            "failure cause", "action",
+        ],
     },
     {
         "label": "Downtime Driver Analysis",
@@ -1641,11 +1644,11 @@ SEARCH_ENTRIES = [
         ],
     },
     {
-        "label": "Failure Mode Trend Analysis method",
+        "label": "Triage Analysis method",
         "url": "/standards-and-documentation/documentation#analysis-trend",
         "kind": "function",
         "context": "Standards and Documentation",
-        "keywords": ["monthly trend", "fastest growing", "most improved", "occurrences"],
+        "keywords": ["triage", "failure mode trend", "monthly trend", "fastest growing", "most improved", "occurrences"],
     },
     {
         "label": "Downtime Driver Analysis method",
@@ -2810,6 +2813,8 @@ def api_summary():
     """Readiness, the Pareto, the matrix, the trend and the rankings for a population.
 
     A read: POST only to carry the population as JSON, as every analysis below does.
+    ``view: "weibull"`` asks for the Weibull view's: the population as the fit reads
+    it, with a Pareto bar per sub-asset, component and mechanism.
     """
 
     payload = _population_payload()
@@ -2820,6 +2825,7 @@ def api_summary():
             end=payload["end"],
             group_by=str(payload.get("group_by") or "sub_asset"),
             weeks=_risk_weeks(payload.get("weeks")),
+            weibull=payload.get("view") == "weibull",
         )
     )
 
