@@ -14,6 +14,7 @@ confirm or change those choices.
 | Code lists, the Disposition page's rows and saves (with the record class), and its Excel workbook | `services/standard_disposition_service.py` (tested in `tests/test_standard_disposition_service.py`, including the spec §8 acceptance cases, and `tests/test_population_analysis_service.py`) |
 | Perform an Analysis: the population, readiness, Pareto, matrix, trend, downtime drivers, PM effectiveness, repeat fixes, the renewal-stream Weibull, saved runs, adjustments, rankings, the numbered report | `services/population_analysis_service.py` (tested in `tests/test_population_analysis_service.py`) |
 | API | `app.py`, `/life-data-analysis/api/...` (tested in `tests/test_standard_disposition_api.py`) |
+| **Developer > Code lists** (administrators): every code list as a workbook to download, edit and upload | `/developer/code-lists` — `templates/developer_code_lists.html`, `static/js/developer_code_lists.js`; `StandardDispositionService.export_code_lists_excel` / `import_code_lists_excel` (tested in `tests/test_code_list_workbook.py`) |
 | **Disposition** (editors) | `/life-data-analysis/disposition` — `templates/disposition.html`, `static/js/disposition.js` |
 | **Perform an Analysis** (any account that may see Life Data Analysis) | `/life-data-analysis/perform-analysis` — `templates/perform_analysis.html`, `static/js/life_data_analysis.js` |
 | The disposition form both pages use | `static/js/disposition_form.js` (the Disposition page's right-hand window, and the editor that opens over Perform an Analysis from any task ID in its tables) |
@@ -93,6 +94,16 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   accepted on re-save only while the record keeps it. A change to a list reaches
   the work order open on the Disposition page at once, and a code added there is
   set on its field, ready to save.
+  Administrators can also keep the lists in Excel, from **Developer > Code
+  lists**: the download is one row per code (retired ones too), with the
+  columns an upload reads highlighted, empty highlighted rows to add codes in,
+  dropdowns for the list, the meaning, yes/no and the default cause, and how many
+  work orders use each code. The upload adds and changes codes through the same
+  checks as the Code lists dialog, all or none (one refused row refuses the
+  upload, naming its row), leaves a row that already reads as its code alone, and
+  never deletes: a code left out of the workbook is kept. An empty sort order puts
+  a new code at the end of its list; an empty `is_active` or `renews_item` keeps
+  what the code had.
   What a code means *to the engine* is an attribute, not its spelling, so the team
   can rename and extend lists freely:
   * `renews_item` on actions (seeded on REPLACE, REPAIR, CLEAN_SERVICE);

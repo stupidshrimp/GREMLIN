@@ -1458,6 +1458,17 @@ SEARCH_ENTRIES = [
         ],
     },
     {
+        "label": "Code lists",
+        "url": "/developer/code-lists",
+        "kind": "page",
+        "context": "Developer",
+        "role": "admin",
+        "keywords": [
+            "codes", "component", "mechanism", "failure mode", "cause", "action", "excel", "workbook",
+            "upload", "download", "disposition", "import", "export",
+        ],
+    },
+    {
         "label": "User activity",
         "url": "/developer/activity",
         "kind": "page",
@@ -3288,6 +3299,16 @@ def developer_bugs():
     )
 
 
+@app.route("/developer/code-lists")
+@dev_page
+def developer_code_lists():
+    return render_template(
+        "developer_code_lists.html",
+        # The upload posts a form, which carries this token.
+        **_dev_page_context("code_lists", csrf_token=csrf_token()),
+    )
+
+
 @app.route("/developer/access")
 @dev_page
 def developer_access():
@@ -3620,6 +3641,63 @@ def api_dev_bug_delete(report_id: int):
     except BugReportStoreError as exc:
         return jsonify({"error": str(exc)}), 503
     return jsonify({"deleted": report_id})
+
+
+@app.route("/developer/api/code-lists/excel")
+@dev_api
+@life_data_api
+def api_dev_code_lists_excel():
+    """Every code list as a workbook to edit offline: one row per code, and rows to add more."""
+
+    # Built in a temp file, served from memory, and the file deleted at once, as
+    # the Disposition workbook is.
+    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="code_lists_")
+    os.close(fd)
+    try:
+        _standard_service().export_code_lists_excel(path)
+        with open(path, "rb") as handle:
+            workbook_bytes = handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return send_file(
+        io.BytesIO(workbook_bytes),
+        as_attachment=True,
+        # Dated, so a copy kept from last month is not mistaken for today's lists.
+        download_name=f"gremlin_code_lists_{date.today().isoformat()}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/developer/api/code-lists/excel", methods=["POST"])
+@dev_api
+@requires_role("admin")
+@requires_csrf
+@life_data_api
+def api_dev_upload_code_lists_excel():
+    """Add and change the codes a filled-in code-list workbook holds: every row, or none if one is refused."""
+
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        raise LifeDataApiError("Choose the .xlsx file downloaded from this page.", status_code=400)
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        upload.save(path)
+        try:
+            outcome = _standard_service().import_code_lists_excel(path, updated_by=_username())
+        except (zipfile.BadZipFile, KeyError, ET.ParseError):
+            raise LifeDataApiError(
+                "That file is not a workbook this page can read. Upload the .xlsx downloaded here."
+            ) from None
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return jsonify(outcome)
 
 
 @app.route("/developer/api/sync")

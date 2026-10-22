@@ -117,6 +117,31 @@ EXCEL_CODE_COLUMNS = {
 }
 
 
+# The workbook the code lists are kept in offline (Developer > Code lists): one
+# row per code. The columns the upload reads come first; how many work orders use
+# a code is there to read, since an upload never deletes and that count is what
+# says a code can be retired or deleted without leaving a disposition unreadable.
+CODE_EXCEL_SHEET_NAME = "Code lists"
+CODE_EXCEL_EDITABLE_COLUMNS = (
+    "code_list",
+    "code",
+    "name",
+    "description",
+    "iso_ref",
+    "default_cause_code",
+    "renews_item",
+    "semantic",
+    "sort_order",
+    "is_active",
+)
+CODE_EXCEL_COLUMNS = CODE_EXCEL_EDITABLE_COLUMNS + ("work_orders_using",)
+# Empty rows drawn under the codes, highlighted like the rest, for adding new ones.
+CODE_EXCEL_BLANK_ROWS = 25
+# What a code holds besides its list and its string: what an upload compares to
+# tell a changed code from one it left as it was.
+_CODE_FIELDS = ("name", "description", "iso_ref", "default_cause_code", "renews_item", "semantic", "sort_order", "is_active")
+
+
 def _clean(value: Any) -> str | None:
     if value is None:
         return None
@@ -275,13 +300,13 @@ class StandardDispositionService:
             conn.execute("DELETE FROM disposition_code WHERE code_list = ? AND code = ?", (code_list, code))
         return self.code_lists()
 
-    def save_code(self, values: Mapping[str, Any], *, updated_by: str | None = None) -> dict[str, Any]:
-        """Add a code to a list, or change one already there, and return every list.
+    @staticmethod
+    def _code_fields(values: Mapping[str, Any]) -> dict[str, Any]:
+        """One code's fields, checked and cleaned: everything but whether its default cause exists.
 
-        A code's string is its key -- dispositions and saved populations store it --
-        so an existing code keeps it; everything else about it can change. A code
-        is retired (``is_active`` false) rather than deleted, so the dispositions
-        that use it still read.
+        Raises ValueError, in words for whoever typed the value. The Code lists
+        dialog and the code-list workbook both come through here, so a code
+        either can save, the other can too.
         """
 
         code_list = (_clean(values.get("code_list")) or "").upper()
@@ -302,7 +327,6 @@ class StandardDispositionService:
                 allowed = ", ".join(std.CODE_LIST_SEMANTICS[code_list]) or "none"
                 raise ValueError(f"A {std.CODE_LIST_LABELS[code_list].lower()} code can mean: {allowed}.")
         default_cause = _clean(values.get("default_cause_code"))
-        renews_item = bool(values.get("renews_item")) if code_list == std.ACTION else False
         if code_list != std.FAILURE_MECHANISM:
             default_cause = None
         try:
@@ -310,50 +334,348 @@ class StandardDispositionService:
         except (TypeError, ValueError):
             raise ValueError("Sort order must be a whole number.") from None
         is_active = values.get("is_active")
-        is_active = True if is_active is None else bool(is_active)
+        return {
+            "code_list": code_list,
+            "code": code,
+            "name": name,
+            "description": std.clean_text(values.get("description")),
+            "iso_ref": std.clean_text(values.get("iso_ref")),
+            "default_cause_code": default_cause,
+            "renews_item": bool(values.get("renews_item")) if code_list == std.ACTION else False,
+            "semantic": semantic,
+            "sort_order": sort_order,
+            "is_active": True if is_active is None else bool(is_active),
+        }
+
+    @staticmethod
+    def _write_code(conn: sqlite3.Connection, fields: Mapping[str, Any], updated_by: str | None) -> None:
+        """Add a checked code to its list, or change the one already there."""
+
+        existing = conn.execute(
+            "SELECT disposition_code_id FROM disposition_code WHERE code_list = ? AND code = ?",
+            (fields["code_list"], fields["code"]),
+        ).fetchone()
+        values = (
+            fields["name"],
+            fields["description"],
+            fields["iso_ref"],
+            fields["default_cause_code"],
+            int(fields["renews_item"]),
+            fields["semantic"],
+            fields["sort_order"],
+            int(fields["is_active"]),
+            updated_by,
+        )
+        if existing:
+            conn.execute(
+                """
+                UPDATE disposition_code
+                SET name = ?, description = ?, iso_ref = ?, default_cause_code = ?, renews_item = ?, semantic = ?,
+                    sort_order = ?, is_active = ?, updated_by = ?, updated_at = datetime('now')
+                WHERE disposition_code_id = ?
+                """,
+                (*values, int(existing[0])),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO disposition_code(name, description, iso_ref, default_cause_code, renews_item, semantic,
+                    sort_order, is_active, updated_by, code_list, code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*values, fields["code_list"], fields["code"]),
+            )
+
+    def save_code(self, values: Mapping[str, Any], *, updated_by: str | None = None) -> dict[str, Any]:
+        """Add a code to a list, or change one already there, and return every list.
+
+        A code's string is its key -- dispositions and saved populations store it --
+        so an existing code keeps it; everything else about it can change. A code
+        is retired (``is_active`` false) rather than deleted, so the dispositions
+        that use it still read.
+        """
+
+        fields = self._code_fields(values)
         with self.life.write_connection() as conn:
+            default_cause = fields["default_cause_code"]
             if default_cause is not None:
                 cause = conn.execute(
-                    "SELECT is_active FROM disposition_code WHERE code_list = ? AND code = ?",
+                    "SELECT 1 FROM disposition_code WHERE code_list = ? AND code = ?",
                     (std.FAILURE_CAUSE, default_cause),
                 ).fetchone()
                 if cause is None:
                     raise ValueError(f"Default cause {default_cause!r} is not in the failure cause list.")
-            existing = conn.execute(
-                "SELECT disposition_code_id FROM disposition_code WHERE code_list = ? AND code = ?",
-                (code_list, code),
-            ).fetchone()
-            fields = (
-                name,
-                std.clean_text(values.get("description")),
-                std.clean_text(values.get("iso_ref")),
-                default_cause,
-                int(renews_item),
-                semantic,
-                sort_order,
-                int(is_active),
-                updated_by,
-            )
-            if existing:
-                conn.execute(
-                    """
-                    UPDATE disposition_code
-                    SET name = ?, description = ?, iso_ref = ?, default_cause_code = ?, renews_item = ?, semantic = ?,
-                        sort_order = ?, is_active = ?, updated_by = ?, updated_at = datetime('now')
-                    WHERE disposition_code_id = ?
-                    """,
-                    (*fields, int(existing[0])),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO disposition_code(name, description, iso_ref, default_cause_code, renews_item, semantic,
-                        sort_order, is_active, updated_by, code_list, code)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (*fields, code_list, code),
-                )
+            self._write_code(conn, fields, updated_by)
         return self.code_lists()
+
+    def _code_use_counts(self, conn: sqlite3.Connection) -> dict[tuple[str, str], int]:
+        """How many work orders' current dispositions use each code, counted as ``code_uses`` counts one."""
+
+        counts: dict[tuple[str, str], int] = {}
+        for code_list, column in self._CODE_COLUMNS.items():
+            for code, count in conn.execute(
+                f"SELECT {column}, COUNT(*) FROM wo_disposition WHERE is_current = 1 AND {column} IS NOT NULL GROUP BY {column}"
+            ):
+                counts[(code_list, code)] = int(count)
+        # A component renewed alongside another is used by that work order too.
+        for component, text in conn.execute(
+            "SELECT component_code, renewed_items_json FROM wo_disposition WHERE is_current = 1 AND renewed_items_json LIKE '%\"%'"
+        ):
+            for code in set(renewed_items_from_json(text)) - {component}:
+                counts[(std.COMPONENT, code)] = counts.get((std.COMPONENT, code), 0) + 1
+        return counts
+
+    def export_code_lists_excel(self, output_path: str | Path) -> int:
+        """Write every code list, retired codes too, to a workbook to edit offline, and return how many codes.
+
+        One row per code, list by list in the order the dropdowns show them. The
+        columns an upload reads are highlighted, and so are empty rows under the
+        codes, where new ones are typed; the list, meaning, yes/no and default
+        cause columns have dropdowns. The default cause's dropdown suggests
+        rather than insists, so a mechanism can name a cause added further down
+        the same sheet.
+        """
+
+        from services.life_data_service import COLUMN_TYPE_BOOLEAN, COLUMN_TYPE_NUMBER, COLUMN_TYPE_TEXT, ExcelValidation
+
+        codebook = self.codebook()
+        with self.life.connect() as conn:
+            uses = self._code_use_counts(conn)
+        sheet_rows: list[list[Any]] = [list(CODE_EXCEL_COLUMNS)]
+        for code_list in std.CODE_LISTS:
+            for entry in codebook.entries(code_list, include_inactive=True):
+                values = {**self._entry_dict(entry), "code_list": code_list, "work_orders_using": uses.get((code_list, entry.code), 0)}
+                # Only an action renews items; on any other list the column is left empty rather than FALSE.
+                if code_list != std.ACTION:
+                    values["renews_item"] = None
+                sheet_rows.append([values[column] for column in CODE_EXCEL_COLUMNS])
+        written = len(sheet_rows) - 1
+        sheet_rows.extend([None] * len(CODE_EXCEL_COLUMNS) for _ in range(CODE_EXCEL_BLANK_ROWS))
+
+        semantics = list(dict.fromkeys(semantic for code_list in std.CODE_LISTS for semantic in std.CODE_LIST_SEMANTICS[code_list]))
+        causes = codebook.entries(std.FAILURE_CAUSE, include_inactive=True)
+        lists: list[tuple[str, list[str], list[str]]] = [
+            ("code_list", list(std.CODE_LISTS), [std.CODE_LIST_LABELS[code_list] for code_list in std.CODE_LISTS]),
+            ("semantic", semantics, [std.SEMANTIC_LABELS[semantic] for semantic in semantics]),
+            ("default_cause_code", [entry.code for entry in causes], [entry.name for entry in causes]),
+            ("yes_no", ["TRUE", "FALSE"], ["Yes", "No"]),
+        ]
+        depth = max(len(codes) for _, codes, _ in lists)
+        lookup_rows: list[list[Any]] = [[header for column, _, _ in lists for header in (column, f"{column} name")]]
+        for index in range(depth):
+            lookup_rows.append([
+                value
+                for _, codes, names in lists
+                for value in ((codes[index], names[index]) if index < len(codes) else ("", ""))
+            ])
+
+        def source(position: int, codes: list[str]) -> str:
+            letter = self.life._xlsx_column_name(position * 2 + 1)
+            return f"'Lookup Lists'!${letter}$2:${letter}${max(len(codes), 1) + 1}"
+
+        validations = [
+            ExcelValidation(
+                column_name="code_list", validation_type="list", formula1=source(0, lists[0][1]),
+                error=f"Choose the code's list: {', '.join(std.CODE_LISTS)}.",
+            ),
+            ExcelValidation(
+                column_name="code", validation_type="textLength", operator="lessThanOrEqual", formula1="32",
+                error="A code is 1-32 letters, digits, '-', '_' or '.', starting with a letter or digit.",
+            ),
+            ExcelValidation(
+                column_name="semantic", validation_type="list", formula1=source(1, lists[1][1]),
+                error="Choose what the code means to the engine from the list, or leave it blank.",
+            ),
+            ExcelValidation(
+                column_name="default_cause_code", validation_type="list", formula1=source(2, lists[2][1]),
+                show_error=False,
+            ),
+            ExcelValidation(
+                column_name="sort_order", validation_type="whole", operator="greaterThanOrEqual", formula1="0",
+                error="Sort order is a whole number; the dropdowns list a code list from the lowest up.",
+            ),
+        ]
+        for column in ("renews_item", "is_active"):
+            validations.append(ExcelValidation(
+                column_name=column, validation_type="list", formula1=source(3, lists[3][1]),
+                error="Choose TRUE or FALSE.",
+            ))
+        column_types = {column: COLUMN_TYPE_TEXT for column in CODE_EXCEL_COLUMNS}
+        column_types.update({
+            "renews_item": COLUMN_TYPE_BOOLEAN,
+            "is_active": COLUMN_TYPE_BOOLEAN,
+            "sort_order": COLUMN_TYPE_NUMBER,
+            "work_orders_using": COLUMN_TYPE_NUMBER,
+        })
+        self.life._write_xlsx(
+            output_path,
+            sheet_rows,
+            CODE_EXCEL_SHEET_NAME,
+            validations=validations,
+            lookup_rows=lookup_rows,
+            column_types=column_types,
+            editable_columns=frozenset(CODE_EXCEL_EDITABLE_COLUMNS),
+        )
+        return written
+
+    @staticmethod
+    def _excel_flag(value: Any) -> bool | None:
+        """A yes/no cell: None when empty, and ValueError when it is neither."""
+
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("true", "yes", "y", "1", "1.0"):
+            return True
+        if text in ("false", "no", "n", "0", "0.0"):
+            return False
+        raise ValueError(f"{value!r} is not TRUE or FALSE.")
+
+    def import_code_lists_excel(self, input_path: str | Path, *, updated_by: str | None = None) -> dict[str, Any]:
+        """Add and change codes from a filled-in code-list workbook, all or none.
+
+        Each row is one code, found by its list and its code. A row that reads as
+        the code already does is left alone; every other row adds a code or
+        changes one through the Code lists dialog's own checks, and one refused
+        row refuses the upload, named by its sheet row. A code's string is its
+        key, so retyping one adds a new code rather than renaming the old.
+
+        Codes the workbook leaves out are kept: an upload adds and changes, and
+        never deletes, so a sheet trimmed to the few codes being worked on cannot
+        take the rest with it. A code is retired with is_active FALSE.
+        """
+
+        rows = self.life._read_xlsx(input_path)
+        if not rows:
+            raise ValueError("The workbook is empty. Download the code lists and fill that in.")
+        headers = [str(value).strip().lower() if value is not None else "" for value in rows[0]]
+        missing = [column for column in ("code_list", "code", "name") if column not in headers]
+        if missing:
+            raise ValueError(
+                f"The workbook needs the {', '.join(missing)} column{'s' if len(missing) != 1 else ''} "
+                "from the downloaded code lists."
+            )
+        present = [column for column in CODE_EXCEL_EDITABLE_COLUMNS if column in headers and column not in ("code_list", "code")]
+
+        def list_key(text: str) -> str:
+            return re.sub(r"[\s_-]+", " ", text).strip().lower()
+
+        # The key or the label, in any case: FAILURE_MECHANISM and "Failure mechanism" are the same list.
+        lists_by_key = {list_key(code_list): code_list for code_list in std.CODE_LISTS}
+        codebook = self.codebook()
+        existing = {
+            (entry.code_list, entry.code): entry
+            for code_list in std.CODE_LISTS
+            for entry in codebook.entries(code_list, include_inactive=True)
+        }
+        spelled = {(code_list, code.casefold()): code for code_list, code in existing}
+        seen: dict[tuple[str, str], int] = {}
+        uploaded: list[tuple[str, dict[str, Any], bool]] = []
+        for row_number, values in enumerate(rows[1:], start=2):
+            data = {header: values[index] if index < len(values) else None for index, header in enumerate(headers) if header}
+            cells = {column: self._excel_cell(data.get(column)) for column in ("code_list", "code", *present)}
+            if not any(cells.values()):
+                continue
+            list_text, code = cells["code_list"], cells["code"]
+            if list_text is None or code is None:
+                raise ValueError(f"Row {row_number}: give the code's list and the code itself. Nothing was saved.")
+            code_list = lists_by_key.get(list_key(list_text))
+            if code_list is None:
+                raise ValueError(
+                    f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}. "
+                    "Nothing was saved."
+                )
+            label = std.CODE_LIST_LABELS[code_list]
+            where = f"Row {row_number} ({label} {code})"
+            folded = (code_list, code.casefold())
+            if folded in seen:
+                raise ValueError(f"{where}: the code is in the workbook twice, also on row {seen[folded]}. Nothing was saved.")
+            seen[folded] = row_number
+            stored = spelled.get(folded)
+            if stored is not None and stored != code:
+                raise ValueError(
+                    f"{where}: the {label.lower()} list already has {stored}, which differs only in capitals. "
+                    f"Write it as {stored} to change that code; a code's spelling is its key. Nothing was saved."
+                )
+            before = existing.get((code_list, code))
+            item: dict[str, Any] = (
+                self._entry_dict(before) if before is not None else {
+                    "description": None, "iso_ref": None, "default_cause_code": None, "renews_item": False,
+                    "semantic": None, "sort_order": None, "is_active": True,
+                }
+            )
+            item.update({"code_list": code_list, "code": code})
+            for column in present:
+                if column in ("renews_item", "is_active"):
+                    try:
+                        flag = self._excel_flag(data.get(column))
+                    except ValueError as exc:
+                        raise ValueError(f"{where}: {column} {exc} Nothing was saved.") from None
+                    # Empty keeps what the code had: a new code is active and renews nothing.
+                    if flag is not None:
+                        item[column] = flag
+                elif column == "sort_order":
+                    if cells[column] is not None:
+                        item[column] = cells[column]
+                else:
+                    item[column] = cells[column]
+            unordered = item["sort_order"] is None
+            try:
+                fields = self._code_fields(item)
+            except ValueError as exc:
+                raise ValueError(f"{where}: {exc} Nothing was saved.") from None
+            uploaded.append((where, fields, unordered))
+        if not uploaded:
+            raise ValueError("The workbook has no codes in it. Download the code lists and fill that in.")
+
+        causes = {code for code_list, code in existing if code_list == std.FAILURE_CAUSE}
+        causes.update(fields["code"] for _, fields, _ in uploaded if fields["code_list"] == std.FAILURE_CAUSE)
+        for where, fields, _ in uploaded:
+            cause = fields["default_cause_code"]
+            if cause is not None and cause not in causes:
+                raise ValueError(f"{where}: default cause {cause!r} is not in the failure cause list. Nothing was saved.")
+        # A new code given no sort order goes to the end of its list, in the sheet's order.
+        last = {code_list: 0 for code_list in std.CODE_LISTS}
+        for (code_list, _), entry in existing.items():
+            last[code_list] = max(last[code_list], entry.sort_order)
+        for _, fields, unordered in uploaded:
+            if not unordered:
+                last[fields["code_list"]] = max(last[fields["code_list"]], fields["sort_order"])
+        for _, fields, unordered in uploaded:
+            if unordered:
+                last[fields["code_list"]] += 10
+                fields["sort_order"] = last[fields["code_list"]]
+
+        added: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        for _, fields, _ in uploaded:
+            before = existing.get((fields["code_list"], fields["code"]))
+            summary = {
+                "code_list": fields["code_list"],
+                "list_label": std.CODE_LIST_LABELS[fields["code_list"]],
+                "code": fields["code"],
+                "name": fields["name"],
+            }
+            if before is None:
+                added.append(summary)
+            elif any(fields[key] != self._entry_dict(before)[key] for key in _CODE_FIELDS):
+                updated.append(summary)
+        if added or updated:
+            changed = {(item["code_list"], item["code"]) for item in (*added, *updated)}
+            with self.life.write_connection() as conn:
+                for _, fields, _ in uploaded:
+                    if (fields["code_list"], fields["code"]) in changed:
+                        self._write_code(conn, fields, updated_by)
+        matched = sum(1 for _, fields, _ in uploaded if (fields["code_list"], fields["code"]) in existing)
+        return {
+            "added": added,
+            "updated": updated,
+            "unchanged": matched - len(updated),
+            "not_in_workbook": len(existing) - matched,
+            "code_lists": self.code_lists(),
+        }
 
     # ------------------------------------------------------------------ #
     # Disposition editor

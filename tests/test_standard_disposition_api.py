@@ -278,3 +278,85 @@ def test_one_disposition_page_and_one_analysis_page(monkeypatch, tmp_path):
     for retired in ("/life-data-analysis/population-analysis", "/life-data-analysis/disposition/standard"):
         assert editor.get(retired).status_code == 404, retired
     assert editor.get(f"{API}/standard/code-lists").status_code == 404
+
+
+def test_the_code_lists_workbook_is_an_administrators(monkeypatch, tmp_path):
+    import io
+
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    excel = "/developer/api/code-lists/excel"
+    # The page and both halves of the workbook are kept to administrators: an
+    # editor has the one-code-at-a-time dialog, but not the bulk upload.
+    editor = _client(module, role="editor")
+    assert editor.get("/developer/code-lists").status_code == 403
+    assert editor.get(excel).status_code == 403
+    with editor.session_transaction() as session:
+        session["csrf_token"] = "form-token"
+    refused = editor.post(
+        excel,
+        data={"file": (io.BytesIO(b"x"), "code_lists.xlsx"), "csrf_token": "form-token"},
+        content_type="multipart/form-data",
+    )
+    assert refused.status_code == 403
+
+    admin = _client(module, role="admin")
+    page = admin.get("/developer/code-lists")
+    assert page.status_code == 200
+    assert b"Download code lists" in page.data
+    workbook = admin.get(excel)
+    assert workbook.status_code == 200
+    assert "gremlin_code_lists_" in workbook.headers["Content-Disposition"]
+
+    # A form from another session is refused before the file is read.
+    with admin.session_transaction() as session:
+        session["csrf_token"] = token = "form-token"
+    stale = admin.post(
+        excel,
+        data={"file": (io.BytesIO(workbook.data), "code_lists.xlsx"), "csrf_token": "another"},
+        content_type="multipart/form-data",
+    )
+    assert stale.status_code == 403
+
+    life = module.get_life_data_service()
+    rows = [list(row) for row in life._read_xlsx(io.BytesIO(workbook.data))]
+    rows = [row + [None] * (len(rows[0]) - len(row)) for row in rows]
+    blank = next(row for row in rows[1:] if not any(row))
+    for column, value in {"code_list": "COMPONENT", "code": "Boiler", "name": "Boiler / water heater"}.items():
+        blank[rows[0].index(column)] = value
+    filled = tmp_path / "filled.xlsx"
+    life._write_xlsx(filled, rows, "Code lists")
+    response = admin.post(
+        excel,
+        data={"file": (io.BytesIO(filled.read_bytes()), "code_lists.xlsx"), "csrf_token": token},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200, response.get_json()
+    outcome = response.get_json()
+    assert [item["code"] for item in outcome["added"]] == ["Boiler"]
+    assert outcome["updated"] == []
+    assert "Boiler" in [code["code"] for code in outcome["code_lists"]["COMPONENT"]["codes"]]
+    codes = admin.get(f"{API}/code-lists").get_json()["code_lists"]["COMPONENT"]["codes"]
+    assert "Boiler" in [code["code"] for code in codes]
+
+    # A refused row comes back as a 400 that names it, and a file that is not a
+    # workbook as one that says so.
+    blank[rows[0].index("code")] = "Light"
+    blank[rows[0].index("name")] = None
+    life._write_xlsx(filled, rows, "Code lists")
+    bad = admin.post(
+        excel,
+        data={"file": (io.BytesIO(filled.read_bytes()), "code_lists.xlsx"), "csrf_token": token},
+        content_type="multipart/form-data",
+    )
+    assert bad.status_code == 400
+    assert "(Component Light): Give the code a name." in bad.get_json()["error"]
+    garbage = admin.post(
+        excel,
+        data={"file": (io.BytesIO(b"not a workbook"), "code_lists.xlsx"), "csrf_token": token},
+        content_type="multipart/form-data",
+    )
+    assert garbage.status_code == 400
+    assert "not a workbook" in garbage.get_json()["error"]
+    missing = admin.post(excel, data={"csrf_token": token}, content_type="multipart/form-data")
+    assert missing.status_code == 400
