@@ -207,7 +207,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 }
 .lda-subgrid.is-single { grid-template-columns: 1fr; }
 
-/* Date-range filter row for the Failure Mode Trend chart. */
+/* Date-range filter row for the Triage trend chart. */
 .lda-trend-controls {
   display: flex;
   flex-wrap: wrap;
@@ -217,7 +217,7 @@ button.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; transform: n
 .lda-trend-controls .lda-field { min-width: 150px; gap: 0.3rem; }
 .lda-trend-controls .btn-secondary { padding: 0.5rem 0.95rem; }
 
-/* Failure Mode Trend summary cards lead with the analysis-type label, then the
+/* Triage trend summary cards lead with the analysis-type label, then the
    headline mechanism name (kept smaller than the big numeric readiness metrics so
    longer mechanism names stay readable), then the supporting metric. */
 .lda-trend-metric .lda-trend-metric-value {
@@ -363,7 +363,7 @@ table.lda-table tbody tr.lda-trend-total:nth-child(even) td {
   background: rgba(85, 116, 143, 0.14);
 }
 
-/* Clickable Failure Mode Trend Detail month rows: drill the Work Orders in Trend
+/* Clickable Triage trend detail month rows: drill the Work Orders in Trend
    table into a single month. The active month is highlighted to show the filter. */
 table.lda-table tbody tr.lda-trend-month-row { cursor: pointer; }
 table.lda-table tbody tr.lda-trend-month-row:hover td { background: rgba(85, 116, 143, 0.08); }
@@ -626,28 +626,175 @@ table thead th.is-sorted-desc .lda-col-label::after { content: " \25BC"; font-si
 .lda-point-tooltip-label { color: #a9c4b3; font-weight: 600; }
 .lda-point-tooltip-value { overflow-wrap: anywhere; white-space: pre-wrap; }
 
-/* Loading + spinner */
+/* ---- Loading ---------------------------------------------------------------
+   The veil over the page while it waits on a fit, a save or a list. It takes the
+   clicks the moment it is shown but only fades in after --lda-load-delay, so a
+   quick request never flashes it. */
+:root { --lda-load-delay: 160ms; }
 .lda-loading {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
+  padding: 1rem;
   background: rgba(29, 39, 49, 0.32);
   backdrop-filter: blur(2px);
   z-index: 60;
-  color: #fff;
-  font-weight: 600;
+  animation: lda-fade-in 220ms ease-out var(--lda-load-delay, 160ms) both;
+}
+.lda-loading-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  min-width: min(21rem, 100%);
+  max-width: 100%;
+  padding: 1.05rem 1.3rem 1.2rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  animation: lda-rise-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1) var(--lda-load-delay, 160ms) both;
+}
+.lda-loading-words { display: grid; gap: 0.15rem; font-weight: 600; }
+.lda-loading-elapsed { color: var(--muted); font-size: 0.8rem; font-weight: 500; }
+.lda-loading-elapsed:empty { display: none; }
+.lda-loading-bar {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 3px;
+  background: var(--border);
+}
+.lda-loading-bar,
+.is-busy::after {
+  background-image: linear-gradient(90deg, transparent, var(--accent-solid), transparent);
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: lda-sweep 1.15s ease-in-out infinite;
 }
 .lda-spinner {
-  width: 34px; height: 34px;
+  flex: none;
+  width: 32px; height: 32px;
   border-radius: 50%;
-  border: 4px solid rgba(255, 255, 255, 0.45);
-  border-top-color: #fff;
+  border: 4px solid var(--border);
+  border-top-color: var(--accent-solid);
   animation: lda-spin 800ms linear infinite;
 }
+.lda-spinner.is-small { width: 15px; height: 15px; border-width: 2px; }
+
+/* A part of the page being read again: it dims under a sweeping bar, after the
+   same moment, while the rest of the page stays usable. A part inside one that is
+   already dimmed is not dimmed twice. */
+.is-busy { position: relative; }
+.is-busy > * { animation: lda-dim 220ms ease var(--lda-load-delay, 160ms) both; }
+.is-busy .is-busy > * { animation: none; }
+.is-busy::after {
+  content: "";
+  position: absolute;
+  inset: 0 1rem auto 1rem;
+  height: 3px;
+  border-radius: 999px;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  animation: lda-sweep 1.15s ease-in-out infinite, lda-fade-in 200ms ease var(--lda-load-delay, 160ms) forwards;
+}
+/* What is loading, at the foot of the window: the part may be out of view. */
+.lda-busy-status {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 55;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: calc(100vw - 2.5rem);
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  pointer-events: none;
+  animation: lda-rise-in 240ms ease-out var(--lda-load-delay, 160ms) both;
+}
+
+/* Placeholders that shimmer where content is on its way. */
+.lda-skeleton {
+  border-radius: 10px;
+  background: linear-gradient(90deg, var(--border) 0%, var(--surface-veil-strong) 50%, var(--border) 100%);
+  background-size: 200% 100%;
+  animation: lda-shimmer 1.3s ease-in-out infinite;
+  opacity: 0.7;
+}
+.lda-skeleton-metric { height: 4.6rem; border-radius: 14px; }
+.lda-skeleton-line { height: 0.85rem; }
+.lda-skeleton-line.is-short { width: 55%; }
+.lda-skeleton-list { height: 9.5rem; border-radius: 12px; }
+.lda-skeleton-label { height: 0.9rem; width: 7rem; margin-bottom: 0.4rem; }
+.lda-skeleton-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.2rem;
+  height: 300px;
+  padding: 1.5rem 3.5rem 3rem 4rem;
+}
+.lda-skeleton-chart > .lda-skeleton { flex: 1 1 0; max-width: 110px; border-radius: 6px 6px 0 0; }
+.lda-skeleton-card { display: grid; gap: 0.8rem; }
+.lda-skeleton-card .lda-skeleton-block { height: 14rem; border-radius: 14px; }
+.lda-skeleton-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+.lda-rankings li.lda-skeleton-row { list-style: none; margin-left: -1.1rem; }
+.lda-skeleton-caption { display: flex; align-items: center; gap: 0.5rem; margin: 0; }
+/* A hint that says something is loading carries a spinner while it does. */
+.lda-hint.is-loading { display: flex; align-items: center; gap: 0.5rem; }
+.lda-hint.is-loading::before {
+  content: "";
+  flex: none;
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-solid);
+  animation: lda-spin 800ms linear infinite;
+}
+.lda-skeleton-tab { display: inline-block; width: 7rem; height: 2rem; border-radius: 999px; margin-right: 0.4rem; }
+.lda-col-menu-values > .lda-skeleton-line { margin: 0.45rem 0; }
+
+/* Entrances: content that has just arrived rises into place; a readiness count
+   that changed flashes once. */
+.lda-reveal { animation: lda-rise-in 320ms ease-out both; }
+.lda-reveal-stagger > * { animation: lda-rise-in 320ms ease-out both; }
+.lda-reveal-stagger > :nth-child(2) { animation-delay: 30ms; }
+.lda-reveal-stagger > :nth-child(3) { animation-delay: 60ms; }
+.lda-reveal-stagger > :nth-child(4) { animation-delay: 90ms; }
+.lda-reveal-stagger > :nth-child(5) { animation-delay: 120ms; }
+.lda-reveal-stagger > :nth-child(6) { animation-delay: 150ms; }
+.lda-reveal-stagger > :nth-child(n + 7) { animation-delay: 180ms; }
+.lda-metric.is-changed .lda-metric-value { animation: lda-flash 700ms ease-out; }
+
 @keyframes lda-spin { to { transform: rotate(360deg); } }
+@keyframes lda-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lda-rise-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes lda-dim { to { opacity: 0.45; } }
+@keyframes lda-sweep {
+  from { background-position: -80% 0; }
+  to { background-position: 180% 0; }
+}
+@keyframes lda-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@keyframes lda-flash {
+  0% { color: var(--accent-solid); transform: scale(1.08); }
+  100% { color: inherit; transform: none; }
+}
 
 /* Modal */
 .lda-modal-backdrop {
@@ -906,6 +1053,19 @@ textarea.lda-rationale-input { width: 100%; box-sizing: border-box; resize: vert
 @media (prefers-reduced-motion: reduce) {
   .lda-tip { transition: none; }
   .lda-help-dialog[open] { animation: none; }
+  /* Loading still shows -- the veil, the dimming, the status pill and a slower
+     spinner -- without anything sliding, sweeping or shimmering. */
+  .lda-loading,
+  .lda-loading-card,
+  .lda-busy-status { animation: lda-fade-in 1ms linear var(--lda-load-delay, 160ms) both; }
+  .lda-loading-bar,
+  .lda-skeleton,
+  .lda-reveal,
+  .lda-reveal-stagger > *,
+  .lda-metric.is-changed .lda-metric-value { animation: none; }
+  .is-busy::after { animation: lda-fade-in 1ms linear var(--lda-load-delay, 160ms) forwards; background-position: 50% 0; }
+  .lda-spinner,
+  .lda-hint.is-loading::before { animation-duration: 2.4s; }
 }
 
 @media (max-width: 1100px) {

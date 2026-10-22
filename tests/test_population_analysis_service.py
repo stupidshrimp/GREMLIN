@@ -6,11 +6,13 @@ an adjustment kept beside a fit, the numbered report, and the Disposition page's
 workbook round trip.
 """
 
+import json
 import tempfile
 import zipfile
 from datetime import date
 from pathlib import Path
 
+from services import disposition_standard as std
 from tests.test_standard_disposition_service import PFS, S09, S11, StandardDispositionFixture, coded
 
 
@@ -30,6 +32,42 @@ class PopulationViewTests(StandardDispositionFixture):
         self.assertEqual(downtime["by_location"][0], {"label": "Asset 4002-S09", "downtime_hours": 15.0})
         self.assertEqual(downtime["top_events"][0]["mapped_record_id"], 220477)
         self.assertEqual(downtime["months"][0], "2024-02")
+
+    def test_the_weibull_pareto_has_a_bar_per_sub_asset_component_and_mechanism(self):
+        # Mode and categories are the other views'; the Weibull's summary ignores them.
+        summary = self.analysis.summary(
+            {"assets": [PFS], "failure_modes": ["UST"], "categories": ["PM_RESET"]}, weibull=True
+        )
+        pareto = summary["pareto"]
+        self.assertEqual(pareto["group_by"], "weibull_population")
+        bars = {row["label"]: (row["count"], row["downtime_hours"]) for row in pareto["rows"]}
+        self.assertEqual(bars, {
+            "4002-S09 · Filter · CONT": (4, 9.0),
+            "4002-S09 · Filter · DEFM": (1, 6.0),
+            "4002-S05 · Electrical · ELEC": (1, 1.0),
+            "4002-S11 · Nozzle · PLUG": (1, 2.0),
+        })
+        top = pareto["rows"][0]
+        self.assertEqual(top["selection"], {"locations": [S09], "components": ["Filter"], "failure_mechanisms": ["CONT"]})
+        self.assertEqual([part["label"] for part in top["parts"]], ["Sub-asset", "Component", "Failure mechanism"])
+        self.assertEqual(pareto["not_coded"]["count"], 0)
+        self.assertEqual(summary["readiness"]["failures"], 7)
+        self.assertNotIn("failure_mode", summary["population_definition"])
+        self.assertIsNone(summary["trend"])
+        # On one place, the names start at the component.
+        one_place = self.analysis.summary({"assets": [PFS], "locations": [S09]}, weibull=True)["pareto"]["rows"]
+        self.assertEqual([row["label"] for row in one_place], ["Filter · CONT", "Filter · DEFM"])
+        self.assertEqual(one_place[0]["selection"]["locations"], [S09])
+        # The same selection on the other views narrows by the mode it names.
+        triage = self.analysis.summary({"assets": [PFS], "failure_modes": ["UST"], "categories": ["FAILURE"]})
+        self.assertEqual([(row["key"], row["count"]) for row in triage["pareto"]["rows"]], [(S09, 1)])
+
+    def test_a_weibull_pareto_bar_runs_the_fit_of_exactly_that_population(self):
+        [top, *_] = self.analysis.summary({"assets": [PFS]}, weibull=True)["pareto"]["rows"]
+        result = self.analysis.run_weibull({"assets": [PFS], **top["selection"]}, analysis_cutoff=date(2024, 12, 31))
+        self.assertEqual(result["streams"][0]["location"], S09)
+        self.assertEqual([stream["component"] for stream in result["streams"]], ["Filter"])
+        self.assertEqual(result["fit"]["failure_count"], 4)
 
     def test_downtime_follows_a_drill_into_one_location(self):
         downtime = self.analysis.downtime({"assets": [PFS], "locations": [S11], "categories": ["FAILURE"]})
@@ -96,6 +134,29 @@ class SavedFitTests(StandardDispositionFixture):
         self.assertEqual(latest["analysis_id"], second["analysis_id"])
         self.assertNotEqual(first["analysis_id"], second["analysis_id"])
         self.assertIsNone(self.analysis.latest_saved({"assets": [PFS], "components": ["Belt"]}))
+
+    def test_mode_cause_and_action_neither_split_saved_fits_nor_are_saved(self):
+        pattern_only = {"failure_modes": ["FTS"], "failure_causes": ["OPERATE"], "actions": ["REPLACE"]}
+        saved = self.run_and_save(**pattern_only)
+        self.assertEqual(saved["selection"], {**std.Population().to_mapping(), **self.selection})
+        self.assertNotIn("failure_mode", saved["population_definition"])
+        self.assertEqual(self.analysis.latest_saved(self.selection)["analysis_id"], saved["analysis_id"])
+        self.assertEqual(
+            self.analysis.latest_saved({**self.selection, "failure_modes": ["UST"]})["analysis_id"], saved["analysis_id"]
+        )
+
+    def test_a_run_saved_by_mode_before_is_kept_but_stands_for_no_population(self):
+        current = self.run_and_save()
+        older = self.run_and_save()
+        with self.life.write_connection() as conn:
+            conn.execute(
+                "UPDATE population_weibull_analysis SET selection_json = ? WHERE population_weibull_analysis_id = ?",
+                (json.dumps({**older["selection"], "failure_modes": ["FTS"]}), older["analysis_id"]),
+            )
+        self.assertEqual(self.analysis.latest_saved(self.selection)["analysis_id"], current["analysis_id"])
+        self.assertEqual(self.analysis.load_saved(older["analysis_id"])["analysis_id"], older["analysis_id"])
+        [ranked] = self.analysis.summary({"assets": [PFS]})["rankings"]
+        self.assertEqual(ranked["analysis_id"], current["analysis_id"])
 
     def test_the_result_reads_as_the_weibull_view_reads_it(self):
         result = self.run_and_save()

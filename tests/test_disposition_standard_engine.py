@@ -6,6 +6,7 @@ and above all section 5 -- every life measured on one location's one component,
 and only then pooled.
 """
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -143,6 +144,25 @@ def test_a_failure_of_the_mechanism_counts_whatever_mode_it_presented_as():
     ]
     analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-02-01"))
     assert analysis.failure_count == 1
+
+
+def test_mode_cause_and_action_do_not_decide_which_failures_count():
+    events = [
+        pm_reset("L", "2025-01-01", ["Filter"]),
+        failure("L", "Filter", "2025-02-01", mode="UST", action="REPLACE", cause="OPERATE"),
+        failure("L", "Filter", "2025-03-01"),
+    ]
+    narrowed = replace(
+        FILTER_CONT, failure_modes=frozenset({"FTS"}), failure_causes=frozenset({"EXP-WEAR"}),
+        actions=frozenset({"CLEAN_SERVICE"}),
+    )
+    assert narrowed.narrows_patterns_only() and not FILTER_CONT.narrows_patterns_only()
+    assert narrowed.for_life_analysis() == FILTER_CONT
+    analysis = build_renewal_intervals(events, narrowed, cutoff=at("2025-03-01"))
+    assert analysis.failure_count == 2
+    assert population_definition(narrowed, None, date(2025, 3, 1)) == population_definition(
+        FILTER_CONT, None, date(2025, 3, 1)
+    )
 
 
 def test_a_renewing_failure_of_another_mechanism_is_a_suspension_that_resets_the_clock():
@@ -333,7 +353,7 @@ def test_warnings_name_each_way_a_population_can_mislead():
     analysis = build_renewal_intervals(events, mixed, cutoff=at("2025-03-31"))
     codes = warning_codes(analysis, mixed, uncoded_count=2, unreviewed_count=3)
     assert codes == {
-        "MIXED_COMPONENTS", "MODE_KEYED", "MIXED_MECHANISMS", "SMALL_N", "MULTI_UNIT",
+        "MIXED_COMPONENTS", "PATTERN_ONLY_FILTERS", "MIXED_MECHANISMS", "SMALL_N", "MULTI_UNIT",
         "INDUCED_FAILURES", "RECURRENT_EVENTS", "UNCODED_RECORDS", "NOT_REVIEWED",
     }
 

@@ -175,10 +175,18 @@ class AcceptanceTests(StandardDispositionFixture):
         result = self.weibull(components=["Nozzle"])
         self.assertIn("MULTI_UNIT", {warning["code"] for warning in result["warnings"]})
 
-    def test_selecting_by_mode_warns_and_loses_the_trip(self):
-        result = self.weibull(locations=[S09], components=["Filter"], failure_modes=["FTS"])
-        self.assertIn("MODE_KEYED", {warning["code"] for warning in result["warnings"]})
-        self.assertEqual(self.roles(result)[168996], std.ROLE_SUSPENSION)
+    def test_mode_cause_and_action_narrow_the_pattern_views_not_the_weibull(self):
+        result = self.weibull(
+            locations=[S09], components=["Filter"], failure_mechanisms=["CONT"],
+            failure_modes=["FTS"], failure_causes=["OPERATE"], actions=["REPLACE"],
+        )
+        # The trip is the same mechanism under another mode: still a failure.
+        self.assertEqual(self.roles(result)[168996], std.ROLE_FAILURE)
+        self.assertEqual(self.roles(result), self.filter_roles)
+        self.assertEqual(result["population_definition"], self.result["population_definition"])
+        self.assertEqual(result["selection"], self.result["selection"])
+        self.assertIn("PATTERN_ONLY_FILTERS", {warning["code"] for warning in result["warnings"]})
+        self.assertNotIn("PATTERN_ONLY_FILTERS", {warning["code"] for warning in self.result["warnings"]})
 
 
 class FittingTests(StandardDispositionFixture):
