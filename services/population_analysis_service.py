@@ -508,7 +508,9 @@ class PopulationAnalysisService:
             "downtime_hours": round(sum(float(record["downtime_hours"] or 0) for record in selected), 4),
             "pareto": self._weibull_pareto(selected, codebook) if weibull else self._pareto(selected, group_by, codebook),
             "matrix": self._matrix(selected, codebook),
-            "trend": None if weibull else self._trend(selected, group_by, codebook),
+            "trend": None if weibull else self._trend(
+                selected, group_by, codebook, own=self._own_buckets(population, group_by, loaded["tree"]),
+            ),
             "rankings": self._beta_rankings(fits),
             "risk_rankings": self._risk_rankings(fits, weeks),
             "plant_time_zone": loaded["zone_name"],
@@ -705,12 +707,39 @@ class PopulationAnalysisService:
             "max_count": max((int(cell["count"]) for cell in cells.values()), default=0),
         }
 
-    def _trend(self, records: list[dict[str, Any]], group_by: str, codebook: std.CodeBook) -> dict[str, Any]:
+    @staticmethod
+    def _own_buckets(population: std.Population, group_by: str, tree: AssetTree) -> dict[str, str]:
+        """The values of the Pareto's dimension that are the asset itself, by label.
+
+        Grouped by sub-asset, a work order placed on no sub-asset is counted under
+        the asset it was logged against. That is where every work order nobody
+        placed lands, so it is the biggest group on almost any asset, and a card
+        naming it says only that much of the history is not placed. The cards
+        compare the sub-assets instead; the Pareto still draws the asset's bar.
+        """
+
+        if GROUP_BY_DIMENSIONS[group_by][0] != "location":
+            return {}
+        return {number: tree.label(number) for number in population.assets}
+
+    def _trend(
+        self,
+        records: list[dict[str, Any]],
+        group_by: str,
+        codebook: std.CodeBook,
+        *,
+        own: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Monthly counts and downtime for the population, and per value of the Pareto's dimension.
 
         The month axis is continuous, so a quiet month is a zero rather than a gap.
         ``growth`` compares the last three months with the three before, and only
         once there are six months to compare.
+
+        The summary cards compare the values the Pareto draws, less the ones
+        ``own`` names (the asset itself, grouped by sub-asset; see
+        ``_own_buckets``). When nothing is left to compare -- an asset with no
+        sub-assets, grouped by sub-asset -- ``summary["note"]`` says why.
         """
 
         field, code_list, label = GROUP_BY_DIMENSIONS[group_by]
@@ -747,18 +776,35 @@ class PopulationAnalysisService:
             )
         ranked = sorted(groups.values(), key=lambda group: (-group["total_count"], str(group["label"])))
         # The cards compare the values the Pareto draws, so work orders not coded
-        # on its dimension are left out of them as they are out of its bars.
-        coded = [group for group in ranked if group["key"] is not None]
+        # on its dimension are left out of them as they are out of its bars, and
+        # so is the asset's own bucket (see _own_buckets).
+        own = own or {}
+        coded = [group for group in ranked if group["key"] is not None and group["key"] not in own]
 
         def entry(group: dict[str, Any] | None, value: Any) -> dict[str, Any] | None:
             return None if group is None else {"key": group["key"], "label": group["label"], "value": value}
 
-        summary: dict[str, Any] = {"most_frequent": None, "highest_downtime": None, "fastest_growing": None, "most_improved": None}
+        summary: dict[str, Any] = {
+            "most_frequent": None,
+            "highest_downtime": None,
+            "fastest_growing": None,
+            "most_improved": None,
+            "note": None,
+        }
+        if not coded and any(group["key"] in own for group in ranked):
+            names = ", ".join(sorted(own[key] for key in {group["key"] for group in ranked} & set(own)))
+            summary["note"] = (
+                f"Every work order here is on {names} itself rather than on one of its sub-assets, so there are no "
+                "sub-assets to compare. Group the Pareto by component, mechanism or mode to compare those."
+            )
         if coded:
             most = max(coded, key=lambda group: (group["total_count"], group["total_downtime_hours"]))
             summary["most_frequent"] = entry(most, most["total_count"])
+            # With no downtime recorded at all, every value ties at zero and the
+            # card would name one at random.
             costly = max(coded, key=lambda group: (group["total_downtime_hours"], group["total_count"]))
-            summary["highest_downtime"] = entry(costly, costly["total_downtime_hours"])
+            if costly["total_downtime_hours"] > 0:
+                summary["highest_downtime"] = entry(costly, costly["total_downtime_hours"])
             growing = [group for group in coded if (group["growth"] or 0) > 0]
             if growing:
                 fastest = max(growing, key=lambda group: (group["growth"], group["total_count"]))

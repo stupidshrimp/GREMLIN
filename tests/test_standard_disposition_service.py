@@ -606,6 +606,48 @@ class PatternViewTests(StandardDispositionFixture):
         cards = summary["trend"]["summary"]
         self.assertTrue(all(card is None or card["key"] is not None for card in cards.values()))
 
+    def test_the_cards_compare_sub_assets_not_the_asset_itself(self):
+        # Work orders nobody placed on a sub-asset are counted under the asset, and
+        # usually outnumber any one sub-asset: the cards would always name it.
+        for record_id in range(1, 9):
+            self.add_record(record_id, PFS, "Unplaced", "2024-08-01", "2024-08-01", downtime=9.0)
+        self.std.save_dispositions([
+            {"mapped_record_id": record_id, **coded(sub_asset=None)} for record_id in range(1, 9)
+        ])
+        summary = self.summary({"categories": ["FAILURE"]}, group_by="sub_asset")
+        bars = {row["key"]: row["count"] for row in summary["pareto"]["rows"]}
+        self.assertGreater(bars[PFS], bars[S09])  # the Pareto still draws the asset's own bar
+        cards = summary["trend"]["summary"]
+        self.assertEqual(cards["most_frequent"]["key"], S09)
+        self.assertNotEqual(cards["highest_downtime"]["key"], PFS)
+        self.assertIsNone(cards["note"])
+        # Grouped by anything else, the asset is not a value at all, and nothing changes.
+        self.assertEqual(self.summary({"categories": ["FAILURE"]}, group_by="component")["trend"]["summary"]["most_frequent"]["key"], "Filter")
+
+    def test_with_only_the_asset_itself_to_compare_the_cards_say_so(self):
+        # As on an asset with no sub-assets: every work order is on the asset itself.
+        self.add_record(1, PFS, "Unplaced", "2024-08-01", "2024-08-01", downtime=2.0)
+        self.std.save_dispositions([{"mapped_record_id": 1, **coded(sub_asset=None)}])
+        cards = self.summary({"locations": [PFS], "categories": ["FAILURE"]}, group_by="sub_asset")["trend"]["summary"]
+        self.assertTrue(all(cards[key] is None for key in ("most_frequent", "highest_downtime", "fastest_growing", "most_improved")))
+        self.assertIn("no sub-assets to compare", cards["note"])
+        self.assertIn("Group the Pareto by component", cards["note"])
+        # By component the same work order is compared as usual.
+        cards = self.summary({"locations": [PFS], "categories": ["FAILURE"]}, group_by="component")["trend"]["summary"]
+        self.assertEqual(cards["most_frequent"]["key"], "Filter")
+        self.assertIsNone(cards["note"])
+
+    def test_with_no_downtime_recorded_no_value_has_the_highest(self):
+        for record_id in (1, 2):
+            self.add_record(record_id, S05, "Check", "2024-08-01", "2024-08-01", downtime=0.0)
+        self.std.save_dispositions([
+            {"mapped_record_id": record_id, **coded("NON_FAILURE", sub_asset=S05, mode="NFF", mechanism="UNK", action="INSPECT_ONLY")}
+            for record_id in (1, 2)
+        ])
+        cards = self.summary({"locations": [S05], "categories": ["NON_FAILURE"]}, group_by="component")["trend"]["summary"]
+        self.assertEqual(cards["most_frequent"]["key"], "Filter")
+        self.assertIsNone(cards["highest_downtime"])
+
     def test_the_trend_is_continuous_and_reads_the_pareto_dimension(self):
         trend = self.summary({"categories": ["FAILURE"]}, group_by="component")["trend"]
         self.assertEqual(trend["months"], ["2024-02", "2024-03", "2024-04", "2024-05", "2024-06", "2024-07"])

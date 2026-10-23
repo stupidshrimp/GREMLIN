@@ -459,19 +459,6 @@
     return () => ends.forEach((end) => end());
   }
 
-  // The fit saved for a population is looked up whenever it changes: a
-  // placeholder result card holds its place meanwhile.
-  function showFitSkeleton(message) {
-    const workspace = $("lda-workspace");
-    workspace.innerHTML = "";
-    workspace.appendChild(el("section", { class: "glass-card lda-card lda-skeleton-card lda-reveal", id: "lda-fit-loading", "aria-busy": "true" }, [
-      el("p", { class: "lda-hint lda-skeleton-caption" }, [el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }), message]),
-      ...skeleton("lda-skeleton-line is-short"),
-      ...skeleton("lda-skeleton-line"),
-      el("div", { class: "lda-skeleton-pair" }, skeleton("lda-skeleton-block", 2)),
-    ]));
-  }
-
   function showBanner(message, kind) {
     if (kind === "error" && /log in|role is required|guest access is read-only/i.test(message) && window.gremlinToast) {
       window.gremlinToast(message);
@@ -883,7 +870,7 @@
     if (state.analysisType === ANALYSIS_TYPES.PM) loadPm();
     else if (state.analysisType === ANALYSIS_TYPES.DOWNTIME) loadDowntime();
     else if (state.analysisType === ANALYSIS_TYPES.REPEAT) loadRepeat();
-    else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) loadSavedFit();
+    else if (state.analysisType === ANALYSIS_TYPES.WEIBULL) showFitPrompt();
   }
 
   function renderSummary() {
@@ -1454,19 +1441,22 @@
     grid.innerHTML = "";
     const summary = trend.summary || {};
     const dimension = trend.label.toLowerCase();
+    // [key, title, detail of a value, what an empty card says, whether it compares months]
     [
-      ["most_frequent", `Most frequent ${dimension}`, (c) => `${c.value} work orders`, null],
-      ["highest_downtime", "Highest downtime", (c) => `${fmt(c.value)} downtime hours`, null],
-      ["fastest_growing", "Fastest growing", (c) => trendDeltaText(c.value), `No ${dimension} increased`],
-      ["most_improved", "Most improved", (c) => trendDeltaText(c.value), `No ${dimension} decreased`],
-    ].forEach(([key, label, detail, emptyText]) => {
+      ["most_frequent", `Most frequent ${dimension}`, (c) => `${c.value} work orders`, null, false],
+      ["highest_downtime", "Highest downtime", (c) => `${fmt(c.value)} downtime hours`, "No downtime recorded", false],
+      ["fastest_growing", "Fastest growing", (c) => trendDeltaText(c.value), `No ${dimension} increased`, true],
+      ["most_improved", "Most improved", (c) => trendDeltaText(c.value), `No ${dimension} decreased`, true],
+    ].forEach(([key, label, detail, emptyText, overMonths]) => {
       const entry = summary[key];
       let valueText = "—";
       let detailText = "";
       if (entry) {
         valueText = entry.label;
         detailText = detail(entry);
-      } else if (emptyText && !trend.has_growth_window) {
+      } else if (summary.note) {
+        // Nothing to compare: the note under the cards says why.
+      } else if (overMonths && !trend.has_growth_window) {
         valueText = "Insufficient Data";
         detailText = "Needs six months of data";
       } else if (emptyText) {
@@ -1478,6 +1468,9 @@
         detailText ? el("span", { class: "lda-metric-label", text: detailText }) : null,
       ]));
     });
+    const note = $("lda-trend-note");
+    note.textContent = summary.note || "";
+    note.hidden = !summary.note;
     revealIfChanged(grid, before);
     renderTrendChart();
     renderTrendTable();
@@ -1959,36 +1952,23 @@
 
   // The fit saved for exactly this population, whatever its window: shown when the
   // population changes, so a saved fit is there without running anything.
-  async function loadSavedFit() {
-    const asset = state.asset;
-    const token = ++state.analysisToken;
-    showFitSkeleton("Looking for a saved Weibull fit of this population…");
-    const end = busy(null, "Looking for a saved fit…");
-    try {
-      const data = await postJson(`${API}/saved-analysis`, populationBody());
-      if (token !== state.analysisToken || asset !== state.asset || state.analysisType !== ANALYSIS_TYPES.WEIBULL) return;
-      if (data.result) renderAnalysisResult(data.result, { scroll: false });
-      else {
-        clearWorkspace();
-        $("lda-workspace").appendChild(el("section", { class: "glass-card lda-card lda-empty-result", id: "lda-no-fit" }, [
-          el("h2", { text: "No saved Weibull fit for this population" }),
-          el("p", {
-            class: "lda-hint",
-            text: CAN_EDIT
-              ? "Click a Pareto bar to fit and save one sub-asset, component and mechanism, or Perform Analysis to fit the " +
-                "population ticked. A Weibull life is measured on one kind of item, so pick one component at least."
-              : "An editor has to save a fit of this population before it can be opened here. Click a Pareto bar, or Preview the fit, to see one without saving.",
-          }),
-        ]));
-      }
-    } catch (err) {
-      if (token === state.analysisToken) {
-        clearWorkspace();
-        showBanner(err.message, "error");
-      }
-    } finally {
-      end();
-    }
+  // The Weibull's workspace before anything is fitted. Choosing an asset, or
+  // changing the population, never fits or opens a fit by itself: a bar of the
+  // Pareto or Perform Analysis does, and a saved fit opens from the rankings.
+  function showFitPrompt() {
+    state.analysisToken += 1;
+    clearWorkspace();
+    $("lda-workspace").appendChild(el("section", { class: "glass-card lda-card lda-empty-result", id: "lda-no-fit" }, [
+      el("h2", { text: "No Weibull fitted yet" }),
+      el("p", {
+        class: "lda-hint",
+        text: CAN_EDIT
+          ? "Click a Pareto bar to fit and save one sub-asset, component and mechanism, or Perform Analysis to fit the " +
+            "population ticked. A Weibull life is measured on one kind of item, so pick one component at least. Saved " +
+            "fits open from the rankings above."
+          : "Click a Pareto bar, or Preview the fit, to see one. Saved fits open from the rankings above.",
+      }),
+    ]));
   }
 
   // Perform Analysis saves the run for an editor; anybody else previews it.
@@ -4301,7 +4281,7 @@
       body: () =>
         state.result
           ? `The fit of ${state.result.analysis_label}: ${state.result.failure_count} failures among ${state.result.total_observation_count} lives.`
-          : "A saved fit of the population shows here, with everything it rests on.",
+          : "A fit shows here, with everything it rests on, once a Pareto bar or Perform Analysis runs one. Nothing is fitted until then.",
       action: TOUR_FIT_ACTION,
       when: forType(ANALYSIS_TYPES.WEIBULL),
       more: docsLink("analysis-weibull", "The Weibull analysis, in the documentation"),

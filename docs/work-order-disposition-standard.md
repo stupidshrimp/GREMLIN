@@ -88,9 +88,11 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
 * **Weibull** — the renewal-stream fit below, shown with its population
   definition, validity warnings, the items pooled, the sensitivity fit, the
   charts, the interpretation summary, the lives and the event processing table.
-  The latest saved fit of exactly the population on screen opens by itself;
-  Perform Analysis (editors) fits and saves a new run, Preview the fit (viewers)
-  fits without saving. Adjusted beta and eta are kept beside a saved run, with the
+  Nothing is fitted, or opened, until asked: picking an asset or changing the
+  population leaves the results empty. A Pareto bar fits that one sub-asset,
+  component and mechanism; Perform Analysis (editors) fits and saves the
+  population ticked, Preview the fit (viewers) fits it without saving; a saved
+  fit opens from the rankings. Adjusted beta and eta are kept beside a saved run, with the
   reason. **Generate Weibull Report** writes the numbered Word report of a saved
   run with its population definition, items pooled and warnings.
 * **Rankings** — the latest saved fit of each one-component population the
