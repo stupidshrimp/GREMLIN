@@ -264,8 +264,15 @@ body:has(.dev-panel) .content,
 }
 
 .dev-panel .glass-card + .glass-card,
-.dev-panel .dev-panel-grid + .glass-card {
+.dev-panel .dev-panel-grid + .glass-card,
+.dev-panel .glass-card + .dev-panel-grid {
   margin-top: 18px;
+}
+
+/* Side by side in a grid, cards share a top edge: the rule above is for cards
+   stacked one under another, and pushed the second of a pair down. */
+.dev-panel .dev-panel-grid > .glass-card + .glass-card {
+  margin-top: 0;
 }
 
 .dev-panel-grid {
@@ -1041,4 +1048,25 @@ body:has(.dev-panel) .content,
 .dev-bug-delete {
   color: var(--danger-strong);
   border-color: var(--danger-tint-border);
+}
+
+/* --- Code lists ---------------------------------------------------------- */
+
+.dev-code-rules {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.88rem;
+}
+
+.dev-code-result {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.dev-code-result-summary {
+  margin: 0;
+  font-weight: 600;
 }

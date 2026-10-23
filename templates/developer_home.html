@@ -8,13 +8,14 @@
 <section class="glass-card fade-in-up dev-hero">
   <div class="dev-hero-copy">
     <p class="eyebrow">Developer</p>
-    <h1>Five tools, kept apart.</h1>
+    <h1>Six tools, kept apart.</h1>
     <p>
       Database inspection reads and only reads: every panel behind it opens
       <code>GREMLIN.db</code> <code>mode=ro</code>, so it can neither change the file nor
       take the writer lock other users depend on. User activity reads too, from the
       access database rather than this one. The rest are consequential:
       Limble sync writes to the database and spends this server's API credentials,
+      code lists rewrites the codes every disposition is made from,
       access control decides who may sign in, and bug reports writes to the shared
       drive every deployment reads, so they each get their own page rather
       than a tab next to something you opened to read.
@@ -50,6 +51,18 @@
         The same job the nightly scheduled task runs: pulls tasks and assets from the
         Limble API, upserts them into the raw import tables and refreshes the mapped
         layer. Writes to the database. Idempotent, so running it again is safe.
+      </p>
+    </div>
+  </a>
+
+  <a class="glass-card tile slide-in dev-card" href="{{ url_for('developer_code_lists') }}">
+    <h2>Code lists</h2>
+    <p>Download the disposition code lists as a workbook, and upload it back.</p>
+    <div class="card-hover-copy">
+      <p>
+        Components, failure mechanisms, failure modes, failure causes and actions, one
+        row per code in a formatted Excel sheet with dropdowns and empty rows for new
+        codes. An upload adds and changes codes, all or none, and never deletes.
       </p>
     </div>
   </a>

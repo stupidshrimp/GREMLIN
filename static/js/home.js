@@ -62,7 +62,7 @@
       parts.push("Perform an Analysis fits failure data for one asset.");
     }
     if (document.getElementById("home-card-disposition")) {
-      parts.push("Disposition sorts work orders and PM resets into what an analysis uses.");
+      parts.push("Disposition codes each work order -- where and what failed, how, and what was done -- for every analysis to read.");
     }
     if (document.getElementById("home-card-standards")) {
       parts.push("Standards and Documentation holds the references you work to.");

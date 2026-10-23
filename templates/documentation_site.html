@@ -124,27 +124,29 @@
           is why availability's hours and its Exclude PMs switch ignore the
           guess, which only names the non-PM segments of its stacked bars, and
           why a class a person saves on the Disposition page replaces it in
-          every metric and analysis. The Disposition lists and the readiness
-          counts still include any record the classifier flagged as a work
-          order or PM.
+          every metric and analysis.
         </p>
       </div>
     </section>
     <section class="std-section">
       <h4>Dispositioning</h4>
       <p>
-        Editors open Disposition, pick an asset, choose Work Orders or PMs, and
-        can narrow the list to the records that still need a decision. Each
-        row takes a category, a failure mode and mechanism for a work order or
-        a reset decision and target for a PM, the Include in Weibull Candidate
-        flag, and notes. Saving keeps the previous decision as history. The
-        same rows can be exported to Excel, filled in there and imported back.
+        Editors open Disposition and pick an asset: its work orders are listed
+        on the left, and the one picked opens on the right with its request,
+        notes and narrative above the fields. Each takes a category, and then
+        where it failed (sub-asset), what (component), how (failure mechanism,
+        mode and cause), what was done (action), how sure the record is
+        (evidence), its record class, and a note; Save &amp; next moves down
+        the list. Saving keeps the previous decision as history. The list can
+        be narrowed to the work orders not reviewed yet, or to those carried
+        over from the REL categories that still need confirming, and the same
+        work orders can be downloaded to Excel, filled in there and uploaded.
       </p>
       <p>
-        Failure modes and mechanisms belong to each asset: typing a new name
-        adds it to that asset's list when the row is saved, so later rows can
-        reuse it and stay in the same population. What each category means for
-        the analyses is on the Analysis tab, in
+        The code lists the fields offer (components, mechanisms, modes, causes
+        and actions) belong to the team and are edited from the Disposition
+        page; a code that is retired keeps reading on the records that use it.
+        What each category means for the analyses is on the Analysis tab, in
         <a href="#analysis-common">What every analysis reads</a>.
       </p>
     </section>
@@ -168,8 +170,8 @@
         </thead>
         <tbody>
           <tr><td>Home</td><td>The start page, with shortcuts into the main workflows. An Operations &amp; Maintenance account sees its own dashboards there instead.</td><td>Everyone</td></tr>
-          <tr><td>Life Data Analysis</td><td>Perform an Analysis: Weibull, failure mode trend, downtime drivers and PM effectiveness for one asset at a time.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
-          <tr><td>Disposition</td><td>Classifying the work orders and PMs the analyses read.</td><td>Editors; not Operations &amp; Maintenance</td></tr>
+          <tr><td>Life Data Analysis</td><td>Perform an Analysis: Weibull, failure trend, downtime drivers, PM effectiveness and repeat fix rate for one population of an asset's work orders.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
+          <tr><td>Disposition</td><td>Dispositioning the work orders the analyses read.</td><td>Editors; not Operations &amp; Maintenance</td></tr>
           <tr><td>Metrics</td><td>The Availability, Reliability performance and Reliability risk cards.</td><td>Signed in; not Operations &amp; Maintenance</td></tr>
           <tr><td>PM Task Tracker</td><td>The PM calendar: what is due, what is done and what is late for the assets you pick.</td><td>Signed in, every department</td></tr>
           <tr><td>Safety Report, Overdue WO Tracker</td><td>Coming soon.</td><td>Signed in, every department except Facilities</td></tr>

@@ -1,0 +1,415 @@
+/* Life Data Analysis's two pages, read from the work-order disposition standard:
+   Disposition (the list and the disposition window side by side) and Perform an
+   Analysis (the population selector, matrix, warnings and the record editor that
+   opens over it). Built on life_data_analysis.css (fields, tables, banners, the
+   loading veil), which both pages load first; only what is new lives here. Every
+   colour is a theme token, so both pages follow the light and dark themes. */
+
+.std-intro-links { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; }
+
+.std-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 1fr) minmax(220px, 1.4fr);
+  gap: 0.9rem;
+  align-items: end;
+}
+
+/* ---- disposition editor ------------------------------------------------- */
+.std-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 1.2rem;
+  align-items: start;
+}
+.std-layout > .glass-card { min-width: 0; }
+.std-editor-card { position: sticky; top: 86px; max-height: calc(100vh - 100px); overflow: auto; }
+
+table.lda-table tbody tr.std-row { cursor: pointer; }
+table.lda-table tbody tr.std-row:hover td { background: var(--brand-tint-soft); }
+table.lda-table tbody tr.std-row.is-selected td,
+table.lda-table tbody tr.std-row.is-selected:nth-child(even) td { background: var(--row-focus); }
+table.lda-table td.std-title { min-width: 16ch; max-width: 40ch; overflow-wrap: anywhere; }
+table.lda-table td.std-nowrap { white-space: nowrap; }
+table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wrap: anywhere; }
+
+/* The Disposition list's column filters: what is narrowing it, and the count of
+   work orders beside each value in a column's menu. */
+.std-filter-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.std-filter-status .btn-secondary { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
+.lda-col-menu-value .std-col-count {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.lda-col-menu-sort.is-active { outline: 2px solid var(--forest-500); outline-offset: -2px; }
+
+.std-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.std-chip.is-failure { background: var(--danger-tint-soft); border-color: var(--danger-tint-border); color: var(--danger-ink); }
+.std-chip.is-pm-reset { background: var(--success-bg); border-color: var(--success-border); color: var(--success-ink); }
+.std-chip.is-held,
+.std-chip.is-migrated { background: var(--warning-tint); border-color: var(--warning-tint); color: var(--warning-ink); }
+.std-chip.is-not-reviewed { color: var(--muted); }
+
+/* The work order above the disposition fields: a labelled grid of its facts,
+   then its request, failure narrative and notes, each under its own heading. */
+.std-record-text { display: grid; gap: 0.75rem; font-size: 0.88rem; }
+.std-record-head { display: grid; gap: 0.1rem; }
+.std-record-task {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.std-record-text h3 { margin: 0; font-size: 1.05rem; color: var(--forest-900); overflow-wrap: anywhere; }
+.std-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.55rem 1rem;
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-veil-soft);
+}
+.std-fact { min-width: 0; }
+.std-fact-wide { grid-column: 1 / -1; }
+.std-facts dt,
+.std-record-field dt {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.std-facts dd { margin: 0.1rem 0 0; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.std-record-section { display: grid; gap: 0.4rem; }
+.std-record-section h4 {
+  margin: 0;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--forest-900);
+}
+.std-record-section .lda-hint { margin: 0; }
+.std-record-fields { margin: 0; display: grid; gap: 0.45rem; }
+.std-record-field dd { margin: 0.1rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.std-narrative {
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-solid);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-narrative h4 { border-bottom: none; padding-bottom: 0; }
+.std-missing { color: var(--muted); font-style: italic; font-weight: 400; }
+
+.std-flag {
+  border: 1px solid var(--warning-tint);
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.84rem;
+}
+
+/* A field whose control is a group (category buttons, a checklist) is captioned
+   by a span rather than a <label>, and reads like one. */
+.lda-field .lda-field-label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
+
+.std-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 0.9rem; }
+/* The fields start below a rule, apart from the record they are read off. */
+.std-record-text + .std-form { margin-top: 1rem; padding-top: 0.9rem; border-top: 2px solid var(--border); }
+.std-form .std-wide { grid-column: 1 / -1; }
+.std-form .lda-field label .std-required { color: var(--danger-strong); margin-left: 0.15rem; }
+.std-form .lda-hint { margin: 0; font-size: 0.78rem; }
+
+.std-categories { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.std-category {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--forest-800);
+  cursor: pointer;
+}
+.std-category:hover { background: var(--forest-100); }
+.std-category:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.std-category.is-active { background: var(--accent-solid); border-color: var(--accent-solid); color: var(--accent-solid-ink); }
+
+.std-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  max-height: 150px;
+  overflow: auto;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.std-derived {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.2rem 0.8rem;
+  font-size: 0.82rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-derived dt { color: var(--muted); }
+.std-derived dd { margin: 0; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+
+.std-history { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.3rem; font-size: 0.8rem; color: var(--muted); }
+
+/* ---- code lists dialog --------------------------------------------------- */
+.std-code-dialog { width: min(1100px, calc(100vw - 32px)); }
+.std-code-table input[type="text"],
+.std-code-table input[type="number"],
+.std-code-table select { width: 100%; min-width: 0; padding: 0.35rem 0.45rem; font-size: 0.8rem; }
+.std-code-table td { vertical-align: middle; }
+.std-code-table tr.is-retired td { opacity: 0.6; }
+.std-code-table td.std-code-name { min-width: 220px; }
+.std-code-table td.std-code-actions { white-space: nowrap; display: flex; gap: 0.35rem; }
+.std-code-table .std-code-delete { color: var(--danger-ink); }
+
+/* ---- Perform an Analysis: the population --------------------------------- */
+.std-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.8rem 1rem;
+}
+/* A short list sits under its heading rather than at the foot of a row a long
+   one made tall. */
+.std-selector > .lda-field { align-content: start; }
+.std-multi {
+  display: grid;
+  gap: 0.2rem;
+  max-height: 168px;
+  overflow: auto;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 0.82rem;
+}
+.std-multi label { display: flex; gap: 0.4rem; align-items: flex-start; font-weight: 400; color: var(--text); cursor: pointer; text-align: left; }
+/* .lda-field gives every input in it a text box's full width and padding; a
+   checkbox in one of these lists is a checkbox. */
+.lda-field .std-multi input[type="checkbox"],
+.lda-field .std-checklist input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  padding: 0;
+  margin: 0.15rem 0 0;
+  border-radius: 3px;
+}
+.std-multi .std-count { color: var(--muted); font-size: 0.74rem; margin-left: auto; }
+.std-multi-empty { color: var(--muted); font-style: italic; }
+.std-multi-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+.std-multi-head button {
+  font: inherit;
+  font-size: 0.74rem;
+  border: none;
+  background: none;
+  color: var(--brand-accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+.std-pop-string {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  overflow-wrap: anywhere;
+}
+
+.std-view-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.std-pareto-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.std-chart { display: grid; gap: 0.4rem; min-width: 0; }
+.std-chart h3 { margin: 0; font-size: 0.98rem; color: var(--forest-800); }
+/* Drawn at the container's own pixel width (the scripts measure it), so text
+   stays at its set size instead of scaling with the chart. */
+.std-chart svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.std-chart svg text { fill: var(--chart-label); font-size: 11px; font-family: inherit; }
+.std-chart svg .std-axis { stroke: var(--chart-axis); stroke-width: 1; }
+.std-chart svg .std-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.std-chart svg .std-bar { cursor: pointer; }
+.std-chart svg .std-bar:hover,
+.std-chart svg .std-bar:focus { opacity: 0.8; outline: none; }
+.std-chart svg .std-cum { fill: none; stroke: var(--chart-highlight); stroke-width: 2; }
+.std-chart svg .std-value { fill: var(--chart-ink); font-weight: 600; }
+
+.std-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; font-size: 0.78rem; color: var(--muted); }
+.std-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.std-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+.std-matrix-scroll { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 12px; }
+/* A matrix wider than the window has to scroll inside its own box, not drag the
+   page sideways. A grid item's min-width resolves to its min-content size --
+   the whole matrix, straight through the scroll box -- so the cards between the
+   page and the matrix take a zero minimum. The panel itself is a block, not the
+   grid .lda-panel is: Chrome puts a <details>'s contents in a box of its own,
+   which as a grid item sized itself to the matrix whatever its child said. */
+#lda-summary-card,
+.lda-matrix-panel { min-width: 0; }
+.lda-matrix-panel { display: block; }
+.lda-matrix-panel > * + * { margin-top: 0.55rem; }
+.lda-matrix-panel > .lda-hint { margin-bottom: 0; }
+table.std-matrix { border-collapse: collapse; font-size: 0.8rem; min-width: 100%; }
+table.std-matrix th,
+table.std-matrix td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: center; }
+table.std-matrix thead th { position: sticky; top: 0; background: var(--accent-solid); color: var(--accent-solid-ink); z-index: 1; }
+table.std-matrix tbody th { text-align: left; background: var(--surface); position: sticky; left: 0; white-space: nowrap; }
+table.std-matrix td.has-count { cursor: pointer; font-weight: 600; color: var(--forest-900); }
+table.std-matrix td.is-zero { color: var(--muted); }
+
+.std-warnings { display: grid; gap: 0.5rem; }
+.std-warning {
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--warning-tint);
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  font-size: 0.86rem;
+}
+.std-warning.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
+.std-warning strong { display: block; }
+
+.std-fits { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+.std-fit { display: grid; gap: 0.35rem; padding: 0.75rem 0.9rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.std-fit h3 { margin: 0; font-size: 0.98rem; color: var(--forest-800); }
+.std-fit .std-params { font-size: 1.2rem; font-weight: 700; color: var(--forest-900); }
+.std-fit dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.15rem 0.7rem; margin: 0; font-size: 0.82rem; }
+.std-fit dt { color: var(--muted); }
+.std-fit dd { margin: 0; }
+
+table.lda-table td.std-failure { color: var(--danger-ink); font-weight: 600; }
+table.lda-table td.std-suspension { color: var(--success-ink); font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .std-layout { grid-template-columns: 1fr; }
+  .std-editor-card { position: static; max-height: none; }
+  .std-pareto-pair { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .std-controls,
+  .std-form { grid-template-columns: 1fr; }
+  .lda-modal.lda-record-modal { padding: 1rem; }
+}
+
+/* ---- Disposition page --------------------------------------------------- */
+.std-excel { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; align-items: center; }
+
+.lda-population-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+  align-items: flex-end;
+  margin-top: 0.9rem;
+}
+.lda-population-row #lda-categories-field { flex: 1 1 340px; }
+.lda-population-row .std-checklist { max-height: none; }
+/* Right above the Pareto's bars: the way the drilling came, each step a click
+   back to it, with Back and Start over; or the filters ticked by hand as chips. */
+.lda-drill {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.lda-drill .lda-hint { margin: 0; }
+.lda-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 0.3rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.84rem;
+}
+.lda-crumbs li { display: inline-flex; align-items: center; gap: 0.3rem; }
+.lda-crumbs li + li::before { content: "›"; color: var(--muted); }
+button.lda-crumb {
+  font: inherit;
+  font-weight: 600;
+  color: var(--forest-700);
+  background: none;
+  border: none;
+  padding: 0.1rem 0.25rem;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.lda-crumb:hover,
+button.lda-crumb:focus-visible { background: var(--forest-100); color: var(--forest-900); }
+.lda-crumb.is-current { font-weight: 700; color: var(--text); padding: 0.1rem 0.25rem; }
+.lda-drill-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.lda-drill-btn { padding: 0.3rem 0.8rem; font-size: 0.8rem; }
+.lda-drill-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+button.lda-drill-chip { cursor: pointer; font: inherit; font-size: 0.78rem; font-weight: 600; }
+button.lda-drill-chip:hover { background: var(--forest-100); }
+
+.lda-matrix-panel > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+.lda-matrix-panel[open] > summary { margin-bottom: 0.4rem; }
+
+.lda-rankings .lda-ranking-link {
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.lda-rankings .lda-ranking-link:hover { text-decoration-style: solid; }
+
+/* The disposition form opened over Perform an Analysis: the same form as the
+   Disposition page's right-hand window, given room. */
+.lda-modal.lda-record-modal { width: min(920px, 100%); max-height: 92vh; position: relative; }
+.lda-record-modal .lda-record-close { position: absolute; top: 0.7rem; right: 0.8rem; }
+.lda-record-modal .std-record-text h3 { padding-right: 2.4rem; }
+.lda-empty-result h2 { margin-top: 0; }

@@ -93,8 +93,8 @@ def test_a_viewer_is_no_better_off_than_a_visitor(monkeypatch, tmp_path):
     index = _embedded_index(client)
     assert _labels(index).isdisjoint({
         "Disposition",
-        "Disposition Work Orders",
-        "Disposition PM Resets",
+        "Work orders not reviewed",
+        "Migrated dispositions to confirm",
         "Asset group schedules",
         "Linked downtime rules",
         "Refresh CMMS mapping",
@@ -109,7 +109,7 @@ def test_an_editor_gets_disposition_and_still_no_developer_tools(monkeypatch, tm
     client.post("/auth/login", json={"username": "editor", "pin": "2468"})
 
     index = _embedded_index(client)
-    assert {"Disposition", "Disposition Work Orders", "Disposition PM Resets"} <= _labels(index)
+    assert {"Disposition", "Work orders not reviewed", "Migrated dispositions to confirm"} <= _labels(index)
     assert not [entry for entry in index if entry["context"] == "Developer"]
     assert "Log out" in _labels(index)
 
