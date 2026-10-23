@@ -514,17 +514,21 @@
     setTimeout(remove, 5000);
   }
 
-  // The top bar is pinned over the page, so a plain scrollIntoView({block:"start"})
-  // parks the target's heading underneath it. scrollIntoView honours
-  // scroll-margin-top, so reserve the bar's height there. The filters sit beside
-  // the results, not over them, so nothing else needs room.
+  // The topbar is pinned at the top of the viewport and the Step 1 card is pinned
+  // directly below it, so a plain scrollIntoView({block:"start"}) parks the target's
+  // heading underneath them. scrollIntoView honours scroll-margin-top, so reserve the
+  // pinned height there. offsetHeight (not getBoundingClientRect) is used for the
+  // Step 1 card because its on-screen box depends on how far the page is already
+  // scrolled, while its layout height does not.
   const STICKY_TOPBAR_HEIGHT = 74;
   function scrollBelowSticky(node) {
     if (!node) return;
     // While the tour is open it decides what is on screen. A scroll of the page's
     // own, landing a frame after the tour's, would carry the lit part away.
     if (window.gremlinTour && window.gremlinTour.isOpen()) return;
-    node.style.scrollMarginTop = `${STICKY_TOPBAR_HEIGHT + 12}px`;
+    const step1 = $("lda-step1-card");
+    const pinned = STICKY_TOPBAR_HEIGHT + (step1 && !step1.hidden ? step1.offsetHeight : 0);
+    node.style.scrollMarginTop = `${pinned + 12}px`;
     node.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -560,9 +564,6 @@
     state.asset = asset;
     state.selection = emptySelection();
     state.drillHistory = [];
-    // Another asset's lists: nothing searched for, and each from the top.
-    sideFilters.search = {};
-    sideFilters.scroll = {};
     state.groupBy = "sub_asset";
     $("lda-pareto-group").value = "sub_asset";
     state.summary = null;
@@ -571,7 +572,6 @@
     clearWorkspace();
     $("lda-population-card").hidden = !asset;
     $("lda-summary-card").hidden = !asset;
-    $("lda-start-card").hidden = Boolean(asset);
     state.renderedReadiness = null;
     if (!asset) return;
     showLoadingSkeletons();
@@ -625,31 +625,12 @@
     }
   }
 
-  // The filters in the sidebar: one section per dimension, each value with how
-  // many work orders in reach carry it, then the categories, dates and the
-  // induced-failure switch. A value that is selected but not in the list (a
-  // drill into "not coded", or a retired code) still shows, ticked.
-  //
-  // Every tick draws the sections again, so which are open, what each is
-  // searched for and how far each list is scrolled are kept here: ticking a value
-  // neither folds its section nor jumps its list back to the top.
-  const sideFilters = { open: new Set(["locations"]), search: {}, scroll: {} };
-  // A list longer than this gets a search box.
-  const SIDE_SEARCH_FROM = 8;
-
-  function filterSideList(list, term) {
-    const needle = (term || "").trim().toLowerCase();
-    list.querySelectorAll("label").forEach((label) => {
-      const ticked = label.querySelector("input").checked;
-      label.hidden = Boolean(needle) && !ticked && !label.dataset.text.includes(needle);
-    });
-  }
-
+  // The selector: one list per dimension, each value with how many work orders
+  // in reach carry it, plus the categories, the induced-failure switch and the
+  // dates. A value that is selected but not in the list (a drill into "not
+  // coded", or a retired code) still shows, ticked.
   function renderSelector() {
     const wrap = $("lda-population-selector");
-    wrap.querySelectorAll(".std-multi[data-key]").forEach((list) => {
-      sideFilters.scroll[list.dataset.key] = list.scrollTop;
-    });
     wrap.innerHTML = "";
     const dimensions = (state.options && state.options.dimensions) || {};
     shownDimensions().forEach(([key, label]) => {
@@ -658,7 +639,7 @@
       chosen.forEach((value) => {
         if (!values.some((option) => option.value === value)) values.unshift({ value, label: value, count: 0 });
       });
-      const list = el("div", { class: "std-multi", role: "group", "aria-label": label, "data-key": key });
+      const list = el("div", { class: "std-multi", role: "group", "aria-label": label });
       if (!values.length) list.appendChild(el("span", { class: "std-multi-empty", text: "None coded yet" }));
       values.forEach((option) => {
         const box = el("input", {
@@ -674,63 +655,26 @@
           },
         });
         // A sub-asset sits indented under its parent, as in the Disposition page's dropdown.
-        const indent = option.depth > 1 ? `${"   ".repeat(option.depth - 1)}└ ` : "";
-        list.appendChild(el("label", { "data-text": String(option.label).toLowerCase() }, [
-          box,
-          el("span", { text: indent + option.label }),
-          el("span", { class: "std-count", text: String(option.count) }),
-        ]));
+        const indent = option.depth > 1 ? `${"\u00a0\u00a0\u00a0".repeat(option.depth - 1)}└ ` : "";
+        list.appendChild(el("label", {}, [box, el("span", { text: indent + option.label }), el("span", { class: "std-count", text: String(option.count) })]));
       });
-      const search = values.length > SIDE_SEARCH_FROM
-        ? el("input", {
-            type: "search",
-            class: "lda-side-search",
-            placeholder: `Search ${label.toLowerCase()}…`,
-            "aria-label": `Search ${label.toLowerCase()}`,
-            value: sideFilters.search[key] || "",
-            oninput: (event) => {
-              sideFilters.search[key] = event.target.value;
-              filterSideList(list, event.target.value);
-            },
-          })
-        : null;
-      const section = el("details", { class: "lda-side-filter", id: `lda-dim-${key}`, open: sideFilters.open.has(key) }, [
-        el("summary", {}, [
-          el("span", { class: "lda-side-filter-name", text: label }),
-          chosen.length ? el("span", { class: "lda-side-filter-count", text: String(chosen.length) }) : null,
+      wrap.appendChild(el("div", { class: "lda-field", id: `lda-dim-${key}` }, [
+        el("div", { class: "std-multi-head" }, [
+          el("span", { class: "lda-field-label", text: label }),
           chosen.length
-            ? el("button", {
-                type: "button",
-                class: "lda-link-btn",
-                text: "Clear",
-                title: `Take every ${label.toLowerCase()} back out`,
-                onclick: (event) => {
-                  // Inside the summary, so it must not open or fold the section too.
-                  event.preventDefault();
-                  state.selection[key] = [];
-                  state.drillHistory = [];
-                  onPopulationChange();
-                },
-              })
-            : null,
-          chosen.length
-            ? el("span", { class: "lda-side-filter-picked", text: chosen.map((value) => valueLabel(key, value)).join(", ") })
+            ? el("button", { type: "button", text: "Clear", onclick: () => {
+                state.selection[key] = [];
+                state.drillHistory = [];
+                onPopulationChange();
+              } })
             : null,
         ]),
-        el("div", { class: "lda-side-filter-body" }, [search, list]),
-      ]);
-      section.addEventListener("toggle", () => {
-        if (section.open) sideFilters.open.add(key);
-        else sideFilters.open.delete(key);
-      });
-      wrap.appendChild(section);
-      filterSideList(list, sideFilters.search[key]);
-      list.scrollTop = sideFilters.scroll[key] || 0;
+        list,
+      ]));
     });
     const categories = $("lda-categories");
     categories.innerHTML = "";
-    const categoryOptions = (state.options && state.options.categories) || [];
-    categoryOptions.forEach((option) => {
+    ((state.options && state.options.categories) || []).forEach((option) => {
       categories.appendChild(el("label", { class: "lda-checkbox" }, [
         el("input", {
           type: "checkbox",
@@ -745,20 +689,8 @@
         option.label,
       ]));
     });
-    $("lda-categories-picked").textContent = categoryOptions
-      .filter((option) => state.categories.includes(option.value))
-      .map((option) => option.label)
-      .join(", ");
-    renderDateSummary();
     $("lda-exclude-induced").checked = state.excludeInduced;
-    setHidden($("lda-population-reset"), !hasNarrowing());
     renderDrill();
-  }
-
-  // The Dates section's summary: the range in force, or nothing for all dates.
-  function renderDateSummary() {
-    const { from, to } = state.dateRange;
-    $("lda-dates-picked").textContent = from || to ? `${from || "start"} to ${to || "today"}` : "";
   }
 
   // A selected value as the selector lists it: a sub-asset by its name, a code
@@ -784,7 +716,7 @@
   // from where the drilling started, each step clickable to go back to it, with
   // Back for the last one and Start over. Filters ticked by hand show as chips
   // that each take one back out. So undoing a drill never means scrolling back
-  // up to the filters.
+  // up to the population.
   function renderDrill() {
     const wrap = $("lda-drill");
     wrap.innerHTML = "";
@@ -798,7 +730,6 @@
     });
     if (history.length) {
       const trail = el("ol", { class: "lda-crumbs" });
-      const assetName = state.asset || "the asset";
       const rootNarrowed = DIMENSIONS.some(([key]) => history[0].selection[key].length);
       const crumb = (text, index) => el("li", {}, [el("button", {
         type: "button",
@@ -807,7 +738,7 @@
         title: "Go back to here",
         onclick: () => restoreDrill(index),
       })]);
-      trail.appendChild(crumb(rootNarrowed ? "Your filters" : `All of ${assetName}`, 0));
+      trail.appendChild(crumb(rootNarrowed ? "Your filters" : `All of ${state.asset || "the asset"}`, 0));
       for (let index = 1; index < history.length; index += 1) {
         trail.appendChild(crumb(stepLabel(history[index - 1].step), index));
       }
@@ -887,8 +818,6 @@
     Object.entries(changes).forEach(([key, value]) => {
       if (key === "categories") state.categories = [value];
       else state.selection[key] = [value];
-      // Its section in the sidebar opens, so the narrowing shows there too.
-      sideFilters.open.add(key);
     });
     // The Weibull's Pareto is always by sub-asset, component and mechanism.
     if (nextGroupBy && !isWeibull()) {
@@ -1133,7 +1062,6 @@
     }
     if (from === state.dateRange.from && to === state.dateRange.to) return;
     state.dateRange = { from, to };
-    renderDateSummary();
     resetAnalyses();
     clearWorkspace();
     refresh();
@@ -4447,7 +4375,7 @@
     if (!window.gremlinTour || window.gremlinTour.isOpen()) return;
     tourExampleTried = false;
     tourFitTried = false;
-    window.gremlinTour.start(ANALYSIS_TOUR_STEPS, { seenKey: ANALYSIS_TOUR_SEEN_KEY, pinned: [".topbar"] });
+    window.gremlinTour.start(ANALYSIS_TOUR_STEPS, { seenKey: ANALYSIS_TOUR_SEEN_KEY, pinned: [".topbar", "#lda-step1-card"] });
   }
 
   // ---- start -------------------------------------------------------------------------
@@ -4505,7 +4433,6 @@
       state.repeatFilter = null;
       renderRepeat();
     });
-    $("lda-population-reset").addEventListener("click", startOver);
     $("lda-perform").addEventListener("click", performAnalysis);
     $("analysis-tour-btn").addEventListener("click", startAnalysisTour);
     applyAnalysisTypeUI();

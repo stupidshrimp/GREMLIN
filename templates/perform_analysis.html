@@ -17,85 +17,68 @@
   <button type="button" class="page-tour-btn" id="analysis-tour-btn">Show me around</button>
 </section>
 
-{#- Two columns: what is analysed on the left, kept in view as the results
-    scroll; the results on the right. Step 1 and the population are one panel,
-    so every filter stays a click away from the Pareto it narrows. A narrow
-    screen stacks them, the filters first. -#}
-<div class="lda-layout" id="lda-layout">
-  <aside class="glass-card slide-in lda-sidebar" id="lda-sidebar" aria-label="Asset, analysis and population">
-    <section class="lda-side-section" id="lda-step1-card" aria-labelledby="lda-step-1">
-      <p class="eyebrow">Step 1</p>
-      <h2 id="lda-step-1">Asset and analysis</h2>
-      <div class="lda-selectors">
-        <div class="lda-field" id="lda-asset-field">
-          <label for="lda-asset">Asset Number</label>
-          <div class="lda-combobox" id="lda-asset-combobox">
-            <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
-                   aria-autocomplete="list" aria-expanded="false" aria-controls="lda-asset-list"
-                   placeholder="Search imported Asset Number values…">
-            <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
-          </div>
-        </div>
-        <div class="lda-field" id="lda-type-field">
-          <label for="lda-analysis-type">Analysis Type</label>
-          <select id="lda-analysis-type" name="analysis_type">
-            <option value="Weibull Analysis" selected>Weibull Analysis</option>
-            <option value="Triage Analysis">Triage Analysis</option>
-            <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
-            <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
-            <option value="Repeat Fix Rate Analysis">Repeat Fix Rate Analysis</option>
-          </select>
-        </div>
-      </div>
-      <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
-    </section>
+<div id="lda-status" class="lda-banner" role="status" hidden></div>
 
-    <section class="lda-side-section" id="lda-population-card" aria-labelledby="lda-step-2" hidden>
-      <div class="lda-side-head">
-        <div>
-          <p class="eyebrow">Step 2</p>
-          <h2 id="lda-step-2">Population</h2>
-        </div>
-        <button type="button" class="lda-link-btn" id="lda-population-reset" hidden>Clear all</button>
+<section class="glass-card slide-in lda-card lda-step1-sticky" id="lda-step1-card" aria-labelledby="lda-step-1">
+  <p class="eyebrow">Step 1</p>
+  <h2 id="lda-step-1">Select asset and analysis type</h2>
+  <div class="lda-selectors">
+    <div class="lda-field" id="lda-asset-field">
+      <label for="lda-asset">Asset Number</label>
+      <div class="lda-combobox" id="lda-asset-combobox">
+        <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
+               aria-autocomplete="list" aria-expanded="false" aria-controls="lda-asset-list"
+               placeholder="Search imported Asset Number values…">
+        <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
       </div>
-      <p class="lda-hint" id="lda-population-hint-weibull">Leave a list unticked for no restriction. Sub-asset and
-         component choose whose lives are pooled, mechanism which failures count.</p>
-      <p class="lda-hint" id="lda-population-hint-triage" hidden>Leave a list unticked for no restriction. Clicking a
-         Pareto bar or a matrix cell narrows these for you.</p>
-      <div class="lda-side-filters" id="lda-population-selector"></div>
-      <details class="lda-side-filter" id="lda-categories-field" open>
-        <summary><span class="lda-side-filter-name">Disposition categories</span><span class="lda-side-filter-picked" id="lda-categories-picked"></span></summary>
-        <div class="lda-side-checks" id="lda-categories" role="group" aria-label="Disposition categories"></div>
-      </details>
-      <details class="lda-side-filter" id="lda-dates">
-        <summary><span class="lda-side-filter-name">Dates</span><span class="lda-side-filter-picked" id="lda-dates-picked"></span></summary>
-        <div class="lda-side-dates">
-          <div class="lda-field">
-            <label for="lda-date-from">From</label>
-            <input type="date" id="lda-date-from">
-          </div>
-          <div class="lda-field">
-            <label for="lda-date-to">To</label>
-            <input type="date" id="lda-date-to">
-          </div>
-          <button type="button" class="btn-secondary" id="lda-date-reset">All dates</button>
-        </div>
-      </details>
-      <label class="lda-checkbox lda-side-induced" id="lda-induced-field">
-        <input type="checkbox" id="lda-exclude-induced">
-        Count induced failures (installation and maintenance errors) as suspensions
-      </label>
-      <p class="std-pop-string" id="lda-pop-string" title="The population definition every saved Weibull run keeps"></p>
-    </section>
-  </aside>
+    </div>
+    <div class="lda-field" id="lda-type-field">
+      <label for="lda-analysis-type">Analysis Type</label>
+      <select id="lda-analysis-type" name="analysis_type">
+        <option value="Weibull Analysis" selected>Weibull Analysis</option>
+        <option value="Triage Analysis">Triage Analysis</option>
+        <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
+        <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
+        <option value="Repeat Fix Rate Analysis">Repeat Fix Rate Analysis</option>
+      </select>
+    </div>
+  </div>
+  <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
+</section>
 
-  <div class="lda-main" id="lda-main">
-    <div id="lda-status" class="lda-banner" role="status" hidden></div>
-    <section class="glass-card slide-in lda-card lda-start-card" id="lda-start-card">
-      <h2>Pick an asset to begin</h2>
-      <p class="lda-hint">Choose an Asset Number on the left. Its analysis appears here, and the filters under it narrow
-         what every view reads.</p>
-    </section>
+<section class="glass-card slide-in lda-card" id="lda-population-card" aria-labelledby="lda-step-2" hidden>
+  <p class="eyebrow">Step 2</p>
+  <h2 id="lda-step-2">Analysis population</h2>
+  <p class="lda-hint" id="lda-population-hint-weibull">Leave a list unticked for no restriction on it. Sub-asset and
+     component choose which items' lives are pooled, and mechanism which of their failures count. The sub-asset list
+     follows the asset's hierarchy. A Pareto bar below is one of each: clicking it fits that one.</p>
+  <p class="lda-hint" id="lda-population-hint-triage" hidden>Leave a list unticked for no restriction on it. The
+     sub-asset list follows the asset's hierarchy; clicking a Pareto bar or a matrix cell below narrows it for you
+     too.</p>
+  <div class="std-selector" id="lda-population-selector"></div>
+  <div class="lda-population-row">
+    <div class="lda-field" id="lda-categories-field">
+      <span class="lda-field-label">Disposition categories</span>
+      <div class="std-checklist" id="lda-categories" role="group" aria-label="Disposition categories"></div>
+    </div>
+    <div class="lda-trend-controls" id="lda-dates">
+      <div class="lda-field">
+        <label for="lda-date-from">From</label>
+        <input type="date" id="lda-date-from">
+      </div>
+      <div class="lda-field">
+        <label for="lda-date-to">To</label>
+        <input type="date" id="lda-date-to">
+      </div>
+      <button type="button" class="btn-secondary" id="lda-date-reset">All dates</button>
+    </div>
+    <label class="lda-checkbox" id="lda-induced-field">
+      <input type="checkbox" id="lda-exclude-induced">
+      Count induced failures (installation and maintenance errors) as suspensions
+    </label>
+  </div>
+  <p class="std-pop-string" id="lda-pop-string" title="The population definition every saved Weibull run keeps"></p>
+</section>
 
 <section id="lda-summary-card" class="glass-card slide-in lda-card" aria-labelledby="lda-step-3" hidden>
   <p class="eyebrow">Step 3</p>
@@ -276,8 +259,6 @@
 </section>
 
 <div id="lda-workspace" class="lda-workspace"></div>
-  </div>
-</div>
 
 <div id="lda-loading" class="lda-loading" hidden>
   <div class="lda-loading-card" role="status" aria-live="polite">

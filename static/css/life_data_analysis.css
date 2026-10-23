@@ -64,128 +64,32 @@
 .lda-field { display: grid; gap: 0.35rem; }
 .lda-field label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
 
-/* ---- The page: filters beside the results -------------------------------
-   Step 1 and the population are one panel on the left that stays in view, just
-   below the 74px sticky top bar, scrolling on its own when it is taller than
-   the screen; the results take the rest of the width. A narrow screen stacks
-   them, the filters first, and lets the panel scroll away with the page. */
-.lda-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
-  gap: 1.2rem;
-  align-items: start;
-}
-.lda-main { display: grid; gap: 1.2rem; min-width: 0; align-content: start; }
-.lda-sidebar {
+/* Step 1 card stays pinned just below the 74px sticky topbar so the Asset Number
+   and Analysis Type controls follow the screen while the workspace scrolls. A more
+   opaque background than the default glass-card keeps scrolling content from
+   showing through; z-index sits below the topbar (30) but above the scrolling
+   workspace so the asset combobox dropdown (z-index 50 within this card) is never
+   clipped by panels below. */
+.lda-step1-sticky {
   position: sticky;
-  top: 86px;
-  max-height: calc(100vh - 98px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: grid;
-  gap: 1rem;
-  padding: 1rem 1rem 1.15rem;
-  /* Above the results it sits beside, so the asset list it opens is never under them. */
-  z-index: 5;
+  top: 74px;
+  z-index: 15;
+  gap: 0.4rem;
+  padding: 0.9rem 1.1rem;
   background: var(--glass-bg-strong);
 }
-/* Grid items take their content's width by default, so one long picked value on
-   a line of its own would widen the whole panel past its edge. */
-.lda-side-section,
-.lda-side-section > *,
-.lda-side-filters > * { min-width: 0; }
-.lda-side-section { display: grid; gap: 0.6rem; align-content: start; }
-.lda-side-section + .lda-side-section { border-top: 1px solid var(--border); padding-top: 1rem; }
-.lda-sidebar .eyebrow { margin: 0; line-height: 1.1; }
-.lda-sidebar h2 { margin: 0; font-size: 1.15rem; line-height: 1.2; }
-.lda-sidebar .lda-hint { margin: 0; font-size: 0.8rem; line-height: 1.35; }
-.lda-sidebar .lda-selectors { grid-template-columns: 1fr; gap: 0.7rem; }
-.lda-side-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.5rem; }
-.lda-link-btn {
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--forest-700);
-  background: none;
-  border: none;
-  padding: 0 0.15rem;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.lda-link-btn:hover,
-.lda-link-btn:focus-visible { color: var(--forest-900); }
 
-/* One folding section per filter: its name, how many are ticked and which,
-   then its list. */
-.lda-side-filters { display: grid; gap: 0.45rem; }
-.lda-side-filter { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.lda-side-filter > summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.15rem 0.45rem;
-  padding: 0.5rem 0.65rem;
-  cursor: pointer;
-  list-style: none;
-  font-weight: 600;
-  font-size: 0.86rem;
-  color: var(--forest-800);
+.lda-step1-sticky .eyebrow { line-height: 1.1; }
+.lda-step1-sticky h2 {
+  margin: 0;
+  font-size: clamp(1.25rem, 1.05rem + 0.55vw, 1.55rem);
+  line-height: 1.2;
 }
-.lda-side-filter > summary::-webkit-details-marker { display: none; }
-.lda-side-filter > summary::before {
-  content: "▸";
-  color: var(--muted);
-  font-size: 0.72rem;
-  transition: transform 0.15s ease;
-}
-.lda-side-filter[open] > summary::before { transform: rotate(90deg); }
-.lda-side-filter > summary:focus-visible { outline: 2px solid var(--forest-700); outline-offset: -2px; border-radius: 10px; }
-.lda-side-filter-name { flex: 1 1 auto; }
-.lda-side-filter-count {
-  background: var(--accent-solid);
-  color: var(--accent-solid-ink);
-  border-radius: 999px;
-  padding: 0 0.45rem;
-  font-size: 0.72rem;
-  line-height: 1.5;
-}
-.lda-side-filter-picked {
-  flex: 1 0 100%;
-  min-width: 0;
-  padding-left: 1.05rem;
-  font-weight: 400;
-  font-size: 0.76rem;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lda-side-filter-picked:empty { display: none; }
-.lda-side-filter-body { display: grid; gap: 0.4rem; padding: 0 0.55rem 0.55rem; }
-.lda-side-filter .std-multi { max-height: 230px; border: none; padding: 0.1rem 0.15rem; background: transparent; }
-.lda-side-search {
-  font: inherit;
-  font-size: 0.8rem;
-  width: 100%;
-  padding: 0.35rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-}
-.lda-side-checks { display: grid; gap: 0.35rem; padding: 0 0.65rem 0.6rem; font-size: 0.84rem; }
-.lda-side-dates { display: grid; gap: 0.55rem; padding: 0 0.65rem 0.65rem; }
-.lda-side-dates .btn-secondary { justify-self: start; }
-.lda-side-induced { font-size: 0.82rem; align-items: flex-start; }
-.lda-sidebar .std-pop-string { margin: 0; font-size: 0.74rem; }
-
-.lda-start-card h2 { margin: 0; }
-.lda-start-card .lda-hint { margin: 0; }
-
-@media (max-width: 1100px) {
-  .lda-layout { grid-template-columns: minmax(0, 1fr); }
-  .lda-sidebar { position: static; max-height: none; overflow: visible; }
+.lda-step1-sticky .lda-selectors { gap: 0.75rem; }
+.lda-step1-sticky .lda-field { gap: 0.25rem; }
+.lda-step1-sticky .lda-hint {
+  margin-top: 0.05rem;
+  line-height: 1.25;
 }
 
 .lda-field input,

@@ -335,6 +335,15 @@ table.lda-table td.std-suspension { color: var(--success-ink); font-weight: 600;
 /* ---- Disposition page --------------------------------------------------- */
 .std-excel { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; align-items: center; }
 
+.lda-population-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+  align-items: flex-end;
+  margin-top: 0.9rem;
+}
+.lda-population-row #lda-categories-field { flex: 1 1 340px; }
+.lda-population-row .std-checklist { max-height: none; }
 /* Right above the Pareto's bars: the way the drilling came, each step a click
    back to it, with Back and Start over; or the filters ticked by hand as chips. */
 .lda-drill {
