@@ -46,7 +46,15 @@ parent) and by date. What the selector offers depends on the Analysis Type:
   sub-asset, component, mechanism, mode, cause and action — and by disposition
   category. Their Pareto is grouped by the dimension chosen (sub-asset at first,
   or component for an asset with no sub-assets), and a bar or matrix cell drills
-  down sub-asset → component → mechanism.
+  down sub-asset → component → mechanism. A breadcrumb right above the bars
+  shows the way the drilling came: each step is a click back to it, with Back
+  for the last drill and Start over.
+
+The asset, the analysis type and every filter sit in one panel on the left that
+stays in view while the results on the right scroll (on a narrow screen it
+stacks above them). Each filter folds, shows what is ticked in it when folded,
+and has a search box once its list is long; a tick redraws the panel without
+folding the section or losing its search and scroll.
 
 Sub-asset, component and mechanism carry across a switch between the two; the
 mode, cause, action and categories ticked for the second group wait there while
