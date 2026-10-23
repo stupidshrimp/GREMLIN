@@ -414,7 +414,10 @@
     shownDimensions().forEach(() => {
       selector.appendChild(el("div", { class: "lda-field" }, [...skeleton("lda-skeleton-label"), ...skeleton("lda-skeleton-list")]));
     });
+    // The drill bar and the Triage note are the last asset's until this one's are in.
     $("lda-drill").innerHTML = "";
+    $("lda-drill").hidden = true;
+    $("lda-trend-note").hidden = true;
     const grid = $("lda-summary-grid");
     grid.innerHTML = "";
     grid.classList.remove("lda-reveal-stagger");
@@ -457,6 +460,19 @@
     }
     const ends = panelIds.map((id, index) => busy($(id), index === 0 ? message : null));
     return () => ends.forEach((end) => end());
+  }
+
+  // A saved fit opened from the rankings is read before it shows: a placeholder
+  // result card holds its place meanwhile.
+  function showFitSkeleton(message) {
+    const workspace = $("lda-workspace");
+    workspace.innerHTML = "";
+    workspace.appendChild(el("section", { class: "glass-card lda-card lda-skeleton-card lda-reveal", id: "lda-fit-loading", "aria-busy": "true" }, [
+      el("p", { class: "lda-hint lda-skeleton-caption" }, [el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }), message]),
+      ...skeleton("lda-skeleton-line is-short"),
+      ...skeleton("lda-skeleton-line"),
+      el("div", { class: "lda-skeleton-pair" }, skeleton("lda-skeleton-block", 2)),
+    ]));
   }
 
   function showBanner(message, kind) {
@@ -670,6 +686,8 @@
             const next = state.categories.filter((value) => value !== option.value);
             if (event.target.checked) next.push(option.value);
             state.categories = next;
+            // A drill remembers the categories it came from: Back would undo this.
+            state.drillHistory = [];
             onPopulationChange();
           },
         }),
@@ -692,7 +710,10 @@
     return option ? option.label : value;
   }
 
-  const hasNarrowing = () => DIMENSIONS.some(([key]) => state.selection[key].length);
+  // Whether a selection narrows what the analysis type showing reads: the mode,
+  // cause and action ticked for the other views wait unread while the Weibull shows.
+  const narrows = (selection) => shownDimensions().some(([key]) => selection[key].length);
+  const hasNarrowing = () => narrows(state.selection);
 
   // A drill step as its crumb reads: what the click narrowed to.
   function stepLabel(step) {
@@ -717,7 +738,8 @@
     });
     if (history.length) {
       const trail = el("ol", { class: "lda-crumbs" });
-      const rootNarrowed = DIMENSIONS.some(([key]) => history[0].selection[key].length);
+      const rootNarrowed = narrows(history[0].selection);
+      const assetLabel = (state.options && state.options.asset_labels && state.options.asset_labels[state.asset]) || state.asset || "the asset";
       const crumb = (text, index) => el("li", {}, [el("button", {
         type: "button",
         class: "lda-crumb",
@@ -725,7 +747,7 @@
         title: "Go back to here",
         onclick: () => restoreDrill(index),
       })]);
-      trail.appendChild(crumb(rootNarrowed ? "Your filters" : `All of ${state.asset || "the asset"}`, 0));
+      trail.appendChild(crumb(rootNarrowed ? "Your filters" : `All of ${assetLabel}`, 0));
       for (let index = 1; index < history.length; index += 1) {
         trail.appendChild(crumb(stepLabel(history[index - 1].step), index));
       }
@@ -764,7 +786,9 @@
       wrap.hidden = false;
       return;
     }
-    if (!isWeibull()) {
+    // A Pareto by detection method has nothing to narrow by: a click only says so.
+    const narrowsBy = state.options && state.options.group_by_selection;
+    if (!isWeibull() && (!narrowsBy || narrowsBy[state.groupBy])) {
       wrap.appendChild(el("span", { class: "lda-hint", text: "Click a bar to narrow the population to it." }));
       wrap.hidden = false;
       return;
@@ -773,6 +797,9 @@
   }
 
   function startOver() {
+    // A drill into a disposition category narrowed the categories too: back to
+    // the ones from before the first drill, as the first crumb would.
+    if (state.drillHistory.length) state.categories = state.drillHistory[0].categories.slice();
     state.selection = emptySelection();
     state.drillHistory = [];
     setGroupBy(defaultGroupBy());
@@ -801,21 +828,25 @@
 
   // Narrow the population by one value of a dimension, remembering where it was.
   function drillInto(changes, nextGroupBy) {
+    // The one bar left once the drilling bottoms out, or the cell already
+    // narrowed to, changes nothing: no step for the breadcrumb or Back.
+    const only = (list, value) => list.length === 1 && list[0] === value;
+    const unchanged = Object.entries(changes).every(([key, value]) =>
+      only(key === "categories" ? state.categories : state.selection[key], value));
+    if (unchanged && (!nextGroupBy || isWeibull() || nextGroupBy === state.groupBy)) return;
     rememberDrill(changes);
     Object.entries(changes).forEach(([key, value]) => {
       if (key === "categories") state.categories = [value];
       else state.selection[key] = [value];
     });
     // The Weibull's Pareto is always by sub-asset, component and mechanism.
-    if (nextGroupBy && !isWeibull()) {
-      state.groupBy = nextGroupBy;
-      $("lda-pareto-group").value = nextGroupBy;
-    }
+    if (nextGroupBy && !isWeibull()) setGroupBy(nextGroupBy);
     onPopulationChange();
   }
 
   // Back to where the population was before drill `index`, forgetting the
-  // drills after it.
+  // drills after it. Read as any change is, so a drill's read still waiting is
+  // replaced rather than run as well.
   function restoreDrill(index) {
     const target = state.drillHistory[index];
     if (!target) return;
@@ -823,10 +854,7 @@
     state.selection = target.selection;
     state.categories = target.categories;
     setGroupBy(target.groupBy);
-    renderSelector();
-    resetAnalyses();
-    clearWorkspace();
-    refresh();
+    onPopulationChange();
   }
 
   function drillBack() {
@@ -908,8 +936,9 @@
     return "";
   }
 
-  // Opening a ranked fit makes its population the page's, and the Weibull view
-  // then shows the latest fit saved for it.
+  // Opening a ranked fit makes its population the page's and shows that saved
+  // fit (or, given only a population, as the tour's example is, the latest fit
+  // saved for it). Nothing else opens a saved fit by itself.
   function openRankedFit(row) {
     const selection = row.selection || {};
     state.selection = emptySelection();
@@ -925,7 +954,9 @@
     renderSelector();
     resetAnalyses();
     clearWorkspace();
-    return refresh();
+    clearTimeout(populationDebounce);
+    const opened = loadSavedFit(row.analysis_id);
+    return Promise.all([refresh(), opened]);
   }
 
   function rankingItem(row, text) {
@@ -1444,7 +1475,8 @@
     // [key, title, detail of a value, what an empty card says, whether it compares months]
     [
       ["most_frequent", `Most frequent ${dimension}`, (c) => `${c.value} work orders`, null, false],
-      ["highest_downtime", "Highest downtime", (c) => `${fmt(c.value)} downtime hours`, "No downtime recorded", false],
+      // Downtime on the asset itself or on work orders not coded here isn't any value's.
+      ["highest_downtime", "Highest downtime", (c) => `${fmt(c.value)} downtime hours`, `No ${dimension} has downtime recorded`, false],
       ["fastest_growing", "Fastest growing", (c) => trendDeltaText(c.value), `No ${dimension} increased`, true],
       ["most_improved", "Most improved", (c) => trendDeltaText(c.value), `No ${dimension} decreased`, true],
     ].forEach(([key, label, detail, emptyText, overMonths]) => {
@@ -1950,15 +1982,16 @@
     hint.textContent = pieces.join(" ");
   }
 
-  // The fit saved for exactly this population, whatever its window: shown when the
-  // population changes, so a saved fit is there without running anything.
   // The Weibull's workspace before anything is fitted. Choosing an asset, or
   // changing the population, never fits or opens a fit by itself: a bar of the
   // Pareto or Perform Analysis does, and a saved fit opens from the rankings.
+  // Every population change has already emptied the workspace and dropped any
+  // fit on its way (resetAnalyses), so the prompt only fills an empty one: a fit
+  // run, or a saved fit opened, while the summary was being read stays.
   function showFitPrompt() {
-    state.analysisToken += 1;
-    clearWorkspace();
-    $("lda-workspace").appendChild(el("section", { class: "glass-card lda-card lda-empty-result", id: "lda-no-fit" }, [
+    const workspace = $("lda-workspace");
+    if (state.result || workspace.childElementCount) return;
+    workspace.appendChild(el("section", { class: "glass-card lda-card lda-empty-result", id: "lda-no-fit" }, [
       el("h2", { text: "No Weibull fitted yet" }),
       el("p", {
         class: "lda-hint",
@@ -1969,6 +2002,47 @@
           : "Click a Pareto bar, or Preview the fit, to see one. Saved fits open from the rankings above.",
       }),
     ]));
+  }
+
+  // A saved fit, opened from the rankings: that run when its id is known, else
+  // the latest run saved for exactly the population on screen. Never fits anything.
+  async function loadSavedFit(analysisId) {
+    const asset = state.asset;
+    const token = ++state.analysisToken;
+    showFitSkeleton("Opening the saved Weibull fit…");
+    $("lda-fit-loading").dataset.token = String(token);
+    // Something newer took over: its own placeholder or result stays, but this
+    // one's placeholder is not left spinning in its place.
+    const superseded = () => {
+      const loading = $("lda-fit-loading");
+      if (loading && loading.dataset.token === String(token)) {
+        clearWorkspace();
+        if (isWeibull()) showFitPrompt();
+      }
+    };
+    const end = busy(null, "Opening the saved fit…");
+    try {
+      const data = analysisId != null
+        ? await getJson(`${API}/saved-analysis/${encodeURIComponent(analysisId)}`)
+        : await postJson(`${API}/saved-analysis`, populationBody());
+      if (token !== state.analysisToken || asset !== state.asset || !isWeibull()) {
+        superseded();
+        return;
+      }
+      clearWorkspace();
+      if (data.result) renderAnalysisResult(data.result, { scroll: true });
+      else showFitPrompt();
+    } catch (err) {
+      if (token === state.analysisToken) {
+        clearWorkspace();
+        showFitPrompt();
+        if (!err.toastShown) showBanner(err.message, "error");
+      } else {
+        superseded();
+      }
+    } finally {
+      end();
+    }
   }
 
   // Perform Analysis saves the run for an editor; anybody else previews it.
@@ -4392,6 +4466,8 @@
     const group = $("lda-pareto-group");
     group.addEventListener("change", () => {
       state.groupBy = group.value;
+      // Whether a bar click narrows depends on the dimension.
+      renderDrill();
       loadSummary();
     });
     $("lda-pareto-metric").addEventListener("click", (event) => {
