@@ -2552,6 +2552,47 @@ def _username() -> str | None:
     return (current_user() or {}).get("username")
 
 
+def _built_in_temp_file(build, *, suffix: str, prefix: str | None = None):
+    """Run ``build(path)`` on a fresh temp file and return (its result, the file's bytes).
+
+    Built in a temp file, served from memory, and the file deleted at once, so
+    repeated downloads never leave files behind.
+    """
+
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
+    os.close(fd)
+    try:
+        result = build(path)
+        with open(path, "rb") as handle:
+            return result, handle.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _read_uploaded_workbook(upload, read, unreadable: str):
+    """Return ``read(path)`` for an uploaded .xlsx saved to a temp file, deleted after.
+
+    A file that is not a workbook at all is refused with ``unreadable``.
+    """
+
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        upload.save(path)
+        try:
+            return read(path)
+        except (zipfile.BadZipFile, KeyError, ET.ParseError):
+            raise LifeDataApiError(unreadable) from None
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _optional_plant_date(value, what: str) -> date | None:
     """An optional YYYY-MM-DD date from a JSON payload; blank means "not set".
 
@@ -2665,12 +2706,13 @@ def api_disposition_record():
     except (TypeError, ValueError):
         raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400)
     service = _standard_service()
+    # An id SQLite cannot hold names no record, rather than a server error.
+    storable = -(2**63) <= mapped_record_id < 2**63
     if (request.values.get("history_only") or "").strip() in ("1", "true"):
         # The Disposition page already holds the record and its options; it asks
         # only for what the record's history pane shows.
-        return jsonify({"history": service.disposition_history(mapped_record_id)})
-    # An id SQLite cannot hold names no record, rather than a server error.
-    record = service.disposition_record(mapped_record_id) if -(2**63) <= mapped_record_id < 2**63 else None
+        return jsonify({"history": service.disposition_history(mapped_record_id) if storable else []})
+    record = service.disposition_record(mapped_record_id) if storable else None
     if record is None:
         raise LifeDataApiError("That record was not found.", status_code=404)
     return jsonify({
@@ -2711,19 +2753,9 @@ def api_download_disposition_excel():
     safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
     # In the name, so a backlog workbook is not mistaken for the full record set later.
     scope_token = {"not_reviewed": "not_reviewed_", "migrated": "to_confirm_"}.get(scope, "")
-    # Built in a temp file, served from memory, and the file deleted at once, so
-    # repeated downloads never leave files behind.
-    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix=f"{safe_asset}_")
-    os.close(fd)
-    try:
-        service.export_excel(asset_number, path, **view)
-        with open(path, "rb") as handle:
-            workbook_bytes = handle.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    _, workbook_bytes = _built_in_temp_file(
+        lambda path: service.export_excel(asset_number, path, **view), suffix=".xlsx", prefix=f"{safe_asset}_"
+    )
     return send_file(
         io.BytesIO(workbook_bytes),
         as_attachment=True,
@@ -2744,19 +2776,11 @@ def api_upload_disposition_excel():
     upload = request.files.get("file")
     if upload is None or not upload.filename:
         raise LifeDataApiError("Choose an .xlsx file downloaded from this page.", status_code=400)
-    fd, path = tempfile.mkstemp(suffix=".xlsx")
-    os.close(fd)
-    try:
-        upload.save(path)
-        try:
-            outcome = service.import_excel(asset_number, path, decided_by=_username())
-        except (zipfile.BadZipFile, KeyError, ET.ParseError):
-            raise LifeDataApiError("That file is not a workbook this page can read. Upload the .xlsx you downloaded.") from None
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    outcome = _read_uploaded_workbook(
+        upload,
+        lambda path: service.import_excel(asset_number, path, decided_by=_username()),
+        "That file is not a workbook this page can read. Upload the .xlsx you downloaded.",
+    )
     return jsonify(outcome)
 
 
@@ -2959,20 +2983,14 @@ def api_weibull_report():
     """A numbered Word report of a saved run, read back from the database rather than the request."""
 
     payload = request.get_json(silent=True) or {}
-    fd, path = tempfile.mkstemp(suffix=".docx", prefix="weibull_report_")
-    os.close(fd)
-    try:
+
+    def build(path: str) -> str:
         try:
-            report_number = _analysis_service().build_report(payload.get("analysis_id"), payload, path)
+            return _analysis_service().build_report(payload.get("analysis_id"), payload, path)
         except LookupError as exc:
             raise LifeDataApiError(str(exc), status_code=404) from None
-        with open(path, "rb") as handle:
-            document_bytes = handle.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+
+    report_number, document_bytes = _built_in_temp_file(build, suffix=".docx", prefix="weibull_report_")
     return send_file(
         io.BytesIO(document_bytes),
         as_attachment=True,
@@ -3655,19 +3673,9 @@ def api_dev_bug_delete(report_id: int):
 def api_dev_code_lists_excel():
     """Every code list as a workbook to edit offline: one row per code, and rows to add more."""
 
-    # Built in a temp file, served from memory, and the file deleted at once, as
-    # the Disposition workbook is.
-    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="code_lists_")
-    os.close(fd)
-    try:
-        _standard_service().export_code_lists_excel(path)
-        with open(path, "rb") as handle:
-            workbook_bytes = handle.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    _, workbook_bytes = _built_in_temp_file(
+        _standard_service().export_code_lists_excel, suffix=".xlsx", prefix="code_lists_"
+    )
     return send_file(
         io.BytesIO(workbook_bytes),
         as_attachment=True,
@@ -3688,21 +3696,11 @@ def api_dev_upload_code_lists_excel():
     upload = request.files.get("file")
     if upload is None or not upload.filename:
         raise LifeDataApiError("Choose the .xlsx file downloaded from this page.", status_code=400)
-    fd, path = tempfile.mkstemp(suffix=".xlsx")
-    os.close(fd)
-    try:
-        upload.save(path)
-        try:
-            outcome = _standard_service().import_code_lists_excel(path, updated_by=_username())
-        except (zipfile.BadZipFile, KeyError, ET.ParseError):
-            raise LifeDataApiError(
-                "That file is not a workbook this page can read. Upload the .xlsx downloaded here."
-            ) from None
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    outcome = _read_uploaded_workbook(
+        upload,
+        lambda path: _standard_service().import_code_lists_excel(path, updated_by=_username()),
+        "That file is not a workbook this page can read. Upload the .xlsx downloaded here.",
+    )
     return jsonify(outcome)
 
 

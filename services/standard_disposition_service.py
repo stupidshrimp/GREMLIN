@@ -305,6 +305,14 @@ class StandardDispositionService:
                     f"{code} is still used by {' and '.join(uses)}. Change those first, or retire the code "
                     "(untick Active) to take it off the dropdowns while they keep reading it."
                 )
+            # An emptied list is seeded again on the next start (seed_code_lists), which
+            # would bring back every starting code the team deleted from it.
+            remaining = conn.execute("SELECT COUNT(*) FROM disposition_code WHERE code_list = ?", (code_list,)).fetchone()[0]
+            if int(remaining) <= 1:
+                raise ValueError(
+                    f"{code} is the last code in the {label} list, and a list is never left empty. Add its "
+                    "replacement first, or retire it (untick Active)."
+                )
             conn.execute("DELETE FROM disposition_code WHERE code_list = ? AND code = ?", (code_list, code))
         return self.code_lists()
 
@@ -433,6 +441,26 @@ class StandardDispositionService:
                 counts[(std.COMPONENT, code)] = counts.get((std.COMPONENT, code), 0) + 1
         return counts
 
+    @staticmethod
+    def _lookup_rows(lists: list[tuple[str, list[str], list[str]]]) -> list[list[Any]]:
+        """A workbook's 'Lookup Lists' sheet: each list's codes in one column and their names beside them."""
+
+        depth = max((len(codes) for _, codes, _ in lists), default=0)
+        rows: list[list[Any]] = [[header for column, _, _ in lists for header in (column, f"{column} name")]]
+        for index in range(depth):
+            rows.append([
+                value
+                for _, codes, names in lists
+                for value in ((codes[index], names[index]) if index < len(codes) else ("", ""))
+            ])
+        return rows
+
+    def _lookup_range(self, position: int, codes: list[str]) -> str:
+        """The cells of the ``position``-th list on the 'Lookup Lists' sheet, for a dropdown."""
+
+        letter = self.life._xlsx_column_name(position * 2 + 1)
+        return f"'Lookup Lists'!${letter}$2:${letter}${max(len(codes), 1) + 1}"
+
     def export_code_lists_excel(self, output_path: str | Path) -> int:
         """Write every code list, retired codes too, to a workbook to edit offline, and return how many codes.
 
@@ -468,19 +496,8 @@ class StandardDispositionService:
             ("default_cause_code", [entry.code for entry in causes], [entry.name for entry in causes]),
             ("yes_no", ["TRUE", "FALSE"], ["Yes", "No"]),
         ]
-        depth = max(len(codes) for _, codes, _ in lists)
-        lookup_rows: list[list[Any]] = [[header for column, _, _ in lists for header in (column, f"{column} name")]]
-        for index in range(depth):
-            lookup_rows.append([
-                value
-                for _, codes, names in lists
-                for value in ((codes[index], names[index]) if index < len(codes) else ("", ""))
-            ])
-
-        def source(position: int, codes: list[str]) -> str:
-            letter = self.life._xlsx_column_name(position * 2 + 1)
-            return f"'Lookup Lists'!${letter}$2:${letter}${max(len(codes), 1) + 1}"
-
+        lookup_rows = self._lookup_rows(lists)
+        source = self._lookup_range
         validations = [
             ExcelValidation(
                 column_name="code_list", validation_type="list", formula1=source(0, lists[0][1]),
@@ -1328,24 +1345,15 @@ class StandardDispositionService:
         for column, code_list in EXCEL_CODE_COLUMNS.items():
             entries = options["code_lists"][code_list]
             lists.append((column, [entry["code"] for entry in entries], [entry["name"] for entry in entries]))
-        # The lookup sheet: each list's codes in one column and their names beside them.
-        depth = max(len(codes) for _, codes, _ in lists)
-        lookup_rows: list[list[Any]] = [[header for column, _, _ in lists for header in (column, f"{column} name")]]
-        for index in range(depth):
-            lookup_rows.append([
-                value
-                for _, codes, names in lists
-                for value in ((codes[index], names[index]) if index < len(codes) else ("", ""))
-            ])
+        lookup_rows = self._lookup_rows(lists)
         validations = []
         for position, (column, codes, _) in enumerate(lists):
             if not codes:
                 continue
-            letter = self.life._xlsx_column_name(position * 2 + 1)
             validations.append(ExcelValidation(
                 column_name=column,
                 validation_type="list",
-                formula1=f"'Lookup Lists'!${letter}$2:${letter}${len(codes) + 1}",
+                formula1=self._lookup_range(position, codes),
                 error=f"Choose a {column.replace('_', ' ')} from the list (see the Lookup Lists sheet).",
             ))
         validations.append(ExcelValidation(

@@ -305,6 +305,28 @@ def test_a_failure_dated_inside_the_previous_repair_makes_no_life():
     assert any("overlapping or duplicate" in note.note for note in analysis.notes)
 
 
+def test_a_failure_dated_inside_the_previous_repair_never_moves_the_clock_back():
+    # Repaired Feb 10; one found Feb 5, inside that repair, was finished Feb 8. The
+    # item was last renewed on Feb 10, so the next life runs from then.
+    events = [
+        failure("L", "Filter", "2025-02-01", repaired="2025-02-10"),
+        failure("L", "Filter", "2025-02-05", repaired="2025-02-08"),
+        failure("L", "Filter", "2025-03-12"),
+    ]
+    analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-03-12"))
+    assert failure_days(analysis) == [30]
+
+
+def test_a_failure_dated_inside_the_previous_repair_that_renewed_nothing_keeps_the_running_life():
+    events = [
+        failure("L", "Filter", "2025-02-01", repaired="2025-02-10"),
+        failure("L", "Filter", "2025-02-05", action="ADJUST"),
+        failure("L", "Filter", "2025-03-12"),
+    ]
+    analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-03-12"))
+    assert failure_days(analysis) == [30]
+
+
 def test_induced_failures_can_be_treated_as_suspensions():
     events = [
         pm_reset("L", "2025-01-01", ["Filter"]),

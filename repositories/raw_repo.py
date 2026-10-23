@@ -41,6 +41,20 @@ DB_WRITE_TIMEOUT_SECONDS = 30
 # dominated by callback overhead.
 _PROGRESS_EVERY = 100
 
+# Limble's asset list as the last sync read it: each asset's id, name and
+# parent by parentAssetID. Replaced whole each sync. The Disposition page's
+# sub-assets and every analysis that reaches an asset's sub-assets read the
+# hierarchy from here (see standard_disposition_schema.AssetTree), since
+# the work orders only record the parent each had when it was imported.
+_LIMBLE_ASSET_TABLE_STATEMENT = """
+    CREATE TABLE IF NOT EXISTS limble_asset (
+        asset_id TEXT PRIMARY KEY,
+        asset_name TEXT,
+        parent_asset_id TEXT,
+        synced_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """
+
 # Canonical, API-first definitions used only when the tables do not already
 # exist (fresh or test databases). Existing databases keep their own definition.
 _MODERN_TABLE_STATEMENTS = (
@@ -75,19 +89,7 @@ _MODERN_TABLE_STATEMENTS = (
         FOREIGN KEY (import_batch_id) REFERENCES import_batch(import_batch_id) ON UPDATE CASCADE ON DELETE RESTRICT
     )
     """,
-    # Limble's asset list as the last sync read it: each asset's id, name and
-    # parent by parentAssetID. Replaced whole each sync. The Disposition page's
-    # sub-assets and every analysis that reaches an asset's sub-assets read the
-    # hierarchy from here (see standard_disposition_schema.AssetTree), since
-    # the work orders only record the parent each had when it was imported.
-    """
-    CREATE TABLE IF NOT EXISTS limble_asset (
-        asset_id TEXT PRIMARY KEY,
-        asset_name TEXT,
-        parent_asset_id TEXT,
-        synced_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-    """,
+    _LIMBLE_ASSET_TABLE_STATEMENT,
 )
 
 # Best-effort helper indexes; created only when every referenced column exists.
@@ -160,7 +162,7 @@ class RawRepository:
         """
 
         with self.write_connection() as conn:
-            conn.execute(_MODERN_TABLE_STATEMENTS[-1])
+            conn.execute(_LIMBLE_ASSET_TABLE_STATEMENT)
             conn.execute("DELETE FROM limble_asset")
             conn.executemany(
                 "INSERT OR REPLACE INTO limble_asset (asset_id, asset_name, parent_asset_id) VALUES (?, ?, ?)",

@@ -1068,33 +1068,40 @@ def build_renewal_intervals(
                 continue
 
             if touch.exposure_end <= clock:
-                note(touch, ROLE_NO_EFFECT if renewal is None else ROLE_STARTS_LIFE,
+                # The running life began with a renewal finished after this event, so
+                # the item stays renewed from then: only a later renewal moves the
+                # clock, and nothing here stops it.
+                later = renewal is not None and renewal > clock
+                note(touch, ROLE_STARTS_LIFE if later else ROLE_NO_EFFECT,
                      "No life: dated before the renewal that started the running life was finished. "
                      "Check for an overlapping or duplicate work order.")
+                if later:
+                    clock, clock_record = renewal, event.record_id
+                continue
+
+            hours = measure(key, clock, touch.exposure_end)
+            raw = _raw_hours(clock, touch.exposure_end)
+            if hours <= 0:
+                note(touch, ROLE_NO_EFFECT, "No life: no scheduled hours since the life started.")
             else:
-                hours = measure(key, clock, touch.exposure_end)
-                raw = _raw_hours(clock, touch.exposure_end)
-                if hours <= 0:
-                    note(touch, ROLE_NO_EFFECT, "No life: no scheduled hours since the life started.")
+                if effect == FAILURE_END:
+                    why = "Failure of this population."
+                    if event.mechanism_unknown and population.failure_mechanisms and event.mechanism not in population.failure_mechanisms:
+                        why = "Counted as a failure: its mechanism is unknown (sensitivity run)."
+                    analysis.failure_events.append(event)
+                elif touch.primary:
+                    why = ("Suspension: its mechanism is unknown (sensitivity run)."
+                           if population.unknown_mechanism_decides(event)
+                           else "Suspension: a failure of another kind renewed the item, resetting the clock.")
+                elif event.category == PM_RESET:
+                    why = "Suspension: renewed by planned work."
                 else:
-                    if effect == FAILURE_END:
-                        why = "Failure of this population."
-                        if event.mechanism_unknown and population.failure_mechanisms and event.mechanism not in population.failure_mechanisms:
-                            why = "Counted as a failure: its mechanism is unknown (sensitivity run)."
-                        analysis.failure_events.append(event)
-                    elif touch.primary:
-                        why = ("Suspension: its mechanism is unknown (sensitivity run)."
-                               if population.unknown_mechanism_decides(event)
-                               else "Suspension: a failure of another kind renewed the item, resetting the clock.")
-                    elif event.category == PM_RESET:
-                        why = "Suspension: renewed by planned work."
-                    else:
-                        why = "Suspension: renewed while repairing another item."
-                    analysis.intervals.append(LifeInterval(
-                        location, component, clock, touch.exposure_end, effect, why,
-                        clock_record, event.record_id, hours, raw,
-                    ))
-                    note(touch, ROLE_FAILURE if effect == FAILURE_END else ROLE_SUSPENSION, why)
+                    why = "Suspension: renewed while repairing another item."
+                analysis.intervals.append(LifeInterval(
+                    location, component, clock, touch.exposure_end, effect, why,
+                    clock_record, event.record_id, hours, raw,
+                ))
+                note(touch, ROLE_FAILURE if effect == FAILURE_END else ROLE_SUSPENSION, why)
 
             if renewal is not None:
                 clock, clock_record = renewal, event.record_id

@@ -2413,9 +2413,11 @@
         await postJson(`${API}/dispositions/save`, { dispositions: [payload] });
         close(true);
         showToast(`Task ${data.record.task_id} saved.`, "success");
+        // Read before resetAnalyses(), which clears the fit on screen.
+        const rerun = state.analysisType === ANALYSIS_TYPES.WEIBULL && Boolean(state.result) && CAN_EDIT && state.result.saved;
         await loadOptions();
         resetAnalyses();
-        if (state.analysisType === ANALYSIS_TYPES.WEIBULL && state.result && CAN_EDIT && state.result.saved) {
+        if (rerun) {
           await loadSummary();
           await performAnalysis();
         } else {

@@ -51,6 +51,16 @@ class LifeHoursTests(unittest.TestCase):
                 for got, expected in zip(fast, walked):
                     self.assertAlmostEqual(got, expected, delta=1e-9 * max(1.0, abs(expected)), msg=(zone, start, end))
 
+    def test_a_life_near_the_first_day_of_the_calendar_is_walked_rather_than_refused(self):
+        # A placeholder date such as 0001-01-01 leaves no room for the totals' margin.
+        chicago = ZoneInfo("America/Chicago")
+        start = datetime(1, 1, 3, tzinfo=timezone.utc)
+        end = datetime(1, 3, 1, tzinfo=timezone.utc)
+        self.assertEqual(
+            LifeDataService._scheduled_life_hours(start, end, 24.0, tz=chicago),
+            LifeDataService._scheduled_life_hours_by_day(start, end, 24.0, True, chicago),
+        )
+
     def test_the_day_the_clocks_change_is_the_hours_it_really_was(self):
         chicago = ZoneInfo("America/Chicago")
         # Friday to Tuesday across the spring change: Sunday is 23 hours, and a

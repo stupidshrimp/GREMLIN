@@ -20,6 +20,7 @@ work order happened or how a life is measured.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import sqlite3
@@ -30,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from services import disposition_standard as std
 from services.standard_disposition_schema import AssetTree, load_codebook
-from services.standard_disposition_service import StandardDispositionService
+from services.standard_disposition_service import StandardDispositionService, _clean
 from services.wo_narrative import NARRATIVE_KEYS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -90,13 +91,6 @@ GROWTH_MONTHS = 3
 RANKING_LIMIT = 5
 
 
-def _clean(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _month(day: date) -> str:
     return f"{day.year:04d}-{day.month:02d}"
 
@@ -138,6 +132,8 @@ def _life_selection_key(selection: Mapping[str, Any]) -> str:
 _LOADED: "OrderedDict[tuple, dict[str, Any]]" = OrderedDict()
 _LOADED_SIZE = 8
 _LOADED_LOCK = threading.Lock()
+# The rankings' saved fits (see PopulationAnalysisService._ranked_fits), kept the same way.
+_RANKED: "OrderedDict[tuple, list[dict[str, Any]]]" = OrderedDict()
 
 
 class PopulationAnalysisService:
@@ -235,8 +231,12 @@ class PopulationAnalysisService:
                 # Diagnosed now, repaired later (spec section 6): the item is renewed
                 # when the last repair work order linked to it is finished, and not
                 # before -- an open one means the repair is not done.
-                dates = [parsed for value in links if (parsed := self.life._parse_event_datetime(value, zone))]
-                renewal_date = max(dates + ([completed] if completed else [])) if dates else None
+                dates = [self.life._parse_event_datetime(value, zone) for value in links]
+                renewal_date = (
+                    max([*dates, *([completed] if completed else [])])
+                    if dates and all(when is not None for when in dates)
+                    else None
+                )
             record.update({
                 "category": disposition["disposition_category"],
                 "location": record["derived"]["location"],
@@ -296,6 +296,7 @@ class PopulationAnalysisService:
             "records": records,
             "tree": tree,
             "places": {record["location"]: record["location_label"] for record in records},
+            "token": token,
         }
         if key is not None:
             with _LOADED_LOCK:
@@ -493,7 +494,7 @@ class PopulationAnalysisService:
             population = population.for_life_analysis()
         with self.life.read_transaction() as conn:
             loaded = self._load(conn, population)
-            fits = self._ranked_fits(conn, population, loaded["tree"])
+            fits = self._ranked_fits(conn, population, loaded["tree"], token=loaded["token"])
         codebook, records = loaded["codebook"], loaded["records"]
         selected = self._pattern_records(records, population, start, end, categories=[std.FAILURE] if weibull else None)
         window_start = start or min((record["event_day"] for record in selected if record["event_day"]), default=None)
@@ -766,9 +767,10 @@ class PopulationAnalysisService:
             if declining:
                 improved = min(declining, key=lambda group: (group["growth"], -group["total_count"]))
                 summary["most_improved"] = entry(improved, improved["growth"])
+        # Reversed, so the dated come first, newest first, and the undated last.
         newest_first = sorted(
             records,
-            key=lambda record: (record["event_date"] is None, record["event_date"] or datetime.min.replace(tzinfo=timezone.utc)),
+            key=lambda record: (record["event_date"] is not None, record["event_date"] or datetime.min.replace(tzinfo=timezone.utc)),
             reverse=True,
         )
         return {
@@ -929,14 +931,18 @@ class PopulationAnalysisService:
         by_location: dict[str, list[dict[str, Any]]] = {}
         for record in sorted(failures, key=lambda record: (record["event_date"], record["mapped_record_id"])):
             by_location.setdefault(record["location"], []).append(record)
+        # Each location's failure dates in order, so a PM's next failure is a bisection.
+        dates_at = {location: [record["event_date"] for record in found] for location, found in by_location.items()}
 
         rows = []
         days_values = []
         distinct: dict[int, dict[str, Any]] = {}
         for when, pm in pms:
-            following = next((failure for failure in by_location.get(pm["location"], []) if failure["event_date"] > when), None)
-            if following is None:
+            found = by_location.get(pm["location"], [])
+            position = bisect.bisect_right(dates_at.get(pm["location"], []), when)
+            if position >= len(found):
                 continue
+            following = found[position]
             days = (following["event_date"] - when).total_seconds() / 86400.0
             days_values.append(days)
             distinct.setdefault(following["mapped_record_id"], following)
@@ -1760,7 +1766,12 @@ class PopulationAnalysisService:
     # Rankings of the saved fits
     # ------------------------------------------------------------------ #
     def _ranked_fits(
-        self, conn: sqlite3.Connection, population: std.Population, tree: AssetTree | None = None
+        self,
+        conn: sqlite3.Connection,
+        population: std.Population,
+        tree: AssetTree | None = None,
+        *,
+        token: Any = None,
     ) -> list[dict[str, Any]]:
         """The latest saved fit of each single-component population the page's population reaches.
 
@@ -1769,6 +1780,11 @@ class PopulationAnalysisService:
         their patterns into one. Each carries what both rankings need -- the fit,
         its R², each stream's current life at the run's cutoff and the schedule it
         was counted on -- and whether it is still current.
+
+        Reading them means reading every saved run's whole result, so they are kept,
+        as a population's records are, until GREMLIN.db changes: ``token`` is its
+        change token, read before ``conn``'s transaction first queried. Nothing that
+        reads the list changes it.
         """
 
         from services.life_data_service import MIN_WEIBULL_FAILURE_LIVES
@@ -1777,6 +1793,13 @@ class PopulationAnalysisService:
         reach = set(population.assets) | set(population.locations)
         for asset in population.assets:
             reach.update(option["asset_number"] for option in tree.descendants(asset))
+        key = (token, tree.serial, tuple(sorted(reach))) if token is not None else None
+        if key is not None:
+            with _LOADED_LOCK:
+                cached = _RANKED.get(key)
+                if cached is not None:
+                    _RANKED.move_to_end(key)
+                    return cached
         seen: set[str] = set()
         fits = []
         for row in conn.execute(
@@ -1835,6 +1858,11 @@ class PopulationAnalysisService:
                 "schedule_current": payload["schedule_current"],
                 "time_zone_current": payload["time_zone_current"],
             })
+        if key is not None:
+            with _LOADED_LOCK:
+                _RANKED[key] = fits
+                while len(_RANKED) > _LOADED_SIZE:
+                    _RANKED.popitem(last=False)
         return fits
 
     @staticmethod
@@ -1887,7 +1915,7 @@ class PopulationAnalysisService:
         population = std.Population.from_mapping(selection)
         token = self.life.change_token()
         with self.life.read_transaction() as conn:
-            fits = self._ranked_fits(conn, population, self.records.asset_tree(conn, token=token))
+            fits = self._ranked_fits(conn, population, self.records.asset_tree(conn, token=token), token=token)
         return self._risk_rankings(fits, weeks)
 
     # ------------------------------------------------------------------ #

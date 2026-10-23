@@ -334,7 +334,12 @@ class _PlantDays:
         if last_day < first_day:
             return None
         with self.lock:
-            self._cover(first_day, last_day)
+            try:
+                self._cover(first_day, last_day)
+            except OverflowError:
+                # A life within the margin of the calendar's first or last day (a
+                # year-1 placeholder date, say): the walk measures it instead.
+                return None
             if not self.sound:
                 return None
             low = (first_day - self.first).days + 1
