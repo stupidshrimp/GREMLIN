@@ -61,23 +61,80 @@
     select.value = state.list;
   }
 
+  function chip(modifier, text, title) {
+    const node = el("span", modifier ? `cl-chip ${modifier}` : "cl-chip", text);
+    if (title) node.title = title;
+    return node;
+  }
+
+  // The codes as the Disposition page's Code lists dialog shows them: each
+  // code's name over its whole description, and chips for the rest.
   function drawTable() {
     const list = state.codeLists[state.list];
     const meanings = {};
     list.semantics.forEach((semantic) => {
-      meanings[semantic.code] = semantic.label;
+      meanings[semantic.code] = semantic;
     });
-    const columns = ["Code", "Name", "Description", "ISO ref", "Means", "Order", "Active"];
-    if (state.list === "FAILURE_MECHANISM") columns.splice(4, 0, "Default cause");
-    if (state.list === "ACTION") columns.splice(4, 0, "Renews item");
-    const rows = list.codes.map((code) => {
-      const row = [code.code, code.name, code.description || "", code.iso_ref || ""];
-      if (state.list === "FAILURE_MECHANISM") row.push(code.default_cause_code || "");
-      if (state.list === "ACTION") row.push(code.renews_item ? "Yes" : "No");
-      row.push(code.semantic ? meanings[code.semantic] || code.semantic : "", code.sort_order, code.is_active ? "Yes" : "Retired");
-      return row;
+    const causes = {};
+    ((state.codeLists.FAILURE_CAUSE && state.codeLists.FAILURE_CAUSE.codes) || []).forEach((cause) => {
+      causes[cause.code] = cause.name;
     });
-    dev.replaceChildren($("dev-codes-table"), dev.buildTable(columns, rows, { emptyText: "This list has no codes." }));
+    const none = () => el("span", "cl-none", "—");
+    const text = (value) => document.createTextNode(String(value));
+    // [heading, class, the cell's content]
+    const columns = [
+      ["Code", "cl-code", (code) => [el("span", "cl-code-pill", code.code)]],
+      ["Name and description", "cl-main", (code) => {
+        const name = el("div", "cl-name", code.name);
+        if (!code.is_active) name.appendChild(chip("is-retired", "Retired"));
+        return code.description ? [name, el("div", "cl-desc", code.description)] : [name];
+      }],
+    ];
+    if (list.codes.some((code) => code.iso_ref)) {
+      columns.push(["ISO ref", "cl-meta", (code) => [code.iso_ref ? text(code.iso_ref) : none()]]);
+    }
+    if (state.list === "FAILURE_MECHANISM") {
+      columns.push(["Default cause", "cl-fit", (code) => [code.default_cause_code
+        ? chip(null, causes[code.default_cause_code] || code.default_cause_code, code.default_cause_code)
+        : none()]]);
+    }
+    if (state.list === "ACTION") {
+      columns.push(["Renews item", "cl-fit", (code) => [code.renews_item ? chip("is-renews", "Renews") : none()]]);
+    }
+    if (list.semantics.length) {
+      columns.push(["Means", "cl-fit", (code) => {
+        const meaning = meanings[code.semantic];
+        if (!code.semantic) return [none()];
+        return [chip("is-meaning", meaning ? meaning.short : code.semantic, meaning ? meaning.label : code.semantic)];
+      }]);
+    }
+    columns.push(["Order", "cl-meta cl-num", (code) => [text(code.sort_order)]]);
+
+    const table = el("table", "cl-table");
+    const head = el("tr");
+    columns.forEach(([label, className]) => {
+      const th = el("th", className, label);
+      th.scope = "col";
+      head.appendChild(th);
+    });
+    table.appendChild(el("thead")).appendChild(head);
+    const body = el("tbody");
+    if (!list.codes.length) {
+      const cell = el("td", "cl-empty", "This list has no codes.");
+      cell.colSpan = columns.length;
+      body.appendChild(el("tr")).appendChild(cell);
+    }
+    list.codes.forEach((code) => {
+      const row = el("tr", code.is_active ? "cl-row" : "cl-row is-retired");
+      columns.forEach(([, className, content]) => {
+        const cell = el("td", className);
+        content(code).forEach((node) => cell.appendChild(node));
+        row.appendChild(cell);
+      });
+      body.appendChild(row);
+    });
+    table.appendChild(body);
+    dev.replaceChildren($("dev-codes-table"), table);
   }
 
   function draw(codeLists) {

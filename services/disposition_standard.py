@@ -156,6 +156,14 @@ SEMANTIC_LABELS = {
     SEMANTIC_NO_FAULT_FOUND: "No fault found (never a FAILURE)",
     SEMANTIC_INDUCED: "Induced failure (maintenance or installation)",
 }
+# The same, as a word or two for a chip in a list of codes.
+SEMANTIC_SHORT_LABELS = {
+    SEMANTIC_UNKNOWN: "Unknown",
+    SEMANTIC_REVIEW: "Review",
+    SEMANTIC_INSPECTION_FINDING: "Inspection finding",
+    SEMANTIC_NO_FAULT_FOUND: "No fault found",
+    SEMANTIC_INDUCED: "Induced",
+}
 
 # A code is a short stable key: it is what dispositions store and what a saved
 # population definition names, so it never changes once used. Names can.

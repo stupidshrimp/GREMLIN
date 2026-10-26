@@ -192,15 +192,162 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .std-history { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.3rem; font-size: 0.8rem; color: var(--muted); }
 
 /* ---- code lists dialog --------------------------------------------------- */
-.std-code-dialog { width: min(1100px, calc(100vw - 32px)); }
-.std-code-table input[type="text"],
-.std-code-table input[type="number"],
-.std-code-table select { width: 100%; min-width: 0; padding: 0.35rem 0.45rem; font-size: 0.8rem; }
-.std-code-table td { vertical-align: middle; }
-.std-code-table tr.is-retired td { opacity: 0.6; }
-.std-code-table td.std-code-name { min-width: 220px; }
-.std-code-table td.std-code-actions { white-space: nowrap; display: flex; gap: 0.35rem; }
-.std-code-table .std-code-delete { color: var(--danger-ink); }
+/* The Code lists dialog: header and toolbar stay put while the list scrolls. */
+.std-code-dialog {
+  width: min(1200px, calc(100vw - 32px));
+  height: min(88vh, 900px);
+  max-height: min(88vh, 900px);
+}
+.std-code-dialog .lda-help-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: none;
+  overflow: hidden;
+}
+.std-code-intro { margin: 0.45rem 0 0; max-width: 88ch; color: var(--muted); font-size: 0.85rem; line-height: 1.55; }
+/* The lists on top; search, the retired switch and Add code under them. */
+.std-code-toolbar {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 1.3rem;
+  border-bottom: 1px solid var(--border);
+}
+.std-code-toolbar .cl-tabs { justify-self: start; }
+.std-code-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.9rem; }
+.std-code-tools .std-code-add { margin-left: auto; }
+.std-code-search {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: min(340px, 100%);
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.std-code-search:focus-within { border-color: var(--forest-500); box-shadow: 0 0 0 3px rgba(85, 116, 143, 0.18); }
+.std-code-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+}
+.std-code-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.std-code-add { padding: 0.45rem 1rem; font-size: 0.86rem; }
+.std-code-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 1.3rem 1.3rem; }
+
+/* The lists, as a segmented control with each list's count. */
+.cl-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--forest-100);
+}
+.cl-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.8rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.cl-tab:hover { color: var(--text); }
+.cl-tab:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.cl-tab.is-active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(var(--shadow-ink), 0.16); }
+.cl-tab-count {
+  min-width: 1.5rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-veil-strong);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.cl-tab.is-active .cl-tab-count { background: var(--forest-100); }
+
+.cl-actions { width: 1%; white-space: nowrap; text-align: right; }
+.cl-edit-btn {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 140ms ease, border-color 140ms ease;
+}
+.cl-row:hover .cl-edit-btn,
+.cl-edit-btn:focus-visible { opacity: 1; border-color: var(--forest-500); }
+
+/* One code's form, opened under its row (or at the top, for a new one). */
+.cl-form-row > td { padding: 0 0 0.9rem; background: var(--brand-tint-soft); }
+.cl-form {
+  display: grid;
+  gap: 1rem;
+  margin: 0 0.85rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgba(var(--shadow-ink), 0.08);
+}
+.cl-form-title { margin: 0; font-size: 0.95rem; color: var(--text); }
+.cl-form-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+}
+.cl-field { display: grid; gap: 0.3rem; grid-column: span 2; align-content: start; }
+.cl-field.is-wide { grid-column: span 4; }
+.cl-field.is-full { grid-column: 1 / -1; }
+.cl-field > span { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.cl-field .lda-textarea { min-height: 96px; max-height: 50vh; line-height: 1.55; }
+.cl-field .lda-input[readonly] { background: var(--forest-100); color: var(--muted); cursor: not-allowed; }
+.cl-switch { display: inline-flex; align-items: center; gap: 0.5rem; padding-top: 0.45rem; font-size: 0.88rem; cursor: pointer; }
+.cl-switch input { width: 1.05rem; height: 1.05rem; accent-color: var(--accent-solid); }
+.cl-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.cl-form-actions .cl-spacer { flex: 1; }
+.cl-form-actions button { padding: 0.45rem 1.1rem; font-size: 0.86rem; }
+.cl-delete-btn {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--danger-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cl-delete-btn:hover { background: var(--danger-tint-soft); border-color: var(--danger-tint-border); }
+
+@media (max-width: 760px) {
+  .cl-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .cl-field,
+  .cl-field.is-wide { grid-column: 1 / -1; }
+  .std-code-search { width: 100%; }
+}
 
 /* ---- Perform an Analysis: the population --------------------------------- */
 .std-selector {

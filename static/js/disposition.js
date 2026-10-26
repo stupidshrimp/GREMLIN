@@ -491,13 +491,19 @@
   }
 
   // ---- code lists -------------------------------------------------------------------
-  const codeState = { lists: null, active: "COMPONENT" };
+  // Each code reads as a row, its whole description under its name; Edit (or a
+  // click on the row) opens that one code's form under it, and Add code opens a
+  // blank one at the top. `editing` is the code whose form is open.
+  const NEW_CODE = "\u0000new";
+  const codeState = { lists: null, active: "COMPONENT", editing: null, form: null, query: "", hideRetired: false };
   // The order a disposition is filled in, not the alphabetical order the JSON
   // arrives in.
   const CODE_LIST_ORDER = ["COMPONENT", "FAILURE_MECHANISM", "FAILURE_MODE", "FAILURE_CAUSE", "ACTION"];
 
   async function openCodeLists() {
     openDialog($("disp-code-dialog"));
+    codeState.editing = null;
+    codeState.form = null;
     // The lists are read afresh each time the dialog opens: the ones from last
     // time dim meanwhile, and the first time placeholders hold their place.
     if (!codeState.lists) {
@@ -507,10 +513,10 @@
       const table = $("disp-code-table");
       table.innerHTML = "";
       table.appendChild(el("tbody", {}, Array.from({ length: 6 }, () => el("tr", {}, [
-        el("td", { colspan: "6" }, skeleton("lda-skeleton-line")),
+        el("td", { colspan: "4" }, skeleton("lda-skeleton-line")),
       ]))));
     }
-    const end = busy($("disp-code-table").parentElement, "Loading the code lists…");
+    const end = busy($("disp-code-body"), "Loading the code lists…");
     try {
       const data = await getJson(`${API}/code-lists`);
       codeState.lists = data.code_lists;
@@ -523,122 +529,311 @@
   }
 
   function renderCodeLists() {
+    renderCodeTabs();
+    renderCodeTable();
+  }
+
+  function renderCodeTabs() {
     const tabs = $("disp-code-tabs");
     tabs.innerHTML = "";
     CODE_LIST_ORDER.filter((key) => codeState.lists[key]).forEach((key) => {
+      const list = codeState.lists[key];
+      const active = list.codes.filter((entry) => entry.is_active).length;
+      const retired = list.codes.length - active;
       tabs.appendChild(el("button", {
         type: "button",
         role: "tab",
-        "aria-selected": key === codeState.active ? "true" : "false",
-        class: "std-category" + (key === codeState.active ? " is-active" : ""),
-        text: codeState.lists[key].label,
+        "aria-selected": String(key === codeState.active),
+        class: "cl-tab" + (key === codeState.active ? " is-active" : ""),
+        title: `${active} active${retired ? `, ${retired} retired` : ""}`,
         onclick: () => {
+          if (key === codeState.active) return;
           codeState.active = key;
+          closeCodeForm();
           renderCodeLists();
         },
-      }));
+      }, [list.label, el("span", { class: "cl-tab-count", text: String(active) })]));
     });
+  }
+
+  function codeCauses() {
+    return (codeState.lists.FAILURE_CAUSE && codeState.lists.FAILURE_CAUSE.codes) || [];
+  }
+
+  // The columns a list's rows show: code, name over description, then only what
+  // that list's codes can hold.
+  function codeColumns(listKey, list) {
+    const none = () => el("span", { class: "cl-none", text: "—" });
+    const columns = [
+      { label: "Code", className: "cl-code", cell: (entry) => [el("span", { class: "cl-code-pill", text: entry.code })] },
+      {
+        label: "Name and description",
+        className: "cl-main",
+        cell: (entry) => [
+          el("div", { class: "cl-name" }, [
+            entry.name,
+            entry.is_active ? null : el("span", { class: "cl-chip is-retired", text: "Retired" }),
+          ]),
+          entry.description ? el("div", { class: "cl-desc", text: entry.description }) : null,
+        ],
+      },
+    ];
+    if (list.codes.some((entry) => entry.iso_ref)) {
+      columns.push({ label: "ISO ref", className: "cl-meta", cell: (entry) => [entry.iso_ref ? entry.iso_ref : none()] });
+    }
+    if (listKey === "FAILURE_MECHANISM") {
+      columns.push({
+        label: "Default cause",
+        className: "cl-fit",
+        cell: (entry) => {
+          if (!entry.default_cause_code) return [none()];
+          const cause = codeCauses().find((item) => item.code === entry.default_cause_code);
+          return [el("span", { class: "cl-chip", title: entry.default_cause_code, text: cause ? cause.name : entry.default_cause_code })];
+        },
+      });
+    }
+    if (listKey === "ACTION") {
+      columns.push({
+        label: "Renews item",
+        className: "cl-fit",
+        cell: (entry) => [entry.renews_item ? el("span", { class: "cl-chip is-renews", text: "Renews" }) : none()],
+      });
+    }
+    if (list.semantics.length) {
+      // A word or two on the chip; the full wording is its tooltip.
+      const meanings = Object.fromEntries(list.semantics.map((option) => [option.code, option]));
+      columns.push({
+        label: "Means",
+        className: "cl-fit",
+        cell: (entry) => {
+          const meaning = meanings[entry.semantic];
+          if (!entry.semantic) return [none()];
+          return [el("span", {
+            class: "cl-chip is-meaning",
+            title: meaning ? meaning.label : entry.semantic,
+            text: meaning ? meaning.short : entry.semantic,
+          })];
+        },
+      });
+    }
+    columns.push({ label: "Order", className: "cl-meta cl-num", cell: (entry) => [String(entry.sort_order)] });
+    columns.push({
+      label: "",
+      className: "cl-actions",
+      cell: (entry) => [el("button", {
+        type: "button",
+        class: "cl-edit-btn",
+        text: entry.code === codeState.editing ? "Close" : "Edit",
+        "aria-label": `${entry.code === codeState.editing ? "Close" : "Edit"} ${list.label.toLowerCase()} ${entry.code}`,
+        onclick: () => openCodeForm(entry.code === codeState.editing ? null : entry.code),
+      })],
+    });
+    return columns;
+  }
+
+  function renderCodeTable() {
     const listKey = codeState.active;
     const list = codeState.lists[listKey];
-    const isMechanism = listKey === "FAILURE_MECHANISM";
-    const isAction = listKey === "ACTION";
-    const hasMeaning = list.semantics.length > 0;
+    const columns = codeColumns(listKey, list);
+    const query = codeState.query.trim().toLowerCase();
+    // The code being edited stays in view whatever the search or the switch say.
+    const shown = list.codes.filter((entry) => entry.code === codeState.editing || (
+      (!codeState.hideRetired || entry.is_active) &&
+      (!query || [entry.code, entry.name, entry.description, entry.iso_ref].some((text) => (text || "").toLowerCase().includes(query)))
+    ));
     const table = $("disp-code-table");
     table.innerHTML = "";
-    const heads = ["Code", "Name", "Description"];
-    if (isMechanism) heads.push("ISO ref", "Default cause");
-    if (isAction) heads.push("Renews item");
-    if (hasMeaning) heads.push("Means");
-    heads.push("Order", "Active", "");
-    table.appendChild(el("thead", {}, [el("tr", {}, heads.map((text) => el("th", { scope: "col", text })))]));
+    table.appendChild(el("thead", {}, [el("tr", {}, columns.map((column) => el("th", {
+      scope: "col",
+      class: column.className || null,
+    }, [column.label || el("span", { class: "visually-hidden", text: "Edit" })])))]));
     const body = el("tbody");
-    const causes = (codeState.lists.FAILURE_CAUSE && codeState.lists.FAILURE_CAUSE.codes) || [];
-    const rowFor = (entry, isNew) => {
-      const inputs = {
-        code: el("input", { type: "text", value: entry.code || "", readonly: !isNew, "aria-label": "Code", placeholder: isNew ? "New code" : null }),
-        name: el("input", { type: "text", value: entry.name || "", "aria-label": "Name" }),
-        description: el("input", { type: "text", value: entry.description || "", "aria-label": "Description" }),
-        iso_ref: el("input", { type: "text", value: entry.iso_ref || "", "aria-label": "ISO reference" }),
-        default_cause_code: el("select", { "aria-label": "Default cause" }, [
-          el("option", { value: "", text: "—" }),
-          ...causes.map((cause) => el("option", { value: cause.code, text: `${cause.code} · ${cause.name}` })),
-        ]),
-        renews_item: el("input", { type: "checkbox", checked: Boolean(entry.renews_item), "aria-label": "Renews the item" }),
-        semantic: el("select", { "aria-label": "Means" }, [
-          el("option", { value: "", text: "—" }),
-          ...list.semantics.map((option) => el("option", { value: option.code, text: option.label })),
-        ]),
-        sort_order: el("input", { type: "number", step: "1", value: String(entry.sort_order ?? ""), "aria-label": "Order" }),
-        is_active: el("input", { type: "checkbox", checked: isNew || Boolean(entry.is_active), "aria-label": "Active" }),
-      };
-      inputs.default_cause_code.value = entry.default_cause_code || "";
-      inputs.semantic.value = entry.semantic || "";
-      const cells = [inputs.code, inputs.name, inputs.description];
-      if (isMechanism) cells.push(inputs.iso_ref, inputs.default_cause_code);
-      if (isAction) cells.push(inputs.renews_item);
-      if (hasMeaning) cells.push(inputs.semantic);
-      cells.push(inputs.sort_order, inputs.is_active);
-      const button = el("button", {
-        type: "button",
-        class: "btn-secondary",
-        text: isNew ? "Add" : "Save",
-        onclick: async () => {
-          const code = inputs.code.value.trim();
-          try {
-            const data = await postJson(`${API}/code-lists`, {
-              code_list: listKey,
-              code: inputs.code.value.trim(),
-              name: inputs.name.value,
-              description: inputs.description.value,
-              iso_ref: inputs.iso_ref.value,
-              default_cause_code: inputs.default_cause_code.value,
-              renews_item: inputs.renews_item.checked,
-              semantic: inputs.semantic.value,
-              sort_order: inputs.sort_order.value || 0,
-              is_active: inputs.is_active.checked,
-            });
-            codeState.lists = data.code_lists;
-            renderCodeLists();
-            const used = isNew && inputs.is_active.checked && applyCodeLists(data.code_lists, listKey, code);
-            showToast(
-              used
-                ? `${list.label} ${code} added and set on task ${currentRow().task_id}; save the work order to keep it.`
-                : `${list.label} ${code} saved.`,
-              "success"
-            );
-            if (!isNew) applyCodeLists(data.code_lists);
-          } catch (err) {
-            if (!err.toastShown) showToast(err.message, "error");
-          }
+    if (codeState.editing === NEW_CODE) body.appendChild(codeFormRow(listKey, list, null, columns.length));
+    shown.forEach((entry) => {
+      const editing = entry.code === codeState.editing;
+      body.appendChild(el("tr", {
+        class: "cl-row is-clickable" + (entry.is_active ? "" : " is-retired") + (editing ? " is-editing" : ""),
+        onclick: (event) => {
+          // A click on the row opens it, but not one that selected text or hit a control.
+          if (event.target.closest("button, a, input, select, textarea")) return;
+          if (String(window.getSelection() || "")) return;
+          openCodeForm(editing ? null : entry.code);
         },
-      });
-      const remove = isNew ? null : el("button", {
-        type: "button",
-        class: "btn-secondary std-code-delete",
-        text: "Delete",
-        title: "Delete this code. A code in use can only be retired.",
-        onclick: async () => {
-          if (!window.confirm(`Delete ${list.label.toLowerCase()} code ${entry.code}? This cannot be undone.`)) return;
-          try {
-            const data = await postJson(`${API}/code-lists/delete`, { code_list: listKey, code: entry.code });
-            codeState.lists = data.code_lists;
-            renderCodeLists();
-            applyCodeLists(data.code_lists);
-            showToast(`${list.label} ${entry.code} deleted.`, "success");
-          } catch (err) {
-            if (!err.toastShown) showToast(err.message, "error");
-          }
-        },
-      });
-      return el("tr", { class: entry.is_active === false ? "is-retired" : "" }, [
-        ...cells.map((cell) => el("td", { class: cell === inputs.name ? "std-code-name" : null }, [cell])),
-        el("td", { class: "std-code-actions" }, [button, remove]),
-      ]);
-    };
-    list.codes.forEach((entry) => body.appendChild(rowFor(entry, false)));
-    const last = list.codes.length ? list.codes[list.codes.length - 1].sort_order : 0;
-    body.appendChild(rowFor({ sort_order: (last || 0) + 10, is_active: true }, true));
+      }, columns.map((column) => el("td", { class: column.className || null }, column.cell(entry)))));
+      if (editing) body.appendChild(codeFormRow(listKey, list, entry, columns.length));
+    });
+    if (!shown.length && codeState.editing !== NEW_CODE) {
+      body.appendChild(el("tr", {}, [el("td", {
+        colspan: String(columns.length),
+        class: "cl-empty",
+        text: query || codeState.hideRetired
+          ? `No ${list.label.toLowerCase()} code matches${query ? ` “${codeState.query.trim()}”` : ""}${codeState.hideRetired ? " among the active ones" : ""}.`
+          : "This list has no codes yet. Add the first one.",
+      })]));
+    }
     table.appendChild(body);
+  }
+
+  function closeCodeForm() {
+    codeState.editing = null;
+    codeState.form = null;
+  }
+
+  function openCodeForm(code) {
+    closeCodeForm();
+    codeState.editing = code;
+    renderCodeTable();
+    if (code === null) return;
+    const form = codeState.form && codeState.form.row;
+    if (!form) return;
+    form.querySelectorAll("textarea").forEach(fitText);
+    // The code's own row comes to the top, under the column headings, with its form below.
+    const anchor = code === NEW_CODE ? form : form.previousElementSibling;
+    anchor.scrollIntoView({ block: "start", behavior: "smooth" });
+    const first = form.querySelector(code === NEW_CODE ? "input" : "input:not([readonly])");
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  // A description box as tall as what it holds, so a long one reads without scrolling.
+  function fitText(area) {
+    area.style.height = "auto";
+    area.style.height = `${area.scrollHeight + 2}px`;
+  }
+
+  // One code's form. It is kept while it is open, so searching, the retired
+  // switch or a redraw never loses what was typed in it.
+  function codeFormRow(listKey, list, entry, span) {
+    const key = `${listKey}:${entry ? entry.code : NEW_CODE}`;
+    if (codeState.form && codeState.form.key === key) {
+      codeState.form.row.firstChild.colSpan = span;
+      return codeState.form.row;
+    }
+    const isNew = !entry;
+    const last = list.codes.length ? list.codes[list.codes.length - 1].sort_order : 0;
+    const values = entry || { sort_order: (last || 0) + 10, is_active: true };
+    const input = (attrs) => el("input", { class: "lda-input", ...attrs });
+    const inputs = {
+      code: input({
+        type: "text",
+        value: values.code || "",
+        readonly: !isNew,
+        required: true,
+        maxlength: "32",
+        placeholder: isNew ? "e.g. Filter" : null,
+        title: isNew ? "1-32 letters, digits, '-', '_' or '.'. It can't be changed once added." : "A code can't be renamed once added.",
+      }),
+      name: input({ type: "text", value: values.name || "", required: true }),
+      description: el("textarea", {
+        class: "lda-textarea",
+        rows: "3",
+        text: values.description || "",
+        oninput: (event) => fitText(event.target),
+      }),
+      iso_ref: input({ type: "text", value: values.iso_ref || "", placeholder: "e.g. 5.2" }),
+      default_cause_code: el("select", { class: "lda-select" }, [
+        el("option", { value: "", text: "None" }),
+        ...codeCauses().map((cause) => el("option", { value: cause.code, text: `${cause.name} (${cause.code})` })),
+      ]),
+      renews_item: el("input", { type: "checkbox", checked: Boolean(values.renews_item) }),
+      semantic: el("select", { class: "lda-select" }, [
+        el("option", { value: "", text: "Nothing special" }),
+        ...list.semantics.map((option) => el("option", { value: option.code, text: option.label })),
+      ]),
+      sort_order: input({ type: "number", step: "1", value: String(values.sort_order ?? "") }),
+      is_active: el("input", { type: "checkbox", checked: Boolean(values.is_active) }),
+    };
+    inputs.default_cause_code.value = values.default_cause_code || "";
+    inputs.semantic.value = values.semantic || "";
+    const field = (label, control, size) => el("label", { class: "cl-field" + (size ? ` is-${size}` : "") }, [
+      el("span", { text: label }),
+      control,
+    ]);
+    const toggle = (label, control, text) => el("div", { class: "cl-field" }, [
+      el("span", { text: label }),
+      el("label", { class: "cl-switch" }, [control, text]),
+    ]);
+    const fields = [
+      field("Code", inputs.code),
+      field("Name", inputs.name, "wide"),
+      field("Description", inputs.description, "full"),
+      field("ISO ref", inputs.iso_ref),
+    ];
+    if (listKey === "FAILURE_MECHANISM") fields.push(field("Default cause", inputs.default_cause_code));
+    if (listKey === "ACTION") fields.push(toggle("Renews item", inputs.renews_item, "Makes the item as good as new"));
+    if (list.semantics.length) fields.push(field("Means", inputs.semantic));
+    fields.push(field("Order", inputs.sort_order));
+    fields.push(toggle("Status", inputs.is_active, "Active, offered on the dropdowns"));
+
+    const submit = el("button", { type: "submit", class: "btn-primary", text: isNew ? "Add code" : "Save changes" });
+    const remove = isNew ? null : el("button", {
+      type: "button",
+      class: "cl-delete-btn",
+      text: "Delete code",
+      title: "Delete this code. A code in use can only be retired.",
+      onclick: async () => {
+        if (!window.confirm(`Delete ${list.label.toLowerCase()} code ${entry.code}? This cannot be undone.`)) return;
+        try {
+          const data = await postJson(`${API}/code-lists/delete`, { code_list: listKey, code: entry.code });
+          codeState.lists = data.code_lists;
+          closeCodeForm();
+          renderCodeLists();
+          applyCodeLists(data.code_lists);
+          showToast(`${list.label} ${entry.code} deleted.`, "success");
+        } catch (err) {
+          if (!err.toastShown) showToast(err.message, "error");
+        }
+      },
+    });
+    const form = el("form", {
+      class: "cl-form",
+      novalidate: true,
+      onsubmit: async (event) => {
+        event.preventDefault();
+        const code = inputs.code.value.trim();
+        submit.disabled = true;
+        try {
+          const data = await postJson(`${API}/code-lists`, {
+            code_list: listKey,
+            code,
+            name: inputs.name.value,
+            description: inputs.description.value,
+            iso_ref: inputs.iso_ref.value,
+            default_cause_code: inputs.default_cause_code.value,
+            renews_item: inputs.renews_item.checked,
+            semantic: inputs.semantic.value,
+            sort_order: inputs.sort_order.value || 0,
+            is_active: inputs.is_active.checked,
+          });
+          codeState.lists = data.code_lists;
+          closeCodeForm();
+          renderCodeLists();
+          // A new active code is set on the open work order, ready to save.
+          const used = applyCodeLists(data.code_lists, isNew && inputs.is_active.checked ? listKey : null, code);
+          showToast(
+            used
+              ? `${list.label} ${code} added and set on task ${currentRow().task_id}; save the work order to keep it.`
+              : `${list.label} ${code} ${isNew ? "added" : "saved"}.`,
+            "success"
+          );
+        } catch (err) {
+          if (!err.toastShown) showToast(err.message, "error");
+        } finally {
+          submit.disabled = false;
+        }
+      },
+    }, [
+      isNew ? el("h3", { class: "cl-form-title", text: `New ${list.label.toLowerCase()} code` }) : null,
+      el("div", { class: "cl-form-grid" }, fields),
+      el("div", { class: "cl-form-actions" }, [
+        remove,
+        el("span", { class: "cl-spacer" }),
+        el("button", { type: "button", class: "btn-secondary", text: "Cancel", onclick: () => openCodeForm(null) }),
+        submit,
+      ]),
+    ]);
+    const row = el("tr", { class: "cl-form-row" }, [el("td", { colspan: String(span) }, [form])]);
+    codeState.form = { key, row };
+    return row;
   }
 
   // A change to the code lists reaches the open work order at once: its
@@ -897,6 +1092,17 @@
     $("lda-excel-help-close").addEventListener("click", () => $("lda-excel-help-dialog").close());
     $("disp-code-lists-btn").addEventListener("click", openCodeLists);
     $("disp-code-close").addEventListener("click", () => $("disp-code-dialog").close());
+    $("disp-code-search").addEventListener("input", (event) => {
+      codeState.query = event.target.value;
+      if (codeState.lists) renderCodeTable();
+    });
+    $("disp-code-hide-retired").addEventListener("change", (event) => {
+      codeState.hideRetired = event.target.checked;
+      if (codeState.lists) renderCodeTable();
+    });
+    $("disp-code-add").addEventListener("click", () => {
+      if (codeState.lists) openCodeForm(NEW_CODE);
+    });
     $("disposition-tour-btn").addEventListener("click", startTour);
     window.addEventListener("beforeunload", (event) => {
       if (isDirty()) {

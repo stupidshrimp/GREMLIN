@@ -252,7 +252,7 @@ class StandardDispositionService:
             code_list: {
                 "label": std.CODE_LIST_LABELS[code_list],
                 "semantics": [
-                    {"code": semantic, "label": std.SEMANTIC_LABELS[semantic]}
+                    {"code": semantic, "label": std.SEMANTIC_LABELS[semantic], "short": std.SEMANTIC_SHORT_LABELS[semantic]}
                     for semantic in std.CODE_LIST_SEMANTICS[code_list]
                 ],
                 "codes": [

@@ -3,6 +3,7 @@
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/standard_disposition.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/code_lists.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
 {% endblock %}
 
@@ -98,17 +99,29 @@
       <div>
         <p class="eyebrow">Configuration</p>
         <h2 id="disp-code-title">Disposition code lists</h2>
+        <p class="std-code-intro">
+          A code is what dispositions and saved analyses store, so it can't be renamed once added;
+          everything else about it can change. A code nothing uses can be deleted; one in use can only
+          be retired, which takes it off the dropdowns. Changes reach the open work order at once, and a
+          code you add is set on it, ready to save.
+        </p>
       </div>
       <button type="button" class="lda-help-close" id="disp-code-close" aria-label="Close the code lists">&times;</button>
     </header>
-    <div class="lda-help-body">
-      <p>The team owns these lists. A code is the key dispositions and saved analyses store, so it
-         cannot be renamed once added; its name, ISO reference and the rest can. Delete a code nothing
-         uses yet; one that a work order, a mechanism's default cause or a saved Weibull run uses can only be
-         retired (untick Active), which takes it off the dropdowns while they keep reading it. A change here
-         reaches the work order you have open at once, and a code you add is set on it, ready to save.</p>
-      <div class="std-view-tabs" id="disp-code-tabs" role="tablist"></div>
-      <div class="lda-table-scroll"><table class="lda-table std-code-table" id="disp-code-table"></table></div>
+    <div class="std-code-toolbar">
+      <div class="cl-tabs" id="disp-code-tabs" role="tablist" aria-label="Code list"></div>
+      <div class="std-code-tools">
+        <label class="std-code-search">
+          <span class="visually-hidden">Search this list</span>
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.5 2a6.5 6.5 0 0 1 5.15 10.47l4.44 4.44-1.18 1.18-4.44-4.44A6.5 6.5 0 1 1 8.5 2Zm0 1.67a4.83 4.83 0 1 0 0 9.66 4.83 4.83 0 0 0 0-9.66Z"/></svg>
+          <input type="search" id="disp-code-search" placeholder="Search codes, names and descriptions" autocomplete="off">
+        </label>
+        <label class="std-code-toggle"><input type="checkbox" id="disp-code-hide-retired"> Hide retired</label>
+        <button type="button" class="btn-primary std-code-add" id="disp-code-add">+ Add code</button>
+      </div>
+    </div>
+    <div class="std-code-body" id="disp-code-body">
+      <table class="cl-table" id="disp-code-table"></table>
     </div>
   </div>
 </dialog>
