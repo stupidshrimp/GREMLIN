@@ -244,9 +244,12 @@ Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
 11. **Minimum failures.** The REL rule stays: no fit under 5 lives ending in a
     failure (the intervals are still listed). The "small n" warning fires under 6,
     so a five-failure fit is made and flagged.
-12. **Induced failures** (cause semantic INDUCED) can be excluded with a checkbox;
-    excluded, they end a life as a suspension (the item was still renewed), and the
-    POP string records `induced=suspensions`.
+12. **Induced failures** (cause semantic INDUCED) are counted as suspensions when
+    *Count induced failures (installation and maintenance errors) as suspensions*
+    is ticked: one whose work renewed the item ends its life as a suspension, one
+    that renewed nothing ends no life, and the pattern views leave them out. The
+    POP string records `induced=suspensions`, and the "Induced failures present"
+    warning names the checkbox the same way.
 13. **The Weibull reads sub-asset, component and mechanism only.** Failure mode,
     cause and action narrow Triage and the other views but not the life analysis,
     and the Weibull's selector does not offer them: one

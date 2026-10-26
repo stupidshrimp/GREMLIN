@@ -8,6 +8,7 @@ and only then pooled.
 
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -339,6 +340,39 @@ def test_induced_failures_can_be_treated_as_suspensions():
     )
     assert kept.failure_count == 2
     assert [i.end_type for i in excluded.intervals] == [std.SUSPENSION_END, std.FAILURE_END]
+    # The lives table says why, rather than calling it a failure of another kind.
+    induced = next(note for note in excluded.notes if note.record_id == events[1].record_id)
+    assert induced.role == std.ROLE_SUSPENSION
+    assert "induced failure" in induced.note and "another kind" not in induced.note
+
+
+def test_an_induced_failure_that_renewed_nothing_says_so():
+    events = [
+        pm_reset("L", "2025-01-01", ["Filter"]),
+        failure("L", "Filter", "2025-01-11", cause="INSTALL", action="ADJUST"),
+        failure("L", "Filter", "2025-02-10"),
+    ]
+    population = Population(**{**FILTER_CONT.__dict__, "exclude_induced": True})
+    analysis = build_renewal_intervals(events, population, cutoff=at("2025-02-10"))
+    assert [i.end_type for i in analysis.intervals] == [std.FAILURE_END]
+    induced = next(note for note in analysis.notes if note.record_id == events[1].record_id)
+    assert induced.role == std.ROLE_NO_EFFECT
+    assert "induced failure" in induced.note and "another kind" not in induced.note
+
+
+def test_the_induced_warning_names_the_checkbox_as_the_page_labels_it():
+    page = (Path(__file__).resolve().parents[1] / "templates" / "perform_analysis.html").read_text(encoding="utf-8")
+    assert std.INDUCED_SWITCH_LABEL in " ".join(page.split())
+    events = [
+        pm_reset("L", "2025-01-01", ["Filter"]),
+        failure("L", "Filter", "2025-01-11", cause="MNT-ERR", action="REPLACE"),
+    ]
+    analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-02-10"))
+    warning = next(
+        warning for warning in validity_warnings(analysis, FILTER_CONT, codebook=CODES)
+        if warning["code"] == "INDUCED_FAILURES"
+    )
+    assert f"'{std.INDUCED_SWITCH_LABEL}'" in warning["message"]
 
 
 def test_life_hours_come_from_the_callback_per_stream():

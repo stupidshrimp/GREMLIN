@@ -684,6 +684,9 @@ POPULATION_DIMENSIONS = (
 )
 # The dimensions that narrow the pattern views but not the Weibull (see Population).
 PATTERN_ONLY_DIMENSIONS = ("failure_modes", "failure_causes", "actions")
+# The Perform an Analysis checkbox that sets ``exclude_induced``, word for word as
+# the page labels it, so what names it here names what is on screen.
+INDUCED_SWITCH_LABEL = "Count induced failures (installation and maintenance errors) as suspensions"
 
 
 @dataclass(frozen=True)
@@ -769,13 +772,15 @@ class Population:
 
         return any(getattr(self, attribute) for attribute in PATTERN_ONLY_DIMENSIONS)
 
-    def _induced_left_out(self, event: "StreamEvent") -> bool:
+    def induced_as_suspension(self, event: "StreamEvent") -> bool:
+        """Whether this is an induced failure the checkbox counts as a suspension."""
+
         return self.exclude_induced and event.cause_induced
 
     def counts_as_failure(self, event: "StreamEvent", unknown_mechanism_as: str) -> bool:
         """Whether a FAILURE in a pooled stream is a failure of this population."""
 
-        if self._induced_left_out(event):
+        if self.induced_as_suspension(event):
             return False
         if not self.failure_mechanisms or event.mechanism in self.failure_mechanisms:
             return True
@@ -788,7 +793,7 @@ class Population:
             bool(self.failure_mechanisms)
             and event.mechanism not in self.failure_mechanisms
             and event.mechanism_unknown
-            and not self._induced_left_out(event)
+            and not self.induced_as_suspension(event)
         )
 
 
@@ -1064,7 +1069,10 @@ def build_renewal_intervals(
                 continue
 
             if effect is None:
-                note(touch, ROLE_NO_EFFECT, "No effect: a failure of another kind that did not renew this item.")
+                note(touch, ROLE_NO_EFFECT,
+                     "No effect: an induced failure, counted as a suspension, that did not renew this item."
+                     if population.induced_as_suspension(event)
+                     else "No effect: a failure of another kind that did not renew this item.")
                 continue
 
             if touch.exposure_end <= clock:
@@ -1090,9 +1098,13 @@ def build_renewal_intervals(
                         why = "Counted as a failure: its mechanism is unknown (sensitivity run)."
                     analysis.failure_events.append(event)
                 elif touch.primary:
-                    why = ("Suspension: its mechanism is unknown (sensitivity run)."
-                           if population.unknown_mechanism_decides(event)
-                           else "Suspension: a failure of another kind renewed the item, resetting the clock.")
+                    if population.unknown_mechanism_decides(event):
+                        why = "Suspension: its mechanism is unknown (sensitivity run)."
+                    elif population.induced_as_suspension(event):
+                        why = ("Suspension: an induced failure (installation or maintenance error), counted as a "
+                               "suspension; it renewed the item, resetting the clock.")
+                    else:
+                        why = "Suspension: a failure of another kind renewed the item, resetting the clock."
                 elif event.category == PM_RESET:
                     why = "Suspension: renewed by planned work."
                 else:
@@ -1216,9 +1228,11 @@ def validity_warnings(
         warn(
             "INDUCED_FAILURES",
             "Induced failures present",
-            f"{len(induced)} failures were caused by maintenance or installation error. Those are introduced by the "
-            "work, not by the item's wear; tick 'Treat induced failures as suspensions' to leave them out of the "
-            "failures.",
+            (f"1 failure was caused by maintenance or installation error. It was introduced by the work, not by "
+             f"the item's wear; tick '{INDUCED_SWITCH_LABEL}' to leave it out of the failures."
+             if len(induced) == 1 else
+             f"{len(induced)} failures were caused by maintenance or installation error. Those are introduced by the "
+             f"work, not by the item's wear; tick '{INDUCED_SWITCH_LABEL}' to leave them out of the failures."),
         )
     if analysis.recurrent_streams:
         warn(

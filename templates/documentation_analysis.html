@@ -112,7 +112,7 @@
       <ul>
         <li><strong>Sub-asset and component</strong> choose which items' lives are pooled. The sub-asset list shows the asset itself, then each of its sub-assets under its parent.</li>
         <li><strong>Failure mechanism</strong> chooses which failures count. A failure of the pooled items with another mechanism is a competing failure: it ends the life as a suspension when it renewed the item.</li>
-        <li><strong>Induced failures</strong> (installation or maintenance errors) can be counted as suspensions instead.</li>
+        <li><strong>Induced failures</strong> (installation or maintenance errors) are counted as suspensions instead when <em>Count induced failures (installation and maintenance errors) as suspensions</em> is ticked.</li>
         <li><strong>From and To</strong> are the run's start and cutoff.</li>
       </ul>
       <p>
@@ -126,7 +126,7 @@
       <ul>
         <li><strong>Sub-asset, component, failure mechanism, mode, cause and action</strong> each narrow the work orders counted.</li>
         <li><strong>Disposition categories</strong> say which dispositions are counted: Failure, unless more are ticked.</li>
-        <li><strong>Induced failures</strong> can be left out, and <strong>From and To</strong> narrow by date.</li>
+        <li><strong>Induced failures</strong> are left out when that same box is ticked: these views count work orders, so there is no life to suspend. <strong>From and To</strong> narrow by date.</li>
       </ul>
       <p>
         Sub-asset, component and mechanism stay ticked when you switch between
