@@ -140,6 +140,8 @@ CODE_EXCEL_BLANK_ROWS = 25
 # What a code holds besides its list and its string: what an upload compares to
 # tell a changed code from one it left as it was.
 _CODE_FIELDS = ("name", "description", "iso_ref", "default_cause_code", "renews_item", "semantic", "sort_order", "is_active")
+# A refused upload lists this many refused rows, then counts the rest.
+CODE_EXCEL_REFUSALS_LISTED = 25
 
 
 def _clean(value: Any) -> str | None:
@@ -147,6 +149,43 @@ def _clean(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _listed(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _semantic_lists(semantic: str) -> str:
+    """The lists a semantic is for, as a sentence ends: "components and failure causes"."""
+
+    return _listed([
+        f"{std.CODE_LIST_LABELS[code_list].lower()}s" for code_list in std.CODE_LISTS
+        if semantic in std.CODE_LIST_SEMANTICS[code_list]
+    ])
+
+
+def _semantic_refusal(code_list: str, semantic: str) -> str:
+    """Why a code of this list can't take this semantic, and what it can take instead."""
+
+    known = any(semantic in allowed for allowed in std.CODE_LIST_SEMANTICS.values())
+    said = f"Semantic {semantic} is for {_semantic_lists(semantic)} only." if known else f"Semantic {semantic} is not one GREMLIN knows."
+    kind = std.CODE_LIST_LABELS[code_list].lower()
+    article = "An" if kind[0] in "aeiou" else "A"
+    allowed = std.CODE_LIST_SEMANTICS[code_list]
+    if not allowed:
+        return f"{said} {article} {kind} can mean nothing to the engine: leave semantic blank."
+    return f"{said} {article} {kind} can mean {' or '.join(allowed)}, or leave semantic blank."
+
+
+def _upload_refusal(problems: list[str]) -> str:
+    """Every row an upload refused, so one fix-up covers them all."""
+
+    if len(problems) == 1:
+        return f"{problems[0]} Nothing was saved."
+    lines = [f"{len(problems)} rows were refused, so nothing was saved:", *problems[:CODE_EXCEL_REFUSALS_LISTED]]
+    if len(problems) > CODE_EXCEL_REFUSALS_LISTED:
+        lines.append(f"…and {len(problems) - CODE_EXCEL_REFUSALS_LISTED} more.")
+    return "\n".join(lines)
 
 
 class StandardDispositionService:
@@ -340,8 +379,7 @@ class StandardDispositionService:
         if semantic is not None:
             semantic = semantic.upper()
             if semantic not in std.CODE_LIST_SEMANTICS[code_list]:
-                allowed = ", ".join(std.CODE_LIST_SEMANTICS[code_list]) or "none"
-                raise ValueError(f"A {std.CODE_LIST_LABELS[code_list].lower()} code can mean: {allowed}.")
+                raise ValueError(_semantic_refusal(code_list, semantic))
         default_cause = _clean(values.get("default_cause_code"))
         if code_list != std.FAILURE_MECHANISM:
             default_cause = None
@@ -492,7 +530,9 @@ class StandardDispositionService:
         causes = codebook.entries(std.FAILURE_CAUSE, include_inactive=True)
         lists: list[tuple[str, list[str], list[str]]] = [
             ("code_list", list(std.CODE_LISTS), [std.CODE_LIST_LABELS[code_list] for code_list in std.CODE_LISTS]),
-            ("semantic", semantics, [std.SEMANTIC_LABELS[semantic] for semantic in semantics]),
+            # One dropdown serves every row, so each meaning says which lists take it.
+            ("semantic", semantics,
+             [f"{std.SEMANTIC_LABELS[semantic]} — {_semantic_lists(semantic)} only" for semantic in semantics]),
             ("default_cause_code", [entry.code for entry in causes], [entry.name for entry in causes]),
             ("yes_no", ["TRUE", "FALSE"], ["Yes", "No"]),
         ]
@@ -598,6 +638,11 @@ class StandardDispositionService:
         spelled = {(code_list, code.casefold()): code for code_list, code in existing}
         seen: dict[tuple[str, str], int] = {}
         uploaded: list[tuple[str, dict[str, Any], bool]] = []
+        # Every row is checked before any is refused, so one upload names them all.
+        problems: list[str] = []
+        # The failure causes the sheet names, refused rows too: a mechanism whose
+        # default cause is on a refused row is refused for that row, not again here.
+        causes = {code for code_list, code in existing if code_list == std.FAILURE_CAUSE}
         for row_number, values in enumerate(rows[1:], start=2):
             data = {header: values[index] if index < len(values) else None for index, header in enumerate(headers) if header}
             cells = {column: self._excel_cell(data.get(column)) for column in ("code_list", "code", *present)}
@@ -605,25 +650,28 @@ class StandardDispositionService:
                 continue
             list_text, code = cells["code_list"], cells["code"]
             if list_text is None or code is None:
-                raise ValueError(f"Row {row_number}: give the code's list and the code itself. Nothing was saved.")
+                problems.append(f"Row {row_number}: give the code's list and the code itself.")
+                continue
             code_list = lists_by_key.get(list_key(list_text))
             if code_list is None:
-                raise ValueError(
-                    f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}. "
-                    "Nothing was saved."
-                )
+                problems.append(f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}.")
+                continue
+            if code_list == std.FAILURE_CAUSE:
+                causes.add(code)
             label = std.CODE_LIST_LABELS[code_list]
             where = f"Row {row_number} ({label} {code})"
             folded = (code_list, code.casefold())
             if folded in seen:
-                raise ValueError(f"{where}: the code is in the workbook twice, also on row {seen[folded]}. Nothing was saved.")
+                problems.append(f"{where}: the code is in the workbook twice, also on row {seen[folded]}.")
+                continue
             seen[folded] = row_number
             stored = spelled.get(folded)
             if stored is not None and stored != code:
-                raise ValueError(
+                problems.append(
                     f"{where}: the {label.lower()} list already has {stored}, which differs only in capitals. "
-                    f"Write it as {stored} to change that code; a code's spelling is its key. Nothing was saved."
+                    f"Write it as {stored} to change that code; a code's spelling is its key."
                 )
+                continue
             before = existing.get((code_list, code))
             item: dict[str, Any] = (
                 self._entry_dict(before) if before is not None else {
@@ -632,12 +680,14 @@ class StandardDispositionService:
                 }
             )
             item.update({"code_list": code_list, "code": code})
+            refused = None
             for column in present:
                 if column in ("renews_item", "is_active"):
                     try:
                         flag = self._excel_flag(data.get(column))
                     except ValueError as exc:
-                        raise ValueError(f"{where}: {column} {exc} Nothing was saved.") from None
+                        refused = f"{where}: {column} {exc}"
+                        break
                     # Empty keeps what the code had: a new code is active and renews nothing.
                     if flag is not None:
                         item[column] = flag
@@ -646,21 +696,27 @@ class StandardDispositionService:
                         item[column] = cells[column]
                 else:
                     item[column] = cells[column]
+            if refused is not None:
+                problems.append(refused)
+                continue
             unordered = item["sort_order"] is None
             try:
                 fields = self._code_fields(item)
             except ValueError as exc:
-                raise ValueError(f"{where}: {exc} Nothing was saved.") from None
+                problems.append(f"{where}: {exc}")
+                continue
             uploaded.append((where, fields, unordered))
-        if not uploaded:
+        if not uploaded and not problems:
             raise ValueError("The workbook has no codes in it. Download the code lists and fill that in.")
 
-        causes = {code for code_list, code in existing if code_list == std.FAILURE_CAUSE}
-        causes.update(fields["code"] for _, fields, _ in uploaded if fields["code_list"] == std.FAILURE_CAUSE)
         for where, fields, _ in uploaded:
             cause = fields["default_cause_code"]
             if cause is not None and cause not in causes:
-                raise ValueError(f"{where}: default cause {cause!r} is not in the failure cause list. Nothing was saved.")
+                problems.append(f"{where}: default cause {cause!r} is not in the failure cause list.")
+        if problems:
+            # Sheet order, though the default causes are checked last.
+            problems.sort(key=lambda problem: int(re.match(r"Row (\d+)", problem).group(1)))
+            raise ValueError(_upload_refusal(problems))
         # A new code given no sort order goes to the end of its list, in the sheet's order.
         last = {code_list: 0 for code_list in std.CODE_LISTS}
         for (code_list, _), entry in existing.items():

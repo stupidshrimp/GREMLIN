@@ -200,6 +200,8 @@
   background: var(--forest-100);
   color: var(--text);
   font-weight: 500;
+  /* A refused upload lists each refused row on its own line. */
+  white-space: pre-line;
 }
 
 .dev-banner.is-error {

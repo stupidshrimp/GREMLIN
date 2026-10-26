@@ -45,7 +45,8 @@
           Add as many more rows as you need.</li>
         <li><code>code_list</code>, <code>semantic</code>, <code>renews_item</code> and
           <code>is_active</code> have dropdowns, and <code>default_cause_code</code>
-          suggests the failure causes.</li>
+          suggests the failure causes. Each list takes only some semantics: the
+          <strong>Lookup Lists</strong> sheet says which.</li>
       </ul>
       <div class="dev-controls">
         <a class="btn-primary" id="dev-codes-download" href="{{ url_for('api_dev_code_lists_excel') }}" download>
@@ -73,7 +74,8 @@
         <li><code>default_cause_code</code> is read for failure mechanisms only, and
           <code>renews_item</code> for actions only.</li>
         <li>Every row is checked before anything is saved. One refused row refuses the
-          upload, naming its row, and nothing changes.</li>
+          upload and nothing changes; every refused row is listed, so they can all be
+          fixed at once.</li>
       </ul>
       <div class="dev-controls">
         <input type="file" id="dev-codes-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>

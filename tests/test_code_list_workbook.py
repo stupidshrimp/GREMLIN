@@ -120,6 +120,10 @@ class DownloadTests(CodeListWorkbookFixture):
         self.assertEqual(validations[letters["code_list"]].get("showErrorMessage"), "1")
         self.assertIn("EXP-WEAR", lookup)
         self.assertIn("NO_FAULT_FOUND", lookup)
+        # One semantic dropdown serves every row, so each meaning says which lists take it.
+        self.assertIn("Flags the record for review — components only", lookup)
+        self.assertIn("not known&apos; — components, failure mechanisms and failure causes only",
+                      lookup.replace("'", "&apos;"))
 
 
 class UploadTests(CodeListWorkbookFixture):
@@ -199,6 +203,39 @@ class UploadTests(CodeListWorkbookFixture):
         self.assertIsNone(self.code("COMPONENT", "Boiler"))
         self.assertEqual(self.code("COMPONENT", "Filter")["name"], "Filter / strainer / sieve")
 
+    def test_every_refused_row_is_named_at_once(self):
+        rows = self.download()
+        self.fill(rows, code_list="COMPONENT", code="Boiler", name="Boiler")
+        refused_rows = [
+            self.fill(rows, code_list="FAILURE_MECHANISM", code="OTH", name="Other", semantic="REVIEW"),
+            self.fill(rows, code_list="FAILURE_MECHANISM", code="CORR", name="Corrosion", default_cause_code="RUST"),
+            self.fill(rows, code_list="FAILURE_MODE", code="UNK", name="Unknown", semantic="UNKNOWN"),
+        ]
+        sheet_row = {id(row): number for number, row in enumerate(rows, start=1)}
+        with self.assertRaises(ValueError) as refused:
+            self.upload(rows)
+        lines = str(refused.exception).split("\n")
+        self.assertEqual(lines[0], "3 rows were refused, so nothing was saved:")
+        # In the sheet's order, the default cause (checked last) included.
+        self.assertEqual([line.split(":")[0] for line in lines[1:]], [
+            f"Row {sheet_row[id(refused_rows[0])]} (Failure mechanism OTH)",
+            f"Row {sheet_row[id(refused_rows[1])]} (Failure mechanism CORR)",
+            f"Row {sheet_row[id(refused_rows[2])]} (Failure mode UNK)",
+        ])
+        self.assertIsNone(self.code("COMPONENT", "Boiler"))
+
+    def test_a_long_list_of_refusals_is_cut_short(self):
+        rows = [list(CODE_EXCEL_COLUMNS)]
+        for number in range(30):
+            rows.append([None] * len(CODE_EXCEL_COLUMNS))
+            self.fill(rows, code_list="ACTION", code=f"X{number}", name="X", semantic="UNKNOWN")
+        with self.assertRaises(ValueError) as refused:
+            self.upload(rows)
+        lines = str(refused.exception).split("\n")
+        self.assertEqual(lines[0], "30 rows were refused, so nothing was saved:")
+        self.assertEqual(len(lines), 1 + 25 + 1)
+        self.assertEqual(lines[-1], "…and 5 more.")
+
     def test_what_each_row_is_refused_for(self):
         cases = [
             ({"code_list": "PARTS", "code": "X", "name": "X"}, r"'PARTS' is not a code list"),
@@ -208,7 +245,13 @@ class UploadTests(CodeListWorkbookFixture):
              r"already has Filter, which differs only in capitals"),
             ({"code_list": "FAILURE_MECHANISM", "code": "CORR", "name": "Corrosion", "default_cause_code": "RUST"},
              r"default cause 'RUST' is not in the failure cause list"),
-            ({"code_list": "ACTION", "code": "X", "name": "X", "semantic": "UNKNOWN"}, r"can mean"),
+            ({"code_list": "ACTION", "code": "X", "name": "X", "semantic": "UNKNOWN"},
+             r"Semantic UNKNOWN is for components, failure mechanisms and failure causes only\. "
+             r"An action can mean nothing to the engine: leave semantic blank\."),
+            ({"code_list": "FAILURE_MECHANISM", "code": "OTH", "name": "Other", "semantic": "REVIEW"},
+             r"Semantic REVIEW is for components only\. A failure mechanism can mean UNKNOWN, or leave semantic blank\."),
+            ({"code_list": "FAILURE_MODE", "code": "UNK", "name": "Unknown", "semantic": "NOPE"},
+             r"Semantic NOPE is not one GREMLIN knows\. A failure mode can mean INSPECTION_FINDING or NO_FAULT_FOUND"),
             ({"code_list": "ACTION", "code": "X", "name": "X", "is_active": "maybe"}, r"is_active 'maybe' is not TRUE or FALSE"),
             ({"code_list": "ACTION", "code": "X", "name": "X", "sort_order": "first"}, r"Sort order must be a whole number"),
         ]
