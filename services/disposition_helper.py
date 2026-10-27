@@ -43,6 +43,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from services import disposition_standard as std
+from services import disposition_helper_embedding as embedding
 from services import disposition_helper_text as text
 from services.standard_disposition_schema import AssetTree, load_codebook
 
@@ -73,6 +74,12 @@ MIGRATED_WEIGHT = 0.6
 OTHER_CATEGORY_WEIGHT = 0.4
 # How much vote weight makes the votes trusted as much as they can be.
 VOTE_SCALE = 0.6
+# With meaning matching on, how alike two work orders are is this much their
+# wording (TF-IDF) and the rest their meaning (the embedding model). The model
+# scores any two pieces of English a little alike, so its similarity counts
+# only above MEANING_FLOOR.
+WORDING_SHARE = 0.8
+MEANING_FLOOR = 0.2
 
 # The fields the helper proposes, in the order the form fills them.
 CODED_FIELDS = {
@@ -211,6 +218,21 @@ class Corpus:
         for word in lexicon.words():
             known.setdefault(word, 1)
         self.speller = text.Speller(known)
+        # The work orders' meaning vectors, by the same positions, when meaning
+        # matching is on (see DispositionHelper.knowledge).
+        self.meaning: embedding.MeaningIndex | None = None
+        self.meaning_status: dict[str, Any] = {"enabled": False, "model": embedding.MODEL_NAME, "reason": None}
+
+    def similarity(self, query: Mapping[int, float], position: int) -> float:
+        """Cosine similarity of ``query`` to one work order, on every feature."""
+
+        ids, weights = self.doc_vectors[position]
+        return sum(query.get(fid, 0.0) * weight for fid, weight in zip(ids, weights))
+
+    def meaning_signature(self) -> tuple:
+        """What the calibration depends on of the meaning index: whether there is one, and whether it is complete."""
+
+        return (self.meaning is not None, self.meaning is not None and self.meaning.complete)
 
     def word_idf(self, word: str) -> float:
         fid = self.feature_ids.get(f"w:{word}")
@@ -240,11 +262,7 @@ class Corpus:
         if exclude is not None:
             scores.pop(exclude, None)
         best = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:CANDIDATES_RESCORED]
-        rescored = []
-        for position, _ in best:
-            ids, weights = self.doc_vectors[position]
-            similarity = sum(query.get(fid, 0.0) * weight for fid, weight in zip(ids, weights))
-            rescored.append((position, similarity))
+        rescored = [(position, self.similarity(query, position)) for position, _ in best]
         rescored.sort(key=lambda item: item[1], reverse=True)
         return rescored
 
@@ -548,12 +566,39 @@ class DispositionHelper:
                 rows = conn.execute(_CORPUS_SQL).fetchall() if state.corpus is None or state.corpus_key != corpus_key else None
                 labels = load_labels(conn)
             if rows is not None:
-                state.corpus, state.corpus_key = Corpus(rows, text.build_lexicon(codebook)), corpus_key
+                corpus = Corpus(rows, text.build_lexicon(codebook))
+                self._attach_meaning(corpus, rows)
+                state.corpus, state.corpus_key = corpus, corpus_key
                 state.calibration = None
             state.codebook = codebook
             state.labels = labels
             state.labels_token = token
             return state.corpus, labels, codebook
+
+    def _attach_meaning(self, corpus: Corpus, rows: Sequence[Mapping[str, Any]]) -> None:
+        """Give the index its meaning vectors, when the model is installed and meaning matching is on."""
+
+        db_path = getattr(self.life, "db_path", None)
+        if db_path is None:
+            corpus.meaning_status = {"enabled": False, "model": embedding.MODEL_NAME, "reason": "No database path."}
+            return
+        encoder, status = embedding.availability(db_path, load=embedding.LOADER)
+        corpus.meaning_status = status
+        if encoder is None:
+            return
+        config = embedding.settings(db_path)
+        corpus.meaning = embedding.MeaningIndex(
+            corpus.ids, [embedding.embedding_text(row) for row in rows], encoder,
+            embedding.VectorCache(config["cache_path"]),
+        )
+
+    def meaning_status(self, corpus: Corpus) -> dict[str, Any]:
+        """Whether meaning matching is on for this index, why not, and how far it has read."""
+
+        status = dict(corpus.meaning_status)
+        if corpus.meaning is not None:
+            status.update(corpus.meaning.status())
+        return status
 
     def _calibration(self, corpus: Corpus, labels: Mapping[int, Label], codebook: std.CodeBook, tree: AssetTree,
                      *, wait: bool) -> Calibration | None:
@@ -568,7 +613,10 @@ class DispositionHelper:
         state = self._state()
         engineered = sum(1 for label in labels.values() if label.source != "MIGRATION")
         current = state.calibration
-        if current is not None and current.basis[0] is corpus and engineered < current.basis[1] * 1.1 + 5:
+        # Refitted, too, once every work order's meaning has been read: the
+        # scores read differently with it than with part of it.
+        if (current is not None and current.basis[0] is corpus and current.basis[2] == corpus.meaning_signature()
+                and engineered < current.basis[1] * 1.1 + 5):
             return current
         if not wait:
             if not BACKGROUND_CALIBRATION:
@@ -601,8 +649,9 @@ class DispositionHelper:
     def _fit_calibration(self, corpus: Corpus, labels: Mapping[int, Label], codebook: std.CodeBook,
                          tree: AssetTree) -> Calibration:
         engineered = sum(1 for label in labels.values() if label.source != "MIGRATION")
+        signature = corpus.meaning_signature()
         trials = self._replay(corpus, labels, codebook, tree, sample=CALIBRATION_SAMPLE)
-        return self._calibration_from(trials, basis=(corpus, engineered))
+        return self._calibration_from(trials, basis=(corpus, engineered, signature))
 
     def _calibration_from(self, trials: Sequence[Mapping[str, Any]], *, basis: tuple) -> Calibration:
         """Each field's curve from replayed work orders, then the overall one: from the least sure field to all right."""
@@ -661,13 +710,16 @@ class DispositionHelper:
         context: AssetContext,
         *,
         legacy: str | None = None,
+        use_meaning: bool = True,
     ) -> dict[str, Any]:
         """What the evidence says about one work order, field by field, uncalibrated.
 
         ``record`` carries the work order's text, ``mapped_record_id``,
         ``asset_number``, ``record_class`` and the date it was found
         (``found``). Its own disposition, if it has one, is never a vote: it is
-        read as though it had never been dispositioned.
+        read as though it had never been dispositioned. ``use_meaning=False``
+        finds the similar work orders by their wording alone (for the accuracy
+        report's comparison).
         """
 
         mapped_record_id = int(record["mapped_record_id"])
@@ -678,31 +730,17 @@ class DispositionHelper:
         reading = text.read_work_order(texts, corpus.lexicon, record_class=record_class, speller=corpus.speller)
         query = corpus.vector(reading)
         own_position = corpus.position.get(mapped_record_id)
-        hits = corpus.search(query, exclude=own_position)
+        worded = corpus.search(query, exclude=own_position)
+        hits, parts = self._similar(corpus, query, texts, own_position, worded, use_meaning=use_meaning)
         day = _day_number(record.get("found"))
-
-        neighbours: list[tuple[int, float, Label, float]] = []
-        duplicates = []
-        for position, similarity in hits:
-            if similarity <= 0.02:
-                break
-            other_id = corpus.ids[position]
-            same_asset = corpus.assets[position] == context.asset_number
-            if (same_asset and similarity >= DUPLICATE_SIMILARITY and day is not None
-                    and corpus.days[position] is not None and abs(corpus.days[position] - day) <= DUPLICATE_DAYS
-                    and len(duplicates) < 3):
-                duplicates.append((position, similarity))
-            if len(neighbours) >= NEIGHBOURS:
-                if len(duplicates) >= 3 or similarity < DUPLICATE_SIMILARITY:
-                    break
-                continue
-            label = labels.get(other_id)
-            if label is None:
-                continue
-            weight = similarity * similarity
-            weight *= SAME_ASSET_WEIGHT if same_asset else 1.0
-            weight *= MIGRATED_WEIGHT if label.source == "MIGRATION" else 1.0
-            neighbours.append((position, similarity, label, weight))
+        neighbours, duplicates = self._neighbours(hits, corpus, labels, context, day)
+        # The category and the sub-asset are voted on by wording alone. Meaning
+        # finds work orders about the same thing, which is what the codes need;
+        # but a check of the oven's intake screen and a clogged intake screen
+        # mean nearly the same and are different kinds of event, and the words
+        # ("check", "PM", the record class) are what tell them apart. Where is
+        # in names and numbers ("S09", "dry-off oven"), which are words too.
+        worded_neighbours = neighbours if hits is worded else self._neighbours(worded, corpus, labels, context, None)[0]
 
         evidence = self._lexicon_evidence(reading, corpus, codebook)
         fields: dict[str, Any] = {}
@@ -711,7 +749,7 @@ class DispositionHelper:
         votes: dict[str, float] = {}
         counts: dict[str, int] = {}
         total = 0.0
-        for _, _, label, weight in neighbours:
+        for _, _, label, weight in worded_neighbours:
             total += weight
             votes[label.disposition_category] = votes.get(label.disposition_category, 0.0) + weight
             counts[label.disposition_category] = counts.get(label.disposition_category, 0) + 1
@@ -734,7 +772,7 @@ class DispositionHelper:
         category = candidates[0].value if candidates else None
 
         # Sub-asset.
-        fields["sub_asset"] = self._sub_asset(reading, record, context, neighbours, corpus)
+        fields["sub_asset"] = self._sub_asset(reading, record, context, worded_neighbours, corpus)
 
         # The coded fields, read for the category the work order looks like.
         for field_name, code_list in CODED_FIELDS.items():
@@ -770,10 +808,82 @@ class DispositionHelper:
             "category": category,
             "neighbours": neighbours,
             "duplicates": duplicates,
+            "parts": parts,
             "day": day,
             "evidence": evidence,
             "corpus": corpus,
         }
+
+    @staticmethod
+    def _neighbours(hits: Sequence[tuple[int, float]], corpus: Corpus, labels: Mapping[int, Label], context: AssetContext,
+                    day: int | None) -> tuple[list[tuple[int, float, Label, float]], list[tuple[int, float]]]:
+        """The dispositioned work orders that vote, with their weights, and any likely duplicates.
+
+        Each vote weighs its similarity squared, more on the same asset and less
+        for a migrated REL decision. A likely duplicate is one on the same asset,
+        found within DUPLICATE_DAYS, that reads much the same (``day`` None
+        looks for none).
+        """
+
+        neighbours: list[tuple[int, float, Label, float]] = []
+        duplicates: list[tuple[int, float]] = []
+        for position, similarity in hits:
+            if similarity <= 0.02:
+                break
+            same_asset = corpus.assets[position] == context.asset_number
+            if (same_asset and similarity >= DUPLICATE_SIMILARITY and day is not None
+                    and corpus.days[position] is not None and abs(corpus.days[position] - day) <= DUPLICATE_DAYS
+                    and len(duplicates) < 3):
+                duplicates.append((position, similarity))
+            if len(neighbours) >= NEIGHBOURS:
+                if day is None or len(duplicates) >= 3 or similarity < DUPLICATE_SIMILARITY:
+                    break
+                continue
+            label = labels.get(corpus.ids[position])
+            if label is None:
+                continue
+            weight = similarity * similarity
+            weight *= SAME_ASSET_WEIGHT if same_asset else 1.0
+            weight *= MIGRATED_WEIGHT if label.source == "MIGRATION" else 1.0
+            neighbours.append((position, similarity, label, weight))
+        return neighbours, duplicates
+
+    @staticmethod
+    def _similar(corpus: Corpus, query: Mapping[int, float], texts: Mapping[str, Any], own_position: int | None,
+                 worded: list[tuple[int, float]], *, use_meaning: bool,
+                 ) -> tuple[list[tuple[int, float]], dict[int, tuple[float, float | None]]]:
+        """Work orders by how alike they are to this one, most alike first, and each one's wording and meaning parts.
+
+        ``worded`` is the TF-IDF search's best. With meaning matching, the best
+        by wording and the best by meaning are pooled and each is scored on
+        both, so a work order that says the same thing in other words is found
+        even when it shares none of them. Wording keeps most of the say
+        (WORDING_SHARE): on the synthetic plant, more meaning than that found
+        work orders about the same part but a different fault.
+        """
+
+        meaning = corpus.meaning if use_meaning else None
+        if meaning is None:
+            return worded, {position: (similarity, None) for position, similarity in worded}
+        vector = meaning.vector_for(own_position, embedding.embedding_text(texts))
+        scores = meaning.similarities(vector)
+        wording = dict(worded)
+        pool = set(wording)
+        pool.update(position for position, _ in meaning.nearest(scores, CANDIDATES_RESCORED, exclude=own_position))
+        parts: dict[int, tuple[float, float | None]] = {}
+        blended = []
+        for position in pool:
+            words = wording[position] if position in wording else corpus.similarity(query, position)
+            alike = float(scores[position])
+            alike_part = None if math.isnan(alike) else alike
+            parts[position] = (words, alike_part)
+            if alike_part is None:
+                blended.append((position, words))
+                continue
+            meant = min(1.0, max(0.0, (alike_part - MEANING_FLOOR) / (1.0 - MEANING_FLOOR)))
+            blended.append((position, WORDING_SHARE * words + (1.0 - WORDING_SHARE) * meant))
+        blended.sort(key=lambda item: item[1], reverse=True)
+        return blended, parts
 
     @staticmethod
     def _lexicon_evidence(reading: text.Reading, corpus: Corpus, codebook: std.CodeBook) -> dict[str, Any]:
@@ -1021,6 +1131,9 @@ class DispositionHelper:
                 "task_id": corpus.task_ids[position],
                 "title": corpus.titles[position],
                 "similarity": round(similarity, 3),
+                "wording": round(prediction["parts"].get(position, (similarity, None))[0], 3),
+                "meaning": (None if prediction["parts"].get(position, (0, None))[1] is None
+                            else round(prediction["parts"][position][1], 3)),
                 "same_asset": corpus.assets[position] == record["asset_number"],
                 "asset_number": corpus.assets[position],
                 "disposition_category": label.disposition_category,
@@ -1072,6 +1185,7 @@ class DispositionHelper:
             "possible_duplicates": duplicates,
             "notes": notes,
             "prefill_confidence": PREFILL_CONFIDENCE,
+            "meaning": self.meaning_status(corpus),
         }
 
     @staticmethod
@@ -1171,6 +1285,7 @@ class DispositionHelper:
         sample: int,
         asset_number: str | None = None,
         seed: int = 14224,
+        use_meaning: bool = True,
     ) -> list[dict[str, Any]]:
         """Disposition decided work orders as if they were new, each without its own decision.
 
@@ -1204,7 +1319,7 @@ class DispositionHelper:
             truth = labels[mapped_record_id]
             record = {key: row[key] for key in row.keys()}
             context = self._context(tree, record["asset_number"] or "", contexts)
-            prediction = self._predict(record, corpus, labels, codebook, context)
+            prediction = self._predict(record, corpus, labels, codebook, context, use_meaning=use_meaning)
             scores: dict[str, float] = {}
             right: dict[str, bool] = {}
             predicted: dict[str, Any] = {}
@@ -1251,24 +1366,53 @@ class DispositionHelper:
         trials = self._replay(corpus, labels, codebook, tree, sample=sample, asset_number=asset_number)
         in_use = self.in_use(asset_number)
         engineered = sum(1 for label in labels.values() if label.source == "ENGINEER")
+        meaning = self.meaning_status(corpus)
+        report: dict[str, Any] = {
+            "asset_number": asset_number,
+            "replayed": len(trials),
+            "learnt_from": engineered,
+            "enough": False,
+            "fields": [],
+            "thresholds": [],
+            "mistakes": [],
+            "in_use": in_use,
+            "meaning": meaning,
+            "without_meaning": None,
+            "helper_version": HELPER_VERSION,
+        }
         if len(trials) < 2:
-            return {
-                "asset_number": asset_number,
-                "replayed": len(trials),
-                "learnt_from": engineered,
-                "enough": False,
-                "fields": [],
-                "thresholds": [],
-                "mistakes": [],
-                "in_use": in_use,
-                "helper_version": HELPER_VERSION,
+            return report
+        graded = self._graded(trials)
+        report.update({
+            "replayed": len(graded["rows"]),
+            "enough": len(graded["rows"]) >= MIN_CALIBRATION_RECORDS,
+            "fields": graded["fields"],
+            "thresholds": graded["thresholds"],
+            "mistakes": graded["mistakes"],
+        })
+        if corpus.meaning is not None:
+            # The same work orders matched by their wording alone: what meaning
+            # matching adds, on this plant's own records.
+            plain = self._graded(self._replay(
+                corpus, labels, codebook, tree, sample=sample, asset_number=asset_number, use_meaning=False,
+            ))
+            report["without_meaning"] = {
+                "fields": [{key: row[key] for key in ("field", "label", "accuracy")} for row in plain["fields"]],
+                "thresholds": plain["thresholds"],
             }
-        halves = [trials[0::2], trials[1::2]]
+        return report
+
+    def _graded(self, trials: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """Replayed work orders graded: each with calibrated confidences, and the report's tables from them.
+
+        Each half's confidences come from a calibration fitted on the other
+        half, exactly as the live calibration is fitted on all of them.
+        """
+
+        halves = [list(trials[0::2]), list(trials[1::2])]
         rows = []
         for half, other in ((halves[0], halves[1]), (halves[1], halves[0])):
-            # Fitted on the other half, exactly as the live calibration is fitted
-            # on all of them: per field, then the overall from the least sure field.
-            calibration = self._calibration_from(other, basis=(None, 0))
+            calibration = self._calibration_from(other, basis=(None, 0, None))
             for trial in half:
                 confidences = {
                     field_name: calibration.confidence(field_name, trial["scores"][field_name])
@@ -1312,17 +1456,7 @@ class DispositionHelper:
             for (guess, truth), count in sorted(pairs.items(), key=lambda item: -item[1])[:3]:
                 mistakes.append({"field": field_name, "label": FIELD_NAMES[field_name], "suggested": guess,
                                  "decided": truth, "count": count})
-        return {
-            "asset_number": asset_number,
-            "replayed": len(rows),
-            "learnt_from": engineered,
-            "enough": len(rows) >= MIN_CALIBRATION_RECORDS,
-            "fields": fields_report,
-            "thresholds": thresholds,
-            "mistakes": mistakes,
-            "in_use": in_use,
-            "helper_version": HELPER_VERSION,
-        }
+        return {"rows": rows, "fields": fields_report, "thresholds": thresholds, "mistakes": mistakes}
 
     @staticmethod
     def _rate(rows: Sequence[Any], right) -> float | None:
@@ -1612,6 +1746,18 @@ class DispositionHelper:
             "overall": suggestion.get("overall_confidence"),
             "fields": kept,
         }, separators=(",", ":"))
+
+    def status(self) -> dict[str, Any]:
+        """Whether meaning matching is on (and how far it has read), and whether the helper has measured itself."""
+
+        corpus, labels, _ = self.knowledge(token=self.life.change_token())
+        calibration = self._state().calibration
+        return {
+            "meaning": self.meaning_status(corpus),
+            "learnt_from": sum(1 for label in labels.values() if label.source == "ENGINEER"),
+            "calibrated": calibration is not None and calibration.samples >= MIN_CALIBRATION_RECORDS,
+            "helper_version": HELPER_VERSION,
+        }
 
     def runs(self, asset_number: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """The asset's batch runs, newest first, with how many of each are still the helper's."""

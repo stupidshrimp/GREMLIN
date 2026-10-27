@@ -71,6 +71,7 @@
       Off. Turn it on and the disposition helper reads each work order you open and fills in its disposition from
       the code lists, for you to check and save.
     </p>
+    <p class="lda-hint std-helper-meaning" id="disp-helper-meaning" hidden></p>
     <div class="std-helper-tools">
       <button type="button" class="btn-secondary" id="disp-helper-batch" aria-haspopup="dialog"
               aria-controls="disp-helper-dialog">Auto-disposition the backlog…</button>
@@ -191,7 +192,10 @@
       <p>The helper reads a work order two ways: it finds the work orders the team has already dispositioned that
         read most like it, and lets them vote for their codes; and it reads what the work order says outright
         (“clogged”, “won't light”, “replaced”, “S09”) against the code lists and a thesaurus of maintenance wording.
-        Where the two agree it is sure; where they disagree, or there is little of either, it says so.</p>
+        Where the two agree it is sure; where they disagree, or there is little of either, it says so. With meaning
+        matching on, a small model run on this server also finds work orders that say the same thing in other words
+        (“no flame on startup” for “won't light”); it helps find what failed, and the category is still read from the
+        wording.</p>
       <p>To measure itself, it dispositions work orders the team has already decided as if they were new, each one
         without its own decision, and compares. A confidence of 90% means that nine in ten of its suggestions that
         sure matched the engineer's disposition.</p>

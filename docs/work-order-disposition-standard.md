@@ -18,7 +18,7 @@ confirm or change those choices.
 | **Disposition** (editors) | `/life-data-analysis/disposition` — `templates/disposition.html`, `static/js/disposition.js` |
 | **Perform an Analysis** (any account that may see Life Data Analysis) | `/life-data-analysis/perform-analysis` — `templates/perform_analysis.html`, `static/js/life_data_analysis.js` |
 | The disposition form both pages use | `static/js/disposition_form.js` (the Disposition page's right-hand window, and the editor that opens over Perform an Analysis from any task ID in its tables) |
-| **The disposition helper** (Auto-disposition): reading a work order, suggesting its disposition, batch runs and their undo, the accuracy report | `services/disposition_helper_text.py` (words, the thesaurus, negation, spelling) and `services/disposition_helper.py` (the index, voting, calibration, runs); saves and undo in `StandardDispositionService.save_auto_dispositions` / `undo_helper_run`. Tested in `tests/test_disposition_helper.py` on the synthetic plant of `tests/disposition_helper_corpus.py` |
+| **The disposition helper** (Auto-disposition): reading a work order, suggesting its disposition, batch runs and their undo, the accuracy report | `services/disposition_helper_text.py` (words, the thesaurus, negation, spelling) and `services/disposition_helper.py` (the index, voting, calibration, runs), `services/disposition_helper_embedding.py` (meaning matching: the model, its vector cache); saves and undo in `StandardDispositionService.save_auto_dispositions` / `undo_helper_run`; `tools/fetch_embedding_model.py` puts the model in place. Tested in `tests/test_disposition_helper.py` and `tests/test_disposition_helper_meaning.py` on the synthetic plant of `tests/disposition_helper_corpus.py` |
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
@@ -283,13 +283,61 @@ orders, never on the ones being graded. It also reports the helper in use: how
 often a suggested value was kept on a save, and how many auto-dispositions an
 engineer confirmed unchanged.
 
+**Meaning matching (optional).** Word matching finds work orders that use the
+same words or thesaurus concepts; "burner won't light" and "no flame on startup"
+share neither. With meaning matching on, a small embedding model,
+`sentence-transformers/all-MiniLM-L6-v2` (Apache-2.0, pinned to revision
+`c9745ed1`), reads every work order's title, request, narrative and notes into
+384 numbers that stand for what it means, and work orders that say the same
+thing in other words are found too. It runs on the server's CPU through ONNX
+Runtime; no text leaves the plant.
+
+* *Where it counts.* Similar work orders are found by wording (TF-IDF) and by
+  meaning, pooled, and scored 80% on wording and 20% on meaning (the model's
+  similarity counts only above 0.2, where unrelated English sits). That
+  similarity finds the votes for the **component, mechanism, mode and action**.
+  The **category** and the **sub-asset** are still voted on by wording alone: a
+  check of the oven's intake screen and a clogged intake screen mean nearly the
+  same and are different kinds of event, and where is in names and numbers.
+  More weight on meaning made the synthetic plant's dispositions worse, by
+  finding work orders about the same part but a different fault.
+* *What it adds, measured.* On the synthetic plant with its backlog written in
+  wording no dispositioned work order used ("no flame at the dry-off oven on
+  startup", "intake screen caked with dust"), whole dispositions entirely right
+  went from 76.3% to 80.6% (component 78.5% to 82.8%, action 91.4% to 95.2%);
+  with the backlog worded like the past, nothing got worse (92.5% to 93.0%).
+  The accuracy report shows the same comparison on the plant's own records:
+  with meaning matching on, every figure has a "words only" one beside it.
+* *Reading the work orders.* Each work order's vector is kept, by a hash of the
+  text it was read from, in `GREMLIN.embeddings.db` beside GREMLIN.db (not in
+  GREMLIN.db: it is derived data, and writing it there would move the change
+  token every cache above is keyed on). Work orders not read yet are read in the
+  background and matched by their words until they are; the helper bar says how
+  far it has got. The calibration is refitted once all are read.
+* *Setting it up.* `python -m pip install -r requirements.txt` (adds `numpy`,
+  `onnxruntime`, `tokenizers`), then `python tools/fetch_embedding_model.py`,
+  which downloads the two model files (about 90 MB) from Hugging Face into
+  `embedding-model/all-MiniLM-L6-v2` beside GREMLIN.db, checks each against its
+  SHA-256, and then checks GREMLIN loads it. A server that cannot reach Hugging
+  Face takes the folder from a machine that can: `--from-dir <copied folder>`.
+  `--check` says whether GREMLIN will find and load it. GREMLIN picks it up on
+  its next start.
+* *Settings* (environment or `.env`): `GREMLIN_EMBEDDINGS=off` turns it off;
+  `GREMLIN_EMBEDDING_MODEL_DIR` and `GREMLIN_EMBEDDING_CACHE_PATH` move the model
+  and the cache. Without the packages or the model, the helper matches by words
+  alone, as before, and the helper bar says why.
+
 **Keeping it fast.** The index is built once per change to the work orders'
 text or the code lists (`COUNT`, `MAX(mapped_record_id)` and `MAX(mapped_at)`,
 answered from `idx_mapped_cmms_mapped_at`), and the decisions are re-read on
 each change to GREMLIN.db, one narrow query. On a 43,000-work-order synthetic
-plant the index builds in about 4 s, a suggestion takes about 12 ms, the
-calibration about 4 s, and the process holds about 120 MB. Everything is in the
-standard library: nothing to install on the deployment.
+plant, by words alone, the index builds in about 4 s, a suggestion takes about
+12 ms, the calibration about 4 s, and the process holds about 120 MB.
+With meaning matching on, the first reading of all 43,000 work orders took
+about 5 minutes on a 4-core machine (in the background, with half the cores);
+after that a restart reads the 46 MB vector cache in about 5 s, a suggestion
+takes about 17 ms, the accuracy report (replayed twice, with and without
+meaning) about 11 s, and the process peaks at about 450 MB.
 
 ## Decisions the spec left open
 

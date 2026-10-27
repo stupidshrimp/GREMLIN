@@ -768,3 +768,6 @@ table.std-helper-table tbody th { text-align: left; font-weight: 600; white-spac
 @media (prefers-reduced-motion: reduce) {
   .std-switch-track, .std-switch-thumb { transition: none; }
 }
+.std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
+.std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
+table.std-helper-table td.std-helper-plain { color: var(--muted); }

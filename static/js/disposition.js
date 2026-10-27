@@ -426,6 +426,37 @@
         "from the code lists, for you to check and save.";
   }
 
+  // Whether meaning matching is on, and how far it has read the work orders;
+  // asked again every 15 s while it is still reading them.
+  let meaningTimer = null;
+  async function loadHelperStatus() {
+    clearTimeout(meaningTimer);
+    const line = $("disp-helper-meaning");
+    if (!state.helperOn) {
+      line.hidden = true;
+      return;
+    }
+    try {
+      const status = await getJson(`${API}/disposition-helper/status`);
+      const meaning = status.meaning || {};
+      line.hidden = false;
+      line.textContent = meaningText(meaning);
+      if (meaning.enabled && !meaning.complete && !meaning.error) meaningTimer = setTimeout(loadHelperStatus, 15000);
+    } catch (err) {
+      line.hidden = true;
+    }
+  }
+
+  function meaningText(meaning) {
+    if (!meaning.enabled) return `Meaning matching is off, so work orders are matched by their words: ${meaning.reason || "not set up."}`;
+    if (meaning.error) return `Meaning matching stopped reading the work orders (${meaning.error}); the rest are matched by their words.`;
+    if (!meaning.complete) {
+      return `Meaning matching (${meaning.model}) is reading the work orders: ${(meaning.done || 0).toLocaleString()} of ` +
+        `${(meaning.total || 0).toLocaleString()} so far. The rest are matched by their words until it has.`;
+    }
+    return `Meaning matching is on (${meaning.model}): work orders that say the same thing in other words are found too.`;
+  }
+
   function setHelper(on) {
     state.helperOn = on;
     try {
@@ -434,6 +465,7 @@
       /* remembered for this visit only */
     }
     renderHelperStatus();
+    loadHelperStatus();
     const row = currentRow();
     if (!state.form || !row) return;
     if (on) loadSuggestion(row, state.form);
@@ -670,25 +702,41 @@
           `the helper learns from every decision engineers have made (${data.learnt_from}).`,
         data.enough ? "" : " That is too few to say much yet: the figures will steady as more are dispositioned.",
       ]));
+      if (data.meaning) body.appendChild(el("p", { class: "lda-hint", text: meaningText(data.meaning) }));
       const head = ["", "Right overall", ...data.thresholds.map((t) => `At ${pct(t.threshold)}+`)];
       body.appendChild(el("h3", { class: "std-helper-subhead", text: "Whole dispositions" }));
       body.appendChild(el("p", { class: "lda-hint", text: "How many work orders a batch run at each setting would disposition, and how many of those it gets entirely right (every field)." }));
+      // With meaning matching on, the same work orders matched by their words
+      // alone sit beside each figure: what the model adds on this plant's records.
+      const plain = data.without_meaning;
+      const plainAt = (threshold) => (plain ? plain.thresholds.find((t) => t.threshold === threshold) : null);
+      const plainCell = (value) => el("td", { class: "std-helper-plain", text: value === null || value === undefined ? "—" : value });
       body.appendChild(el("div", { class: "lda-table-scroll" }, [el("table", { class: "lda-table std-helper-table" }, [
-        el("thead", {}, [el("tr", {}, ["At least", "Would disposition", "Entirely right", "Category right"].map((t) => el("th", { scope: "col", text: t })))]),
+        el("thead", {}, [el("tr", {}, [
+          "At least", "Would disposition", "Entirely right", "Category right",
+          ...(plain ? ["Words only: would disposition", "Words only: entirely right"] : []),
+        ].map((t) => el("th", { scope: "col", text: t })))]),
         el("tbody", {}, data.thresholds.map((t) => el("tr", {}, [
           el("td", { text: pct(t.threshold) }),
           el("td", { text: `${t.count} (${pct(t.coverage)})` }),
           el("td", { text: t.accuracy === null ? "—" : pct(t.accuracy) }),
           el("td", { text: t.category_right === null ? "—" : pct(t.category_right) }),
+          ...(plain ? [
+            plainCell(plainAt(t.threshold) ? `${plainAt(t.threshold).count} (${pct(plainAt(t.threshold).coverage)})` : null),
+            plainCell(plainAt(t.threshold) && plainAt(t.threshold).accuracy !== null ? pct(plainAt(t.threshold).accuracy) : null),
+          ] : []),
         ]))),
       ])]));
       body.appendChild(el("h3", { class: "std-helper-subhead", text: "Field by field" }));
       body.appendChild(el("p", { class: "lda-hint", text: "Right overall, then, at each confidence, how often it is that sure and how often it is then right." }));
+      const plainField = (field) => (plain ? plain.fields.find((f) => f.field === field) : null);
       body.appendChild(el("div", { class: "lda-table-scroll" }, [el("table", { class: "lda-table std-helper-table" }, [
-        el("thead", {}, [el("tr", {}, head.map((t) => el("th", { scope: "col", text: t })))]),
+        el("thead", {}, [el("tr", {}, [...head.slice(0, 2), ...(plain ? ["Words only"] : []), ...head.slice(2)]
+          .map((t) => el("th", { scope: "col", text: t })))]),
         el("tbody", {}, data.fields.map((f) => el("tr", {}, [
           el("th", { scope: "row", text: f.label }),
           el("td", { text: pct(f.accuracy) }),
+          ...(plain ? [plainCell(plainField(f.field) ? pct(plainField(f.field).accuracy) : null)] : []),
           ...f.at.map((a) => el("td", { title: `${a.count} of ${f.judged} this sure` }, [
             a.accuracy === null ? "—" : `${pct(a.accuracy)} `,
             el("span", { class: "lda-hint", text: `of ${pct(a.coverage)}` }),
@@ -1494,6 +1542,7 @@
       state.helperOn = false;
     }
     renderHelperStatus();
+    loadHelperStatus();
     $("disp-helper-toggle").addEventListener("change", (event) => setHelper(event.target.checked));
     $("disp-helper-batch").hidden = !G.CAN_EDIT;
     $("disp-helper-batch").addEventListener("click", openHelperDialog);

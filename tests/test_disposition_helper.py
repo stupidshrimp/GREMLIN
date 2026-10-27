@@ -514,6 +514,16 @@ def test_an_editor_previews_runs_and_undoes_a_batch(monkeypatch, tmp_path):
     dh.reset_cache()
 
 
+def test_the_status_says_whether_meaning_matching_is_on_and_why_not(monkeypatch, tmp_path):
+    monkeypatch.setenv("GREMLIN_EMBEDDINGS", "off")
+    module, _ = _app(monkeypatch, tmp_path)
+    status = _client(module, role="viewer").get(f"{API}/disposition-helper/status").get_json()
+    assert status["meaning"]["enabled"] is False
+    assert "GREMLIN_EMBEDDINGS=off" in status["meaning"]["reason"]
+    assert status["learnt_from"] > 40
+    dh.reset_cache()
+
+
 def test_a_suggestion_names_a_record_that_exists(monkeypatch, tmp_path):
     module, _ = _app(monkeypatch, tmp_path)
     viewer = _client(module, role="viewer")

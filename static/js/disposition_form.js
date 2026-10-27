@@ -478,6 +478,11 @@
                 item.action_code,
               ].filter(Boolean).join(" · "),
             }),
+            // How it is alike: in its words, and (with meaning matching on) in what it means.
+            item.meaning !== null && item.meaning !== undefined ? el("span", {
+              class: "std-helper-sim-how",
+              text: `alike in wording ${pct(item.wording)} · in meaning ${pct(item.meaning)}`,
+            }) : null,
           ]))),
         ]));
       }

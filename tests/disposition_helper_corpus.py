@@ -202,6 +202,113 @@ SCENARIOS = (
     ),
 )
 
+# The same faults in other words, none of them the templates' own phrasing: the
+# work orders a plant writes after the ones it has dispositioned. Reading these
+# right needs meaning, not shared words. Keyed by scenario: (titles,
+# conditions, actions).
+OTHER_WORDS: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {
+    "s09-filter": (
+        ("No flame at the dry-off oven on startup", "Drying oven burner fails to ignite", "Dry-off oven stays cold, burner out"),
+        ("intake screen caked with dust", "combustion intake choked with debris", "inlet screen packed solid"),
+        ("vacuumed the intake screen, burner back on", "cleared the inlet screen and restarted", "washed out the intake screen"),
+    ),
+    "s09-flamerod": (
+        ("Drying oven keeps losing flame mid-run", "Dry-off oven flame lockout during production"),
+        ("flame sensor coated with residue, signal weak", "sensing rod fouled"),
+        ("polished the flame sensor, signal good", "wiped the sensing rod and restarted"),
+    ),
+    "s12-igniter": (
+        ("Prime bake oven has no ignition at start-up", "Prime bake burner not firing at all"),
+        ("spark electrode eroded away", "electrode tip burnt back, no spark"),
+        ("fitted a new spark electrode", "new electrode installed, burner lit"),
+    ),
+    "s14-chain": (
+        ("Oven conveyor clanking", "Rattling from the oven conveyor drive chain"),
+        ("chain elongated, too much slack", "chain sagging at the take-up"),
+        ("took up the slack", "re-tensioned the chain"),
+    ),
+    "s14-bearing": (
+        ("Oven conveyor drive howling", "Screeching from the conveyor drive end"),
+        ("drive bearing rough and dry", "bearing rumbling, play in the shaft"),
+        ("fitted a new drive bearing", "new bearing installed and lubricated"),
+    ),
+    "s16-gun": (
+        ("Powder booth gun sputtering", "Gun 3 throwing a thin uneven pattern"),
+        ("powder packed in the gun tip", "tip choked with fused powder"),
+        ("stripped and cleaned the gun tip", "cleared the gun and blew it through"),
+    ),
+    "s16-hose": (
+        ("Powder escaping from the booth feed line", "Feed line spitting powder at the booth"),
+        ("feed line split", "line chafed through"),
+        ("fitted a new feed line", "new line run to the gun"),
+    ),
+    "s01-seal": (
+        ("Water running from the washer pump", "Pretreatment pump weeping at the shaft"),
+        ("shaft seal worn out", "gland seal gone"),
+        ("installed a new shaft seal", "new gland seal fitted"),
+    ),
+    "s01-nozzle": (
+        ("Weak spray inside the pretreatment washer", "Washer coverage patchy"),
+        ("jets choked with scale", "spray tips crusted over"),
+        ("descaled the spray tips", "soaked and cleared the jets"),
+    ),
+    "s05-fuse": (
+        ("Activator pump completely dead", "No power to the activator pump"),
+        ("fuse open in the bucket", "one fuse gone, lost a leg"),
+        ("swapped the fuses, pump runs", "new fuses fitted"),
+    ),
+    "s11-belt": (
+        ("No extraction in the prime booth", "Prime booth extraction stopped pulling air"),
+        ("drive belt in pieces", "belt shredded"),
+        ("fitted new drive belts", "new belts on and tensioned"),
+    ),
+    "s18-thermocouple": (
+        ("Cure oven temperature bouncing around", "Cure oven showing crazy temperatures"),
+        ("temperature probe failing open", "probe reading open intermittently"),
+        ("fitted a new temperature probe", "probe changed"),
+    ),
+    "s18-contactor": (
+        ("Cure oven circulation fan keeps cutting out", "Cure oven recirculation fan drops off"),
+        ("contacts pitted", "contact tips welded and pitted"),
+        ("installed a new contactor", "new contactor fitted"),
+    ),
+    "plc": (
+        ("Whole line halted on a controller fault", "Line halted, processor error"),
+        ("processor in fault", "controller lost its rack"),
+        ("cleared the processor fault and restarted", "acknowledged the fault, line running"),
+    ),
+    "gas-off": (
+        ("Ovens out, no natural gas supply", "Gas utility outage took the ovens out"),
+        ("supply shut off by the gas company", "utility gas interrupted"),
+        ("restarted the ovens when supply returned", "brought the ovens back once gas was back"),
+    ),
+    "power": (
+        ("Line dead after a utility power loss", "Blackout stopped the line"),
+        ("utility blackout", "outage on the incoming supply"),
+        ("brought the line back up after the outage", "restarted everything once power was back"),
+    ),
+    "check-filter": (
+        ("Look over the dry-off oven intake screen", "Inspect the drying oven inlet screen"),
+        ("looks fine", "in good shape"),
+        ("inspected, all good", "looked at it, nothing to do"),
+    ),
+    "check-booth": (
+        ("Measure powder booth air velocity", "Confirm powder booth extraction"),
+        ("within limits", "velocities fine"),
+        ("measured, all good", "confirmed, nothing wrong"),
+    ),
+    "pm-filters": (
+        ("Monthly dry-off oven intake screen change", "Drying oven monthly screen swap"),
+        ("screens loaded as expected", ""),
+        ("swapped all screens", "fitted fresh screens"),
+    ),
+    "pm-chain": (
+        ("Weekly oven conveyor greasing", "Oven conveyor chain greasing round"),
+        ("chain dry", ""),
+        ("greased the chain", "chain greased all round"),
+    ),
+}
+
 TYPOS = {"filter": "fliter", "bearing": "bearng", "replaced": "replced", "conveyor": "conveyer", "thermocouple": "thermocoupl",
          "cleaned": "clened", "contactor": "contacter", "igniter": "ignitor"}
 NARRATIVE_EMPTY = 0.3
@@ -219,16 +326,22 @@ def _typo(phrase: str, rng: random.Random) -> str:
     return " ".join(words)
 
 
-def work_order(scenario: Scenario, rng: random.Random, *, vague: bool = False) -> dict[str, Any]:
-    """One work order written from a scenario (or, ``vague``, one that hardly says anything)."""
+def work_order(scenario: Scenario, rng: random.Random, *, vague: bool = False, other_words: bool = False) -> dict[str, Any]:
+    """One work order written from a scenario (or, ``vague``, one that hardly says anything).
+
+    ``other_words`` writes it in OTHER_WORDS rather than the scenario's own phrasing.
+    """
 
     if vague:
         title = rng.choice(VAGUE_TITLES)
         return {"task_name": title, "request_title": title, "requestor_description": "", "condition_found": None,
                 "cause": None, "action_taken": None, "completion_notes": rng.choice(VAGUE_NOTES)}
-    title = _typo(rng.choice(scenario.titles), rng)
-    condition = _typo(rng.choice(scenario.conditions), rng)
-    action = _typo(rng.choice(scenario.actions), rng)
+    titles, conditions, actions = (
+        OTHER_WORDS[scenario.key] if other_words else (scenario.titles, scenario.conditions, scenario.actions)
+    )
+    title = _typo(rng.choice(titles), rng)
+    condition = _typo(rng.choice(conditions), rng)
+    action = _typo(rng.choice(actions), rng)
     empty = rng.random() < NARRATIVE_EMPTY
     notes = action if empty else rng.choice(["", f"{action}. ok", f"{condition}; {action}", "done"])
     return {
@@ -298,13 +411,16 @@ def insert_records(life, records: list[dict[str, Any]]) -> None:
 
 
 def build_plant(life, *, per_scenario: int = 8, seed: int = 4002, start_id: int = 1, other_assets: int = 0,
-                other_per_asset: int = 0, vague: float = 0.0, mislabel: float = 0.0) -> dict[int, dict[str, Any]]:
+                other_per_asset: int = 0, vague: float = 0.0, mislabel: float = 0.0,
+                other_words_after: float | None = None) -> dict[int, dict[str, Any]]:
     """Fill a GREMLIN.db with the 4002 line's work orders (and, optionally, other assets' to bulk it out).
 
     Returns each 4002 work order's intended disposition by mapped_record_id, in
     the order they were written (oldest first). ``vague`` is the share of work
     orders that hardly say anything, and ``mislabel`` the share whose intended
-    disposition is another scenario's (engineers disagree too).
+    disposition is another scenario's (engineers disagree too). From the share
+    ``other_words_after`` of the line's work orders on, they are written in
+    OTHER_WORDS: a backlog worded unlike anything dispositioned before it.
     """
 
     rng = random.Random(seed)
@@ -325,9 +441,11 @@ def build_plant(life, *, per_scenario: int = 8, seed: int = 4002, start_id: int 
         next_id += 1
     pool = [scenario for scenario in SCENARIOS for _ in range(max(1, round(scenario.weight * per_scenario)))]
     rng.shuffle(pool)
-    for scenario in pool:
+    switch = None if other_words_after is None else int(len(pool) * other_words_after)
+    for index, scenario in enumerate(pool):
         day += timedelta(days=rng.choice([0, 1, 1, 2, 3]))
-        written = work_order(scenario, rng, vague=rng.random() < vague)
+        written = work_order(scenario, rng, vague=rng.random() < vague,
+                             other_words=switch is not None and index >= switch)
         records.append({
             "mapped_record_id": next_id, "asset_number": PFS, "asset_name": f"{PFS} {PFS_NAME}", "asset_id": ASSET_IDS[PFS],
             **written, "created": f"{day.isoformat()}T{rng.randint(6, 22):02d}:00:00+00:00",

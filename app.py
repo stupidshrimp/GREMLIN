@@ -2858,6 +2858,14 @@ def api_disposition_helper_apply():
     ))
 
 
+@app.route("/life-data-analysis/api/disposition-helper/status")
+@life_data_api
+def api_disposition_helper_status():
+    """Whether meaning matching is on (and how far it has read), and whether the helper has measured itself."""
+
+    return jsonify(_disposition_helper().status())
+
+
 @app.route("/life-data-analysis/api/disposition-helper/runs")
 @life_data_api
 def api_disposition_helper_runs():
