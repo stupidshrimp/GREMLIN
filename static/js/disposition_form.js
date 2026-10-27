@@ -87,7 +87,6 @@
       failure_cause_code: d.failure_cause_code || "",
       renewed_items: (d.renewed_items || []).slice(),
       qty: d.qty === null || d.qty === undefined ? "" : String(d.qty),
-      item_detail: d.item_detail || "",
       linked_wo: d.linked_task_id ? String(d.linked_task_id) : "",
       disposition_note: d.disposition_note || "",
     };
@@ -662,11 +661,6 @@
         const qty = el("input", { id: id("qty"), type: "number", min: "1", step: "1", class: "lda-input", value: draft.qty });
         qty.addEventListener("input", update("qty"));
         form.appendChild(field("qty", "Qty", qty, { hint: "For several identical units at once (risers, guns, nozzles)." }));
-        const detail = el("input", { id: id("item-detail"), class: "lda-input", value: draft.item_detail, maxlength: "200" });
-        detail.addEventListener("input", update("item_detail"));
-        form.appendChild(field("item-detail", "Item detail", detail, {
-          hint: "Tells two items of one component type apart (combustion-air filter vs motor cooling filter).",
-        }));
       }
 
       // Record class: what kind of work order this is, which the CMMS guessed.
@@ -790,7 +784,6 @@
         failure_cause_code: blank(draft.failure_cause_code),
         renewed_items: isRenewing(category) ? draft.renewed_items : [],
         qty: blank(String(draft.qty).trim()),
-        item_detail: blank(draft.item_detail.trim()),
       };
     }
 
