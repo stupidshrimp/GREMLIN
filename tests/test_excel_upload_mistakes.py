@@ -133,11 +133,11 @@ class HeadingsAndColumnsTests(DispositionWorkbookFixture):
 
     def test_a_missing_column_keeps_what_is_saved_and_is_reported(self):
         workbook, sheet = self.download()
-        sheet.delete_cols(self.column(sheet, "item_detail"))
+        sheet.delete_cols(self.column(sheet, "disposition_note"))
         self.fill(sheet, 502, **self.belt_failure())
         outcome = self.upload(workbook)
         self.assertEqual(outcome["saved"], 1)
-        self.assertEqual(outcome["columns_missing"], ["item_detail"])
+        self.assertEqual(outcome["columns_missing"], ["disposition_note"])
 
     def test_a_column_twice_refuses_the_workbook_naming_both(self):
         workbook, sheet = self.download()

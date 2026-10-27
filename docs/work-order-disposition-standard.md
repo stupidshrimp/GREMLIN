@@ -303,10 +303,10 @@ Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
     the disposition; it decides the detection method (periodic maintenance).
 19. **Excel.** The workbook holds the work orders *Show* is set to, one row each,
     with the record columns read-only and the disposition columns (category,
-    record class, sub-asset, the five codes, evidence, renewed items, qty, item
-    detail, linked WO, note) as dropdowns where they come from a list. Its sheet
-    is protected without a password: the header row is locked and columns can't
-    be inserted or deleted, while every cell below, and rows added, stay free to
+    record class, sub-asset, the five codes, evidence, renewed items, qty,
+    linked WO, note) as dropdowns where they come from a list. Its sheet is
+    protected without a password: the header row is locked and columns can't be
+    inserted or deleted, while every cell below, and rows added, stay free to
     edit, sort and filter. A hidden last column, `disposition_version`, holds the
     saved disposition each row was downloaded with.
 

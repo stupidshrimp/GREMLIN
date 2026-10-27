@@ -68,7 +68,6 @@ _STATEMENTS = (
         failure_cause_code TEXT,
         renewed_items_json TEXT NOT NULL DEFAULT '[]',
         qty INTEGER,
-        item_detail TEXT,
         linked_mapped_record_id INTEGER,
         disposition_note TEXT,
         record_class TEXT,
@@ -590,7 +589,7 @@ class AssetTree:
             )
         where = "Limble's asset list" if self.source == "gremlin" else "the PM calendar's copy of Limble's asset list"
         if number in self.on_limble_list:
-            return f"As {where} has them: every asset under {self.label(number)}, by parentAssetID."
+            return f"Every asset under {self.label(number)}, by parentAssetID."
         return f"{where[0].upper()}{where[1:]} does not have {number}, so these follow the Asset Numbers: every {number}-… asset."
 
     def name(self, number: str | None) -> str:
@@ -711,11 +710,11 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
             """
             INSERT INTO wo_disposition(
                 mapped_record_id, disposition_category, sub_asset, component_code, failure_mechanism_code,
-                failure_mode_code, action_code, evidence, failure_cause_code, renewed_items_json, qty, item_detail,
+                failure_mode_code, action_code, evidence, failure_cause_code, renewed_items_json, qty,
                 linked_mapped_record_id, disposition_note, record_class, legacy_disposition_category,
                 legacy_failure_mode, legacy_failure_mechanism, source, migrated_from_event_disposition_id,
                 review_flag, decided_by, is_current
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 mapped_record_id,
@@ -729,7 +728,6 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
                 values.get("failure_cause_code"),
                 json.dumps(list(values.get("renewed_items") or ())),
                 values.get("qty"),
-                values.get("item_detail"),
                 values.get("linked_mapped_record_id"),
                 values.get("disposition_note"),
                 values.get("record_class"),
