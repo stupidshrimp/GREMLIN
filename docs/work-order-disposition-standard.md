@@ -303,8 +303,8 @@ Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
     the disposition; it decides the detection method (periodic maintenance).
 19. **Excel.** The workbook holds the work orders *Show* is set to, one row each,
     with the record columns read-only and the disposition columns (category,
-    record class, sub-asset, the five codes, evidence, renewed items, qty, item
-    detail, linked WO, note) as dropdowns where they come from a list. On upload,
+    record class, sub-asset, the five codes, evidence, renewed items, qty,
+    linked WO, note) as dropdowns where they come from a list. On upload,
     only rows whose disposition columns differ from what is saved are saved,
     through the same checks as the form; one refused row refuses the upload,
     named by sheet row and task.
