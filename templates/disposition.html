@@ -166,10 +166,11 @@
           <code>renewed_items</code> takes component codes separated by commas; <code>linked_wo</code> the task
           ID a duplicate continues; <code>qty</code>, <code>item_detail</code> and
           <code>disposition_note</code> are typed. Leave <code>failure_cause_code</code> blank to take the
-          mechanism's default cause.</li>
+          mechanism's default cause. A code typed rather than picked can be in any capitals, or its name
+          (<em>Contamination</em> for CONT, <em>PM reset</em> for PM_RESET).</li>
         <li><strong>Leave the rest alone.</strong> The grey columns are the work order as Limble recorded it
-          and are never written back. <code>mapped_record_id</code> is how each row finds its work order:
-          never edit it, and don't copy a row.</li>
+          and are never written back. <code>mapped_record_id</code> and <code>task_id</code> are how each row
+          finds its work order: don't edit them, and don't copy a row.</li>
         <li><strong>Click Upload Excel and choose the file.</strong> Only rows whose disposition columns
           differ from what is saved are saved, through the same checks as Save here, and recorded against
           your account.</li>
@@ -177,11 +178,17 @@
 
       <div class="lda-help-note">
         <strong>Worth knowing</strong>
-        <p><strong>One refused row saves none.</strong> The upload says which sheet row and task was refused
-          and why; fix it and upload the file again.</p>
-        <p><strong>A workbook is a snapshot.</strong> Each row is compared with the database when you
-          upload, so a row somebody else has since changed counts as a difference and puts your values
-          back over theirs. Download a fresh workbook if yours has been sitting around.</p>
+        <p><strong>The headings and columns are locked; the cells aren't.</strong> Sort, filter, resize, and
+          add or delete rows as you like, but the headings can't be retyped and columns can't be added,
+          deleted or moved, so the upload always finds them. Review &gt; Unprotect Sheet lifts the lock if you
+          must; the upload still reads headings in other capitals or under the names this page uses, a
+          column moved, and a title typed above the table, and tells you about any column it didn't read.</p>
+        <p><strong>One refused row saves none.</strong> The upload lists every refused row at once, by the row
+          number Excel shows, its task and why; fix them and upload the file again.</p>
+        <p><strong>Your team's newer work is kept.</strong> Each row remembers the disposition it was
+          downloaded with. If somebody changes a work order here after your download and you leave its row
+          alone, the upload keeps their newer one and says so. If you both changed it, the upload stops and
+          names the row: delete it to keep theirs, or download a fresh workbook and redo it there.</p>
         <p><strong>Uploading the same file twice is harmless:</strong> the second time every row already
           matches.</p>
       </div>

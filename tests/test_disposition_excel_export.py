@@ -31,6 +31,7 @@ from services.standard_disposition_service import (
     EXCEL_COLUMNS,
     EXCEL_DISPOSITION_COLUMNS,
     EXCEL_RECORD_COLUMNS,
+    EXCEL_VERSION_COLUMN,
     StandardDispositionService,
 )
 
@@ -475,9 +476,11 @@ class EditableColumnHighlightTests(DispositionExcelTestCase):
         return {sheet._text(cell): self.fill(sheet, cell.attrib.get("s")) for cell in sheet.rows[0]}
 
     def test_the_editable_columns_are_the_disposition_columns(self):
-        """Everything after the record columns, and only that."""
+        """Everything after the record columns but the hidden version, and only that."""
 
-        self.assertEqual(set(EXCEL_COLUMNS) & EDITABLE, set(EXCEL_COLUMNS) - set(EXCEL_RECORD_COLUMNS))
+        self.assertEqual(
+            set(EXCEL_COLUMNS) & EDITABLE, set(EXCEL_COLUMNS) - set(EXCEL_RECORD_COLUMNS) - {EXCEL_VERSION_COLUMN}
+        )
         # The key the import matches rows by is read back too, but it is not
         # the reader's to change.
         self.assertNotIn("mapped_record_id", EDITABLE)

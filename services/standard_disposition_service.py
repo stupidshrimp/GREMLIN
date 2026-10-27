@@ -106,7 +106,29 @@ EXCEL_DISPOSITION_COLUMNS = (
     "linked_wo",
     "disposition_note",
 )
-EXCEL_COLUMNS = EXCEL_RECORD_COLUMNS + EXCEL_DISPOSITION_COLUMNS
+# Hidden, last: which saved disposition each row was downloaded with, so an
+# upload can tell a row nobody touched from one somebody changed, and leaves a
+# disposition saved in GREMLIN since the download alone.
+EXCEL_VERSION_COLUMN = "disposition_version"
+EXCEL_COLUMNS = EXCEL_RECORD_COLUMNS + EXCEL_DISPOSITION_COLUMNS + (EXCEL_VERSION_COLUMN,)
+# Headings a person may have retyped a column's to, read as that column.
+EXCEL_HEADER_ALIASES = {
+    "mapped_record_id": ("record id", "mapped record"),
+    "task_id": ("task", "task #", "task no", "task number"),
+    "disposition_category": ("category", "disposition"),
+    "record_class": ("class",),
+    "sub_asset": ("subasset", "location"),
+    "component_code": ("component",),
+    "failure_mechanism_code": ("failure mechanism", "mechanism", "mech"),
+    "failure_mode_code": ("failure mode", "mode"),
+    "action_code": ("action",),
+    "failure_cause_code": ("failure cause", "cause"),
+    "renewed_items": ("renewed", "renewed item"),
+    "qty": ("quantity",),
+    "item_detail": ("detail",),
+    "linked_wo": ("linked task", "linked task id", "linked work order", "linked"),
+    "disposition_note": ("note", "notes"),
+}
 # The code list behind each coded column's dropdown.
 EXCEL_CODE_COLUMNS = {
     "component_code": std.COMPONENT,
@@ -135,6 +157,18 @@ CODE_EXCEL_EDITABLE_COLUMNS = (
     "is_active",
 )
 CODE_EXCEL_COLUMNS = CODE_EXCEL_EDITABLE_COLUMNS + ("work_orders_using",)
+# Headings a person may have retyped a column's to, read as that column: the
+# names Developer > Code lists shows its columns under among them.
+CODE_EXCEL_HEADER_ALIASES = {
+    "code_list": ("list",),
+    "description": ("desc",),
+    "iso_ref": ("iso", "iso reference", "iso 14224", "iso 14224 ref"),
+    "default_cause_code": ("default cause",),
+    "renews_item": ("renews",),
+    "semantic": ("means", "meaning"),
+    "sort_order": ("order", "sort"),
+    "is_active": ("active",),
+}
 # Empty rows drawn under the codes, highlighted like the rest, for adding new ones.
 CODE_EXCEL_BLANK_ROWS = 25
 # What a code holds besides its list and its string: what an upload compares to
@@ -186,6 +220,148 @@ def _upload_refusal(problems: list[str]) -> str:
     if len(problems) > CODE_EXCEL_REFUSALS_LISTED:
         lines.append(f"…and {len(problems) - CODE_EXCEL_REFUSALS_LISTED} more.")
     return "\n".join(lines)
+
+
+class DispositionErrors(ValueError):
+    """Every item a batch of dispositions refused: ``errors`` holds (its place in the batch, why)."""
+
+    def __init__(self, errors: list[tuple[int, str]]) -> None:
+        super().__init__("\n".join(message for _, message in errors))
+        self.errors = errors
+
+
+class _CheckedOnly(Exception):
+    """Ends a batch that was only being checked, so its transaction rolls back."""
+
+
+# ---------------------------------------------------------------------------
+# Reading a workbook somebody has had open in Excel
+# ---------------------------------------------------------------------------
+# How far down a workbook's header row may sit: below a title or a note somebody
+# typed above it, but not somewhere in the data.
+EXCEL_HEADER_SEARCH_ROWS = 10
+
+
+def _header_key(value: Any) -> str:
+    """A heading, or a typed value, as lower-case letters, digits and underscores.
+
+    "Sub-asset", "sub asset" and "SUB_ASSET" all read as ``sub_asset``, so a
+    heading somebody tidied up, or a code typed in other capitals, still matches.
+    """
+
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _header_names(columns: Iterable[str], aliases: Mapping[str, Iterable[str]]) -> dict[str, str]:
+    """Every heading a column may carry, as ``_header_key`` reads it, mapped to the column."""
+
+    names = {_header_key(column): column for column in columns}
+    for column, others in aliases.items():
+        for other in others:
+            names.setdefault(_header_key(other), column)
+    return names
+
+
+def _column_letter(index: int) -> str:
+    """A 0-based column index as the letters Excel shows: 0 is A, 27 is AB."""
+
+    letters = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+class _ExcelTable:
+    """The table an upload reads: where its header row is, and which column is where."""
+
+    def __init__(self, sheet: str, header_row: int, columns: dict[str, list[int]], unread: list[str],
+                 rows: list[tuple[int, tuple[Any, ...]]]) -> None:
+        self.sheet = sheet
+        self.header_row = header_row
+        self.columns = columns
+        self.unread = unread
+        self.rows = rows
+
+    def doubled(self, names: Iterable[str]) -> list[str]:
+        """Why the workbook can't be read if one of ``names`` heads two columns."""
+
+        return [
+            f"Columns {' and '.join(_column_letter(index) for index in self.columns[name])} are both {name}. "
+            "Delete the extra one and upload again."
+            for name in names
+            if len(self.columns.get(name, ())) > 1
+        ]
+
+    def cell(self, values: tuple[Any, ...], name: str) -> Any:
+        indexes = self.columns.get(name)
+        if not indexes or indexes[0] >= len(values):
+            return None
+        return values[indexes[0]]
+
+
+def _find_excel_table(
+    sheets: list[dict[str, Any]], *, sheet_name: str, names: Mapping[str, str], keys: Iterable[str]
+) -> _ExcelTable | None:
+    """The table a workbook holds, wherever in it Excel has left it.
+
+    The sheet named ``sheet_name`` is looked at first, then every other, hidden
+    ones last, so a sheet renamed, moved behind another or joined by a new one is
+    still found. Its header row is the first of the top rows naming one of
+    ``keys``, so a title typed above it does not hide it. Headings are read
+    through ``names``; any that name no column are kept in ``unread``.
+    """
+
+    wanted = set(keys)
+    ordered = sorted(sheets, key=lambda sheet: (sheet["name"].strip().casefold() != sheet_name.casefold(), sheet["hidden"]))
+    for sheet in ordered:
+        for position, (row_number, values) in enumerate(sheet["rows"][:EXCEL_HEADER_SEARCH_ROWS]):
+            read_as = [names.get(_header_key(value)) for value in values]
+            if not wanted.intersection(read_as):
+                continue
+            columns: dict[str, list[int]] = {}
+            unread = []
+            for index, (value, name) in enumerate(zip(values, read_as)):
+                if name is not None:
+                    columns.setdefault(name, []).append(index)
+                elif _clean(value) is not None:
+                    unread.append(str(value).strip())
+            return _ExcelTable(sheet["name"], row_number, columns, unread, sheet["rows"][position + 1:])
+    return None
+
+
+def _value_reader(choices: Iterable[tuple[str, Iterable[str | None]]]) -> Callable[[str], str]:
+    """How a typed value reads as one of ``choices``' codes: the code in any
+    capitals, its name or label, or "CODE · name" as a dropdown writes it out.
+
+    A name two codes share is no code's; anything else unrecognised is handed
+    back as typed, for the save's own checks to refuse with their message.
+    """
+
+    exact: set[str] = set()
+    by_key: dict[str, str] = {}
+    by_label: dict[str, set[str]] = {}
+    for code, labels in choices:
+        exact.add(code)
+        by_key.setdefault(_header_key(code), code)
+        for label in labels:
+            if label:
+                by_label.setdefault(_header_key(label), set()).add(code)
+    for key, codes in by_label.items():
+        if len(codes) == 1:
+            by_key.setdefault(key, next(iter(codes)))
+
+    def read(text: str) -> str:
+        if text in exact:
+            return text
+        for candidate in (text, re.split(r"\s+[·:|–—-]\s+", text, maxsplit=1)[0]):
+            code = by_key.get(_header_key(candidate))
+            if code is not None:
+                return code
+        return text
+
+    return read
 
 
 class StandardDispositionService:
@@ -580,6 +756,7 @@ class StandardDispositionService:
             lookup_rows=lookup_rows,
             column_types=column_types,
             editable_columns=frozenset(CODE_EXCEL_EDITABLE_COLUMNS),
+            protect_columns=True,
         )
         return written
 
@@ -610,19 +787,38 @@ class StandardDispositionService:
         Codes the workbook leaves out are kept: an upload adds and changes, and
         never deletes, so a sheet trimmed to the few codes being worked on cannot
         take the rest with it. A code is retired with is_active FALSE.
+
+        The table is found and its headings read as ``import_excel`` reads the
+        dispositions workbook's: on whichever sheet and under whichever top row
+        has it, in any capitals, and under the names the page shows ("Means" for
+        semantic). A semantic is read by its label too.
         """
 
-        rows = self.life._read_xlsx(input_path)
-        if not rows:
+        sheets = self.life._read_xlsx_sheets(input_path)
+        names = _header_names(CODE_EXCEL_COLUMNS, CODE_EXCEL_HEADER_ALIASES)
+        table = _find_excel_table(sheets, sheet_name=CODE_EXCEL_SHEET_NAME, names=names, keys=("code_list", "code"))
+        if table is None:
+            disposition_names = _header_names(EXCEL_COLUMNS, EXCEL_HEADER_ALIASES)
+            if _find_excel_table(sheets, sheet_name=EXCEL_SHEET_NAME, names=disposition_names, keys=("mapped_record_id",)):
+                raise ValueError(
+                    "This is a Disposition page workbook, of work orders. Upload it with Upload Excel on the "
+                    "Disposition page; this page takes the code lists workbook it downloads."
+                )
             raise ValueError("The workbook is empty. Download the code lists and fill that in.")
-        headers = [str(value).strip().lower() if value is not None else "" for value in rows[0]]
-        missing = [column for column in ("code_list", "code", "name") if column not in headers]
+        missing = [column for column in ("code_list", "code", "name") if column not in table.columns]
         if missing:
             raise ValueError(
                 f"The workbook needs the {', '.join(missing)} column{'s' if len(missing) != 1 else ''} "
                 "from the downloaded code lists."
             )
-        present = [column for column in CODE_EXCEL_EDITABLE_COLUMNS if column in headers and column not in ("code_list", "code")]
+        doubled = table.doubled(CODE_EXCEL_EDITABLE_COLUMNS)
+        if doubled:
+            raise ValueError(" ".join(doubled) + " Nothing was saved.")
+        present = [column for column in CODE_EXCEL_EDITABLE_COLUMNS if column in table.columns and column not in ("code_list", "code")]
+        # A semantic as its code, its label or the word its chip shows.
+        read_semantic = _value_reader(
+            (semantic, (std.SEMANTIC_LABELS[semantic], std.SEMANTIC_SHORT_LABELS[semantic])) for semantic in std.SEMANTIC_LABELS
+        )
 
         def list_key(text: str) -> str:
             return re.sub(r"[\s_-]+", " ", text).strip().lower()
@@ -645,11 +841,13 @@ class StandardDispositionService:
         # A cause spelled in other capitals than the saved one is not one, though:
         # it can never be saved so, and a mechanism naming it so is refused too.
         causes = {code for code_list, code in existing if code_list == std.FAILURE_CAUSE}
-        for row_number, values in enumerate(rows[1:], start=2):
-            data = {header: values[index] if index < len(values) else None for index, header in enumerate(headers) if header}
+        for row_number, values in table.rows:
+            data = {column: table.cell(values, column) for column in ("code_list", "code", *present)}
             cells = {column: self._excel_cell(data.get(column)) for column in ("code_list", "code", *present)}
             if not any(cells.values()):
                 continue
+            if cells.get("semantic") is not None:
+                cells["semantic"] = read_semantic(cells["semantic"])
             list_text, code = cells["code_list"], cells["code"]
             if list_text is None or code is None:
                 problems.append((row_number, f"Row {row_number}: give the code's list and the code itself."))
@@ -758,6 +956,7 @@ class StandardDispositionService:
             "updated": updated,
             "unchanged": matched - len(updated),
             "not_in_workbook": len(existing) - matched,
+            "columns_not_read": table.unread,
             "code_lists": self.code_lists(),
         }
 
@@ -1208,7 +1407,14 @@ class StandardDispositionService:
             rows = same_asset
         return int(rows[0][0])
 
-    def save_dispositions(self, items: Iterable[Mapping[str, Any]], *, decided_by: str | None = None) -> int:
+    def save_dispositions(
+        self,
+        items: Iterable[Mapping[str, Any]],
+        *,
+        decided_by: str | None = None,
+        check_all: bool = False,
+        check_only: bool = False,
+    ) -> int:
         """Save each item as its record's current disposition, all or none.
 
         Each item names its ``mapped_record_id`` and carries the fields of spec
@@ -1218,81 +1424,118 @@ class StandardDispositionService:
         record itself, where every screen reads it, and decides the detection
         method. Any refused item refuses the whole batch, with the record named in
         the message.
+
+        ``check_all`` checks every item before refusing, and refuses with a
+        ``DispositionErrors`` naming each refused one by its place in the batch;
+        ``check_only`` checks them all the same way and saves none.
         """
 
         saved = 0
         record_classes = self._record_classes()
-        with self.life.write_connection() as conn:
-            codebook = load_codebook(conn)
-            # Read inside the write transaction, before anything is written: no
-            # other write can land while this one holds the writer slot, so the
-            # token is the database this transaction reads.
-            tree = self.asset_tree(conn, token=self.life.change_token())
-            children: dict[str, tuple[str, ...]] = {}
-            for item in items:
-                try:
-                    mapped_record_id = int(item.get("mapped_record_id"))
-                except (TypeError, ValueError):
-                    raise ValueError("Each disposition needs the mapped_record_id of its work order.") from None
-                record = conn.execute(
-                    f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
-                    (mapped_record_id,),
-                ).fetchone()
-                if record is None:
-                    raise ValueError(f"Record {mapped_record_id} was not found.")
-                asset_number = record["asset_number"] or ""
-                if not asset_number:
-                    raise ValueError(f"Task {record['task_id']} has no asset number, so it cannot be dispositioned.")
-                if asset_number not in children:
-                    children[asset_number] = tuple(option["asset_number"] for option in tree.descendants(asset_number))
-                values = dict(item)
-                try:
-                    record_class = record["record_class"]
-                    chosen_class = _clean(values.get("record_class"))
-                    if chosen_class is not None:
-                        chosen_class = chosen_class.upper()
-                        if chosen_class not in record_classes:
-                            raise ValueError(f"Record class must be one of {', '.join(record_classes)}.")
-                    if "linked_wo" in values and "linked_mapped_record_id" not in values:
-                        values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
-                    previous = self._disposition_dict(record) if record["wo_disposition_id"] is not None else None
-                    normalized = std.normalize_disposition(
-                        values,
-                        record=std.RecordContext(
-                            mapped_record_id=mapped_record_id,
-                            asset_number=asset_number,
-                            sub_asset_choices=children[asset_number],
-                            record_class=chosen_class or record_class,
-                        ),
-                        codebook=codebook,
-                        previous=previous,
-                    )
-                    linked = normalized.get("linked_mapped_record_id")
-                    if linked is not None and not conn.execute(
-                        "SELECT 1 FROM mapped_cmms_record WHERE mapped_record_id = ?", (linked,)
-                    ).fetchone():
-                        raise ValueError(f"Linked record {linked} was not found.")
-                except ValueError as exc:
-                    raise ValueError(f"Task {record['task_id'] or mapped_record_id}: {exc}") from None
-                if chosen_class is not None and chosen_class != record_class:
-                    conn.execute(
-                        "UPDATE mapped_cmms_record SET record_class_final = ? WHERE mapped_record_id = ?",
-                        (chosen_class, mapped_record_id),
-                    )
-                    record_class = chosen_class
-                insert_wo_disposition(conn, mapped_record_id, {
-                    **normalized,
-                    "record_class": record_class,
-                    # The legacy text describes the record's history, not one decision,
-                    # so it travels with every disposition after the migrated one.
-                    "legacy_disposition_category": record["legacy_disposition_category"],
-                    "legacy_failure_mode": record["legacy_failure_mode"],
-                    "legacy_failure_mechanism": record["legacy_failure_mechanism"],
-                    "source": "ENGINEER",
-                    "decided_by": decided_by,
-                })
-                saved += 1
+        try:
+            with self.life.write_connection() as conn:
+                codebook = load_codebook(conn)
+                # Read inside the write transaction, before anything is written: no
+                # other write can land while this one holds the writer slot, so the
+                # token is the database this transaction reads.
+                tree = self.asset_tree(conn, token=self.life.change_token())
+                children: dict[str, tuple[str, ...]] = {}
+                errors: list[tuple[int, str]] = []
+                for position, item in enumerate(items):
+                    try:
+                        self._save_disposition(
+                            conn, item, codebook=codebook, tree=tree, children=children,
+                            record_classes=record_classes, decided_by=decided_by,
+                        )
+                    except ValueError as exc:
+                        if not (check_all or check_only):
+                            raise
+                        errors.append((position, str(exc)))
+                        continue
+                    saved += 1
+                # Raised inside the transaction, so nothing this batch wrote is kept.
+                if errors:
+                    raise DispositionErrors(errors)
+                if check_only:
+                    raise _CheckedOnly
+        except _CheckedOnly:
+            pass
         return saved
+
+    def _save_disposition(
+        self,
+        conn: sqlite3.Connection,
+        item: Mapping[str, Any],
+        *,
+        codebook: std.CodeBook,
+        tree: AssetTree,
+        children: dict[str, tuple[str, ...]],
+        record_classes: tuple[str, ...],
+        decided_by: str | None,
+    ) -> None:
+        """One item of ``save_dispositions``, checked and written in its transaction."""
+
+        try:
+            mapped_record_id = int(item.get("mapped_record_id"))
+        except (TypeError, ValueError):
+            raise ValueError("Each disposition needs the mapped_record_id of its work order.") from None
+        record = conn.execute(
+            f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
+            (mapped_record_id,),
+        ).fetchone()
+        if record is None:
+            raise ValueError(f"Record {mapped_record_id} was not found.")
+        asset_number = record["asset_number"] or ""
+        if not asset_number:
+            raise ValueError(f"Task {record['task_id']} has no asset number, so it cannot be dispositioned.")
+        if asset_number not in children:
+            children[asset_number] = tuple(option["asset_number"] for option in tree.descendants(asset_number))
+        values = dict(item)
+        try:
+            record_class = record["record_class"]
+            chosen_class = _clean(values.get("record_class"))
+            if chosen_class is not None:
+                chosen_class = chosen_class.upper()
+                if chosen_class not in record_classes:
+                    raise ValueError(f"Record class must be one of {', '.join(record_classes)}.")
+            if "linked_wo" in values and "linked_mapped_record_id" not in values:
+                values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
+            previous = self._disposition_dict(record) if record["wo_disposition_id"] is not None else None
+            normalized = std.normalize_disposition(
+                values,
+                record=std.RecordContext(
+                    mapped_record_id=mapped_record_id,
+                    asset_number=asset_number,
+                    sub_asset_choices=children[asset_number],
+                    record_class=chosen_class or record_class,
+                ),
+                codebook=codebook,
+                previous=previous,
+            )
+            linked = normalized.get("linked_mapped_record_id")
+            if linked is not None and not conn.execute(
+                "SELECT 1 FROM mapped_cmms_record WHERE mapped_record_id = ?", (linked,)
+            ).fetchone():
+                raise ValueError(f"Linked record {linked} was not found.")
+        except ValueError as exc:
+            raise ValueError(f"Task {record['task_id'] or mapped_record_id}: {exc}") from None
+        if chosen_class is not None and chosen_class != record_class:
+            conn.execute(
+                "UPDATE mapped_cmms_record SET record_class_final = ? WHERE mapped_record_id = ?",
+                (chosen_class, mapped_record_id),
+            )
+            record_class = chosen_class
+        insert_wo_disposition(conn, mapped_record_id, {
+            **normalized,
+            "record_class": record_class,
+            # The legacy text describes the record's history, not one decision,
+            # so it travels with every disposition after the migrated one.
+            "legacy_disposition_category": record["legacy_disposition_category"],
+            "legacy_failure_mode": record["legacy_failure_mode"],
+            "legacy_failure_mechanism": record["legacy_failure_mechanism"],
+            "source": "ENGINEER",
+            "decided_by": decided_by,
+        })
 
     # ------------------------------------------------------------------ #
     # Excel workbook
@@ -1318,7 +1561,8 @@ class StandardDispositionService:
                 f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where} ORDER BY {self._list_order(sort, direction)}",
                 params,
             ).fetchall()
-            return [self.record_dict(row, codebook) for row in rows]
+            # Which saved disposition each row is: what the workbook's version column holds.
+            return [{**self.record_dict(row, codebook), "disposition_version": row["wo_disposition_id"]} for row in rows]
 
     @staticmethod
     def _excel_values(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -1392,6 +1636,7 @@ class StandardDispositionService:
                 "legacy_disposition": legacy or None,
                 "review_flag": disposition["review_flag"],
                 **self._excel_values(record),
+                EXCEL_VERSION_COLUMN: record["disposition_version"],
             }
             sheet_rows.append([values.get(column) for column in EXCEL_COLUMNS])
 
@@ -1428,6 +1673,7 @@ class StandardDispositionService:
             "linked_wo": COLUMN_TYPE_NUMBER,
             "created_date": COLUMN_TYPE_DATETIME,
             "completed_date": COLUMN_TYPE_DATETIME,
+            EXCEL_VERSION_COLUMN: COLUMN_TYPE_NUMBER,
         })
         self.life._write_xlsx(
             output_path,
@@ -1437,6 +1683,9 @@ class StandardDispositionService:
             lookup_rows=lookup_rows,
             column_types=column_types,
             editable_columns=frozenset(EXCEL_DISPOSITION_COLUMNS),
+            # It comes back as an upload, so its columns stay where the upload looks for them.
+            protect_columns=True,
+            hidden_columns=frozenset({EXCEL_VERSION_COLUMN}),
         )
         return len(records)
 
@@ -1450,61 +1699,303 @@ class StandardDispositionService:
             value = int(value)
         return _clean(value)
 
-    def import_excel(self, asset_number: str, input_path: str | Path, *, decided_by: str | None = None) -> dict[str, int]:
+    def import_excel(self, asset_number: str, input_path: str | Path, *, decided_by: str | None = None) -> dict[str, Any]:
         """Save the dispositions a filled-in workbook changed, all or none.
 
-        Rows are matched by ``mapped_record_id`` and must be the asset's. A row
-        whose disposition columns read as the record's current disposition is left
-        alone, so re-uploading a workbook does not stamp every record as decided
-        again; every other row is saved through the editor's own checks, and one
-        refused row refuses the upload, named by its sheet row and task.
+        The workbook is read the way somebody may have left it after Excel: its
+        table is found on whichever sheet, under whichever top row, has it;
+        headings are read in any capitals or spacing, and under the names the
+        page uses ("Component" for component_code); a column moved is read where
+        it went. A heading two columns share refuses the workbook. Headings that
+        name nothing, and disposition columns that aren't there, are reported
+        back rather than guessed at.
+
+        Rows are matched by ``mapped_record_id``, or by ``task_id`` when that is
+        gone, and must be the asset's; when both are there they must agree, which
+        catches rows sorted with only some of their columns. Codes are read in any
+        capitals, or by their names. A row whose disposition columns read as the
+        record's current disposition is left alone, and so is one that still
+        reads as the disposition it was downloaded with (the hidden
+        ``disposition_version`` says which) when GREMLIN has a newer one since:
+        that is somebody else's later work. A row changed in both places is
+        refused rather than either overwriting the other.
+
+        Every row is checked before anything is refused, and one refused row
+        refuses the upload, each named by its sheet row and task.
         """
 
-        rows = self.life._read_xlsx(input_path)
-        if not rows:
-            raise ValueError("The workbook is empty. Download the template and fill that in.")
-        headers = [str(value).strip().lower() if value is not None else "" for value in rows[0]]
-        if "mapped_record_id" not in headers:
-            raise ValueError("The workbook needs the mapped_record_id column from the downloaded template.")
-        present = [column for column in EXCEL_DISPOSITION_COLUMNS if column in headers]
-        if "disposition_category" not in present:
-            raise ValueError("The workbook needs the disposition_category column from the downloaded template.")
+        sheets = self.life._read_xlsx_sheets(input_path)
+        names = _header_names((*EXCEL_COLUMNS,), EXCEL_HEADER_ALIASES)
+        table = _find_excel_table(sheets, sheet_name=EXCEL_SHEET_NAME, names=names, keys=("mapped_record_id", "task_id"))
+        if table is None:
+            code_names = _header_names(CODE_EXCEL_COLUMNS, CODE_EXCEL_HEADER_ALIASES)
+            if _find_excel_table(sheets, sheet_name=CODE_EXCEL_SHEET_NAME, names=code_names, keys=("code_list",)) is not None:
+                raise ValueError(
+                    "This is the code lists workbook. Upload it on Developer > Code lists; this page takes the "
+                    "workbook its own Download Excel gives."
+                )
+            raise ValueError(
+                "The workbook has no mapped_record_id or task_id column to find its work orders by. Download "
+                "Excel again from this page and fill that in."
+            )
+        doubled = table.doubled((*EXCEL_DISPOSITION_COLUMNS, "mapped_record_id", "task_id", EXCEL_VERSION_COLUMN))
+        if doubled:
+            raise ValueError(" ".join(doubled) + " Nothing was saved.")
+        present = [column for column in EXCEL_DISPOSITION_COLUMNS if column in table.columns]
+        if not present:
+            raise ValueError(
+                "The workbook has none of the disposition columns (disposition_category, component_code and the "
+                "rest), so there is nothing in it to save. Download Excel again from this page and fill that in."
+            )
+        has_version = EXCEL_VERSION_COLUMN in table.columns
+
         current = {record["mapped_record_id"]: record for record in self._excel_records(asset_number, "all")}
-        changed: list[tuple[int, dict[str, Any]]] = []
-        seen: set[int] = set()
-        unchanged = 0
-        for row_number, values in enumerate(rows[1:], start=2):
-            data = {header: values[index] if index < len(values) else None for index, header in enumerate(headers) if header}
-            raw_id = self._excel_cell(data.get("mapped_record_id"))
-            if raw_id is None:
+        by_task: dict[str, list[int]] = {}
+        for record in current.values():
+            task = self._excel_cell(record["task_id"])
+            if task is not None:
+                by_task.setdefault(task, []).append(record["mapped_record_id"])
+        read_value = self._excel_value_readers(asset_number)
+
+        def task_of(record: Mapping[str, Any]) -> str:
+            return str(self._excel_cell(record["task_id"]) or record["mapped_record_id"])
+
+        problems: list[tuple[int, str]] = []
+        foreign: dict[int, list[int]] = {}
+        row_of: dict[int, int] = {}
+        matched: list[tuple[int, dict[str, Any], dict[str, str | None], int | None | str]] = []
+        for row_number, values in table.rows:
+            uploaded = {column: read_value(column, self._excel_cell(table.cell(values, column))) for column in present}
+            raw_id = self._excel_cell(table.cell(values, "mapped_record_id"))
+            raw_task = self._excel_cell(table.cell(values, "task_id"))
+            if raw_id is None and raw_task is None:
+                if any(value is not None for value in uploaded.values()):
+                    problems.append((row_number, (
+                        f"Row {row_number}: it has a disposition but no mapped_record_id or task_id, so its work "
+                        "order can't be found. Copy them back from the downloaded workbook, or delete the row."
+                    )))
                 continue
-            try:
-                mapped_record_id = int(raw_id)
-            except ValueError:
-                raise ValueError(f"Row {row_number}: mapped_record_id {raw_id!r} is not a record number.") from None
-            if mapped_record_id not in current:
-                raise ValueError(f"Row {row_number}: record {mapped_record_id} is not one of asset {asset_number}'s work orders.")
-            if mapped_record_id in seen:
-                raise ValueError(f"Row {row_number}: record {mapped_record_id} is in the workbook twice.")
-            seen.add(mapped_record_id)
-            record = current[mapped_record_id]
+            if raw_id is not None:
+                try:
+                    mapped_record_id = int(raw_id)
+                except ValueError:
+                    problems.append((row_number, f"Row {row_number}: mapped_record_id {raw_id!r} is not a record number."))
+                    continue
+                record = current.get(mapped_record_id)
+                if record is None:
+                    foreign.setdefault(mapped_record_id, []).append(row_number)
+                    continue
+                if raw_task is not None and raw_task != task_of(record):
+                    problems.append((row_number, (
+                        f"Row {row_number}: mapped_record_id {mapped_record_id} is task {task_of(record)}, but the row "
+                        f"says task {raw_task}. Rows sorted or pasted with only some of their columns fall out of line "
+                        "like this; download the workbook again rather than guess which cells belong to which task."
+                    )))
+                    continue
+            else:
+                found = by_task.get(raw_task, [])
+                if len(found) != 1:
+                    problems.append((row_number, (
+                        f"Row {row_number}: task {raw_task} is not one of asset {asset_number}'s work orders."
+                        if not found else
+                        f"Row {row_number}: asset {asset_number} has {len(found)} work orders numbered task {raw_task}; "
+                        "give the row its mapped_record_id back from the downloaded workbook."
+                    )))
+                    continue
+                record = current[found[0]]
+            mapped_record_id = record["mapped_record_id"]
+            if mapped_record_id in row_of:
+                problems.append((row_number, (
+                    f"Row {row_number}: task {task_of(record)} is in the workbook twice, also on row "
+                    f"{row_of[mapped_record_id]}. Delete one of the two."
+                )))
+                continue
+            row_of[mapped_record_id] = row_number
+            version: int | None | str = "absent"
+            if has_version:
+                raw_version = self._excel_cell(table.cell(values, EXCEL_VERSION_COLUMN))
+                try:
+                    version = int(raw_version) if raw_version is not None else None
+                except ValueError:
+                    version = "absent"
+            matched.append((row_number, record, uploaded, version))
+
+        if foreign:
+            problems.extend(self._foreign_rows(asset_number, foreign, whole_workbook=not matched))
+
+        # The dispositions rows were downloaded with, where GREMLIN has saved a newer one since.
+        downloaded = self._downloaded_dispositions({
+            version for _, record, _, version in matched
+            if isinstance(version, int) and version != record["disposition_version"]
+        })
+        changed: list[tuple[int, dict[str, Any]]] = []
+        unchanged = 0
+        kept: list[str] = []
+        for row_number, record, uploaded, version in matched:
             existing = {key: self._excel_cell(value) for key, value in self._excel_values(record).items()}
-            uploaded = {column: self._excel_cell(data.get(column)) for column in present}
-            if uploaded.get("disposition_category"):
-                uploaded["disposition_category"] = uploaded["disposition_category"].upper()
             if all(uploaded[column] == existing[column] for column in present):
                 unchanged += 1
                 continue
-            item: dict[str, Any] = {**existing, **uploaded, "mapped_record_id": mapped_record_id}
-            item["renewed_items"] = [code for code in (item.get("renewed_items") or "").replace(";", ",").split(",") if code.strip()]
+            if version != "absent" and version != record["disposition_version"]:
+                before = downloaded.get(version) if version is not None else self._undecided_values(record)
+                if before is not None:
+                    if all(uploaded[column] == before[column] for column in present):
+                        kept.append(task_of(record))
+                        continue
+                    disposition = record["disposition"]
+                    who = disposition["decided_by"] or "Somebody"
+                    # The day only, as the page's history shows it: the time is the database's (UTC).
+                    when = f" on {disposition['decided_at'][:10]}" if disposition["decided_at"] else ""
+                    problems.append((row_number, (
+                        f"Row {row_number} (task {task_of(record)}): {who} changed this work order's disposition in "
+                        f"GREMLIN{when}, after this workbook was downloaded, and the row changes it too. Delete the row "
+                        "to keep what GREMLIN has, or download the workbook again and redo the row there."
+                    )))
+                    continue
+            item: dict[str, Any] = {**existing, **uploaded, "mapped_record_id": record["mapped_record_id"]}
+            item["renewed_items"] = [code.strip() for code in (item.get("renewed_items") or "").split(",") if code.strip()]
             changed.append((row_number, item))
+
+        saved = 0
         try:
-            saved = self.save_dispositions([item for _, item in changed], decided_by=decided_by)
-        except ValueError as exc:
-            message = str(exc)
-            for row_number, item in changed:
-                task = current[item["mapped_record_id"]]["task_id"] or item["mapped_record_id"]
-                if message.startswith(f"Task {task}:"):
-                    raise ValueError(f"Row {row_number}, {message} Nothing was saved.") from None
-            raise ValueError(f"{message} Nothing was saved.") from None
-        return {"saved": saved, "unchanged": unchanged}
+            # With rows already refused nothing is saved, but every changed row is
+            # still checked, so the one refusal names them all.
+            saved = self.save_dispositions(
+                [item for _, item in changed], decided_by=decided_by, check_all=True, check_only=bool(problems)
+            )
+        except DispositionErrors as exc:
+            for position, message in exc.errors:
+                row_number, item = changed[position]
+                task = task_of(current[item["mapped_record_id"]])
+                message = message.removeprefix(f"Task {task}: ")
+                problems.append((row_number, f"Row {row_number} (task {task}): {message}"))
+        if problems:
+            problems.sort(key=lambda problem: problem[0])
+            raise ValueError(_upload_refusal([message for _, message in problems]))
+        return {
+            "saved": saved,
+            "unchanged": unchanged,
+            "kept_newer": kept,
+            "columns_not_read": table.unread,
+            "columns_missing": [column for column in EXCEL_DISPOSITION_COLUMNS if column not in table.columns],
+        }
+
+    def _excel_value_readers(self, asset_number: str) -> Callable[[str, str | None], str | None]:
+        """How a typed disposition cell reads as what is stored.
+
+        A coded column takes its code in any capitals, its name, or "CODE · name";
+        the category, record class and evidence take their labels too ("PM reset"),
+        a sub-asset its name, and renewed items each as a component. Anything else
+        is handed on as typed, for the save's own checks to refuse by name.
+        """
+
+        options = self.editor_options(asset_number)
+        codebook = self.codebook()
+        readers = {
+            "disposition_category": _value_reader((c["code"], (c["label"],)) for c in options["categories"]),
+            "record_class": _value_reader((code, ()) for code in options["record_classes"]),
+            "evidence": _value_reader(
+                (e["code"], (e["label"], e["label"].split(":")[0])) for e in options["evidence"]
+            ),
+            "sub_asset": _value_reader(
+                (o["asset_number"], (o.get("asset_name"),)) for o in options["sub_assets"]
+            ),
+        }
+        for column, code_list in EXCEL_CODE_COLUMNS.items():
+            readers[column] = _value_reader(
+                (entry.code, (entry.name,)) for entry in codebook.entries(code_list, include_inactive=True)
+            )
+
+        def read(column: str, text: str | None) -> str | None:
+            if text is None:
+                return None
+            if column == "renewed_items":
+                items = [readers["component_code"](part.strip()) for part in re.split(r"[,;\n]", text) if part.strip()]
+                return ", ".join(items) or None
+            reader = readers.get(column)
+            return reader(text) if reader is not None else text
+
+        return read
+
+    def _foreign_rows(self, asset_number: str, foreign: Mapping[int, list[int]], *, whole_workbook: bool) -> list[tuple[int, str]]:
+        """Why rows naming records that aren't the asset's are refused, saying whose they are.
+
+        A workbook made up of them all from one other asset is most likely just
+        uploaded with the wrong asset picked, which one message says.
+        """
+
+        ids = sorted(foreign)
+        owners: dict[int, tuple[str, str]] = {}
+        with self.life.connect() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                for row in conn.execute(
+                    f"SELECT mapped_record_id, TRIM(asset_number) AS asset_number, task_id FROM mapped_cmms_record "
+                    f"WHERE mapped_record_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ):
+                    owners[row["mapped_record_id"]] = (row["asset_number"] or "", str(self._excel_cell(row["task_id"]) or ""))
+        others = {owners[mapped][0] for mapped in ids if mapped in owners}
+        if whole_workbook and len(owners) == len(ids) and len(others) == 1:
+            other = others.pop()
+            first = min(row for rows in foreign.values() for row in rows)
+            return [(first, (
+                f"This workbook holds asset {other}'s work orders, not {asset_number}'s. Pick {other} on this page "
+                "and upload it again."
+            ))]
+        problems = []
+        for mapped, rows in foreign.items():
+            for row_number in rows:
+                if mapped in owners:
+                    other, task = owners[mapped]
+                    problems.append((row_number, (
+                        f"Row {row_number}: record {mapped} is task {task} on asset {other or 'none'}, not one of "
+                        f"asset {asset_number}'s work orders."
+                    )))
+                else:
+                    problems.append((row_number, f"Row {row_number}: record {mapped} is not a work order in GREMLIN."))
+        return problems
+
+    def _downloaded_dispositions(self, versions: Iterable[int]) -> dict[int, dict[str, str | None]]:
+        """Saved dispositions by their id, as a workbook's columns held them when it was downloaded."""
+
+        ids = sorted(versions)
+        found: dict[int, dict[str, str | None]] = {}
+        with self.life.connect() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                for row in conn.execute(
+                    f"""
+                    SELECT w.*, linked.task_id AS linked_task_id
+                    FROM wo_disposition w
+                    LEFT JOIN mapped_cmms_record linked ON linked.mapped_record_id = w.linked_mapped_record_id
+                    WHERE w.wo_disposition_id IN ({','.join('?' * len(chunk))})
+                    """,
+                    chunk,
+                ):
+                    values = {
+                        "disposition_category": row["disposition_category"],
+                        "record_class": row["record_class"],
+                        "sub_asset": row["sub_asset"],
+                        "component_code": row["component_code"],
+                        "failure_mechanism_code": row["failure_mechanism_code"],
+                        "failure_mode_code": row["failure_mode_code"],
+                        "action_code": row["action_code"],
+                        "evidence": row["evidence"],
+                        "failure_cause_code": row["failure_cause_code"],
+                        "renewed_items": ", ".join(renewed_items_from_json(row["renewed_items_json"])),
+                        "qty": row["qty"],
+                        "item_detail": row["item_detail"],
+                        "linked_wo": row["linked_task_id"],
+                        "disposition_note": row["disposition_note"],
+                    }
+                    found[row["wo_disposition_id"]] = {key: self._excel_cell(value) for key, value in values.items()}
+        return found
+
+    def _undecided_values(self, record: Mapping[str, Any]) -> dict[str, str | None]:
+        """A workbook row for a work order nobody had dispositioned when it was downloaded."""
+
+        values = {column: None for column in EXCEL_DISPOSITION_COLUMNS}
+        values["disposition_category"] = std.NOT_REVIEWED
+        values["record_class"] = self._excel_cell(record["record_class"])
+        return values

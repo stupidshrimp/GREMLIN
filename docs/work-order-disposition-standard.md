@@ -304,10 +304,23 @@ Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
 19. **Excel.** The workbook holds the work orders *Show* is set to, one row each,
     with the record columns read-only and the disposition columns (category,
     record class, sub-asset, the five codes, evidence, renewed items, qty, item
-    detail, linked WO, note) as dropdowns where they come from a list. On upload,
-    only rows whose disposition columns differ from what is saved are saved,
-    through the same checks as the form; one refused row refuses the upload,
-    named by sheet row and task.
+    detail, linked WO, note) as dropdowns where they come from a list. Its sheet
+    is protected without a password: the header row is locked and columns can't
+    be inserted or deleted, while every cell below, and rows added, stay free to
+    edit, sort and filter. A hidden last column, `disposition_version`, holds the
+    saved disposition each row was downloaded with.
+
+    On upload the table is found on whichever sheet and under whichever top row
+    holds it; headings are read in any capitals and under the page's names, a
+    moved column where it went, and a heading two columns share refuses the
+    workbook. Rows are matched by `mapped_record_id`, or by `task_id` when that is
+    gone, and the two must agree when both are there. Codes are read in any
+    capitals or by name. Only rows whose disposition columns differ from what is
+    saved are saved, through the same checks as the form. A row that still reads
+    as its downloaded version, where a newer one has been saved since, is left as
+    GREMLIN has it; one changed both there and in the workbook is refused. Every
+    refused row is listed at once, by sheet row and task, and one refuses the
+    upload.
 20. **Rankings** take only one-component populations, so a beta is about one kind
     of item, and only the latest saved run of each population (none saved with a
     mode, cause or action, item 13).

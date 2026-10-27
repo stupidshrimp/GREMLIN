@@ -456,6 +456,32 @@
     }
   }
 
+  // What an upload did, a line for each thing worth knowing: what it saved,
+  // what it left as GREMLIN has it, and any column it didn't read.
+  function uploadSummary(outcome) {
+    const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+    const lines = [
+      `Saved ${plural(outcome.saved, "disposition", "dispositions")} from the workbook; ` +
+        `${plural(outcome.unchanged, "row was", "rows were")} already as saved.`,
+    ];
+    const kept = outcome.kept_newer || [];
+    if (kept.length) {
+      const shown = kept.slice(0, 8).join(", ") + (kept.length > 8 ? ` and ${kept.length - 8} more` : "");
+      lines.push(
+        `${plural(kept.length, "row was", "rows were")} left as GREMLIN has ${kept.length === 1 ? "it" : "them"}: ` +
+          `someone changed ${kept.length === 1 ? "it" : "them"} here after the workbook was downloaded, and the ` +
+          `workbook didn't (task ${shown}).`
+      );
+    }
+    if ((outcome.columns_missing || []).length) {
+      lines.push(`Not in the workbook, so kept as saved: ${outcome.columns_missing.join(", ")}.`);
+    }
+    if ((outcome.columns_not_read || []).length) {
+      lines.push(`Columns not read (not GREMLIN's): ${outcome.columns_not_read.join(", ")}.`);
+    }
+    return lines.join("\n");
+  }
+
   async function uploadExcel(file) {
     if (!file || !state.asset) return;
     if (!confirmDiscard()) return;
@@ -469,14 +495,13 @@
         body: form,
         headers: { Accept: "application/json" },
       });
-      clearBanner();
-      showBanner(
-        `Saved ${outcome.saved} disposition${outcome.saved === 1 ? "" : "s"} from the workbook; ` +
-          `${outcome.unchanged} row${outcome.unchanged === 1 ? " was" : "s were"} already as saved.`,
-        "success"
-      );
       state.form = null;
       await load(state.selectedId);
+      // After the list is read again, which clears the banner, unless reading
+      // it failed and the banner says so.
+      if ($("lda-status").hidden || !$("lda-status").classList.contains("is-error")) {
+        showBanner(uploadSummary(outcome), "success");
+      }
     } catch (err) {
       if (!err.toastShown) showBanner(err.message, "error");
     } finally {

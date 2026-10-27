@@ -253,7 +253,9 @@ class RecordClassAndWorkbookTests(StandardDispositionFixture):
                 target[headers.index(column)] = value
             self.life._write_xlsx(path, filled, "Dispositions")
             outcome = self.std.import_excel(PFS, path, decided_by="jose")
-        self.assertEqual(outcome, {"saved": 1, "unchanged": 1})
+        self.assertEqual(outcome, {
+            "saved": 1, "unchanged": 1, "kept_newer": [], "columns_not_read": [], "columns_missing": [],
+        })
         self.assertEqual(self.std.disposition_record(2)["disposition"]["component_code"], "Belt")
         self.assertEqual(self.std.disposition_record(1)["disposition"]["decided_by"], "tim")
 
@@ -272,7 +274,7 @@ class RecordClassAndWorkbookTests(StandardDispositionFixture):
             bad = next(row for row in rows[1:] if int(row[0]) == 2)
             bad[headers.index("disposition_category")] = "FAILURE"
             self.life._write_xlsx(path, rows, "Dispositions")
-            with self.assertRaisesRegex(ValueError, r"^Row \d+, Task 2: FAILURE needs .* Nothing was saved\."):
+            with self.assertRaisesRegex(ValueError, r"^Row \d+ \(task 2\): FAILURE needs .* Nothing was saved\.$"):
                 self.std.import_excel(PFS, path)
         self.assertIsNone(self.std.disposition_record(1)["disposition"]["source"])
 
@@ -281,7 +283,10 @@ class RecordClassAndWorkbookTests(StandardDispositionFixture):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "dispositions.xlsx"
             self.std.export_excel(PFS, path)
-            with self.assertRaisesRegex(ValueError, "not one of asset 4002-S09's work orders"):
+            # A workbook of another asset's rows only says whose it is, once.
+            with self.assertRaisesRegex(
+                ValueError, r"^This workbook holds asset 4002's work orders, not 4002-S09's\. Pick 4002 on this page"
+            ):
                 self.std.import_excel(S09, path)
 
 

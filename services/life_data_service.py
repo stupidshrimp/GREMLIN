@@ -431,6 +431,9 @@ EXCEL_STYLE_EDITABLE_HEADER = 5
 EXCEL_STYLE_EDITABLE = 6
 EXCEL_STYLE_EDITABLE_DATETIME = 7
 EXCEL_STYLE_EDITABLE_DECIMAL = 8
+# A plain cell, unlocked: a protected sheet's grey cells, and its columns'
+# default, so a row somebody adds can be typed into too.
+EXCEL_STYLE_UNLOCKED = 9
 
 # Characters XML 1.0 cannot carry. Free-text CMMS boxes pick them up from
 # copy-pasted terminal output and barcode scanners, and one of them in one
@@ -2590,7 +2593,7 @@ class LifeDataService:
             for arcname, data in image_files:
                 document.writestr(arcname, data)
 
-    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None) -> None:
+    def _write_xlsx(self, output_path: str | Path, rows: list[list[Any]], sheet_name: str, *, validations: list[ExcelValidation] | None = None, lookup_rows: list[list[Any]] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None, protect_columns: bool = False, hidden_columns: frozenset[str] | None = None) -> None:
         """Write a simple Excel-compatible .xlsx workbook using only the standard library.
 
         ``column_types`` maps a header name to one of the ``COLUMN_TYPE_*``
@@ -2602,6 +2605,13 @@ class LifeDataService:
         ``editable_columns`` names the columns the reader is meant to fill in.
         Those are drawn highlighted and the rest under a grey header, so the sheet
         itself shows which cells an upload will read back.
+
+        ``protect_columns`` protects the sheet's shape for a workbook that comes
+        back as an upload: its headings can't be retyped and its columns can't be
+        inserted, deleted or dragged about, while every cell under the headings
+        stays free to fill in, sort, filter, resize, and add or delete rows in.
+        It has no password, so Review > Unprotect Sheet still lifts it.
+        ``hidden_columns`` are written hidden: what an upload needs and nobody edits.
         """
 
         include_lookup_sheet = bool(lookup_rows)
@@ -2616,7 +2626,15 @@ class LifeDataService:
                 # The header row is the filter row, so the sheet opens with
                 # Excel's own sort/filter menu on every column rather than
                 # leaving the reader to select the range and find it themselves.
-                self._xlsx_sheet_xml(rows, validations=validations, column_types=column_types, editable_columns=editable_columns, auto_filter=True),
+                self._xlsx_sheet_xml(
+                    rows,
+                    validations=validations,
+                    column_types=column_types,
+                    editable_columns=editable_columns,
+                    auto_filter=True,
+                    protect_columns=protect_columns,
+                    hidden_columns=hidden_columns,
+                ),
             )
             if include_lookup_sheet:
                 # The dropdown source lists: plain text, and nothing sorts or
@@ -2626,33 +2644,58 @@ class LifeDataService:
     def _read_xlsx(self, input_path: str | Path) -> list[tuple[Any, ...]]:
         """Read values from the first worksheet of an .xlsx workbook."""
 
+        sheets = self._read_xlsx_sheets(input_path)
+        if not sheets:
+            raise ValueError("That .xlsx file has no readable first worksheet. Re-download the template and fill that in.")
+        return [values for _, values in sheets[0]["rows"]]
+
+    def _read_xlsx_sheets(self, input_path: str | Path) -> list[dict[str, Any]]:
+        """Every worksheet of an .xlsx workbook, in the workbook's order.
+
+        Each is ``{"name", "hidden", "rows"}``, its rows as ``(row number, values)``:
+        the number the sheet itself gives the row, so a row someone left empty
+        (which a workbook does not store) never shifts the rows after it, and an
+        upload names the row Excel shows.
+        """
+
+        namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        relationship = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
         with zipfile.ZipFile(input_path) as workbook:
+            names = set(workbook.namelist())
             shared_strings = self._xlsx_shared_strings(workbook)
             workbook_xml = ET.fromstring(workbook.read("xl/workbook.xml"))
-            namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
-            first_sheet = workbook_xml.find("main:sheets/main:sheet", namespace)
-            sheet_path = "xl/worksheets/sheet1.xml"
-            if first_sheet is not None:
-                relationship_id = first_sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
-                rels = ET.fromstring(workbook.read("xl/_rels/workbook.xml.rels"))
-                for rel in rels:
-                    if rel.attrib.get("Id") == relationship_id:
-                        sheet_path = self._xlsx_part_path(rel.attrib.get("Target", "worksheets/sheet1.xml"))
-                        break
-            if sheet_path not in workbook.namelist():
-                raise ValueError("That .xlsx file has no readable first worksheet. Re-download the template and fill that in.")
-            sheet = ET.fromstring(workbook.read(sheet_path))
-        namespace = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-        parsed_rows: list[tuple[Any, ...]] = []
-        for row in sheet.findall(".//main:sheetData/main:row", namespace):
-            values: list[Any] = []
-            for cell in row.findall("main:c", namespace):
-                column_index = self._xlsx_column_index(cell.attrib.get("r", "A1"))
-                while len(values) < column_index:
-                    values.append(None)
-                values.append(self._xlsx_cell_value(cell, shared_strings))
-            parsed_rows.append(tuple(values))
-        return parsed_rows
+            targets = {}
+            if "xl/_rels/workbook.xml.rels" in names:
+                for rel in ET.fromstring(workbook.read("xl/_rels/workbook.xml.rels")):
+                    targets[rel.attrib.get("Id")] = self._xlsx_part_path(rel.attrib.get("Target", ""))
+            sheets = []
+            for position, sheet_node in enumerate(workbook_xml.findall("main:sheets/main:sheet", namespace), start=1):
+                sheet_path = targets.get(sheet_node.attrib.get(relationship), f"xl/worksheets/sheet{position}.xml")
+                if sheet_path not in names:
+                    continue
+                sheets.append({
+                    "name": sheet_node.attrib.get("name", ""),
+                    "hidden": sheet_node.attrib.get("state", "visible") != "visible",
+                    "xml": ET.fromstring(workbook.read(sheet_path)),
+                })
+            if not sheets and "xl/worksheets/sheet1.xml" in names:
+                sheets.append({"name": "", "hidden": False, "xml": ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))})
+        for sheet in sheets:
+            parsed_rows: list[tuple[int, tuple[Any, ...]]] = []
+            row_number = 0
+            for row in sheet.pop("xml").findall(".//main:sheetData/main:row", namespace):
+                # A row or cell without its reference follows the one before it.
+                row_number = int(row.attrib["r"]) if row.attrib.get("r", "").isdigit() else row_number + 1
+                values: list[Any] = []
+                for cell in row.findall("main:c", namespace):
+                    reference = cell.attrib.get("r")
+                    column_index = self._xlsx_column_index(reference) if reference else len(values)
+                    while len(values) < column_index:
+                        values.append(None)
+                    values.append(self._xlsx_cell_value(cell, shared_strings))
+                parsed_rows.append((row_number, tuple(values)))
+            sheet["rows"] = parsed_rows
+        return sheets
 
     def _xlsx_content_types(self, *, include_lookup_sheet: bool = False) -> str:
         sheet2 = '\n<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' if include_lookup_sheet else ""
@@ -2700,6 +2743,13 @@ class LifeDataService:
         Fills 0 and 1 are the two Excel reserves whether a workbook uses them or
         not; the three after them are the editable-column yellow (a paler one for
         the cells, a stronger one for the header) and the read-only header grey.
+
+        Every style but the headers' and the plain default (0) is unlocked, and
+        EXCEL_STYLE_UNLOCKED is the plain one unlocked. That changes nothing until
+        a sheet is protected (``protect_columns``); then the header row is the one
+        thing locked, so headings can't be retyped while every cell under them,
+        and every cell of a row added below, can still be filled in, sorted and
+        filtered.
         """
 
         return '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2718,16 +2768,17 @@ class LifeDataService:
 </fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="9">
+<cellXfs count="10">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
-<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
-<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyProtection="1"><protection locked="0"/></xf>
+<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyProtection="1"><protection locked="0"/></xf>
 <xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
 <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>
-<xf numFmtId="164" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>
-<xf numFmtId="165" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>
+<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1" applyProtection="1"><protection locked="0"/></xf>
+<xf numFmtId="164" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1" applyProtection="1"><protection locked="0"/></xf>
+<xf numFmtId="165" fontId="0" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1" applyProtection="1"><protection locked="0"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyProtection="1"><protection locked="0"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -2975,7 +3026,7 @@ class LifeDataService:
                 return f'<c r="{reference}"{styled}><v>{value}</v></c>'
         return f'<c r="{reference}"{styled} t="inlineStr"><is>{self._xlsx_inline_text(self._xlsx_safe_text(value))}</is></c>'
 
-    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None, auto_filter: bool = False) -> str:
+    def _xlsx_sheet_xml(self, rows: list[list[Any]], *, validations: list[ExcelValidation] | None = None, column_types: dict[str, str] | None = None, editable_columns: frozenset[str] | None = None, auto_filter: bool = False, protect_columns: bool = False, hidden_columns: frozenset[str] | None = None) -> str:
         headers = list(rows[0]) if rows else []
         # Resolved from the header row rather than from the caller's column order:
         # the header names the column, so the types follow a column that moves.
@@ -2991,6 +3042,9 @@ class LifeDataService:
             header_styles = [EXCEL_STYLE_HEADER] * len(headers)
         else:
             header_styles = [EXCEL_STYLE_EDITABLE_HEADER if editable else EXCEL_STYLE_READ_ONLY_HEADER for editable in editable_by_index]
+        # A protected sheet locks every cell not marked otherwise, so its data
+        # cells are, and its columns default to it for the rows added below.
+        data_style = EXCEL_STYLE_UNLOCKED if protect_columns else EXCEL_STYLE_DEFAULT
         xml_rows = []
         for row_index, row in enumerate(rows, start=1):
             is_header = row_index == 1
@@ -3004,25 +3058,34 @@ class LifeDataService:
                         reference,
                         value,
                         column_type,
-                        style=header_styles[column_index - 1] if is_header else EXCEL_STYLE_DEFAULT,
+                        style=header_styles[column_index - 1] if is_header else data_style,
                         editable=not is_header and in_headers and editable_by_index[column_index - 1],
                     )
                 )
             xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-        column_xml = self._xlsx_columns(headers, rows, types_by_index)
+        normalized_hidden = {self._normalize_excel_header(name) for name in hidden_columns or ()}
+        hidden_by_index = [self._normalize_excel_header(header) in normalized_hidden for header in headers]
+        column_xml = self._xlsx_columns(headers, rows, types_by_index, hidden_by_index, data_style)
+        # Locked: the header row, and inserting or deleting columns (the defaults
+        # of a protected sheet). Allowed: everything a reader does to the rows.
+        protection_xml = (
+            '<sheetProtection sheet="1" objects="1" scenarios="1" formatCells="0" formatColumns="0" '
+            'formatRows="0" insertRows="0" deleteRows="0" sort="0" autoFilter="0"/>'
+            if protect_columns else ""
+        )
         filter_xml = ""
         if auto_filter and headers:
             last_column = self._xlsx_column_name(len(headers))
             filter_xml = f'<autoFilter ref="A1:{last_column}{max(len(rows), 1)}"/>'
         validation_xml = self._xlsx_data_validations(headers, validations or [])
-        # Order is fixed by the schema: cols, sheetData, autoFilter, dataValidations.
+        # Order is fixed by the schema: cols, sheetData, sheetProtection, autoFilter, dataValidations.
         return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>{column_xml}
-<sheetData>{"".join(xml_rows)}</sheetData>{filter_xml}{validation_xml}
+<sheetData>{"".join(xml_rows)}</sheetData>{protection_xml}{filter_xml}{validation_xml}
 </worksheet>'''
 
-    def _xlsx_columns(self, headers: list[Any], rows: list[list[Any]], types_by_index: list[str | None]) -> str:
+    def _xlsx_columns(self, headers: list[Any], rows: list[list[Any]], types_by_index: list[str | None], hidden_by_index: list[bool] | None = None, style: int = EXCEL_STYLE_DEFAULT) -> str:
         """Column widths, so a sheet of default-width columns is not the first thing to fix.
 
         Measured off the header and the first few rows rather than the whole
@@ -3045,8 +3108,10 @@ class LifeDataService:
                 if column_index < len(row) and row[column_index] is not None:
                     longest = max(longest, len(self._xlsx_safe_text(row[column_index])))
             widths.append(float(max(10, min(longest + 2, 60))))
+        hidden = hidden_by_index or [False] * len(widths)
+        styled = f' style="{style}"' if style else ""
         entries = "".join(
-            f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>'
+            f'<col min="{index}" max="{index}" width="{width}" customWidth="1"{styled}{" hidden=\"1\"" if hidden[index - 1] else ""}/>'
             for index, width in enumerate(widths, start=1)
         )
         return f"\n<cols>{entries}</cols>"

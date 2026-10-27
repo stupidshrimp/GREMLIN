@@ -13,6 +13,8 @@
   border-radius: 14px;
   padding: 0.85rem 1.1rem;
   font-weight: 600;
+  /* A refused upload lists each refused row on its own line. */
+  white-space: pre-line;
   border: 1px solid var(--border);
   background: var(--surface-veil);
   color: var(--text);

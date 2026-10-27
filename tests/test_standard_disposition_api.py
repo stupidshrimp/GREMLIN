@@ -155,7 +155,9 @@ def test_the_workbook_round_trips_through_the_api(monkeypatch, tmp_path):
         content_type="multipart/form-data",
     )
     assert response.status_code == 200, response.get_json()
-    assert response.get_json() == {"saved": 0, "unchanged": len(ACCEPTANCE)}
+    assert response.get_json() == {
+        "saved": 0, "unchanged": len(ACCEPTANCE), "kept_newer": [], "columns_not_read": [], "columns_missing": [],
+    }
     garbage = editor.post(
         f"{API}/dispositions/excel?asset={PFS}",
         data={"file": (io.BytesIO(b"not a workbook"), "dispositions.xlsx"), "csrf_token": token},

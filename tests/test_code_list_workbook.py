@@ -284,8 +284,11 @@ class UploadTests(CodeListWorkbookFixture):
             self.upload(rows)
 
     def test_a_workbook_that_is_not_the_code_lists_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "needs the code_list, code, name columns"):
+        # The Disposition page's own workbook, uploaded here by mistake, is named as such.
+        with self.assertRaisesRegex(ValueError, "This is a Disposition page workbook.*Upload Excel on the Disposition page"):
             self.upload([["mapped_record_id", "disposition_category"], [1, "FAILURE"]])
+        with self.assertRaisesRegex(ValueError, "needs the name column"):
+            self.upload([["code_list", "code"], ["COMPONENT", "X"]])
         with self.assertRaisesRegex(ValueError, "has no codes in it"):
             self.upload([list(CODE_EXCEL_COLUMNS)])
 

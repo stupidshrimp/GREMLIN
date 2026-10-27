@@ -158,6 +158,9 @@
       parts.push(`${outcome.not_in_workbook.toLocaleString()} not in the workbook and kept as they were`);
     }
     box.appendChild(el("p", "dev-code-result-summary", `${parts.join(", ")}.`));
+    if ((outcome.columns_not_read || []).length) {
+      box.appendChild(el("p", "dev-muted", `Columns not read (not GREMLIN's): ${outcome.columns_not_read.join(", ")}.`));
+    }
     [["Added", added], ["Changed", updated]].forEach(([title, items]) => {
       if (!items.length) return;
       box.appendChild(el("h3", null, title));
