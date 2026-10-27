@@ -589,7 +589,7 @@ class AssetTree:
             )
         where = "Limble's asset list" if self.source == "gremlin" else "the PM calendar's copy of Limble's asset list"
         if number in self.on_limble_list:
-            return f"As {where} has them: every asset under {self.label(number)}, by parentAssetID."
+            return f"Every asset under {self.label(number)}, by parentAssetID."
         return f"{where[0].upper()}{where[1:]} does not have {number}, so these follow the Asset Numbers: every {number}-… asset."
 
     def name(self, number: str | None) -> str:
