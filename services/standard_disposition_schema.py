@@ -81,6 +81,9 @@ _STATEMENTS = (
         decided_by TEXT,
         decided_at TEXT NOT NULL DEFAULT (datetime('now')),
         is_current INTEGER NOT NULL DEFAULT 1,
+        helper_run_id INTEGER,
+        suggestion_json TEXT,
+        replaced_wo_disposition_id INTEGER,
         FOREIGN KEY (mapped_record_id) REFERENCES mapped_cmms_record(mapped_record_id) ON UPDATE CASCADE ON DELETE RESTRICT,
         FOREIGN KEY (linked_mapped_record_id) REFERENCES mapped_cmms_record(mapped_record_id)
     )
@@ -90,6 +93,29 @@ _STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_wo_disposition_linked ON wo_disposition(linked_mapped_record_id) WHERE linked_mapped_record_id IS NOT NULL",
     # A population's records placed on one of its sub-assets.
     "CREATE INDEX IF NOT EXISTS idx_wo_disposition_current_sub_asset ON wo_disposition(sub_asset) WHERE is_current = 1",
+    # The disposition helper's batch runs: each one is undone as a whole, and
+    # every disposition it saved names it (wo_disposition.helper_run_id).
+    """
+    CREATE TABLE IF NOT EXISTS disposition_helper_run (
+        helper_run_id INTEGER PRIMARY KEY,
+        asset_number TEXT NOT NULL,
+        min_confidence REAL NOT NULL,
+        scope_json TEXT,
+        considered INTEGER NOT NULL DEFAULT 0,
+        applied INTEGER NOT NULL DEFAULT 0,
+        skipped INTEGER NOT NULL DEFAULT 0,
+        helper_version TEXT,
+        run_by TEXT,
+        run_at TEXT NOT NULL DEFAULT (datetime('now')),
+        undone_at TEXT,
+        undone_by TEXT,
+        undone_count INTEGER
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_disposition_helper_run_asset ON disposition_helper_run(asset_number, helper_run_id)",
+    # Whether any work order's text changed since the helper indexed it, without
+    # reading every work order (the newest re-mapping, from this index).
+    "CREATE INDEX IF NOT EXISTS idx_mapped_cmms_mapped_at ON mapped_cmms_record(mapped_at)",
     """
     CREATE TABLE IF NOT EXISTS population_weibull_analysis (
         population_weibull_analysis_id INTEGER PRIMARY KEY,
@@ -138,6 +164,8 @@ def ensure_standard_disposition_schema(conn: sqlite3.Connection) -> None:
     for statement in _STATEMENTS:
         conn.execute(statement)
     _add_missing_columns(conn)
+    for statement in _AFTER_ADDED_COLUMNS:
+        conn.execute(statement)
     seed_code_lists(conn)
     sync_migrated_dispositions(conn)
 
@@ -145,10 +173,25 @@ def ensure_standard_disposition_schema(conn: sqlite3.Connection) -> None:
 # Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS leaves an
 # existing table as it is, so anything missing is ALTERed in.
 _ADDED_COLUMNS = {
-    "wo_disposition": {"record_class": "TEXT"},
+    "wo_disposition": {
+        "record_class": "TEXT",
+        # The disposition helper's batch run that saved this disposition, and
+        # what the helper suggested when one was on screen for the save.
+        "helper_run_id": "INTEGER",
+        "suggestion_json": "TEXT",
+        # The disposition a helper run's row took over from (none when the work
+        # order had none): what undoing the run puts back.
+        "replaced_wo_disposition_id": "INTEGER",
+    },
     # A numbered report on a population analysis says which run it reports.
     "weibull_report_log": {"population_weibull_analysis_id": "INTEGER"},
 }
+
+
+# Indexes on columns an older database only has once _add_missing_columns has run.
+_AFTER_ADDED_COLUMNS = (
+    "CREATE INDEX IF NOT EXISTS idx_wo_disposition_helper_run ON wo_disposition(helper_run_id) WHERE helper_run_id IS NOT NULL",
+)
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -714,8 +757,8 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
                 failure_mode_code, action_code, evidence, failure_cause_code, renewed_items_json, qty, item_detail,
                 linked_mapped_record_id, disposition_note, record_class, legacy_disposition_category,
                 legacy_failure_mode, legacy_failure_mechanism, source, migrated_from_event_disposition_id,
-                review_flag, decided_by, is_current
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                review_flag, decided_by, helper_run_id, suggestion_json, replaced_wo_disposition_id, is_current
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 mapped_record_id,
@@ -740,6 +783,9 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
                 values.get("migrated_from_event_disposition_id"),
                 values.get("review_flag"),
                 values.get("decided_by"),
+                values.get("helper_run_id"),
+                values.get("suggestion_json"),
+                values.get("replaced_wo_disposition_id"),
             ),
         ).lastrowid
     )

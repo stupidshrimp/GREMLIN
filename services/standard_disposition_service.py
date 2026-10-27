@@ -33,7 +33,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from services.life_data_service import LifeDataService
 
 DISPOSITION_PAGE_SIZE = 50
-DISPOSITION_SCOPES = ("all", "not_reviewed", "migrated")
+DISPOSITION_SCOPES = ("all", "not_reviewed", "migrated", "auto")
+# What the disposition helper's batch runs save, until an engineer confirms it.
+AUTO_SOURCE = "AUTO"
+# Most of what is kept of the suggestion an engineer saved with.
+SUGGESTION_JSON_MAX = 20_000
 
 _FOUND_SQL = "COALESCE(NULLIF(TRIM(m.created_date_final), ''), m.completed_date_final)"
 _LOCATION_SQL = "COALESCE(NULLIF(TRIM(w.sub_asset), ''), TRIM(m.asset_number))"
@@ -807,7 +811,7 @@ class StandardDispositionService:
         w.failure_mode_code, w.action_code, w.evidence, w.failure_cause_code, w.renewed_items_json, w.qty,
         w.item_detail, w.linked_mapped_record_id, w.disposition_note, w.legacy_disposition_category,
         w.legacy_failure_mode, w.legacy_failure_mechanism, w.source, w.review_flag, w.decided_by, w.decided_at,
-        linked.task_id AS linked_task_id
+        w.helper_run_id, linked.task_id AS linked_task_id
     """
     RECORD_FROM = """
         FROM mapped_cmms_record m
@@ -821,6 +825,8 @@ class StandardDispositionService:
             return " AND (w.wo_disposition_id IS NULL OR w.disposition_category = 'NOT_REVIEWED')"
         if scope == "migrated":
             return " AND w.source = 'MIGRATION'"
+        if scope == "auto":
+            return f" AND w.source = '{AUTO_SOURCE}'"
         return ""
 
     @staticmethod
@@ -915,6 +921,7 @@ class StandardDispositionService:
                 "review_flag": None,
                 "decided_by": None,
                 "decided_at": None,
+                "helper_run_id": None,
             }
         return {
             "disposition_category": row["disposition_category"] or std.NOT_REVIEWED,
@@ -938,6 +945,7 @@ class StandardDispositionService:
             "review_flag": row["review_flag"],
             "decided_by": row["decided_by"],
             "decided_at": row["decided_at"],
+            "helper_run_id": row["helper_run_id"],
         }
 
     def record_dict(self, row: sqlite3.Row, codebook: std.CodeBook) -> dict[str, Any]:
@@ -999,7 +1007,8 @@ class StandardDispositionService:
                 f"""
                 SELECT COUNT(*) AS all_count,
                        SUM(CASE WHEN w.wo_disposition_id IS NULL OR w.disposition_category = 'NOT_REVIEWED' THEN 1 ELSE 0 END) AS not_reviewed,
-                       SUM(CASE WHEN w.source = 'MIGRATION' THEN 1 ELSE 0 END) AS migrated
+                       SUM(CASE WHEN w.source = 'MIGRATION' THEN 1 ELSE 0 END) AS migrated,
+                       SUM(CASE WHEN w.source = 'AUTO' THEN 1 ELSE 0 END) AS auto
                 {self.RECORD_FROM}
                 WHERE TRIM(m.asset_number) = ?
                 """,
@@ -1035,6 +1044,7 @@ class StandardDispositionService:
                 "all": int(counts["all_count"] or 0),
                 "not_reviewed": int(counts["not_reviewed"] or 0),
                 "migrated": int(counts["migrated"] or 0),
+                "auto": int(counts["auto"] or 0),
             },
         }
 
@@ -1208,6 +1218,117 @@ class StandardDispositionService:
             rows = same_asset
         return int(rows[0][0])
 
+    def _prepare_item(
+        self,
+        conn: sqlite3.Connection,
+        item: Mapping[str, Any],
+        *,
+        codebook: std.CodeBook,
+        tree: AssetTree,
+        children: dict[str, tuple[str, ...]],
+    ) -> dict[str, Any]:
+        """One item checked against the standard, as it would be stored; ValueError names what is wrong.
+
+        LookupError when it names no record, so a caller can tell a refusal from a
+        missing record.
+        """
+
+        try:
+            mapped_record_id = int(item.get("mapped_record_id"))
+        except (TypeError, ValueError):
+            raise ValueError("Each disposition needs the mapped_record_id of its work order.") from None
+        record = conn.execute(
+            f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
+            (mapped_record_id,),
+        ).fetchone()
+        if record is None:
+            raise LookupError(f"Record {mapped_record_id} was not found.")
+        asset_number = record["asset_number"] or ""
+        if not asset_number:
+            raise ValueError(f"Task {record['task_id']} has no asset number, so it cannot be dispositioned.")
+        if asset_number not in children:
+            children[asset_number] = tuple(option["asset_number"] for option in tree.descendants(asset_number))
+        values = dict(item)
+        try:
+            record_class = record["record_class"]
+            chosen_class = _clean(values.get("record_class"))
+            if chosen_class is not None:
+                chosen_class = chosen_class.upper()
+                if chosen_class not in self._record_classes():
+                    raise ValueError(f"Record class must be one of {', '.join(self._record_classes())}.")
+            if "linked_wo" in values and "linked_mapped_record_id" not in values:
+                values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
+            previous = self._disposition_dict(record) if record["wo_disposition_id"] is not None else None
+            normalized = std.normalize_disposition(
+                values,
+                record=std.RecordContext(
+                    mapped_record_id=mapped_record_id,
+                    asset_number=asset_number,
+                    sub_asset_choices=children[asset_number],
+                    record_class=chosen_class or record_class,
+                ),
+                codebook=codebook,
+                previous=previous,
+            )
+            linked = normalized.get("linked_mapped_record_id")
+            if linked is not None and not conn.execute(
+                "SELECT 1 FROM mapped_cmms_record WHERE mapped_record_id = ?", (linked,)
+            ).fetchone():
+                raise ValueError(f"Linked record {linked} was not found.")
+        except ValueError as exc:
+            raise ValueError(f"Task {record['task_id'] or mapped_record_id}: {exc}") from None
+        return {
+            "mapped_record_id": mapped_record_id,
+            "record": record,
+            "normalized": normalized,
+            "record_class": record_class,
+            "chosen_class": chosen_class,
+        }
+
+    def _write_prepared(self, conn: sqlite3.Connection, prepared: Mapping[str, Any], **extra: Any) -> None:
+        """Make a checked item the record's current disposition (and its record class, when corrected)."""
+
+        record = prepared["record"]
+        record_class = prepared["record_class"]
+        chosen_class = prepared["chosen_class"]
+        if chosen_class is not None and chosen_class != record_class:
+            conn.execute(
+                "UPDATE mapped_cmms_record SET record_class_final = ? WHERE mapped_record_id = ?",
+                (chosen_class, prepared["mapped_record_id"]),
+            )
+            record_class = chosen_class
+        insert_wo_disposition(conn, prepared["mapped_record_id"], {
+            **prepared["normalized"],
+            "record_class": record_class,
+            # The legacy text describes the record's history, not one decision,
+            # so it travels with every disposition after the migrated one.
+            "legacy_disposition_category": record["legacy_disposition_category"],
+            "legacy_failure_mode": record["legacy_failure_mode"],
+            "legacy_failure_mechanism": record["legacy_failure_mechanism"],
+            **extra,
+        })
+
+    @staticmethod
+    def _suggestion_json(value: Any) -> str | None:
+        """The disposition helper's suggestion an engineer saved with, as kept beside the disposition.
+
+        Kept so the helper can be measured in use (how often a suggested value
+        was kept); anything that is not a small JSON object is dropped rather
+        than refusing the save.
+        """
+
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                return None
+        if not isinstance(value, Mapping):
+            return None
+        textual = json.dumps(value, separators=(",", ":"), default=str)
+        return textual if len(textual) <= SUGGESTION_JSON_MAX else None
+
     def save_dispositions(self, items: Iterable[Mapping[str, Any]], *, decided_by: str | None = None) -> int:
         """Save each item as its record's current disposition, all or none.
 
@@ -1216,12 +1337,12 @@ class StandardDispositionService:
         ``linked_mapped_record_id``. ``record_class`` corrects what kind of work
         order the record is (a PM logged as a corrective, say): it is kept on the
         record itself, where every screen reads it, and decides the detection
-        method. Any refused item refuses the whole batch, with the record named in
-        the message.
+        method. ``helper_suggestion`` is what the disposition helper suggested
+        while the record was open, kept to measure it by. Any refused item refuses
+        the whole batch, with the record named in the message.
         """
 
         saved = 0
-        record_classes = self._record_classes()
         with self.life.write_connection() as conn:
             codebook = load_codebook(conn)
             # Read inside the write transaction, before anything is written: no
@@ -1231,68 +1352,139 @@ class StandardDispositionService:
             children: dict[str, tuple[str, ...]] = {}
             for item in items:
                 try:
-                    mapped_record_id = int(item.get("mapped_record_id"))
-                except (TypeError, ValueError):
-                    raise ValueError("Each disposition needs the mapped_record_id of its work order.") from None
-                record = conn.execute(
-                    f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} WHERE m.mapped_record_id = ?",
-                    (mapped_record_id,),
-                ).fetchone()
-                if record is None:
-                    raise ValueError(f"Record {mapped_record_id} was not found.")
-                asset_number = record["asset_number"] or ""
-                if not asset_number:
-                    raise ValueError(f"Task {record['task_id']} has no asset number, so it cannot be dispositioned.")
-                if asset_number not in children:
-                    children[asset_number] = tuple(option["asset_number"] for option in tree.descendants(asset_number))
-                values = dict(item)
-                try:
-                    record_class = record["record_class"]
-                    chosen_class = _clean(values.get("record_class"))
-                    if chosen_class is not None:
-                        chosen_class = chosen_class.upper()
-                        if chosen_class not in record_classes:
-                            raise ValueError(f"Record class must be one of {', '.join(record_classes)}.")
-                    if "linked_wo" in values and "linked_mapped_record_id" not in values:
-                        values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
-                    previous = self._disposition_dict(record) if record["wo_disposition_id"] is not None else None
-                    normalized = std.normalize_disposition(
-                        values,
-                        record=std.RecordContext(
-                            mapped_record_id=mapped_record_id,
-                            asset_number=asset_number,
-                            sub_asset_choices=children[asset_number],
-                            record_class=chosen_class or record_class,
-                        ),
-                        codebook=codebook,
-                        previous=previous,
-                    )
-                    linked = normalized.get("linked_mapped_record_id")
-                    if linked is not None and not conn.execute(
-                        "SELECT 1 FROM mapped_cmms_record WHERE mapped_record_id = ?", (linked,)
-                    ).fetchone():
-                        raise ValueError(f"Linked record {linked} was not found.")
-                except ValueError as exc:
-                    raise ValueError(f"Task {record['task_id'] or mapped_record_id}: {exc}") from None
-                if chosen_class is not None and chosen_class != record_class:
-                    conn.execute(
-                        "UPDATE mapped_cmms_record SET record_class_final = ? WHERE mapped_record_id = ?",
-                        (chosen_class, mapped_record_id),
-                    )
-                    record_class = chosen_class
-                insert_wo_disposition(conn, mapped_record_id, {
-                    **normalized,
-                    "record_class": record_class,
-                    # The legacy text describes the record's history, not one decision,
-                    # so it travels with every disposition after the migrated one.
-                    "legacy_disposition_category": record["legacy_disposition_category"],
-                    "legacy_failure_mode": record["legacy_failure_mode"],
-                    "legacy_failure_mechanism": record["legacy_failure_mechanism"],
-                    "source": "ENGINEER",
-                    "decided_by": decided_by,
-                })
+                    prepared = self._prepare_item(conn, item, codebook=codebook, tree=tree, children=children)
+                except LookupError as exc:
+                    raise ValueError(str(exc)) from None
+                self._write_prepared(
+                    conn, prepared,
+                    source="ENGINEER",
+                    decided_by=decided_by,
+                    suggestion_json=self._suggestion_json(item.get("helper_suggestion")),
+                )
                 saved += 1
         return saved
+
+    def save_auto_dispositions(
+        self,
+        items: Iterable[Mapping[str, Any]],
+        *,
+        run: Mapping[str, Any],
+        decided_by: str,
+        run_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Save the disposition helper's batch run: every item that still may be, as one run.
+
+        Unlike an engineer's save this is not all or none. An item is skipped,
+        with its reason, when its work order has been dispositioned since the
+        run was worked out (an engineer's decision is never overwritten) or when
+        the standard refuses it. The rest are saved marked ``AUTO``, each with
+        its ``review_flag`` and ``suggestion_json``, under one
+        ``disposition_helper_run`` row that undoes them together. A run that
+        saved nothing leaves no row.
+        """
+
+        applied = 0
+        skipped: list[dict[str, Any]] = []
+        with self.life.write_connection() as conn:
+            codebook = load_codebook(conn)
+            tree = self.asset_tree(conn, token=self.life.change_token())
+            children: dict[str, tuple[str, ...]] = {}
+            run_id = int(conn.execute(
+                """
+                INSERT INTO disposition_helper_run(asset_number, min_confidence, scope_json, considered, helper_version, run_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (run["asset_number"], float(run["min_confidence"]), run.get("scope_json"), int(run.get("considered") or 0),
+                 run.get("helper_version"), run_by),
+            ).lastrowid)
+            for item in items:
+                current = conn.execute(
+                    """
+                    SELECT m.task_id, w.disposition_category, w.wo_disposition_id FROM mapped_cmms_record m
+                    LEFT JOIN wo_disposition w ON w.mapped_record_id = m.mapped_record_id AND w.is_current = 1
+                    WHERE m.mapped_record_id = ?
+                    """,
+                    (item.get("mapped_record_id"),),
+                ).fetchone()
+                if current is None:
+                    skipped.append({"mapped_record_id": item.get("mapped_record_id"), "task_id": None,
+                                    "reason": "The work order is no longer in GREMLIN."})
+                    continue
+                if (current["disposition_category"] or std.NOT_REVIEWED) != std.NOT_REVIEWED:
+                    skipped.append({"mapped_record_id": item.get("mapped_record_id"), "task_id": current["task_id"],
+                                    "reason": "Dispositioned meanwhile; left as it is."})
+                    continue
+                values = {key: value for key, value in item.items() if key not in ("record_class", "helper_suggestion")}
+                try:
+                    prepared = self._prepare_item(conn, values, codebook=codebook, tree=tree, children=children)
+                except (ValueError, LookupError) as exc:
+                    skipped.append({"mapped_record_id": item.get("mapped_record_id"), "task_id": current["task_id"],
+                                    "reason": str(exc)})
+                    continue
+                self._write_prepared(
+                    conn, prepared,
+                    source=AUTO_SOURCE,
+                    decided_by=decided_by,
+                    review_flag=_clean(item.get("review_flag")),
+                    helper_run_id=run_id,
+                    suggestion_json=self._suggestion_json(item.get("suggestion_json")),
+                    replaced_wo_disposition_id=current["wo_disposition_id"],
+                )
+                applied += 1
+            if applied:
+                conn.execute(
+                    "UPDATE disposition_helper_run SET applied = ?, skipped = ? WHERE helper_run_id = ?",
+                    (applied, len(skipped), run_id),
+                )
+            else:
+                conn.execute("DELETE FROM disposition_helper_run WHERE helper_run_id = ?", (run_id,))
+        return {"helper_run_id": run_id if applied else None, "applied": applied, "skipped": skipped}
+
+    def undo_helper_run(self, helper_run_id: int, *, undone_by: str | None = None) -> dict[str, Any]:
+        """Take back what one batch run saved and an engineer has not saved since.
+
+        Each such work order goes back to the disposition that was current when
+        the run saved over it (none, for one never dispositioned), which is not
+        always the row before: an earlier run, since undone, may lie between.
+        The run's row stays in its history, no longer current. One an engineer
+        has saved since keeps the engineer's decision.
+        """
+
+        with self.life.write_connection() as conn:
+            run = conn.execute(
+                "SELECT helper_run_id, applied, undone_at FROM disposition_helper_run WHERE helper_run_id = ?",
+                (int(helper_run_id),),
+            ).fetchone()
+            if run is None:
+                raise LookupError("That disposition helper run was not found.")
+            if run["undone_at"]:
+                raise ValueError("That run has already been undone.")
+            rows = conn.execute(
+                """
+                SELECT wo_disposition_id, mapped_record_id, replaced_wo_disposition_id FROM wo_disposition
+                WHERE helper_run_id = ? AND is_current = 1 AND source = ?
+                """,
+                (int(helper_run_id), AUTO_SOURCE),
+            ).fetchall()
+            for row in rows:
+                conn.execute("UPDATE wo_disposition SET is_current = 0 WHERE wo_disposition_id = ?", (row[0],))
+                if row[2] is not None:
+                    conn.execute(
+                        "UPDATE wo_disposition SET is_current = 1 WHERE wo_disposition_id = ? AND mapped_record_id = ?",
+                        (row[2], row[1]),
+                    )
+            conn.execute(
+                """
+                UPDATE disposition_helper_run SET undone_at = datetime('now'), undone_by = ?, undone_count = ?
+                WHERE helper_run_id = ?
+                """,
+                (undone_by, len(rows), int(helper_run_id)),
+            )
+        return {
+            "helper_run_id": int(helper_run_id),
+            "undone": len(rows),
+            "kept": max(0, int(run["applied"] or 0) - len(rows)),
+        }
 
     # ------------------------------------------------------------------ #
     # Excel workbook

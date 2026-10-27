@@ -43,6 +43,7 @@
         <option value="all" selected>All work orders</option>
         <option value="not_reviewed">Only not reviewed</option>
         <option value="migrated">Migrated from REL categories (to confirm)</option>
+        <option value="auto">Auto-dispositioned (to confirm)</option>
       </select>
     </div>
     <div class="lda-field" id="disp-search-field">
@@ -57,6 +58,25 @@
     <button type="button" class="btn-secondary lda-help-button" id="disp-excel-help" aria-haspopup="dialog"
             aria-controls="lda-excel-help-dialog">How Excel dispositioning works</button>
     <input type="file" id="disp-excel-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+  </div>
+  {# The disposition helper: on, each work order opened is read and filled in
+     from the code lists for the engineer to check and save. #}
+  <div class="std-helper-bar" id="disp-helper-bar">
+    <label class="std-switch" for="disp-helper-toggle">
+      <input type="checkbox" id="disp-helper-toggle" role="switch" aria-describedby="disp-helper-status">
+      <span class="std-switch-track" aria-hidden="true"><span class="std-switch-thumb"></span></span>
+      <span class="std-switch-label">Auto-disposition</span>
+    </label>
+    <p class="lda-hint std-helper-status" id="disp-helper-status">
+      Off. Turn it on and the disposition helper reads each work order you open and fills in its disposition from
+      the code lists, for you to check and save.
+    </p>
+    <div class="std-helper-tools">
+      <button type="button" class="btn-secondary" id="disp-helper-batch" aria-haspopup="dialog"
+              aria-controls="disp-helper-dialog">Auto-disposition the backlog…</button>
+      <button type="button" class="btn-secondary" id="disp-helper-accuracy" aria-haspopup="dialog"
+              aria-controls="disp-helper-accuracy-dialog">How accurate is it?</button>
+    </div>
   </div>
   <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
 </section>
@@ -122,6 +142,60 @@
     </div>
     <div class="std-code-body" id="disp-code-body">
       <table class="cl-table" id="disp-code-table"></table>
+    </div>
+  </div>
+</dialog>
+
+{# The disposition helper's batch run over the list's not-reviewed work orders. #}
+<dialog class="lda-help-dialog std-helper-dialog" id="disp-helper-dialog" aria-labelledby="disp-helper-dialog-title">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Disposition helper</p>
+        <h2 id="disp-helper-dialog-title">Auto-disposition the backlog</h2>
+      </div>
+      <button type="button" class="lda-help-close" id="disp-helper-close" aria-label="Close auto-disposition">&times;</button>
+    </header>
+    <div class="lda-help-body">
+      <p>The helper reads every <strong>not-reviewed</strong> work order in the list (its search and column filters
+        apply) and dispositions the ones it is at least as sure of as you set here. Each is saved marked
+        <strong>Auto</strong>, with a review flag, and stays unconfirmed until an engineer opens it and saves it.
+        Perform an Analysis warns when a fit reads any. The whole run can be undone.</p>
+      <div class="std-helper-threshold">
+        <label for="disp-helper-threshold">Only work orders it is at least
+          <output id="disp-helper-threshold-out" for="disp-helper-threshold">90%</output> sure of</label>
+        <input type="range" id="disp-helper-threshold" min="60" max="99" step="1" value="90">
+        <button type="button" class="btn-secondary" id="disp-helper-preview">Preview</button>
+      </div>
+      <div id="disp-helper-preview-body" class="std-helper-preview" aria-live="polite"></div>
+      <div class="std-helper-dialog-actions">
+        <button type="button" class="btn-primary" id="disp-helper-apply" disabled>Auto-disposition</button>
+      </div>
+      <h3 class="std-helper-subhead">Earlier runs on this asset</h3>
+      <div id="disp-helper-runs"></div>
+    </div>
+  </div>
+</dialog>
+
+{# How often the helper agrees with the team: replayed on decided work orders, and in use. #}
+<dialog class="lda-help-dialog std-helper-dialog" id="disp-helper-accuracy-dialog" aria-labelledby="disp-helper-accuracy-title">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Disposition helper</p>
+        <h2 id="disp-helper-accuracy-title">How accurate is it?</h2>
+      </div>
+      <button type="button" class="lda-help-close" id="disp-helper-accuracy-close" aria-label="Close the accuracy report">&times;</button>
+    </header>
+    <div class="lda-help-body">
+      <p>The helper reads a work order two ways: it finds the work orders the team has already dispositioned that
+        read most like it, and lets them vote for their codes; and it reads what the work order says outright
+        (“clogged”, “won't light”, “replaced”, “S09”) against the code lists and a thesaurus of maintenance wording.
+        Where the two agree it is sure; where they disagree, or there is little of either, it says so.</p>
+      <p>To measure itself, it dispositions work orders the team has already decided as if they were new, each one
+        without its own decision, and compares. A confidence of 90% means that nine in ten of its suggestions that
+        sure matched the engineer's disposition.</p>
+      <div id="disp-helper-accuracy-body" aria-live="polite"></div>
     </div>
   </div>
 </dialog>

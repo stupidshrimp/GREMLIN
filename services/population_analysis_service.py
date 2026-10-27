@@ -537,6 +537,8 @@ class PopulationAnalysisService:
             "dispositioned": sum(1 for record in records if record["category"] != std.NOT_REVIEWED),
             "not_reviewed": sum(1 for record in records if record["category"] == std.NOT_REVIEWED),
             "to_confirm": sum(1 for record in records if record["disposition"]["source"] == "MIGRATION"),
+            # Saved by the disposition helper's batch run and not yet confirmed.
+            "auto_unconfirmed": sum(1 for record in records if record["disposition"]["source"] == "AUTO"),
             "failures": len(self._pattern_records(records, population, start, end, categories=[std.FAILURE])),
             "pm_resets": len(self._pattern_records(records, population, start, end, categories=[std.PM_RESET])),
             "uncoded": uncoded,
@@ -1525,6 +1527,21 @@ class PopulationAnalysisService:
             )
             if loaded["zone_warning"]:
                 warnings.append({"code": "TIME_ZONE", "level": "info", "title": "Days split in UTC", "message": loaded["zone_warning"]})
+            auto = sorted({
+                event.record_id for event in main.stream_events
+                if (by_id.get(event.record_id) or {}).get("disposition", {}).get("source") == "AUTO"
+            })
+            if auto:
+                warnings.append({
+                    "code": "AUTO_DISPOSITIONS",
+                    "level": "warning",
+                    "title": "Unconfirmed auto-dispositions",
+                    "message": (
+                        f"{len(auto)} of the work orders this fit reads {'was' if len(auto) == 1 else 'were'} "
+                        "dispositioned by the disposition helper and not yet confirmed by an engineer. Confirm them "
+                        "on the Disposition page (Show: Auto-dispositioned) before relying on this fit."
+                    ),
+                })
             stream_schedules = {location: schedules[location] for location, _ in main.streams}
             stream_rows = []
             for location, component in main.streams:
