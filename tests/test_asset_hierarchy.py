@@ -383,8 +383,7 @@ class SameAsThePmCalendarTests(unittest.TestCase):
             offered = options["sub_assets"]
         self.assertEqual(
             options["sub_asset_note"],
-            "As the PM calendar's copy of Limble's asset list has them: every asset under "
-            "4002 Panel Finishing System, by parentAssetID.",
+            "Every asset under 4002 Panel Finishing System, by parentAssetID.",
         )
 
         names = {str(asset["assetID"]): asset["name"] for asset in self.ASSETS}

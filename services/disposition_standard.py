@@ -332,7 +332,6 @@ FIELD_LABELS = {
     "failure_cause_code": "Failure cause",
     "renewed_items": "Renewed items",
     "qty": "Qty",
-    "item_detail": "Item detail",
     "linked_mapped_record_id": "Linked WO",
     "disposition_note": "Disposition note",
 }
@@ -342,7 +341,6 @@ CODED_FIELDS = (
     ("failure_mode_code", FAILURE_MODE),
     ("action_code", ACTION),
 )
-ITEM_DETAIL_MAX = 200
 NOTE_MAX = 2000
 
 
@@ -416,7 +414,6 @@ def normalize_disposition(
         "failure_cause_code": None,
         "renewed_items": (),
         "qty": None,
-        "item_detail": None,
         "linked_mapped_record_id": None,
         "disposition_note": None,
     }
@@ -534,11 +531,6 @@ def normalize_disposition(
                 problems.append("Qty must be at least 1.")
             else:
                 result["qty"] = qty_value
-
-    item_detail = clean_text(values.get("item_detail"))
-    if item_detail is not None and len(item_detail) > ITEM_DETAIL_MAX:
-        problems.append(f"Item detail is longer than {ITEM_DETAIL_MAX} characters.")
-    result["item_detail"] = item_detail
 
     if problems:
         raise ValueError(" ".join(problems))

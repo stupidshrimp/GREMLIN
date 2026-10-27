@@ -102,7 +102,6 @@ EXCEL_DISPOSITION_COLUMNS = (
     "failure_cause_code",
     "renewed_items",
     "qty",
-    "item_detail",
     "linked_wo",
     "disposition_note",
 )
@@ -805,7 +804,7 @@ class StandardDispositionService:
         COALESCE(m.record_class_final, m.record_class_auto) AS record_class, m.record_class_auto,
         w.wo_disposition_id, w.disposition_category, w.sub_asset, w.component_code, w.failure_mechanism_code,
         w.failure_mode_code, w.action_code, w.evidence, w.failure_cause_code, w.renewed_items_json, w.qty,
-        w.item_detail, w.linked_mapped_record_id, w.disposition_note, w.legacy_disposition_category,
+        w.linked_mapped_record_id, w.disposition_note, w.legacy_disposition_category,
         w.legacy_failure_mode, w.legacy_failure_mechanism, w.source, w.review_flag, w.decided_by, w.decided_at,
         linked.task_id AS linked_task_id
     """
@@ -904,7 +903,6 @@ class StandardDispositionService:
                 "failure_cause_code": None,
                 "renewed_items": [],
                 "qty": None,
-                "item_detail": None,
                 "linked_mapped_record_id": None,
                 "linked_task_id": None,
                 "disposition_note": None,
@@ -927,7 +925,6 @@ class StandardDispositionService:
             "failure_cause_code": row["failure_cause_code"],
             "renewed_items": list(renewed_items_from_json(row["renewed_items_json"])),
             "qty": row["qty"],
-            "item_detail": row["item_detail"],
             "linked_mapped_record_id": row["linked_mapped_record_id"],
             "linked_task_id": row["linked_task_id"],
             "disposition_note": row["disposition_note"],
@@ -1176,7 +1173,7 @@ class StandardDispositionService:
             rows = conn.execute(
                 """
                 SELECT disposition_category, sub_asset, component_code, failure_mechanism_code, failure_mode_code,
-                       action_code, evidence, failure_cause_code, renewed_items_json, qty, item_detail,
+                       action_code, evidence, failure_cause_code, renewed_items_json, qty,
                        linked_mapped_record_id, disposition_note, source, review_flag, decided_by, decided_at, is_current
                 FROM wo_disposition WHERE mapped_record_id = ?
                 ORDER BY wo_disposition_id DESC
@@ -1337,7 +1334,6 @@ class StandardDispositionService:
             "failure_cause_code": disposition["failure_cause_code"],
             "renewed_items": ", ".join(disposition["renewed_items"]),
             "qty": disposition["qty"],
-            "item_detail": disposition["item_detail"],
             "linked_wo": disposition["linked_task_id"],
             "disposition_note": disposition["disposition_note"],
         }
