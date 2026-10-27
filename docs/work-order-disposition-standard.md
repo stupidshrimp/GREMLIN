@@ -18,6 +18,7 @@ confirm or change those choices.
 | **Disposition** (editors) | `/life-data-analysis/disposition` — `templates/disposition.html`, `static/js/disposition.js` |
 | **Perform an Analysis** (any account that may see Life Data Analysis) | `/life-data-analysis/perform-analysis` — `templates/perform_analysis.html`, `static/js/life_data_analysis.js` |
 | The disposition form both pages use | `static/js/disposition_form.js` (the Disposition page's right-hand window, and the editor that opens over Perform an Analysis from any task ID in its tables) |
+| **The disposition helper** (Auto-disposition): reading a work order, suggesting its disposition, batch runs and their undo, the accuracy report | `services/disposition_helper_text.py` (words, the thesaurus, negation, spelling) and `services/disposition_helper.py` (the index, voting, calibration, runs), `services/disposition_helper_embedding.py` (meaning matching: the model, its vector cache); saves and undo in `StandardDispositionService.save_auto_dispositions` / `undo_helper_run`; `tools/fetch_embedding_model.py` puts the model in place. Tested in `tests/test_disposition_helper.py` and `tests/test_disposition_helper_meaning.py` on the synthetic plant of `tests/disposition_helper_corpus.py` |
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
@@ -188,6 +189,155 @@ Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on
   table is scrolled toward its end (or from Show all); a column's sort or filter
   draws every row first. An off-screen table is not laid out until it is
   scrolled near (`content-visibility: auto` on `.lda-table-scroll`).
+
+## The disposition helper (Auto-disposition)
+
+The **Auto-disposition** switch on the Disposition page turns on a helper that
+reads each work order opened and fills in its disposition from the code lists,
+for the engineer to check and save. It is not part of the spec; it makes the
+spec's fields quicker to fill, and never changes what they mean.
+
+**How it reads a work order.** Two sources of evidence, for every field:
+
+* *The work orders already dispositioned.* Every work order is indexed by its
+  words (stemmed, so "leaking" and "leaked" meet; a misspelling one edit away
+  from a word the plant uses is read as that word), its word pairs, and the
+  concepts read off it (below), weighted TF-IDF. The 25 most similar
+  dispositioned work orders vote for their codes, each by its similarity
+  squared; one on the same asset counts 1.5 times, one carried over by the
+  migration 0.6 times, and one in another category 0.4 times for the coded
+  fields. This is how the plant's own way of writing is learnt.
+* *What the work order says outright.* Every name segment of every active code
+  is a phrase for it ("Filter / strainer / sieve" is three), plus a built-in
+  thesaurus of maintenance wording for the seed codes ("clogged", "plugged",
+  "restricted" for PLUG; "won't light", "no ignition" for FTS; "swapped",
+  "changed out" for REPLACE; "no fault found", "tested OK" for the mode that
+  means no fault found). A phrase in the same clause after "no" or "not" counts
+  against its code ("no leaks found"). Each part of the work order counts for
+  what it is evidence of: the action taken for the action, the condition found
+  and cause for the mechanism, the request for the mode. Words in a code's
+  description count a little too, so the team can teach the helper a word by
+  writing it into a description. "Tested OK" after a repair is read as the check
+  after the fix, not as no fault found.
+
+The two are blended by how much of each there is, so a work order like none
+seen before is read on its wording alone and a terse one on its neighbours. The
+**sub-asset** is read off its number ("S09"), its name ("dry-off oven"), or the
+asset the work order was logged against, and those outweigh the votes, which
+are similar for what failed more than for where. The **category** also reads
+the record class (a PM leans to PM_RESET). The helper never proposes HELD or
+DUPLICATE_MISFILED: it points out a likely duplicate (same asset, within 3 days,
+reading much the same) and leaves the call to the engineer. It never proposes no
+fault found for a FAILURE, overrides the default cause only when the work order
+names another (writing the note the override needs), lists for a PM_RESET the
+items the similar PM resets renewed, and marks the evidence EXPLICIT when the
+work order names the component and its condition, INFERRED otherwise.
+
+**How sure it is.** Each field's confidence is calibrated: the helper
+dispositions up to 400 work orders engineers have decided as if they were new
+(each without its own decision), and fits, field by field, how often a
+suggestion that scored so was right (isotonic, shrunk towards a coin toss so a
+handful of lucky ones never read as certain). A whole disposition is as sure as
+how often past ones whose least sure field scored the same were entirely right,
+and never surer than that field. Below 40 replayed work orders the helper is
+uncalibrated: it still suggests, with its scores discounted and marked as
+estimates, but may not disposition on its own. The calibration is refitted when
+the engineers' decisions grow by a tenth, in the background after a suggestion
+(a batch run and the report wait for it).
+
+**On the page.** With the switch on (remembered per browser), a work order
+nobody has decided (or only the migration or the helper has) is filled in where
+the helper is at least 50% sure; an engineer's own disposition is never filled
+over. Beside each field is how sure the helper is, or its value as a button when
+the field holds something else; above the fields, how sure it is overall, why
+(the phrases it read, the votes, the alternatives), and the most similar
+dispositioned work orders. What it filled is the form's starting point, so
+moving on without saving asks nothing. A save made with a suggestion open keeps
+the suggestion (`wo_disposition.suggestion_json`), which is how the helper is
+measured in use.
+
+**Auto-disposition the backlog** (editors) reads the list's not-reviewed work
+orders, under its search and column filters, newest first and at most 1,000 a
+run, and previews what it would do at the confidence chosen (60-99%, 90% to
+start). Running it saves those that reach it through the standard's own checks,
+as `source = 'AUTO'`, `decided_by = 'Disposition helper (<who ran it>)'`, with a
+review flag naming the confidence, under one `disposition_helper_run`. A work
+order dispositioned meanwhile is left alone, and so is one the standard refuses.
+Show: **Auto-dispositioned (to confirm)** lists them; opening one and saving it
+confirms it (it becomes an engineer's disposition). **Undo** on a run puts every
+one of its work orders not confirmed since back to what it had before the run
+(the run's rows stay in the history, not current).
+
+**What the analysis does with them.** An unconfirmed auto-disposition counts as
+the disposition it is, but Perform an Analysis counts them in its readiness
+("Auto-dispositioned, still to confirm") and a Weibull fit that reads any warns
+(`AUTO_DISPOSITIONS`). The helper never learns from its own unconfirmed
+dispositions.
+
+**How accurate is it?** replays the decided work orders (of the asset picked, or
+the plant) and reports, field by field, how often it is right overall and at
+each confidence, and for whole dispositions how many a run at each setting
+would save and how many of those it gets entirely right. The confidences in
+that report come from a calibration fitted on the other half of the work
+orders, never on the ones being graded. It also reports the helper in use: how
+often a suggested value was kept on a save, and how many auto-dispositions an
+engineer confirmed unchanged.
+
+**Meaning matching (optional).** Word matching finds work orders that use the
+same words or thesaurus concepts; "burner won't light" and "no flame on startup"
+share neither. With meaning matching on, a small embedding model,
+`sentence-transformers/all-MiniLM-L6-v2` (Apache-2.0, pinned to revision
+`c9745ed1`), reads every work order's title, request, narrative and notes into
+384 numbers that stand for what it means, and work orders that say the same
+thing in other words are found too. It runs on the server's CPU through ONNX
+Runtime; no text leaves the plant.
+
+* *Where it counts.* Similar work orders are found by wording (TF-IDF) and by
+  meaning, pooled, and scored 80% on wording and 20% on meaning (the model's
+  similarity counts only above 0.2, where unrelated English sits). That
+  similarity finds the votes for the **component, mechanism, mode and action**.
+  The **category** and the **sub-asset** are still voted on by wording alone: a
+  check of the oven's intake screen and a clogged intake screen mean nearly the
+  same and are different kinds of event, and where is in names and numbers.
+  More weight on meaning made the synthetic plant's dispositions worse, by
+  finding work orders about the same part but a different fault.
+* *What it adds, measured.* On the synthetic plant with its backlog written in
+  wording no dispositioned work order used ("no flame at the dry-off oven on
+  startup", "intake screen caked with dust"), whole dispositions entirely right
+  went from 76.3% to 80.6% (component 78.5% to 82.8%, action 91.4% to 95.2%);
+  with the backlog worded like the past, nothing got worse (92.5% to 93.0%).
+  The accuracy report shows the same comparison on the plant's own records:
+  with meaning matching on, every figure has a "words only" one beside it.
+* *Reading the work orders.* Each work order's vector is kept, by a hash of the
+  text it was read from, in `GREMLIN.embeddings.db` beside GREMLIN.db (not in
+  GREMLIN.db: it is derived data, and writing it there would move the change
+  token every cache above is keyed on). Work orders not read yet are read in the
+  background and matched by their words until they are; the helper bar says how
+  far it has got. The calibration is refitted once all are read.
+* *Setting it up.* `python -m pip install -r requirements.txt` (adds `numpy`,
+  `onnxruntime`, `tokenizers`), then `python tools/fetch_embedding_model.py`,
+  which downloads the two model files (about 90 MB) from Hugging Face into
+  `embedding-model/all-MiniLM-L6-v2` beside GREMLIN.db, checks each against its
+  SHA-256, and then checks GREMLIN loads it. A server that cannot reach Hugging
+  Face takes the folder from a machine that can: `--from-dir <copied folder>`.
+  `--check` says whether GREMLIN will find and load it. GREMLIN picks it up on
+  its next start.
+* *Settings* (environment or `.env`): `GREMLIN_EMBEDDINGS=off` turns it off;
+  `GREMLIN_EMBEDDING_MODEL_DIR` and `GREMLIN_EMBEDDING_CACHE_PATH` move the model
+  and the cache. Without the packages or the model, the helper matches by words
+  alone, as before, and the helper bar says why.
+
+**Keeping it fast.** The index is built once per change to the work orders'
+text or the code lists (`COUNT`, `MAX(mapped_record_id)` and `MAX(mapped_at)`,
+answered from `idx_mapped_cmms_mapped_at`), and the decisions are re-read on
+each change to GREMLIN.db, one narrow query. On a 43,000-work-order synthetic
+plant, by words alone, the index builds in about 4 s, a suggestion takes about
+12 ms, the calibration about 4 s, and the process holds about 120 MB.
+With meaning matching on, the first reading of all 43,000 work orders took
+about 5 minutes on a 4-core machine (in the background, with half the cores);
+after that a restart reads the 46 MB vector cache in about 5 s, a suggestion
+takes about 17 ms, the accuracy report (replayed twice, with and without
+meaning) about 11 s, and the process peaks at about 450 MB.
 
 ## Decisions the spec left open
 

@@ -9,6 +9,12 @@
  * records can be dispositioned offline in a workbook (Download Excel / Upload
  * Excel), which holds what the list shows, and the code lists the dropdowns
  * offer are edited here too.
+ *
+ * The Auto-disposition switch turns on the disposition helper
+ * (services/disposition_helper.py): each work order opened is read and filled in
+ * where the helper is sure enough, for the engineer to check and save. From the
+ * same bar it can disposition the list's backlog on its own, as one run that can
+ * be undone, and report how often it agrees with the team.
  */
 (function () {
   "use strict";
@@ -33,7 +39,13 @@
     form: null,
     token: 0,
     historyToken: 0,
+    // The disposition helper: whether it is on (this browser remembers), and the
+    // suggestions already read for the list on screen.
+    helperOn: false,
+    helperToken: 0,
+    suggestions: new Map(),
   };
+  const HELPER_KEY = "gremlin.disposition.helper";
 
   const rows = () => (state.data && state.data.rows) || [];
   const currentRow = () => rows().find((row) => row.mapped_record_id === state.selectedId) || null;
@@ -78,6 +90,7 @@
       clearBanner();
       state.data = data;
       state.options = data.options;
+      state.suggestions.clear();
       state.page = data.page_index;
       $("disp-workspace").hidden = false;
       renderTable();
@@ -99,7 +112,8 @@
     const counts = data.counts || {};
     $("disp-list-summary").textContent =
       `${counts.all || 0} work orders on ${data.asset_label || state.asset}: ${counts.not_reviewed || 0} not reviewed, ` +
-      `${counts.migrated || 0} migrated from the REL categories and still to confirm.`;
+      `${counts.migrated || 0} migrated from the REL categories and still to confirm` +
+      (counts.auto ? `, ${counts.auto} auto-dispositioned and still to confirm.` : ".");
     const filtered = hasFilters();
     $("disp-filter-status").hidden = !filtered;
     $("disp-filter-text").textContent = filtered
@@ -380,6 +394,378 @@
     body.innerHTML = "";
     body.appendChild(state.form.node);
     loadHistory(row.mapped_record_id, state.form);
+    if (state.helperOn) loadSuggestion(row, state.form);
+  }
+
+  // ---- the disposition helper ----------------------------------------------------
+  // The helper's read of one work order, filled into its form when it is still
+  // the one open. Read once per list: a save or a reload reads again.
+  async function loadSuggestion(row, form) {
+    const token = ++state.helperToken;
+    const cached = state.suggestions.get(row.mapped_record_id);
+    if (cached) {
+      form.setSuggestion(cached, { prefill: true });
+      return;
+    }
+    form.setHelperLoading();
+    try {
+      const suggestion = await getJson(`${API}/dispositions/suggest?mapped_record_id=${row.mapped_record_id}`);
+      state.suggestions.set(row.mapped_record_id, suggestion);
+      if (token === state.helperToken && state.form === form) form.setSuggestion(suggestion, { prefill: true });
+    } catch (err) {
+      if (token === state.helperToken && state.form === form) form.setHelperError(err.message);
+    }
+  }
+
+  function renderHelperStatus() {
+    $("disp-helper-toggle").checked = state.helperOn;
+    $("disp-helper-status").textContent = state.helperOn
+      ? "On. Each work order you open is read and filled in where the helper is at least 50% sure; the % beside a " +
+        "field is how sure it is. Check the fields, then save: nothing is saved until you do."
+      : "Off. Turn it on and the disposition helper reads each work order you open and fills in its disposition " +
+        "from the code lists, for you to check and save.";
+  }
+
+  // Whether meaning matching is on, and how far it has read the work orders;
+  // asked again every 15 s while it is still reading them.
+  let meaningTimer = null;
+  async function loadHelperStatus() {
+    clearTimeout(meaningTimer);
+    const line = $("disp-helper-meaning");
+    if (!state.helperOn) {
+      line.hidden = true;
+      return;
+    }
+    try {
+      const status = await getJson(`${API}/disposition-helper/status`);
+      const meaning = status.meaning || {};
+      line.hidden = false;
+      line.textContent = meaningText(meaning);
+      if (meaning.enabled && !meaning.complete && !meaning.error) meaningTimer = setTimeout(loadHelperStatus, 15000);
+    } catch (err) {
+      line.hidden = true;
+    }
+  }
+
+  function meaningText(meaning) {
+    if (!meaning.enabled) return `Meaning matching is off, so work orders are matched by their words: ${meaning.reason || "not set up."}`;
+    if (meaning.error) return `Meaning matching stopped reading the work orders (${meaning.error}); the rest are matched by their words.`;
+    if (!meaning.complete) {
+      return `Meaning matching (${meaning.model}) is reading the work orders: ${(meaning.done || 0).toLocaleString()} of ` +
+        `${(meaning.total || 0).toLocaleString()} so far. The rest are matched by their words until it has.`;
+    }
+    return `Meaning matching is on (${meaning.model}): work orders that say the same thing in other words are found too.`;
+  }
+
+  function setHelper(on) {
+    state.helperOn = on;
+    try {
+      window.localStorage.setItem(HELPER_KEY, on ? "on" : "off");
+    } catch (err) {
+      /* remembered for this visit only */
+    }
+    renderHelperStatus();
+    loadHelperStatus();
+    const row = currentRow();
+    if (!state.form || !row) return;
+    if (on) loadSuggestion(row, state.form);
+    else state.form.clearSuggestion();
+  }
+
+  const helperState = { preview: null, busy: false };
+
+  function helperRequest() {
+    return {
+      asset: state.asset,
+      search: state.search,
+      filters: state.filters,
+      min_confidence: Number($("disp-helper-threshold").value) / 100,
+    };
+  }
+
+  function openHelperDialog() {
+    if (!state.asset) {
+      showBanner("Select an Asset Number first.", "error");
+      return;
+    }
+    helperState.preview = null;
+    $("disp-helper-preview-body").innerHTML = "";
+    $("disp-helper-preview-body").appendChild(el("p", {
+      class: "lda-hint",
+      text: "Preview shows what a run would do, work order by work order, before anything is saved.",
+    }));
+    $("disp-helper-apply").disabled = true;
+    $("disp-helper-apply").textContent = "Auto-disposition";
+    openDialog($("disp-helper-dialog"));
+    loadRuns();
+  }
+
+  const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
+  const CATEGORY_LABELS = {
+    FAILURE: "failures", PM_RESET: "PM resets", EXTERNAL: "external", NON_FAILURE: "non-failures",
+  };
+
+  async function previewBatch() {
+    if (helperState.busy) return;
+    helperState.busy = true;
+    const body = $("disp-helper-preview-body");
+    const end = busy(body, "Reading the backlog…");
+    $("disp-helper-apply").disabled = true;
+    try {
+      const data = await postJson(`${API}/disposition-helper/preview`, helperRequest());
+      helperState.preview = data;
+      renderPreview(data);
+    } catch (err) {
+      body.innerHTML = "";
+      if (!err.toastShown) body.appendChild(el("div", { class: "lda-banner is-error", role: "alert", text: err.message }));
+    } finally {
+      end();
+      helperState.busy = false;
+    }
+  }
+
+  function renderPreview(data) {
+    const body = $("disp-helper-preview-body");
+    body.innerHTML = "";
+    const by = Object.entries(data.by_category || {})
+      .map(([code, count]) => `${count} ${CATEGORY_LABELS[code] || code}`).join(", ");
+    body.appendChild(el("p", { class: "std-helper-preview-summary" }, [
+      el("strong", { text: `${data.would_apply} of ${data.considered}` }),
+      ` not-reviewed work order${data.considered === 1 ? "" : "s"} reach ${pct(data.threshold)}` + (by ? `: ${by}.` : "."),
+      data.limited ? ` Only the newest ${data.considered} of ${data.backlog_total} are read in one run; run it again for the rest.` : "",
+    ]));
+    if (!data.calibrated) {
+      body.appendChild(el("div", {
+        class: "lda-banner is-error",
+        role: "alert",
+        text: "The helper has not yet measured itself on enough work orders dispositioned by engineers, so it may " +
+          "not disposition on its own. Use the Auto-disposition switch to have it suggest instead.",
+      }));
+    }
+    // How sure it is across the backlog.
+    const most = Math.max(1, ...data.histogram.map((band) => band.count));
+    body.appendChild(el("div", { class: "std-helper-histogram", role: "img", "aria-label": "How sure the helper is across the backlog" },
+      data.histogram.map((band) => el("div", {
+        class: "std-helper-bar-col" + (band.from >= data.threshold || (band.to > data.threshold && band.from < data.threshold) ? " is-applied" : ""),
+        title: `${band.count} work order${band.count === 1 ? "" : "s"} ${pct(band.from)}–${pct(band.to)} sure`,
+      }, [
+        el("span", { class: "std-helper-bar-count", text: String(band.count) }),
+        el("span", { class: "std-helper-bar-fill", style: `height:${Math.round((band.count / most) * 100)}%` }),
+        el("span", { class: "std-helper-bar-label", text: `${pct(band.from)}+` }),
+      ]))));
+    const table = el("table", { class: "lda-table std-helper-table" }, [
+      el("thead", {}, [el("tr", {}, ["Task", "Work order", "Category", "Sub-asset", "Comp.", "Mech.", "Mode", "Action", "Sure", "Least sure of"]
+        .map((label) => el("th", { scope: "col", text: label })))]),
+      el("tbody", {}, data.rows.slice(0, 300).map((row) => el("tr", { class: row.will_apply ? "is-applied" : "is-skipped" }, [
+        el("td", { class: "std-nowrap", text: String(row.task_id ?? "") }),
+        el("td", { class: "std-title", text: row.title }),
+        el("td", {}, row.disposition_category ? Form.categoryChip(row.disposition_category) : []),
+        el("td", { text: row.sub_asset_name || "" }),
+        el("td", { text: row.component_code || "" }),
+        el("td", { text: row.failure_mechanism_code || "" }),
+        el("td", { text: row.failure_mode_code || "" }),
+        el("td", { text: row.action_code || "" }),
+        el("td", { class: "std-nowrap" }, [el("span", { class: `std-helper-chip ${row.confidence >= 0.8 ? "is-high" : row.confidence >= 0.5 ? "is-mid" : "is-low"}`, text: pct(row.confidence) })]),
+        el("td", { class: "std-nowrap", text: row.possible_duplicate ? "possible duplicate" : `${row.weakest.label} ${pct(row.weakest.confidence)}` }),
+      ]))),
+    ]);
+    body.appendChild(el("div", { class: "lda-table-scroll std-helper-table-scroll" }, [table]));
+    if (data.rows.length > 300) body.appendChild(el("p", { class: "lda-hint", text: `The first 300 of ${data.rows.length} are listed.` }));
+    const apply = $("disp-helper-apply");
+    apply.disabled = !data.calibrated || !data.would_apply || !G.CAN_EDIT;
+    apply.textContent = `Auto-disposition ${data.would_apply} work order${data.would_apply === 1 ? "" : "s"}`;
+  }
+
+  async function applyBatch() {
+    const preview = helperState.preview;
+    if (!preview || helperState.busy) return;
+    if (!window.confirm(
+      `Save ${preview.would_apply} disposition${preview.would_apply === 1 ? "" : "s"} marked Auto, each for an ` +
+      "engineer to confirm? The run can be undone from this dialog."
+    )) return;
+    if (!confirmDiscard()) return;
+    helperState.busy = true;
+    beginLoading("Auto-dispositioning…");
+    try {
+      const result = await postJson(`${API}/disposition-helper/apply`, helperRequest());
+      const skipped = (result.skipped || []).length;
+      showToast(
+        `Auto-dispositioned ${result.applied} work order${result.applied === 1 ? "" : "s"}` +
+          (skipped ? `; ${skipped} left as they were.` : ".") + " Show “Auto-dispositioned” to confirm them.",
+        "success"
+      );
+      const body = $("disp-helper-preview-body");
+      body.innerHTML = "";
+      body.appendChild(el("div", { class: "lda-banner is-success", role: "status" }, [
+        `Saved ${result.applied} disposition${result.applied === 1 ? "" : "s"} marked Auto.`,
+        ...(result.skipped || []).slice(0, 10).map((item) => el("div", { class: "lda-hint", text: `Task ${item.task_id ?? item.mapped_record_id}: ${item.reason}` })),
+      ]));
+      $("disp-helper-apply").disabled = true;
+      helperState.preview = null;
+      state.form = null;
+      await load(state.selectedId);
+      loadRuns();
+    } catch (err) {
+      if (!err.toastShown) showToast(err.message, "error");
+    } finally {
+      endLoading();
+      helperState.busy = false;
+    }
+  }
+
+  async function loadRuns() {
+    const target = $("disp-helper-runs");
+    target.innerHTML = "";
+    if (!state.asset) return;
+    const end = busy(target, "Loading earlier runs…");
+    try {
+      const data = await getJson(`${API}/disposition-helper/runs?asset=${encodeURIComponent(state.asset)}`);
+      target.innerHTML = "";
+      if (!data.runs.length) {
+        target.appendChild(el("p", { class: "lda-hint", text: "No runs on this asset yet." }));
+        return;
+      }
+      target.appendChild(el("ul", { class: "std-helper-runs" }, data.runs.map((run) => el("li", {}, [
+        el("span", {}, [
+          el("strong", { text: `${day(run.run_at)} ${run.run_by || ""}`.trim() }),
+          ` · ${run.applied} saved at ${pct(run.min_confidence)} or more` +
+            (run.undone_at ? ` · undone ${day(run.undone_at)}${run.undone_by ? ` by ${run.undone_by}` : ""}` : ` · ${run.still_auto} still to confirm`),
+        ]),
+        !run.undone_at && run.still_auto && G.CAN_EDIT ? el("button", {
+          type: "button",
+          class: "btn-secondary",
+          text: "Undo",
+          title: "Put back the disposition each work order had before this run. Work orders an engineer has saved since keep theirs.",
+          onclick: () => undoRun(run),
+        }) : null,
+      ]))));
+    } catch (err) {
+      target.innerHTML = "";
+      target.appendChild(el("p", { class: "lda-hint", text: err.message }));
+    } finally {
+      end();
+    }
+  }
+
+  async function undoRun(run) {
+    if (!window.confirm(
+      `Undo the run of ${day(run.run_at)}? Its ${run.still_auto} unconfirmed disposition${run.still_auto === 1 ? "" : "s"} ` +
+      "go back to what they were before; any an engineer has saved since are kept."
+    )) return;
+    if (!confirmDiscard()) return;
+    beginLoading("Undoing the run…");
+    try {
+      const result = await postJson(`${API}/disposition-helper/undo`, { helper_run_id: run.helper_run_id });
+      showToast(
+        `Undid ${result.undone} disposition${result.undone === 1 ? "" : "s"}` +
+          (result.kept ? `; ${result.kept} confirmed since were kept.` : "."),
+        "success"
+      );
+      state.form = null;
+      await load(state.selectedId);
+      loadRuns();
+    } catch (err) {
+      if (!err.toastShown) showToast(err.message, "error");
+    } finally {
+      endLoading();
+    }
+  }
+
+  async function openAccuracy() {
+    openDialog($("disp-helper-accuracy-dialog"));
+    const body = $("disp-helper-accuracy-body");
+    body.innerHTML = "";
+    const end = busy(body, "Replaying dispositioned work orders…");
+    try {
+      const query = state.asset ? `?asset=${encodeURIComponent(state.asset)}` : "";
+      renderAccuracy(await getJson(`${API}/disposition-helper/accuracy${query}`));
+    } catch (err) {
+      body.innerHTML = "";
+      body.appendChild(el("p", { class: "lda-hint", text: err.message }));
+    } finally {
+      end();
+    }
+  }
+
+  function renderAccuracy(data) {
+    const body = $("disp-helper-accuracy-body");
+    body.innerHTML = "";
+    const where = data.asset_number ? `on ${data.asset_number}` : "across the plant";
+    if (!data.replayed) {
+      body.appendChild(el("p", {
+        class: "lda-hint",
+        text: `No work orders ${where} have been dispositioned by an engineer yet, so there is nothing to measure the helper against.`,
+      }));
+    } else {
+      body.appendChild(el("p", {}, [
+        `Replayed ${data.replayed} work order${data.replayed === 1 ? "" : "s"} ${where} that engineers dispositioned; ` +
+          `the helper learns from every decision engineers have made (${data.learnt_from}).`,
+        data.enough ? "" : " That is too few to say much yet: the figures will steady as more are dispositioned.",
+      ]));
+      if (data.meaning) body.appendChild(el("p", { class: "lda-hint", text: meaningText(data.meaning) }));
+      const head = ["", "Right overall", ...data.thresholds.map((t) => `At ${pct(t.threshold)}+`)];
+      body.appendChild(el("h3", { class: "std-helper-subhead", text: "Whole dispositions" }));
+      body.appendChild(el("p", { class: "lda-hint", text: "How many work orders a batch run at each setting would disposition, and how many of those it gets entirely right (every field)." }));
+      // With meaning matching on, the same work orders matched by their words
+      // alone sit beside each figure: what the model adds on this plant's records.
+      const plain = data.without_meaning;
+      const plainAt = (threshold) => (plain ? plain.thresholds.find((t) => t.threshold === threshold) : null);
+      const plainCell = (value) => el("td", { class: "std-helper-plain", text: value === null || value === undefined ? "—" : value });
+      body.appendChild(el("div", { class: "lda-table-scroll" }, [el("table", { class: "lda-table std-helper-table" }, [
+        el("thead", {}, [el("tr", {}, [
+          "At least", "Would disposition", "Entirely right", "Category right",
+          ...(plain ? ["Words only: would disposition", "Words only: entirely right"] : []),
+        ].map((t) => el("th", { scope: "col", text: t })))]),
+        el("tbody", {}, data.thresholds.map((t) => el("tr", {}, [
+          el("td", { text: pct(t.threshold) }),
+          el("td", { text: `${t.count} (${pct(t.coverage)})` }),
+          el("td", { text: t.accuracy === null ? "—" : pct(t.accuracy) }),
+          el("td", { text: t.category_right === null ? "—" : pct(t.category_right) }),
+          ...(plain ? [
+            plainCell(plainAt(t.threshold) ? `${plainAt(t.threshold).count} (${pct(plainAt(t.threshold).coverage)})` : null),
+            plainCell(plainAt(t.threshold) && plainAt(t.threshold).accuracy !== null ? pct(plainAt(t.threshold).accuracy) : null),
+          ] : []),
+        ]))),
+      ])]));
+      body.appendChild(el("h3", { class: "std-helper-subhead", text: "Field by field" }));
+      body.appendChild(el("p", { class: "lda-hint", text: "Right overall, then, at each confidence, how often it is that sure and how often it is then right." }));
+      const plainField = (field) => (plain ? plain.fields.find((f) => f.field === field) : null);
+      body.appendChild(el("div", { class: "lda-table-scroll" }, [el("table", { class: "lda-table std-helper-table" }, [
+        el("thead", {}, [el("tr", {}, [...head.slice(0, 2), ...(plain ? ["Words only"] : []), ...head.slice(2)]
+          .map((t) => el("th", { scope: "col", text: t })))]),
+        el("tbody", {}, data.fields.map((f) => el("tr", {}, [
+          el("th", { scope: "row", text: f.label }),
+          el("td", { text: pct(f.accuracy) }),
+          ...(plain ? [plainCell(plainField(f.field) ? pct(plainField(f.field).accuracy) : null)] : []),
+          ...f.at.map((a) => el("td", { title: `${a.count} of ${f.judged} this sure` }, [
+            a.accuracy === null ? "—" : `${pct(a.accuracy)} `,
+            el("span", { class: "lda-hint", text: `of ${pct(a.coverage)}` }),
+          ])),
+        ]))),
+      ])]));
+      if (data.mistakes.length) {
+        body.appendChild(el("h3", { class: "std-helper-subhead", text: "Its commonest mistakes" }));
+        body.appendChild(el("ul", { class: "std-helper-mistakes" }, data.mistakes.map((m) => el("li", {
+          text: `${m.label}: suggested ${m.suggested} where the engineer chose ${m.decided} (${m.count}×)`,
+        }))));
+      }
+    }
+    const use = data.in_use;
+    body.appendChild(el("h3", { class: "std-helper-subhead", text: "In use" }));
+    const kept = use.kept.filter((k) => k.of);
+    body.appendChild(el("p", {}, [
+      use.assisted_saves
+        ? `${use.assisted_saves} work order${use.assisted_saves === 1 ? " was" : "s were"} saved with a suggestion open. Kept as suggested: ` +
+          kept.map((k) => `${k.label.toLowerCase()} ${pct(k.rate)}`).join(", ") + "."
+        : "No work order has been saved with a suggestion open yet.",
+      " ",
+      use.auto_reviewed
+        ? `Of ${use.auto_reviewed} auto-disposition${use.auto_reviewed === 1 ? "" : "s"} an engineer has since saved, ` +
+          `${use.auto_confirmed_unchanged} were confirmed unchanged` +
+          (use.auto_changed_fields.length ? `; the field most often changed was ${use.auto_changed_fields[0].label.toLowerCase()}.` : ".")
+        : "",
+      use.auto_pending ? ` ${use.auto_pending} auto-disposition${use.auto_pending === 1 ? " is" : "s are"} still to confirm.` : "",
+    ]));
   }
 
   function clearEditor() {
@@ -433,8 +819,11 @@
     const counts = state.data.counts || {};
     const notReviewed = (d) => (d.disposition_category === "NOT_REVIEWED" ? 1 : 0);
     const migrated = (d) => (d.source === "MIGRATION" ? 1 : 0);
+    const auto = (d) => (d.source === "AUTO" ? 1 : 0);
     counts.not_reviewed = Math.max(0, (counts.not_reviewed || 0) + notReviewed(after) - notReviewed(before));
     counts.migrated = Math.max(0, (counts.migrated || 0) + migrated(after) - migrated(before));
+    counts.auto = Math.max(0, (counts.auto || 0) + auto(after) - auto(before));
+    state.suggestions.delete(record.mapped_record_id);
     list[index] = record;
     return true;
   }
@@ -955,10 +1344,11 @@
     {
       target: "#disp-scope-field",
       title: "Which work orders",
-      body: "Every work order, only those nobody has reviewed yet, or those carried over from the REL categories that still need confirming.",
+      body: "Every work order, only those nobody has reviewed yet, those carried over from the REL categories that still need confirming, or those the disposition helper dispositioned on its own.",
       points: [
         ["Not reviewed", "the backlog: nothing has been decided about these."],
         ["Migrated", "a REL disposition was carried over with a review flag saying what to check."],
+        ["Auto-dispositioned", "saved by the helper's batch run; open one and save it to confirm it."],
       ],
     },
     {
@@ -1029,6 +1419,18 @@
         "offline, and upload it. Only the rows you changed are saved, and one refused row saves none.",
     },
     {
+      target: "#disp-helper-bar",
+      title: "Auto-disposition",
+      body:
+        "Turn the switch on and the disposition helper reads each work order you open -- its words, and the work " +
+        "orders the team has already dispositioned that read most like it -- and fills in the fields it is sure " +
+        "enough of. The % beside a field is how sure it is; nothing is saved until you save.",
+      points: [
+        ["Auto-disposition the backlog", "saves the not-reviewed work orders it is very sure of, marked Auto, as one run you can undo."],
+        ["How accurate is it?", "replays work orders the team has decided and shows how often it agrees."],
+      ],
+    },
+    {
       target: "#disp-code-lists-btn",
       title: "Code lists",
       body:
@@ -1078,7 +1480,7 @@
     const params = new URLSearchParams(window.location.search);
     combobox.load().then(() => {
       const scope = (params.get("scope") || "").trim();
-      if (["all", "not_reviewed", "migrated"].includes(scope)) {
+      if (["all", "not_reviewed", "migrated", "auto"].includes(scope)) {
         $("disp-scope").value = scope;
         state.scope = scope;
       }
@@ -1159,6 +1561,32 @@
       if (codeState.lists) openCodeForm(NEW_CODE);
     });
     $("disposition-tour-btn").addEventListener("click", startTour);
+    try {
+      state.helperOn = window.localStorage.getItem(HELPER_KEY) === "on";
+    } catch (err) {
+      state.helperOn = false;
+    }
+    renderHelperStatus();
+    loadHelperStatus();
+    $("disp-helper-toggle").addEventListener("change", (event) => setHelper(event.target.checked));
+    $("disp-helper-batch").hidden = !G.CAN_EDIT;
+    $("disp-helper-batch").addEventListener("click", openHelperDialog);
+    $("disp-helper-accuracy").addEventListener("click", openAccuracy);
+    $("disp-helper-close").addEventListener("click", () => $("disp-helper-dialog").close());
+    $("disp-helper-accuracy-close").addEventListener("click", () => $("disp-helper-accuracy-dialog").close());
+    $("disp-helper-threshold").addEventListener("input", (event) => {
+      $("disp-helper-threshold-out").textContent = `${event.target.value}%`;
+      // A preview was for the old setting.
+      if (helperState.preview) {
+        helperState.preview = null;
+        $("disp-helper-apply").disabled = true;
+        $("disp-helper-apply").textContent = "Auto-disposition";
+        $("disp-helper-preview-body").innerHTML = "";
+        $("disp-helper-preview-body").appendChild(el("p", { class: "lda-hint", text: "Preview again for the new setting." }));
+      }
+    });
+    $("disp-helper-preview").addEventListener("click", previewBatch);
+    $("disp-helper-apply").addEventListener("click", applyBatch);
     window.addEventListener("beforeunload", (event) => {
       if (isDirty()) {
         event.preventDefault();

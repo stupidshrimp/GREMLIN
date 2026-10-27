@@ -309,7 +309,7 @@ class DispositionEditorTests(StandardDispositionFixture):
         self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")
         self.std.save_dispositions([{"mapped_record_id": 1, **coded()}])
         page = self.std.disposition_page(PFS)
-        self.assertEqual(page["counts"], {"all": 2, "not_reviewed": 1, "migrated": 0})
+        self.assertEqual(page["counts"], {"all": 2, "not_reviewed": 1, "migrated": 0, "auto": 0})
         self.assertEqual([row["mapped_record_id"] for row in page["rows"]], [2, 1])
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, scope="not_reviewed")["rows"]], [2])
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, search="belt")["rows"]], [2])

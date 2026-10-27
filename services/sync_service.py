@@ -203,6 +203,12 @@ APP_ENV_KEYS = frozenset({
     # Without it here, a deployment that sets the documented override in .env
     # would be ignored and fall back to the path beside GREMLIN.db.
     "GREMLIN_PM_CALENDAR_DB_PATH",
+    # The disposition helper's meaning matching: whether it is on, where its
+    # model is, and where the vectors it reads are kept. Read when the helper
+    # builds its index, and owned by the web app alone.
+    "GREMLIN_EMBEDDINGS",
+    "GREMLIN_EMBEDDING_MODEL_DIR",
+    "GREMLIN_EMBEDDING_CACHE_PATH",
 })
 
 

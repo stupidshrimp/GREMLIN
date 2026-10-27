@@ -15,6 +15,11 @@
  *   const form = GremlinDispositionForm.create({ row, options, onSave, onSaveNext });
  *   container.appendChild(form.node);
  *
+ * With the disposition helper on, the page hands the form a suggestion
+ * (form.setSuggestion): a work order nobody has decided is filled in from it,
+ * field by field where the helper is sure enough, each field shows how sure it
+ * is, and a panel above the fields says why. Nothing is saved until Save.
+ *
  * Exposed as window.GremlinDispositionForm; needs standard_common.js first.
  */
 (function () {
@@ -45,8 +50,28 @@
   function categoryChip(category, source) {
     const chips = [el("span", { class: `std-chip ${CATEGORY_CHIP[category] || ""}`, text: category || "NOT_REVIEWED" })];
     if (source === "MIGRATION") chips.push(" ", el("span", { class: "std-chip is-migrated", text: "Migrated" }));
+    if (source === "AUTO") {
+      chips.push(" ", el("span", {
+        class: "std-chip is-auto",
+        text: "Auto",
+        title: "Dispositioned by the disposition helper; not yet confirmed by an engineer.",
+      }));
+    }
     return chips;
   }
+
+  // A confidence as the helper's chips show it, and the band that colours it.
+  const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
+  const band = (value) => (value >= 0.8 ? "is-high" : value >= 0.5 ? "is-mid" : "is-low");
+  // The fields the helper suggests, as the form names them.
+  const HELPER_FIELDS = {
+    disposition_category: "Category",
+    sub_asset: "Sub-asset",
+    component_code: "Component",
+    failure_mechanism_code: "Failure mechanism",
+    failure_mode_code: "Failure mode",
+    action_code: "Action",
+  };
 
   function draftOf(row) {
     const d = row.disposition;
@@ -90,6 +115,11 @@
     let saved = draftOf(row);
     let error = null;
     let historyEntries = history || null;
+    // The disposition helper's suggestion for this work order, when the page
+    // asked for one: "loading", the suggestion, or an error message.
+    let helper = { status: "off", suggestion: null, error: null };
+    // The fields filled in from the suggestion, to mark them until changed.
+    const filled = new Set();
     const node = el("div", { class: "std-form-wrap" });
 
     const codes = (list) => (options && options.code_lists && options.code_lists[list]) || [];
@@ -203,18 +233,267 @@
       return select;
     }
 
-    function field(name, labelText, control, { required, hint, wide, fieldId } = {}) {
-      return el("div", { class: "lda-field" + (wide ? " std-wide" : ""), id: fieldId || null }, [
-        el("label", { for: id(name) }, [labelText, required ? el("span", { class: "std-required", text: "*", title: "Required for this category" }) : null]),
+    function field(name, labelText, control, { required, hint, wide, fieldId, helperKey } = {}) {
+      return el("div", { class: "lda-field" + (wide ? " std-wide" : "") + (helperKey && isFilled(helperKey) ? " is-helper-filled" : ""), id: fieldId || null }, [
+        el("div", { class: "std-field-head" }, [
+          el("label", { for: id(name) }, [labelText, required ? el("span", { class: "std-required", text: "*", title: "Required for this category" }) : null]),
+          helperKey ? helperChip(helperKey) : null,
+        ]),
         control,
         hint ? el("p", { class: "lda-hint", text: hint }) : null,
       ]);
+    }
+
+    // ---- the disposition helper -------------------------------------------
+    function suggested(key) {
+      const s = helper.suggestion;
+      return s && s.fields && s.fields[key] ? s.fields[key] : null;
+    }
+
+    // Beside a field's label: how sure the helper is of what the field holds,
+    // or, when it holds something else, the helper's value as a button.
+    function helperChip(key) {
+      const f = suggested(key);
+      if (!f || f.value === undefined || (f.value === null && key !== "sub_asset")) return null;
+      const value = f.value || "";
+      const why = [f.name, ...(f.reasons || [])].filter(Boolean).join(" · ");
+      if ((draft[key] || "") === value) {
+        return el("span", {
+          class: `std-helper-chip ${band(f.confidence)}`,
+          title: `Disposition helper: ${pct(f.confidence)} sure. ${why}`,
+          "aria-label": `Disposition helper is ${pct(f.confidence)} sure of this`,
+          text: pct(f.confidence),
+        });
+      }
+      return el("button", {
+        type: "button",
+        class: `std-helper-chip is-offer ${band(f.confidence)}`,
+        title: `Use the disposition helper's suggestion. ${why}`,
+        text: `Helper: ${key === "disposition_category" ? f.name : value || "whole asset"} · ${pct(f.confidence)}`,
+        onclick: () => useSuggested(key),
+      });
+    }
+
+    // Whether a field still holds what the helper filled it with.
+    const isFilled = (key) => {
+      const f = suggested(key);
+      return filled.has(key) && Boolean(f) && (draft[key] || "") === (f.value || "");
+    };
+
+    function useSuggested(key) {
+      const f = suggested(key);
+      if (!f) return;
+      draft[key] = f.value || "";
+      filled.add(key);
+      if (key === "disposition_category") error = null;
+      render();
+    }
+
+    // Fill the form from the suggestion: each empty field the helper is at
+    // least `threshold` sure of (all of them, with `everything`). The category
+    // only replaces NOT_REVIEWED, and the coded fields are filled only when the
+    // category is the one they were read for.
+    function fillFromSuggestion(everything) {
+      const s = helper.suggestion;
+      if (!s) return 0;
+      const threshold = everything ? 0 : s.prefill_confidence;
+      const f = s.fields;
+      let count = 0;
+      const category = f.disposition_category;
+      if (category && category.value && category.confidence >= threshold &&
+          (draft.disposition_category === "NOT_REVIEWED" || (everything && draft.disposition_category !== category.value))) {
+        draft.disposition_category = category.value;
+        filled.add("disposition_category");
+        count += 1;
+      }
+      if (!category || draft.disposition_category !== category.value) return count;
+      if (!isCoded(draft.disposition_category)) return count;
+      const put = (key, value, confidence) => {
+        if (value === null || value === undefined || value === "") return;
+        if (confidence < threshold || (draft[key] && !everything) || draft[key] === value) return;
+        draft[key] = value;
+        filled.add(key);
+        count += 1;
+      };
+      put("sub_asset", f.sub_asset && f.sub_asset.value, f.sub_asset ? f.sub_asset.confidence : 0);
+      ["component_code", "failure_mechanism_code", "failure_mode_code", "action_code"].forEach((key) => {
+        if (f[key]) put(key, f[key].value, f[key].confidence);
+      });
+      if (filled.size && !draft.evidence && f.evidence && f.evidence.value) {
+        draft.evidence = f.evidence.value;
+        filled.add("evidence");
+      }
+      const cause = f.failure_cause_code;
+      if (cause && cause.value && !draft.failure_cause_code && draft.failure_mechanism_code === s.disposition.failure_mechanism_code) {
+        draft.failure_cause_code = cause.value;
+        if (!draft.disposition_note && cause.note) draft.disposition_note = cause.note;
+        filled.add("failure_cause_code");
+      }
+      const renewed = f.renewed_items;
+      if (isRenewing(draft.disposition_category) && draft.disposition_category === "PM_RESET" && !draft.renewed_items.length &&
+          renewed && renewed.value && renewed.value.length) {
+        draft.renewed_items = renewed.value.slice();
+        filled.add("renewed_items");
+      }
+      return count;
+    }
+
+    // Whether a work order is the helper's to fill in: nobody has decided it,
+    // or only the migration or the helper itself has. An engineer's decision is
+    // never filled over; the helper's view of it is only offered.
+    const fillable = () => row.disposition.source !== "ENGINEER" || row.disposition.disposition_category === "NOT_REVIEWED";
+
+    function helperPanel() {
+      if (helper.status === "off") return null;
+      const head = (children) => el("div", { class: "std-helper-head" }, [
+        el("span", { class: "std-helper-title" }, [el("span", { class: "std-helper-icon", "aria-hidden": "true", text: "✦" }), "Disposition helper"]),
+        ...children,
+      ]);
+      if (helper.status === "loading") {
+        return el("section", { class: "std-helper", id: id("helper"), "aria-busy": "true" }, [
+          head([el("span", { class: "lda-hint" }, [el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }), " Reading the work order…"])]),
+        ]);
+      }
+      if (helper.status === "error") {
+        return el("section", { class: "std-helper", id: id("helper") }, [
+          head([el("span", { class: "lda-hint", text: helper.error || "The helper could not read this work order." })]),
+        ]);
+      }
+      const s = helper.suggestion;
+      const f = s.fields;
+      const category = f.disposition_category;
+      const filledCount = filled.size;
+      const summary = filledCount
+        ? `Filled in ${filledCount} field${filledCount === 1 ? "" : "s"} from what it read; check them, then save.`
+        : fillable()
+          ? "Not sure enough to fill anything in; its suggestions are beside each field."
+          : "This work order is already dispositioned; the helper's view is beside each field.";
+      const actions = el("div", { class: "std-helper-actions" }, [
+        filledCount ? el("button", {
+          type: "button",
+          class: "btn-secondary",
+          text: "Clear what it filled",
+          onclick: () => {
+            draft = draftOf(row);
+            filled.clear();
+            error = null;
+            render();
+          },
+        }) : null,
+        el("button", {
+          type: "button",
+          class: "btn-secondary",
+          text: "Use every suggestion",
+          title: "Fill in every field the helper has a suggestion for, however sure it is.",
+          onclick: () => {
+            fillFromSuggestion(true);
+            error = null;
+            render();
+          },
+        }),
+      ]);
+      const blocks = [
+        head([
+          el("span", {
+            class: `std-helper-overall ${band(s.overall_confidence)}`,
+            title: s.calibrated
+              ? "How often the helper's past suggestions this sure matched the engineer's disposition."
+              : "An estimate: the helper has not yet measured itself on enough dispositioned work orders.",
+          }, [
+            el("span", { class: "std-helper-meter", "aria-hidden": "true" }, [
+              el("span", { style: `width:${Math.round(s.overall_confidence * 100)}%` }),
+            ]),
+            `${pct(s.overall_confidence)} sure${s.calibrated ? "" : " (estimate)"}`,
+          ]),
+        ]),
+        el("p", { class: "std-helper-summary", text: `${category && category.value ? `Reads as ${category.name}. ` : ""}${summary}` }),
+        actions,
+      ];
+      (s.possible_duplicates || []).slice(0, 1).forEach((dup) => {
+        blocks.push(el("div", { class: "std-helper-note is-warning" }, [
+          `Task ${dup.task_id} on this asset reads much the same (${pct(dup.similarity)} alike` +
+            (dup.days_apart !== null && dup.days_apart !== undefined ? `, ${dup.days_apart} day${dup.days_apart === 1 ? "" : "s"} apart` : "") +
+            `): “${dup.title}”. `,
+          el("button", {
+            type: "button",
+            class: "std-link-btn",
+            text: `Mark this one a duplicate of ${dup.task_id}`,
+            onclick: () => {
+              draft.disposition_category = "DUPLICATE_MISFILED";
+              draft.linked_wo = String(dup.task_id);
+              filled.add("disposition_category");
+              error = null;
+              render();
+            },
+          }),
+        ]));
+      });
+      (s.notes || []).filter((note) => !/reads much the same/.test(note)).forEach((note) => {
+        blocks.push(el("p", { class: "std-helper-note", text: note }));
+      });
+      const why = el("details", { class: "std-helper-why" }, [
+        el("summary", { text: "Why these suggestions" }),
+        el("dl", { class: "std-helper-reasons" }, Object.entries(HELPER_FIELDS).flatMap(([key, label]) => {
+          const entry = f[key];
+          if (!entry || entry.value === undefined) return [];
+          const alternatives = (entry.alternatives || []).map((alt) => el("button", {
+            type: "button",
+            class: "std-helper-alt",
+            title: (alt.reasons || []).join(" · ") || null,
+            text: `${alt.name || alt.value || "whole asset"} ${pct(alt.confidence)}`,
+            onclick: () => {
+              draft[key] = alt.value || "";
+              filled.add(key);
+              render();
+            },
+          }));
+          return [
+            el("dt", { text: label }),
+            el("dd", {}, [
+              el("strong", { text: entry.name || "—" }),
+              ` · ${pct(entry.confidence)}`,
+              (entry.reasons || []).length ? el("span", { class: "std-helper-because", text: ` — ${entry.reasons.join("; ")}` }) : null,
+              alternatives.length ? el("span", { class: "std-helper-alts" }, ["Or: ", ...alternatives]) : null,
+            ]),
+          ];
+        })),
+      ]);
+      blocks.push(why);
+      if ((s.similar || []).length) {
+        blocks.push(el("details", { class: "std-helper-why" }, [
+          el("summary", { text: `Similar work orders already dispositioned (${s.similar.length})` }),
+          el("ul", { class: "std-helper-similar" }, s.similar.map((item) => el("li", {}, [
+            el("span", { class: "std-helper-sim", text: pct(item.similarity) }),
+            el("span", { class: "std-helper-sim-task", text: `Task ${item.task_id}` }),
+            el("span", { class: "std-helper-sim-title", text: item.title || "(no title)" }),
+            el("span", {
+              class: "std-helper-sim-codes",
+              text: [
+                item.disposition_category,
+                item.sub_asset_label || (item.same_asset ? null : item.asset_number),
+                item.component_code,
+                item.failure_mechanism_code,
+                item.failure_mode_code,
+                item.action_code,
+              ].filter(Boolean).join(" · "),
+            }),
+            // How it is alike: in its words, and (with meaning matching on) in what it means.
+            item.meaning !== null && item.meaning !== undefined ? el("span", {
+              class: "std-helper-sim-how",
+              text: `alike in wording ${pct(item.wording)} · in meaning ${pct(item.meaning)}`,
+            }) : null,
+          ]))),
+        ]));
+      }
+      return el("section", { class: "std-helper", id: id("helper"), "aria-label": "Disposition helper" }, blocks);
     }
 
     function render() {
       const focused = document.activeElement && node.contains(document.activeElement) ? document.activeElement.id : null;
       node.innerHTML = "";
       node.appendChild(recordText());
+      const panel = helperPanel();
+      if (panel) node.appendChild(panel);
       node.appendChild(renderForm());
       if (focused && document.getElementById(focused)) document.getElementById(focused).focus();
     }
@@ -255,8 +534,14 @@
           },
         }));
       });
-      form.appendChild(el("div", { class: "lda-field std-wide", id: id("category-field") }, [
-        el("span", { class: "lda-field-label", text: "Disposition category" }),
+      form.appendChild(el("div", {
+        class: "lda-field std-wide" + (isFilled("disposition_category") ? " is-helper-filled" : ""),
+        id: id("category-field"),
+      }, [
+        el("div", { class: "std-field-head" }, [
+          el("span", { class: "lda-field-label", text: "Disposition category" }),
+          helperChip("disposition_category"),
+        ]),
         categories,
         info ? el("p", { class: "lda-hint", text: `${info.use_when} Weibull: ${info.weibull_role}` }) : null,
       ]));
@@ -288,8 +573,9 @@
           select.appendChild(el("option", { value: draft.sub_asset, text: `${draft.sub_asset} (no longer under ${row.asset_number})` }));
         }
         select.value = draft.sub_asset || "";
-        select.addEventListener("change", update("sub_asset"));
+        select.addEventListener("change", update("sub_asset", true));
         form.appendChild(field("sub-asset", "Sub-asset", select, {
+          helperKey: "sub_asset",
           hint: "Where it failed; leave at the whole asset when the work order does not say. " +
             ((options && options.sub_asset_note) || ""),
         }));
@@ -304,21 +590,23 @@
           render();
         });
         form.appendChild(field("component", "Component", component, {
-          required: coded, hint: "The item found failed, not the one named in the request title.",
+          helperKey: "component_code", required: coded, hint: "The item found failed, not the one named in the request title.",
         }));
         const mechanism = codeSelect("mechanism", "FAILURE_MECHANISM", draft.failure_mechanism_code);
         mechanism.addEventListener("change", update("failure_mechanism_code", true));
         form.appendChild(field("mechanism", "Failure mechanism", mechanism, {
-          required: coded, hint: "The physical process. UNK rather than a guess.",
+          helperKey: "failure_mechanism_code", required: coded, hint: "The physical process. UNK rather than a guess.",
         }));
         const mode = codeSelect("mode", "FAILURE_MODE", draft.failure_mode_code);
         mode.addEventListener("change", update("failure_mode_code", true));
         form.appendChild(field("mode", "Failure mode", mode, {
-          required: coded, hint: "What the equipment or operator experienced.",
+          helperKey: "failure_mode_code", required: coded, hint: "What the equipment or operator experienced.",
         }));
         const action = codeSelect("action", "ACTION", draft.action_code);
         action.addEventListener("change", update("action_code", true));
-        form.appendChild(field("action", "Action", action, { required: coded, hint: "The most significant work done." }));
+        form.appendChild(field("action", "Action", action, {
+          helperKey: "action_code", required: coded, hint: "The most significant work done.",
+        }));
         const evidence = el("select", { id: id("evidence"), class: "lda-select" }, [
           el("option", { value: "", text: "—" }),
           ...((options && options.evidence) || []).map((option) => el("option", { value: option.code, text: option.label })),
@@ -403,6 +691,7 @@
         onCancel ? el("button", { type: "button", class: "btn-secondary", text: "Cancel", onclick: () => onCancel() }) : null,
         el("button", { type: "button", class: "btn-secondary", text: "Revert", onclick: () => {
           draft = draftOf(row);
+          filled.clear();
           error = null;
           render();
         } }),
@@ -470,6 +759,19 @@
         record_class: blank(draft.record_class),
         disposition_note: blank(draft.disposition_note.trim()),
       };
+      const s = helper.suggestion;
+      if (s) {
+        // What the helper suggested, kept with the save so how often its
+        // suggestions are kept can be measured.
+        base.helper_suggestion = {
+          v: s.helper_version,
+          overall: s.overall_confidence,
+          filled: Array.from(filled),
+          fields: Object.fromEntries(Object.keys(HELPER_FIELDS).filter((key) => s.fields[key]).map((key) => [
+            key, { value: s.fields[key].value, confidence: s.fields[key].confidence },
+          ])),
+        };
+      }
       if (category === "DUPLICATE_MISFILED") return { ...base, linked_wo: blank(draft.linked_wo.trim()) };
       return {
         ...base,
@@ -525,6 +827,38 @@
       focus() {
         const first = node.querySelector(".std-category.is-active") || node.querySelector("select, input");
         if (first) first.focus();
+      },
+      // The disposition helper is reading this work order.
+      setHelperLoading() {
+        helper = { status: "loading", suggestion: null, error: null };
+        render();
+      },
+      setHelperError(message) {
+        helper = { status: "error", suggestion: null, error: message };
+        render();
+      },
+      // The helper's suggestion. With `prefill`, a work order nobody has decided
+      // (and nothing typed into yet) is filled in from it; what it filled counts
+      // as the form's starting point, so leaving it unsaved asks nothing.
+      setSuggestion(suggestion, { prefill } = {}) {
+        const untouched = JSON.stringify(draft) === JSON.stringify(saved);
+        helper = { status: "ready", suggestion, error: null };
+        if (prefill && untouched && fillable() && fillFromSuggestion(false)) {
+          saved = JSON.parse(JSON.stringify(draft));
+        }
+        render();
+      },
+      // The helper turned off: its suggestion goes, and so does what it filled
+      // in, unless something has been typed since.
+      clearSuggestion() {
+        const untouched = JSON.stringify(draft) === JSON.stringify(saved);
+        helper = { status: "off", suggestion: null, error: null };
+        if (untouched && filled.size) {
+          draft = draftOf(row);
+          saved = draftOf(row);
+        }
+        filled.clear();
+        render();
       },
     };
   }

@@ -36,6 +36,7 @@ from services.life_data_service import (
 )
 from services.population_analysis_service import PopulationAnalysisService
 from services.standard_disposition_service import StandardDispositionService
+from services.disposition_helper import DEFAULT_BATCH_CONFIDENCE, DispositionHelper
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
     LIST_LIMIT,
@@ -734,6 +735,12 @@ def _standard_service() -> StandardDispositionService:
     """The work-order disposition standard, over the shared LifeDataService."""
 
     return StandardDispositionService(_service_or_api_error(), asset_hierarchy=_limble_asset_hierarchy)
+
+
+def _disposition_helper() -> DispositionHelper:
+    """The disposition helper, over the disposition standard's service."""
+
+    return DispositionHelper(_standard_service())
 
 
 def _analysis_service() -> PopulationAnalysisService:
@@ -2752,7 +2759,7 @@ def api_download_disposition_excel():
     scope = view["scope"]
     safe_asset = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in asset_number).strip("_") or "asset"
     # In the name, so a backlog workbook is not mistaken for the full record set later.
-    scope_token = {"not_reviewed": "not_reviewed_", "migrated": "to_confirm_"}.get(scope, "")
+    scope_token = {"not_reviewed": "not_reviewed_", "migrated": "to_confirm_", "auto": "auto_to_confirm_"}.get(scope, "")
     _, workbook_bytes = _built_in_temp_file(
         lambda path: service.export_excel(asset_number, path, **view), suffix=".xlsx", prefix=f"{safe_asset}_"
     )
@@ -2782,6 +2789,115 @@ def api_upload_disposition_excel():
         "That file is not a workbook this page can read. Upload the .xlsx you downloaded.",
     )
     return jsonify(outcome)
+
+
+# ---- The disposition helper ---------------------------------------------------
+
+
+@app.route("/life-data-analysis/api/dispositions/suggest")
+@life_data_api
+def api_disposition_suggestion():
+    """What the disposition helper would disposition one work order as, with its reasons and confidences."""
+
+    try:
+        mapped_record_id = int(request.values.get("mapped_record_id") or "")
+    except (TypeError, ValueError):
+        raise LifeDataApiError("mapped_record_id must be an integer.", status_code=400) from None
+    if not -(2**63) <= mapped_record_id < 2**63:
+        raise LifeDataApiError("That record was not found.", status_code=404)
+    try:
+        return jsonify(_disposition_helper().suggest(mapped_record_id))
+    except LookupError as exc:
+        raise LifeDataApiError(str(exc), status_code=404) from None
+
+
+def _helper_batch_request() -> dict:
+    """A batch run's asset, the list's search and column filters, and the confidence it must reach."""
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise LifeDataApiError("Send the batch run as JSON.", status_code=400)
+    asset_number = str(payload.get("asset") or "").strip()
+    if not asset_number:
+        raise LifeDataApiError("Select an Asset Number first.", status_code=400)
+    filters = payload.get("filters") or {}
+    if not isinstance(filters, dict):
+        raise LifeDataApiError("The column filters could not be read. Clear them and try again.", status_code=400)
+    return {
+        "asset_number": asset_number,
+        "search": (str(payload.get("search") or "").strip() or None),
+        "filters": filters,
+        "min_confidence": payload.get("min_confidence", DEFAULT_BATCH_CONFIDENCE),
+    }
+
+
+@app.route("/life-data-analysis/api/disposition-helper/preview", methods=["POST"])
+@life_data_api
+def api_disposition_helper_preview():
+    """What a batch run would save, without saving anything (editors, who are the ones who may run it)."""
+
+    _user, error = _authorised_user("editor")
+    if error:
+        return error
+    batch = _helper_batch_request()
+    return jsonify(_disposition_helper().batch_preview(
+        batch["asset_number"], search=batch["search"], filters=batch["filters"], min_confidence=batch["min_confidence"],
+    ))
+
+
+@app.route("/life-data-analysis/api/disposition-helper/apply", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_disposition_helper_apply():
+    """Disposition the list's not-reviewed work orders the helper is sure enough of, as one run that can be undone."""
+
+    batch = _helper_batch_request()
+    return jsonify(_disposition_helper().batch_apply(
+        batch["asset_number"], search=batch["search"], filters=batch["filters"],
+        min_confidence=batch["min_confidence"], run_by=_username(),
+    ))
+
+
+@app.route("/life-data-analysis/api/disposition-helper/status")
+@life_data_api
+def api_disposition_helper_status():
+    """Whether meaning matching is on (and how far it has read), and whether the helper has measured itself."""
+
+    return jsonify(_disposition_helper().status())
+
+
+@app.route("/life-data-analysis/api/disposition-helper/runs")
+@life_data_api
+def api_disposition_helper_runs():
+    """The asset's batch runs, newest first."""
+
+    return jsonify({"runs": _disposition_helper().runs(_required_asset())})
+
+
+@app.route("/life-data-analysis/api/disposition-helper/undo", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_disposition_helper_undo():
+    """Put back what a batch run saved and nobody has saved over since."""
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        helper_run_id = int(payload.get("helper_run_id"))
+    except (TypeError, ValueError):
+        raise LifeDataApiError("Name the run to undo.", status_code=400) from None
+    try:
+        return jsonify(_disposition_helper().undo_run(helper_run_id, undone_by=_username()))
+    except LookupError as exc:
+        raise LifeDataApiError(str(exc), status_code=404) from None
+
+
+@app.route("/life-data-analysis/api/disposition-helper/accuracy")
+@life_data_api
+def api_disposition_helper_accuracy():
+    """How often the helper agrees with the team: replayed on decided work orders, and in use since."""
+
+    asset_number = (request.values.get("asset") or "").strip() or None
+    return jsonify(_disposition_helper().evaluate(asset_number))
 
 
 @app.route("/life-data-analysis/api/disposition-tour-example")

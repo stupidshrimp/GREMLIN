@@ -52,6 +52,7 @@
     ["dispositioned", "Dispositioned"],
     ["not_reviewed", "Not reviewed yet"],
     ["to_confirm", "Migrated, still to confirm"],
+    ["auto_unconfirmed", "Auto-dispositioned, still to confirm"],
     ["failures", "Failures in the population"],
     ["pm_resets", "PM resets in the population"],
     ["uncoded", "Failures and PM resets with no component"],
@@ -1979,6 +1980,9 @@
     ];
     if (readiness.uncoded) pieces.push(`${readiness.uncoded} failures or PM resets have no component yet and are left out until dispositioned.`);
     if (readiness.not_reviewed) pieces.push(`${readiness.not_reviewed} work orders in reach are not reviewed yet.`);
+    if (readiness.auto_unconfirmed) {
+      pieces.push(`${readiness.auto_unconfirmed} were dispositioned by the disposition helper and are not confirmed yet; a fit that reads any says so.`);
+    }
     hint.textContent = pieces.join(" ");
   }
 

@@ -558,3 +558,216 @@ button.lda-drill-chip:hover { background: var(--forest-100); }
 .lda-record-modal .lda-record-close { position: absolute; top: 0.7rem; right: 0.8rem; }
 .lda-record-modal .std-record-text h3 { padding-right: 2.4rem; }
 .lda-empty-result h2 { margin-top: 0; }
+
+/* ---- The disposition helper --------------------------------------------- */
+/* The bar under Step 1: the Auto-disposition switch, what it is doing, and the
+   backlog run and accuracy report beside it. */
+.std-helper-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  margin-top: 0.9rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-helper-status { flex: 1 1 22rem; margin: 0; font-size: 0.84rem; }
+.std-helper-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.std-switch { position: relative; display: inline-flex; align-items: center; gap: 0.55rem; cursor: pointer; font-weight: 700; color: var(--forest-900); }
+.std-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.std-switch-track {
+  position: relative;
+  flex: none;
+  width: 2.5rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: var(--forest-200);
+  border: 1px solid var(--border);
+  transition: background 150ms ease;
+}
+.std-switch-thumb {
+  position: absolute;
+  top: 0.13rem;
+  left: 0.15rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 150ms ease;
+}
+.std-switch input:checked + .std-switch-track { background: var(--brand-accent); border-color: var(--brand-accent); }
+.std-switch input:checked + .std-switch-track .std-switch-thumb { transform: translateX(1.08rem); }
+.std-switch input:focus-visible + .std-switch-track { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+
+/* How sure the helper is: a chip beside a field's label (its value as a button
+   when the field holds something else), coloured by band. */
+.std-field-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.5rem; }
+.std-helper-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  color: var(--muted);
+}
+.std-helper-chip.is-high { background: var(--success-bg); border-color: var(--success-border); color: var(--success-ink); }
+.std-helper-chip.is-mid { background: var(--warning-tint); border-color: var(--warning-tint); color: var(--warning-ink); }
+.std-helper-chip.is-low { color: var(--muted); }
+button.std-helper-chip.is-offer { cursor: pointer; border-style: dashed; font-weight: 600; }
+button.std-helper-chip.is-offer:hover { border-style: solid; }
+button.std-helper-chip.is-offer:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.std-form .lda-field.is-helper-filled select,
+.std-form .lda-field.is-helper-filled .std-categories { box-shadow: 0 0 0 2px var(--brand-tint-strong); border-radius: 8px; }
+
+/* The panel above the fields: how sure it is overall, what it filled, why. */
+.std-helper {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+  font-size: 0.86rem;
+}
+.std-helper-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.8rem; }
+.std-helper-title { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 700; color: var(--forest-900); }
+.std-helper-icon { color: var(--brand-accent); }
+.std-helper-head .lda-hint { display: inline-flex; align-items: center; gap: 0.35rem; margin: 0; }
+.std-helper-overall { display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.std-helper-overall.is-high { color: var(--success-ink); }
+.std-helper-overall.is-mid { color: var(--warning-ink); }
+.std-helper-overall.is-low { color: var(--muted); }
+.std-helper-meter {
+  display: inline-block;
+  width: 5rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--forest-200);
+  overflow: hidden;
+}
+.std-helper-meter > span { display: block; height: 100%; border-radius: inherit; background: currentColor; }
+.std-helper-summary { margin: 0; color: var(--text); }
+.std-helper-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.std-helper-actions .btn-secondary { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
+.std-helper-note { margin: 0; color: var(--muted); font-size: 0.8rem; }
+.std-helper-note.is-warning {
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  font-size: 0.82rem;
+}
+.std-link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.std-helper-why > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+.std-helper-why[open] > summary { margin-bottom: 0.35rem; }
+.std-helper-reasons { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.3rem 0.8rem; margin: 0; }
+.std-helper-reasons dt { color: var(--muted); font-weight: 600; }
+.std-helper-reasons dd { margin: 0; overflow-wrap: anywhere; }
+.std-helper-because { color: var(--muted); }
+.std-helper-alts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.2rem; color: var(--muted); font-size: 0.78rem; }
+.std-helper-alt {
+  padding: 0.05rem 0.45rem;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.std-helper-alt:hover { border-style: solid; }
+.std-helper-similar { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+.std-helper-similar li {
+  display: grid;
+  grid-template-columns: 3rem auto minmax(0, 1fr);
+  gap: 0.1rem 0.6rem;
+  align-items: baseline;
+}
+.std-helper-sim { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--forest-800); }
+.std-helper-sim-task { color: var(--muted); white-space: nowrap; }
+.std-helper-sim-title { overflow-wrap: anywhere; }
+.std-helper-sim-codes { grid-column: 2 / -1; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+
+.std-chip.is-auto { background: var(--brand-tint); border-color: var(--brand-tint-strong); color: var(--brand-ink); }
+
+/* The backlog run and the accuracy report. */
+.std-helper-dialog { width: min(1040px, calc(100vw - 2rem)); }
+.std-helper-threshold { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin: 0.6rem 0; }
+.std-helper-threshold label { font-weight: 600; color: var(--forest-800); }
+.std-helper-threshold output { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--brand-ink); }
+.std-helper-threshold input[type="range"] { flex: 1 1 12rem; accent-color: var(--brand-accent); }
+.std-helper-preview { position: relative; min-height: 2.5rem; display: grid; gap: 0.6rem; }
+.std-helper-preview-summary { margin: 0; }
+.std-helper-histogram {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.4rem;
+  align-items: end;
+  height: 7rem;
+  padding: 0.3rem 0 0;
+}
+.std-helper-bar-col { display: grid; grid-template-rows: auto 1fr auto; height: 100%; text-align: center; font-size: 0.74rem; color: var(--muted); }
+.std-helper-bar-fill { align-self: end; min-height: 2px; border-radius: 4px 4px 0 0; background: var(--forest-200); }
+.std-helper-bar-col.is-applied .std-helper-bar-fill { background: var(--brand-accent); }
+.std-helper-bar-col.is-applied { color: var(--brand-ink); font-weight: 700; }
+.std-helper-bar-count { font-variant-numeric: tabular-nums; }
+.std-helper-table-scroll { max-height: 22rem; }
+table.std-helper-table { font-size: 0.82rem; }
+table.std-helper-table tr.is-skipped td { color: var(--muted); }
+table.std-helper-table tbody th { text-align: left; font-weight: 600; white-space: nowrap; }
+.std-helper-dialog-actions { display: flex; justify-content: flex-end; margin: 0.8rem 0; }
+.std-helper-subhead { margin: 1rem 0 0.4rem; font-size: 0.95rem; color: var(--forest-900); }
+.std-helper-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.85rem; }
+.std-helper-runs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.std-helper-runs .btn-secondary { padding: 0.25rem 0.7rem; font-size: 0.8rem; }
+.std-helper-mistakes { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.2rem; font-size: 0.85rem; }
+
+@media (max-width: 720px) {
+  .std-helper-bar { align-items: flex-start; }
+  .std-helper-tools { width: 100%; }
+  .std-helper-tools .btn-secondary { flex: 1 1 auto; }
+  .std-helper-reasons { grid-template-columns: 1fr; }
+  .std-helper-similar li { grid-template-columns: 3rem minmax(0, 1fr); }
+  .std-helper-sim-title { grid-column: 2 / -1; }
+  .std-helper-histogram { height: 5.5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .std-switch-track, .std-switch-thumb { transition: none; }
+}
+.std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
+.std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
+table.std-helper-table td.std-helper-plain { color: var(--muted); }

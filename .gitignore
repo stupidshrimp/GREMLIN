@@ -7,3 +7,7 @@ __pycache__/
 .vscode/
 .pytest_cache/
 PM_Calendar_local.db
+# The disposition helper's model and its vector cache (tools/fetch_embedding_model.py).
+embedding-model/
+*.embeddings.db
+*.embeddings.db-journal
