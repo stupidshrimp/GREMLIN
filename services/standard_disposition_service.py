@@ -637,11 +637,13 @@ class StandardDispositionService:
         }
         spelled = {(code_list, code.casefold()): code for code_list, code in existing}
         seen: dict[tuple[str, str], int] = {}
-        uploaded: list[tuple[str, dict[str, Any], bool]] = []
+        uploaded: list[tuple[int, str, dict[str, Any], bool]] = []
         # Every row is checked before any is refused, so one upload names them all.
-        problems: list[str] = []
+        problems: list[tuple[int, str]] = []
         # The failure causes the sheet names, refused rows too: a mechanism whose
         # default cause is on a refused row is refused for that row, not again here.
+        # A cause spelled in other capitals than the saved one is not one, though:
+        # it can never be saved so, and a mechanism naming it so is refused too.
         causes = {code for code_list, code in existing if code_list == std.FAILURE_CAUSE}
         for row_number, values in enumerate(rows[1:], start=2):
             data = {header: values[index] if index < len(values) else None for index, header in enumerate(headers) if header}
@@ -650,28 +652,29 @@ class StandardDispositionService:
                 continue
             list_text, code = cells["code_list"], cells["code"]
             if list_text is None or code is None:
-                problems.append(f"Row {row_number}: give the code's list and the code itself.")
+                problems.append((row_number, f"Row {row_number}: give the code's list and the code itself."))
                 continue
             code_list = lists_by_key.get(list_key(list_text))
             if code_list is None:
-                problems.append(f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}.")
+                problems.append((row_number, f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}."))
                 continue
-            if code_list == std.FAILURE_CAUSE:
-                causes.add(code)
             label = std.CODE_LIST_LABELS[code_list]
             where = f"Row {row_number} ({label} {code})"
             folded = (code_list, code.casefold())
             if folded in seen:
-                problems.append(f"{where}: the code is in the workbook twice, also on row {seen[folded]}.")
+                problems.append((row_number, f"{where}: the code is in the workbook twice, also on row {seen[folded]}."))
                 continue
             seen[folded] = row_number
             stored = spelled.get(folded)
             if stored is not None and stored != code:
-                problems.append(
+                problems.append((
+                    row_number,
                     f"{where}: the {label.lower()} list already has {stored}, which differs only in capitals. "
-                    f"Write it as {stored} to change that code; a code's spelling is its key."
-                )
+                    f"Write it as {stored} to change that code; a code's spelling is its key.",
+                ))
                 continue
+            if code_list == std.FAILURE_CAUSE:
+                causes.add(code)
             before = existing.get((code_list, code))
             item: dict[str, Any] = (
                 self._entry_dict(before) if before is not None else {
@@ -697,41 +700,41 @@ class StandardDispositionService:
                 else:
                     item[column] = cells[column]
             if refused is not None:
-                problems.append(refused)
+                problems.append((row_number, refused))
                 continue
             unordered = item["sort_order"] is None
             try:
                 fields = self._code_fields(item)
             except ValueError as exc:
-                problems.append(f"{where}: {exc}")
+                problems.append((row_number, f"{where}: {exc}"))
                 continue
-            uploaded.append((where, fields, unordered))
+            uploaded.append((row_number, where, fields, unordered))
         if not uploaded and not problems:
             raise ValueError("The workbook has no codes in it. Download the code lists and fill that in.")
 
-        for where, fields, _ in uploaded:
+        for row_number, where, fields, _ in uploaded:
             cause = fields["default_cause_code"]
             if cause is not None and cause not in causes:
-                problems.append(f"{where}: default cause {cause!r} is not in the failure cause list.")
+                problems.append((row_number, f"{where}: default cause {cause!r} is not in the failure cause list."))
         if problems:
             # Sheet order, though the default causes are checked last.
-            problems.sort(key=lambda problem: int(re.match(r"Row (\d+)", problem).group(1)))
-            raise ValueError(_upload_refusal(problems))
+            problems.sort(key=lambda problem: problem[0])
+            raise ValueError(_upload_refusal([message for _, message in problems]))
         # A new code given no sort order goes to the end of its list, in the sheet's order.
         last = {code_list: 0 for code_list in std.CODE_LISTS}
         for (code_list, _), entry in existing.items():
             last[code_list] = max(last[code_list], entry.sort_order)
-        for _, fields, unordered in uploaded:
+        for _, _, fields, unordered in uploaded:
             if not unordered:
                 last[fields["code_list"]] = max(last[fields["code_list"]], fields["sort_order"])
-        for _, fields, unordered in uploaded:
+        for _, _, fields, unordered in uploaded:
             if unordered:
                 last[fields["code_list"]] += 10
                 fields["sort_order"] = last[fields["code_list"]]
 
         added: list[dict[str, Any]] = []
         updated: list[dict[str, Any]] = []
-        for _, fields, _ in uploaded:
+        for _, _, fields, _ in uploaded:
             before = existing.get((fields["code_list"], fields["code"]))
             summary = {
                 "code_list": fields["code_list"],
@@ -746,10 +749,10 @@ class StandardDispositionService:
         if added or updated:
             changed = {(item["code_list"], item["code"]) for item in (*added, *updated)}
             with self.life.write_connection() as conn:
-                for _, fields, _ in uploaded:
+                for _, _, fields, _ in uploaded:
                     if (fields["code_list"], fields["code"]) in changed:
                         self._write_code(conn, fields, updated_by)
-        matched = sum(1 for _, fields, _ in uploaded if (fields["code_list"], fields["code"]) in existing)
+        matched = sum(1 for _, _, fields, _ in uploaded if (fields["code_list"], fields["code"]) in existing)
         return {
             "added": added,
             "updated": updated,

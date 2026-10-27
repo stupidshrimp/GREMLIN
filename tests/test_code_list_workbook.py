@@ -224,6 +224,19 @@ class UploadTests(CodeListWorkbookFixture):
         ])
         self.assertIsNone(self.code("COMPONENT", "Boiler"))
 
+    def test_a_cause_refused_for_its_capitals_is_no_default_cause_either(self):
+        # It can never be saved spelled so, so the mechanism naming it so is refused
+        # in the same upload, not only once the cause row is fixed.
+        rows = [list(CODE_EXCEL_COLUMNS), [None] * len(CODE_EXCEL_COLUMNS), [None] * len(CODE_EXCEL_COLUMNS)]
+        self.fill(rows, code_list="FAILURE_CAUSE", code="exp-wear", name="Wear")
+        self.fill(rows, code_list="FAILURE_MECHANISM", code="CORR", name="Corrosion", default_cause_code="exp-wear")
+        with self.assertRaises(ValueError) as refused:
+            self.upload(rows)
+        lines = str(refused.exception).split("\n")
+        self.assertEqual(lines[0], "2 rows were refused, so nothing was saved:")
+        self.assertIn("(Failure cause exp-wear): the failure cause list already has EXP-WEAR", lines[1])
+        self.assertIn("(Failure mechanism CORR): default cause 'exp-wear' is not in the failure cause list", lines[2])
+
     def test_a_long_list_of_refusals_is_cut_short(self):
         rows = [list(CODE_EXCEL_COLUMNS)]
         for number in range(30):

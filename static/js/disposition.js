@@ -547,7 +547,7 @@
         class: "cl-tab" + (key === codeState.active ? " is-active" : ""),
         title: `${active} active${retired ? `, ${retired} retired` : ""}`,
         onclick: () => {
-          if (key === codeState.active) return;
+          if (key === codeState.active || !mayLeaveCodeForm()) return;
           codeState.active = key;
           closeCodeForm();
           renderCodeLists();
@@ -582,13 +582,14 @@
       columns.push({ label: "ISO ref", className: "cl-meta", cell: (entry) => [entry.iso_ref ? entry.iso_ref : none()] });
     }
     if (listKey === "FAILURE_MECHANISM") {
+      const causeNames = Object.fromEntries(codeCauses().map((cause) => [cause.code, cause.name]));
       columns.push({
         label: "Default cause",
         className: "cl-fit",
         cell: (entry) => {
           if (!entry.default_cause_code) return [none()];
-          const cause = codeCauses().find((item) => item.code === entry.default_cause_code);
-          return [el("span", { class: "cl-chip", title: entry.default_cause_code, text: cause ? cause.name : entry.default_cause_code })];
+          const name = causeNames[entry.default_cause_code];
+          return [el("span", { class: "cl-chip", title: entry.default_cause_code, text: name || entry.default_cause_code })];
         },
       });
     }
@@ -679,7 +680,22 @@
     codeState.form = null;
   }
 
-  function openCodeForm(code) {
+  // Whether the open form may be closed: asked first when it holds changes not saved.
+  function mayLeaveCodeForm() {
+    const open = codeState.form;
+    if (!open || !open.changed()) return true;
+    return window.confirm(`Discard your changes to ${open.label}?`);
+  }
+
+  // Opens one code's form (null closes it). Leaving a form with changes asks
+  // first, except from its own Cancel (`discard`).
+  function openCodeForm(code, { discard = false } = {}) {
+    if (code !== null && code === codeState.editing) {
+      const open = codeState.form && codeState.form.row.querySelector("input:not([readonly])");
+      if (open) open.focus();
+      return;
+    }
+    if (!discard && !mayLeaveCodeForm()) return;
     closeCodeForm();
     codeState.editing = code;
     renderCodeTable();
@@ -827,12 +843,20 @@
       el("div", { class: "cl-form-actions" }, [
         remove,
         el("span", { class: "cl-spacer" }),
-        el("button", { type: "button", class: "btn-secondary", text: "Cancel", onclick: () => openCodeForm(null) }),
+        el("button", { type: "button", class: "btn-secondary", text: "Cancel", onclick: () => openCodeForm(null, { discard: true }) }),
         submit,
       ]),
     ]);
     const row = el("tr", { class: "cl-form-row" }, [el("td", { colspan: String(span) }, [form])]);
-    codeState.form = { key, row };
+    // What the form held when it opened, to tell whether anything was changed since.
+    const snapshot = () => JSON.stringify(Object.values(inputs).map((input) => (input.type === "checkbox" ? input.checked : input.value)));
+    const opened = snapshot();
+    codeState.form = {
+      key,
+      row,
+      label: isNew ? "the new code" : `${list.label.toLowerCase()} ${entry.code}`,
+      changed: () => snapshot() !== opened,
+    };
     return row;
   }
 
@@ -1091,7 +1115,13 @@
     $("disp-excel-help").addEventListener("click", () => openDialog($("lda-excel-help-dialog")));
     $("lda-excel-help-close").addEventListener("click", () => $("lda-excel-help-dialog").close());
     $("disp-code-lists-btn").addEventListener("click", openCodeLists);
-    $("disp-code-close").addEventListener("click", () => $("disp-code-dialog").close());
+    $("disp-code-close").addEventListener("click", () => {
+      if (mayLeaveCodeForm()) $("disp-code-dialog").close();
+    });
+    // Escape closes the dialog too: not over a form's unsaved changes without asking.
+    $("disp-code-dialog").addEventListener("cancel", (event) => {
+      if (!mayLeaveCodeForm()) event.preventDefault();
+    });
     $("disp-code-search").addEventListener("input", (event) => {
       codeState.query = event.target.value;
       if (codeState.lists) renderCodeTable();

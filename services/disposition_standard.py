@@ -1078,7 +1078,7 @@ def build_renewal_intervals(
 
             if effect is None:
                 note(touch, ROLE_NO_EFFECT,
-                     "No effect: an induced failure, counted as a suspension, that did not renew this item."
+                     "No effect: an induced failure, not counted as a failure here, that did not renew this item, so it ends no life."
                      if population.induced_as_suspension(event)
                      else "No effect: a failure of another kind that did not renew this item.")
                 continue
