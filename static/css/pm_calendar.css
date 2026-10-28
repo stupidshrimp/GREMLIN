@@ -1370,3 +1370,169 @@
     animation: none;
   }
 }
+
+/* ---- the manager export dialog ------------------------------------------ */
+/* Taller than the other two dialogs because it is a form rather than a list,
+   and the whole of it has to be reachable without the page behind scrolling. */
+.pm-modal.pm-export {
+  width: min(560px, 100%);
+  gap: 0;
+  overflow-y: auto;
+}
+
+.pm-export-lede {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.pm-export-field {
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.pm-export-field h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The asset list can run long -- a picked parent brings its whole branch --
+   so it scrolls inside the dialog rather than pushing Download off the end. */
+.pm-export-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+.pm-export-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.22rem 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pm-export-check input {
+  margin-top: 0.2rem;
+  flex: 0 0 auto;
+}
+
+.pm-export-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pm-export-preset {
+  padding: 0.32rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pm-export-preset:hover {
+  border-color: var(--forest-500);
+  color: inherit;
+}
+
+.pm-export-preset.is-on {
+  border-color: var(--forest-500);
+  background: var(--surface);
+  color: inherit;
+  font-weight: 600;
+}
+
+.pm-export-preset:focus-visible,
+.pm-export-check input:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
+.pm-export-custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 0.6rem;
+}
+
+/* A `display` rule beats the hidden attribute's own `display: none`, so the
+   two fields that only belong to the custom range need this to stay hidden
+   while a preset is chosen. Same for the frequency block, which is only
+   offered when there is a filter on the page to carry over. */
+.pm-export-custom[hidden],
+.pm-export-field[hidden] {
+  display: none;
+}
+
+.pm-export-custom label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.pm-export-custom input {
+  padding: 0.28rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.pm-export-hint {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.pm-export-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.pm-export-error {
+  margin: 0.8rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid var(--rust-500, #c0392b);
+  background: var(--surface-veil);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.pm-export-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.pm-export-status {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pm-export-preset {
+    transition: none;
+  }
+}

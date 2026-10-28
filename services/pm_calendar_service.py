@@ -1237,6 +1237,21 @@ class PmCalendarService:
         hidden = set(exclude or ())
         return [asset_id for asset_id in self._with_descendants(asset_ids) if asset_id not in hidden]
 
+    def resolve_assets(self, asset_ids: list[str], exclude: list[str] | None = None) -> list[str]:
+        """The public form of `_selection`, for callers outside this service.
+
+        The export has to read `pm_task` directly for a few of its figures,
+        and it must read it for exactly the assets the page would have shown
+        -- picked assets plus their sub-assets, minus anything unticked. That
+        resolution is not something a second service should reimplement, so
+        it is offered here rather than copied there.
+        """
+
+        if not asset_ids:
+            return []
+        self._ensure_schema()
+        return self._selection(asset_ids, exclude)
+
     def events(
         self,
         asset_ids: list[str] | None = None,
@@ -1494,4 +1509,4 @@ class PmCalendarService:
             "completed": completed,
             "overdue": overdue,
             "compliance": compliance,
-        }
+        }

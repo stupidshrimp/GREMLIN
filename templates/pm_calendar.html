@@ -50,6 +50,7 @@
 
     <div class="pm-sync-row">
       <button id="pm-sync-btn" class="btn-secondary" type="button">Sync from Limble</button>
+      <button id="pm-export-btn" class="btn-secondary" type="button" disabled>Export a report</button>
       <button id="pm-tour-btn" class="pm-tour-btn" type="button">Show me around</button>
       <span id="pm-sync-status" class="pm-sync-status" role="status"></span>
     </div>
@@ -209,6 +210,76 @@
 
     <div id="pm-overdue-list" class="pm-day-list">
       <!-- populated by openOverdue() -->
+    </div>
+  </div>
+</div>
+
+{# The manager export. Everything in here starts from what the page is
+   already showing -- the picked assets, the cadence filter -- because the
+   common path is "I am looking at this, send it to someone". Nothing is
+   submitted as a form: the download is fetched so a failure (most likely a
+   machine with no Chromium installed) can be shown in the dialog instead of
+   replacing the page with a JSON error. #}
+<div id="pm-export-modal" class="pm-modal-backdrop">
+  <div class="pm-modal pm-export" role="dialog" aria-modal="true" aria-labelledby="pm-export-heading">
+    <div class="pm-modal-head">
+      <h2 id="pm-export-heading">Export a report</h2>
+      <button id="pm-close-export" class="pm-modal-close" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <p class="pm-export-lede">A plain-language report of when PM was due on this
+      equipment and when it was last completed &mdash; written for someone who does
+      not use this page.</p>
+
+    <div class="pm-export-field">
+      <h3>Equipment</h3>
+      <div id="pm-export-assets" class="pm-export-assets">
+        <!-- filled from the page's own selection by openExport() -->
+      </div>
+    </div>
+
+    <div class="pm-export-field">
+      <h3>Period</h3>
+      <div id="pm-export-presets" class="pm-export-presets">
+        <button type="button" class="pm-export-preset" data-preset="last_6_months">Last 6 months</button>
+        <button type="button" class="pm-export-preset is-on" data-preset="last_12_months">Last 12 months</button>
+        <button type="button" class="pm-export-preset" data-preset="year_to_date">Year to date</button>
+        <button type="button" class="pm-export-preset" data-preset="custom">Custom</button>
+      </div>
+      <div id="pm-export-custom" class="pm-export-custom" hidden>
+        <label>From <input type="month" id="pm-export-from"></label>
+        <label>To <input type="month" id="pm-export-to"></label>
+      </div>
+      <p class="pm-export-hint">Whole months, so the calendars in the report are not cut in half.</p>
+    </div>
+
+    <div class="pm-export-field" id="pm-export-cadence-field" hidden>
+      <h3>Frequency</h3>
+      <label class="pm-export-check">
+        <input type="checkbox" id="pm-export-cadence" checked>
+        <span id="pm-export-cadence-label">Only the frequencies selected on this page</span>
+      </label>
+    </div>
+
+    <div class="pm-export-field">
+      <h3>Format</h3>
+      <div class="pm-export-formats">
+        <label class="pm-export-check">
+          <input type="radio" name="pm-export-format" value="pdf" checked>
+          <span>PDF &mdash; for sending on</span>
+        </label>
+        <label class="pm-export-check">
+          <input type="radio" name="pm-export-format" value="html">
+          <span>Web page &mdash; one file, opens in any browser</span>
+        </label>
+      </div>
+    </div>
+
+    <p id="pm-export-error" class="pm-export-error" hidden></p>
+
+    <div class="pm-export-actions">
+      <span id="pm-export-status" class="pm-export-status" role="status"></span>
+      <button id="pm-export-go" class="btn-secondary" type="button">Download</button>
     </div>
   </div>
 </div>
@@ -580,6 +651,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 // only once assets are picked -- the endpoint needs a
                 // selection, and an empty dialog answers nothing.
                 overdueCard.disabled = !(summary.overdue > 0) || !selectedAssets.length;
+                // The export needs a selection for the same reason, but not
+                // a backlog: a report of equipment with nothing overdue is a
+                // perfectly good thing to send someone.
+                document.getElementById('pm-export-btn').disabled = !selectedAssets.length;
                 document.getElementById('pm-summary-compliance').textContent =
                     (summary.compliance ?? 0) + '%';
             });
@@ -1161,6 +1236,159 @@ document.addEventListener('DOMContentLoaded', function () {
         overdueModal.classList.remove('is-open');
         if (overdueTrigger && document.body.contains(overdueTrigger)) overdueTrigger.focus();
         overdueTrigger = null;
+    }
+
+    // ---- the manager export ------------------------------------------
+    //
+    // The dialog starts from what the page is already showing and lets any
+    // of it be narrowed. Nothing here re-asks the server what is selected:
+    // the page knows, and a dialog that disagreed with the chips above it
+    // would be worse than no dialog.
+
+    const exportModal = document.getElementById('pm-export-modal');
+    const exportAssets = document.getElementById('pm-export-assets');
+    const exportCustom = document.getElementById('pm-export-custom');
+    const exportCadenceField = document.getElementById('pm-export-cadence-field');
+    const exportError = document.getElementById('pm-export-error');
+    const exportStatus = document.getElementById('pm-export-status');
+    const exportGo = document.getElementById('pm-export-go');
+    let exportTrigger = null;
+    let exportPreset = 'last_12_months';
+
+    function monthValue(date) {
+        return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0');
+    }
+
+    function openExport() {
+        if (!selectedAssets.length) return;
+        exportTrigger = document.getElementById('pm-export-btn');
+
+        // One row per picked asset, all ticked. Unticking one drops it from
+        // the report without touching the calendar behind the dialog --
+        // "export a subset of what I am looking at" is a different act from
+        // "stop looking at it".
+        exportAssets.innerHTML = '';
+        selectedAssets.forEach(asset => {
+            const row = document.createElement('label');
+            row.className = 'pm-export-check';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = true;
+            // A chipped asset is {id, number, name, ...}, not the
+            // {asset_id, asset_name} shape the API returns -- addAsset
+            // renames them on the way in.
+            box.value = String(asset.id);
+            const name = document.createElement('span');
+            name.textContent = asset.name || ('Asset ' + asset.id);
+            row.append(box, name);
+            exportAssets.append(row);
+        });
+
+        // Only offered when there is a filter to carry over; a checkbox that
+        // can only mean one thing is a checkbox not worth reading.
+        const filtered = cadenceParam() !== '';
+        exportCadenceField.hidden = !filtered;
+
+        const now = new Date();
+        const from = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+        document.getElementById('pm-export-from').value = monthValue(from);
+        document.getElementById('pm-export-to').value = monthValue(now);
+
+        exportError.hidden = true;
+        exportStatus.textContent = '';
+        exportModal.classList.add('is-open');
+        document.getElementById('pm-close-export').focus();
+    }
+
+    function closeExport() {
+        exportModal.classList.remove('is-open');
+        if (exportTrigger && document.body.contains(exportTrigger)) exportTrigger.focus();
+        exportTrigger = null;
+    }
+
+    function exportFormat() {
+        const picked = document.querySelector('input[name="pm-export-format"]:checked');
+        return picked ? picked.value : 'pdf';
+    }
+
+    function exportQuery() {
+        const assets = [...exportAssets.querySelectorAll('input:checked')].map(box => box.value);
+        if (!assets.length) return null;
+        let query = 'assets=' + encodeURIComponent(assets.join(','));
+        // The page's own sub-asset exclusions travel with it, so a branch
+        // hidden on the calendar is not silently back in the report.
+        query += '&exclude=' + encodeURIComponent(excludedIdsCsv());
+        if (!exportCadenceField.hidden && document.getElementById('pm-export-cadence').checked) {
+            query += cadenceParam();
+        }
+        if (exportPreset === 'custom') {
+            const from = document.getElementById('pm-export-from').value;
+            const to = document.getElementById('pm-export-to').value;
+            if (!from || !to) return null;
+            // Whole months. The server snaps them anyway; sending the first
+            // of each keeps the two ends obviously symmetrical.
+            query += '&start=' + encodeURIComponent(from + '-01');
+            query += '&end=' + encodeURIComponent(to + '-01');
+        } else {
+            query += '&preset=' + encodeURIComponent(exportPreset);
+        }
+        return query + '&format=' + encodeURIComponent(exportFormat());
+    }
+
+    function runExport() {
+        const query = exportQuery();
+        if (!query) {
+            exportError.textContent = exportPreset === 'custom'
+                ? 'Pick both a start and an end month, and at least one asset.'
+                : 'Pick at least one asset to include.';
+            exportError.hidden = false;
+            return;
+        }
+        exportError.hidden = true;
+        exportGo.disabled = true;
+        // A PDF means starting a browser on the server, which takes a second
+        // or two on a cold run -- long enough that a button with no feedback
+        // reads as broken and gets pressed again.
+        exportStatus.textContent = exportFormat() === 'pdf'
+            ? 'Building the PDF…' : 'Building the report…';
+
+        // Fetched rather than navigated to, so a failure lands in this
+        // dialog instead of replacing the page with a JSON error. The most
+        // likely failure by far is a machine where Chromium was never
+        // downloaded, and that message tells an administrator what to run.
+        fetch('/pm-calendar/api/export?' + query)
+            .then(response => {
+                if (response.ok) return response.blob().then(blob => ({ blob, response }));
+                return response.json()
+                    .catch(() => ({}))
+                    .then(data => {
+                        const hint = data.hint ? ' Run: ' + data.hint : '';
+                        throw new Error((data.error || 'The report could not be produced.') + hint);
+                    });
+            })
+            .then(({ blob, response }) => {
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = /filename="?([^";]+)"?/.exec(disposition);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = match ? match[1] : 'PM_report';
+                document.body.append(link);
+                link.click();
+                link.remove();
+                // Revoked on a timer rather than straight away: Safari has
+                // not always finished with the blob by the time click()
+                // returns, and a revoked URL downloads an empty file.
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
+                exportStatus.textContent = 'Downloaded.';
+            })
+            .catch(error => {
+                exportStatus.textContent = '';
+                exportError.textContent = error.message ||
+                    'The report could not be produced. Check the connection and try again.';
+                exportError.hidden = false;
+            })
+            .finally(() => { exportGo.disabled = false; });
     }
 
     function closeDay() {
@@ -1789,6 +2017,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('pm-close-day').addEventListener('click', closeDay);
     overdueCard.addEventListener('click', openOverdue);
+
+    document.getElementById('pm-export-btn').addEventListener('click', openExport);
+    document.getElementById('pm-close-export').addEventListener('click', closeExport);
+    exportModal.addEventListener('click', event => {
+        if (event.target === exportModal) closeExport();
+    });
+    document.getElementById('pm-export-go').addEventListener('click', runExport);
+    document.querySelectorAll('.pm-export-preset').forEach(button => {
+        button.addEventListener('click', () => {
+            exportPreset = button.dataset.preset;
+            document.querySelectorAll('.pm-export-preset')
+                .forEach(other => other.classList.toggle('is-on', other === button));
+            exportCustom.hidden = exportPreset !== 'custom';
+            exportError.hidden = true;
+        });
+    });
     document.getElementById('pm-close-overdue').addEventListener('click', closeOverdue);
 
     window.addEventListener('click', function (event) {
@@ -1809,6 +2053,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (modal.classList.contains('is-open')) closePicker();
         if (dayModal.classList.contains('is-open')) closeDay();
         if (overdueModal.classList.contains('is-open')) closeOverdue();
+        if (exportModal.classList.contains('is-open')) closeExport();
     });
 
     const searchBox = document.getElementById('pm-asset-search');
