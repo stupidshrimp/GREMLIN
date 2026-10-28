@@ -1,0 +1,474 @@
+{#
+  The manager export, rendered once and used twice: served as a
+  self-contained .html file, and printed to PDF by services/html_to_pdf.py.
+
+  Self-contained is a requirement, not a nicety. The CSS is inline, the
+  charts are inline SVG, and there is no script, no font request and no
+  image -- so the file opens the same from an email attachment, a shared
+  drive or a browser with no network, and the PDF is printed from a string
+  with no base URL.
+
+  Deliberately does not look like GREMLIN. The audience has never seen the
+  site, so the page explains its own terms and avoids anything that only
+  means something next to the live calendar.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PM report — {{ report.window.label }}</title>
+<style>
+  /* Landscape: the calendar months and the detail table both want width,
+     and prefer_css_page_size means this rule is what the PDF uses too. */
+  @page { size: Letter landscape; margin: 13mm 12mm 14mm; }
+
+  :root {
+    --ink: #1b2430;
+    --muted: #5d6b7a;
+    --faint: #8a97a5;
+    --rule: #d9e0e7;
+    --panel: #f4f7fa;
+    --on-time: #1f8a52;
+    --on-time-bg: #e6f4ec;
+    --late: #b7791f;
+    --late-bg: #fdf3e2;
+    --missed: #c0392b;
+    --missed-bg: #fdeceb;
+    --open: #5d6b7a;
+    --open-bg: #eef1f4;
+    --estimated: #2b6cb0;
+    --estimated-bg: #eaf2fb;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: #fff;
+    font: 10pt/1.45 "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .sheet { max-width: 1040px; margin: 0 auto; padding: 18px 20px 40px; }
+  @media print { .sheet { max-width: none; padding: 0; } }
+
+  h1 { font-size: 19pt; margin: 0 0 2px; letter-spacing: -0.01em; }
+  /* break-after: avoid keeps a heading from being left alone at the foot of
+     a page with its section starting on the next one. */
+  h2 {
+    font-size: 12pt; margin: 0 0 9px; padding-bottom: 5px;
+    border-bottom: 2px solid var(--ink); break-after: avoid;
+  }
+  h3 { font-size: 10.5pt; margin: 0 0 6px; break-after: avoid; }
+  p { margin: 0 0 8px; }
+
+  /* Also avoids a break after, so a section's heading and its one-line
+     explanation are never separated from the table they introduce. */
+  .lede { color: var(--muted); font-size: 10pt; margin: 0 0 14px; break-after: avoid; }
+
+  header.cover { border-bottom: 3px solid var(--ink); padding-bottom: 12px; margin-bottom: 16px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 0 28px; font-size: 9pt; color: var(--muted); }
+  .facts div { padding: 2px 0; }
+  .facts b { color: var(--ink); font-weight: 600; }
+
+  section { margin: 0 0 20px; break-inside: avoid; }
+  section.long { break-inside: auto; }
+
+  /* --- headline figures --- */
+  .figures { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .figure {
+    flex: 1 1 128px; border: 1px solid var(--rule); border-radius: 6px;
+    padding: 9px 11px; background: var(--panel);
+  }
+  .figure .n { font-size: 20pt; font-weight: 600; line-height: 1.1; }
+  .figure .k { font-size: 8pt; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .figure .s { font-size: 8pt; color: var(--faint); }
+  .figure.good .n { color: var(--on-time); }
+  .figure.warn .n { color: var(--late); }
+  .figure.bad  .n { color: var(--missed); }
+
+  /* --- tables --- */
+  table { width: 100%; border-collapse: collapse; font-size: 8.8pt; }
+  thead { display: table-header-group; }
+  th {
+    text-align: left; font-size: 7.8pt; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; padding: 5px 7px;
+    border-bottom: 1.5px solid var(--ink); white-space: nowrap;
+  }
+  td { padding: 4px 7px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tr { break-inside: avoid; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.dim { color: var(--faint); }
+  .asset { font-weight: 600; }
+  .sub { color: var(--faint); font-size: 7.8pt; }
+
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 9px;
+    font-size: 7.6pt; font-weight: 600; white-space: nowrap;
+  }
+  .pill.on_time  { background: var(--on-time-bg);  color: var(--on-time); }
+  .pill.late     { background: var(--late-bg);     color: var(--late); }
+  .pill.missed   { background: var(--missed-bg);   color: var(--missed); }
+  .pill.open     { background: var(--open-bg);     color: var(--open); }
+  .pill.estimated{ background: var(--estimated-bg);color: var(--estimated); }
+
+  /* --- chart --- */
+  .chart { border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px 8px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 8.2pt; color: var(--muted); margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+
+  /* --- calendar --- */
+  .month { break-inside: avoid; margin-bottom: 14px; }
+  .month-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid var(--rule); padding-bottom: 4px; margin-bottom: 7px;
+  }
+  .month-head h3 { margin: 0; }
+  .month-head .meta { font-size: 8.2pt; color: var(--faint); }
+  .days { display: flex; flex-wrap: wrap; gap: 7px; }
+  .day {
+    border: 1px solid var(--rule); border-radius: 5px; overflow: hidden;
+    width: 172px; break-inside: avoid; background: #fff;
+  }
+  .quiet-run {
+    color: var(--faint); font-size: 8.6pt; font-style: italic;
+    border-left: 2px solid var(--rule); padding: 2px 0 2px 9px; margin: 0 0 12px;
+  }
+  .day-head {
+    background: var(--panel); border-bottom: 1px solid var(--rule);
+    padding: 3px 7px; font-size: 8pt; display: flex; justify-content: space-between;
+  }
+  .day-head b { font-size: 9.5pt; }
+  .day-head .wd { color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+  .day ul { list-style: none; margin: 0; padding: 4px 6px; }
+  .day li { padding: 3px 0 4px; border-top: 1px solid #eef1f4; font-size: 7.9pt; }
+  .day li:first-child { border-top: 0; }
+  .day li .nm { display: block; font-weight: 600; line-height: 1.3; }
+  .day li .as { display: block; color: var(--faint); font-size: 7.4pt; }
+  .day li.estimated .nm { font-style: italic; font-weight: 500; }
+  .bar { height: 3px; border-radius: 2px; margin-bottom: 3px; width: 26px; }
+  .bar.on_time { background: var(--on-time); }
+  .bar.late { background: var(--late); }
+  .bar.missed { background: var(--missed); }
+  .bar.open { background: var(--open); }
+  .bar.estimated { background: repeating-linear-gradient(90deg, var(--estimated) 0 4px, transparent 4px 7px); }
+
+  .empty { color: var(--faint); font-style: italic; font-size: 9pt; padding: 6px 0; }
+  .note {
+    background: var(--panel); border-left: 3px solid var(--faint);
+    padding: 8px 11px; font-size: 8.6pt; color: var(--muted); margin-bottom: 14px;
+  }
+  .note b { color: var(--ink); }
+  footer { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--rule);
+           font-size: 8pt; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+{% set w = report.window %}
+{% set t = report.totals %}
+
+<header class="cover">
+  <h1>Preventive maintenance report</h1>
+  <p class="lede">When PM was due on this equipment, and when it was last completed.</p>
+  <div class="facts">
+    <div><b>Period</b> &nbsp;{{ w.label }}</div>
+    <div><b>Equipment</b> &nbsp;{{ report.assets | length }}
+      asset{{ '' if report.assets | length == 1 else 's' }}</div>
+    <div><b>Frequencies</b> &nbsp;{{ report.cadences.label }}</div>
+    <div><b>Prepared</b> &nbsp;{{ report.generated_on | pm_long_date }}</div>
+  </div>
+</header>
+
+{% if not report.assets %}
+  <p class="empty">No equipment was selected, so there is nothing to report.</p>
+{% else %}
+
+<div class="note">
+  <b>How to read this.</b>
+  A PM counts in this period if it was <b>due</b> in it, whatever happened to it
+  afterwards &mdash; so a job due in May and finished in October is counted against May.
+  The calendars further down show the same work on the day it actually
+  happened, which is why a month there can hold PMs that belong to an earlier
+  month's figures.
+  {% if w.ends_in_future %}
+  This period runs past today, so PMs not yet due are shown separately and are
+  left out of the percentages.
+  {% endif %}
+</div>
+
+<section>
+  <h2>The period at a glance</h2>
+  <div class="figures">
+    <div class="figure">
+      <div class="n">{{ t.due }}</div>
+      <div class="k">PMs due</div>
+      <div class="s">in this period</div>
+    </div>
+    <div class="figure good">
+      <div class="n">{{ t.on_time_rate | pm_number }}{% if t.on_time_rate is not none %}%{% endif %}</div>
+      <div class="k">Done on time</div>
+      <div class="s">{{ t.on_time }} of {{ t.answerable }} that came due</div>
+    </div>
+    <div class="figure warn">
+      <div class="n">{{ t.late }}</div>
+      <div class="k">Done late</div>
+      <div class="s">
+        {%- if t.average_days_late is not none %}{{ t.average_days_late | pm_number }} days late on average
+        {%- else %}none in this period{% endif %}</div>
+    </div>
+    <div class="figure bad">
+      <div class="n">{{ t.missed }}</div>
+      <div class="k">Still not done</div>
+      <div class="s">due in this period, outstanding</div>
+    </div>
+    <div class="figure">
+      <div class="n">{{ report.overdue.total }}</div>
+      <div class="k">Backlog today</div>
+      <div class="s">outstanding, any age</div>
+    </div>
+    {% if t.worst_days_late is not none %}
+    <div class="figure">
+      <div class="n">{{ t.worst_days_late }}</div>
+      <div class="k">Worst delay</div>
+      <div class="s">days past due, since completed</div>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+{% if report.by_month %}
+{% set scale = report.by_month | map(attribute='due') | max %}
+<section>
+  <h2>Month by month</h2>
+  <div class="chart">
+    {% set bw = 46 %}{% set gap = 14 %}{% set h = 132 %}
+    {% set width = report.by_month | length * (bw + gap) + 40 %}
+    <svg viewBox="0 0 {{ width }} {{ h + 46 }}" width="100%" height="{{ h + 46 }}"
+         role="img" aria-label="PMs due each month by outcome">
+      <line x1="34" y1="{{ h }}" x2="{{ width - 6 }}" y2="{{ h }}"
+            stroke="#d9e0e7" stroke-width="1"/>
+      {% if scale > 0 %}
+      <text x="30" y="12" text-anchor="end" font-size="8" fill="#8a97a5">{{ scale }}</text>
+      <text x="30" y="{{ h + 3 }}" text-anchor="end" font-size="8" fill="#8a97a5">0</text>
+      {% endif %}
+      {% for m in report.by_month %}
+        {% set x = 40 + loop.index0 * (bw + gap) %}
+        {% set unit = (h - 14) / scale if scale > 0 else 0 %}
+        {% set y0 = h %}
+        {% set hm = (m.missed * unit) | round(2) %}
+        {% set hl = (m.late * unit) | round(2) %}
+        {% set ho = (m.on_time * unit) | round(2) %}
+        {% set hp = (m.open * unit) | round(2) %}
+        <rect x="{{ x }}" y="{{ y0 - ho }}" width="{{ bw }}" height="{{ ho }}" fill="#1f8a52"/>
+        <rect x="{{ x }}" y="{{ y0 - ho - hl }}" width="{{ bw }}" height="{{ hl }}" fill="#d9a441"/>
+        <rect x="{{ x }}" y="{{ y0 - ho - hl - hm }}" width="{{ bw }}" height="{{ hm }}" fill="#c0392b"/>
+        <rect x="{{ x }}" y="{{ y0 - ho - hl - hm - hp }}" width="{{ bw }}" height="{{ hp }}"
+              fill="#cdd6de"/>
+        {% if m.due %}
+        <text x="{{ x + bw / 2 }}" y="{{ y0 - ho - hl - hm - hp - 4 }}" text-anchor="middle"
+              font-size="8.5" font-weight="600" fill="#1b2430">{{ m.due }}</text>
+        {% endif %}
+        <text x="{{ x + bw / 2 }}" y="{{ h + 14 }}" text-anchor="middle"
+              font-size="8.5" fill="#5d6b7a">{{ m.short }}</text>
+        {% if m.on_time_rate is not none %}
+        <text x="{{ x + bw / 2 }}" y="{{ h + 26 }}" text-anchor="middle"
+              font-size="8" fill="#8a97a5">{{ m.on_time_rate }}%</text>
+        {% endif %}
+      {% endfor %}
+    </svg>
+    <div class="legend">
+      <span><i class="swatch" style="background:#1f8a52"></i> Done on time</span>
+      <span><i class="swatch" style="background:#d9a441"></i> Done late</span>
+      <span><i class="swatch" style="background:#c0392b"></i> Not done</span>
+      <span><i class="swatch" style="background:#cdd6de"></i> Not yet due</span>
+      <span>Percentage below each month is the share done on time.</span>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="long">
+  <h2>By asset</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Equipment</th>
+        <th class="n">Due</th>
+        <th class="n">On time</th>
+        <th class="n">Late</th>
+        <th class="n">Not done</th>
+        {% if w.ends_in_future %}<th class="n">Not yet due</th>{% endif %}
+        <th class="n">Done</th>
+        <th class="n">Avg days late</th>
+        <th>Last completed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in report.per_asset %}
+      <tr>
+        <td class="asset">{{ a.asset_name }}<span class="sub"> &middot; {{ a.asset_id }}</span></td>
+        <td class="n">{{ a.due }}</td>
+        <td class="n">{{ a.on_time }}</td>
+        <td class="n">{{ a.late or '' }}</td>
+        <td class="n">{{ a.missed or '' }}</td>
+        {% if w.ends_in_future %}<td class="n">{{ a.open or '' }}</td>{% endif %}
+        <td class="n">{% if a.completion_rate is not none %}{{ a.completion_rate | pm_number }}%{% else %}&mdash;{% endif %}</td>
+        <td class="n">{% if a.average_days_late is not none %}{{ a.average_days_late | pm_number }}{% else %}&mdash;{% endif %}</td>
+        <td>
+          {% if a.last_completed_date %}
+            {{ a.last_completed_date | pm_short_date }}
+            <span class="sub">{{ a.last_completed_name }}</span>
+          {% else %}
+            <span class="dim">no completion on record</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="long">
+  <h2>Calendar</h2>
+  <p class="lede">Only days with PM activity are shown. Each PM sits on the day it was
+    completed, or on the day it is due if it has not been done.</p>
+  {% for month in report.calendar %}
+  {% if month.kind == 'quiet' %}
+  <p class="quiet-run">{{ month.label }} &mdash;
+    nothing scheduled or completed{% if month.count > 1 %}
+    in {{ month.count }} months{% endif %}.</p>
+  {% else %}
+  <div class="month">
+    <div class="month-head">
+      <h3>{{ month.label }}</h3>
+      <div class="meta">
+        {{ month.total }} PM{{ '' if month.total == 1 else 's' }} across
+        {{ month.active_days }} day{{ '' if month.active_days == 1 else 's' }}
+        &middot; {{ month.quiet_days }} quiet days
+      </div>
+    </div>
+    <div class="days">
+      {% for day in month.days %}
+      <div class="day">
+        <div class="day-head">
+          <b>{{ day.day }}</b><span class="wd">{{ day.weekday }}</span>
+        </div>
+        <ul>
+          {% for item in day['items'] %}
+          <li class="{{ item.status }}">
+            <i class="bar {{ item.status }}"></i>
+            <span class="nm">{{ item.name }}</span>
+            <span class="as">{{ item.asset_name }} &middot; {{ item.status_word }}
+              {%- if item.status == 'late' %} by {{ item.days }} days{% endif %}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</section>
+
+<section class="long">
+  <h2>Every PM due in this period</h2>
+  <p class="lede">Worst first: not done, then those finished late by the most days.</p>
+  {% if report.rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Equipment</th><th>PM</th><th>Frequency</th>
+        <th>Due</th><th>Completed</th><th class="n">Days</th><th>Outcome</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in report.rows %}
+      <tr>
+        <td class="asset">{{ r.asset_name }}</td>
+        <td>{{ r.name }}</td>
+        <td class="dim">{{ r.cadence }}</td>
+        <td>{{ r.due_date | pm_short_date }}</td>
+        <td>{% if r.completed_date %}{{ r.completed_date | pm_short_date }}{% else %}
+            <span class="dim">&mdash;</span>{% endif %}</td>
+        <td class="n">{{ r.days or '' }}</td>
+        <td><span class="pill {{ r.status }}">{{ r.status_word }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No PMs were due on this equipment in this period.</p>
+  {% endif %}
+</section>
+
+{% if report.overdue.pms %}
+<section class="long">
+  <h2>Outstanding today</h2>
+  <p class="lede">Everything still not done on this equipment, however long ago it was due.
+    Oldest first{% if report.overdue.total > report.overdue.pms | length %},
+    showing the {{ report.overdue.pms | length }} oldest of
+    {{ report.overdue.total }}{% endif %}.</p>
+  <table>
+    <thead>
+      <tr><th>Equipment</th><th>PM</th><th>Frequency</th><th>Was due</th><th class="n">Days late</th></tr>
+    </thead>
+    <tbody>
+      {% for r in report.overdue.pms %}
+      <tr>
+        <td class="asset">{{ r.asset_name }}</td>
+        <td>{{ r.name }}</td>
+        <td class="dim">{{ r.cadence }}</td>
+        <td>{{ r.due_date | pm_short_date }}</td>
+        <td class="n">{{ r.days }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if report.upcoming %}
+<section class="long">
+  <h2>Coming up</h2>
+  <p class="lede">The next PM due on each asset. Those marked as expected have no work order
+    raised yet &mdash; the date is worked out from how often the job has been running.</p>
+  <table>
+    <thead>
+      <tr><th>Equipment</th><th>PM</th><th>Frequency</th><th>Due</th><th class="n">In days</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in report.upcoming %}
+      <tr>
+        <td class="asset">{{ r.asset_name }}</td>
+        <td>{{ r.name }}</td>
+        <td class="dim">{{ r.cadence }}</td>
+        <td>{{ r.due_date | pm_short_date }}</td>
+        <td class="n">{{ r.days }}</td>
+        <td>{% if r.estimated %}<span class="pill estimated">Expected</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% endif %}
+
+<footer>
+  Prepared from GREMLIN's copy of Limble on {{ report.generated_on | pm_long_date }}.
+  Figures cover {{ report.assets | length }} asset{{ '' if report.assets | length == 1 else 's' }}
+  over {{ report.window.label }}{% if report.cadences.filtered %},
+  limited to {{ report.cadences.label }} PMs{% endif %}.
+</footer>
+
+</div>
+</body>
+</html>
