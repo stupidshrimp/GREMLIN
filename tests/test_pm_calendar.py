@@ -315,21 +315,35 @@ CALENDAR_DATA = (
 )
 
 
-def test_the_calendar_data_needs_an_account_as_the_page_does(monkeypatch, tmp_path):
-    """Locking the page alone would only hide the calendar.
+def test_the_calendar_data_is_open_as_the_page_is(monkeypatch, tmp_path):
+    """The reads follow the page's rule, and the page is open to everybody.
 
-    Everything on it comes from /pm-calendar/api/..., so a signed-out visitor
-    refused the page could otherwise still read the whole schedule from there.
-    The refusal is JSON, because the thing asking is a fetch().
+    Everything on the calendar comes from /pm-calendar/api/..., so gating the
+    data while the page itself is open would serve a visitor an empty
+    calendar with no explanation. The route's "covers" key is what keeps the
+    two answers together; this is the check that it does.
+
+    This test asserted the opposite until 2026-10-28, when the page was
+    opened. See test_sidebar_access.py for why.
     """
 
     client = _app(monkeypatch, tmp_path).app.test_client()
 
     for url in CALENDAR_DATA:
-        response = client.get(url)
-        assert response.status_code == 403, url
-        assert "needs a login" in response.get_json()["error"], url
-    assert client.post("/pm-calendar/api/sync", json={}).status_code == 403
+        assert client.get(url).status_code == 200, url
+
+
+def test_starting_a_sync_still_needs_an_editor(monkeypatch, tmp_path):
+    """Opening the page must not open the one endpoint behind it that writes.
+
+    It pulls ~244,000 tasks from Limble, so an anonymous POST here would be a
+    way to make GREMLIN hammer somebody else's API. The GET beside it is only
+    the progress of a sync somebody else started, and is open with the rest.
+    """
+
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    assert client.post("/pm-calendar/api/sync", json={}).status_code in (401, 403)
 
 
 @pytest.mark.parametrize("department", ["operations_maintenance", "facilities"])

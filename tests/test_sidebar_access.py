@@ -92,14 +92,33 @@ def _headings(client, path="/"):
 
 
 # The four GREMLIN shows a visitor with no account at all.
-OPEN = ["Home", "Reliability Links", "Standards and Documentation", "Configuration"]
-# The three of those four that no department can narrow away either.
+OPEN = [
+    "Home",
+    "Reliability Links",
+    "Standards and Documentation",
+    "Configuration",
+    # Open since 2026-10-28: a technician at a machine should not have to find
+    # an account to see when its PM is due. Only the sync behind it is gated,
+    # and that endpoint checks for an editor itself.
+    "PM Task Tracker",
+]
+# The four of those five that no department can narrow away either.
 # Configuration is not among them: it is open to anybody who has not signed in,
 # and kept from a signed-in Operations & Maintenance account, which is the one
 # page where those two rules disagree.
-FLOOR = ["Home", "Reliability Links", "Standards and Documentation"]
+FLOOR = [
+    "Home",
+    "Reliability Links",
+    "Standards and Documentation",
+    "PM Task Tracker",
+]
 # Where the floor lives, for the checks that it is served as well as listed.
-FLOOR_ROUTES = ["/", "/reliability-links", "/standards-and-documentation"]
+FLOOR_ROUTES = [
+    "/",
+    "/reliability-links",
+    "/standards-and-documentation",
+    "/pm-task-tracker",
+]
 # The two pages under Standards and Documentation's landing page. Not sidebar
 # entries of their own; they answer to the landing page's rule.
 STANDARDS_SUBPAGES = [
@@ -123,6 +142,12 @@ OPERATIONS_MAINTENANCE_PAGES = {
 # Tracker is the PM calendar as of 2026-10-02, so it renders a real page with
 # no "not built yet" text and no placeholder badge.
 PLACEHOLDER_PAGES = {
+    label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
+}
+# Of those three, the two a signed-out visitor is locked out of: the same two
+# again, and again for a different reason, so again under a name of its own.
+# PM Task Tracker needs no account at all as of 2026-10-28.
+LOCKED_FOR_A_VISITOR = {
     label: route for label, route in DEPARTMENT_PAGES.items() if label != "PM Task Tracker"
 }
 # The three kept out of Operations & Maintenance, and the address space each one
@@ -532,15 +557,127 @@ def test_the_old_pm_calendar_address_still_leads_there(monkeypatch, tmp_path, de
     assert response.headers["Location"].endswith("/pm-task-tracker")
 
 
-def test_a_signed_out_visitor_is_refused_at_the_old_address(monkeypatch, tmp_path):
-    """Not redirected onto a 403: refused where they are, as /settings is."""
+# --- the tracker is open to everybody ---------------------------------------
+#
+# Added 2026-10-28. The page answers "when is PM due on this machine, and when
+# was it last done", which is a question somebody standing at the machine may
+# need; requiring an account first is how a page stops being used. What is open
+# is the *reading* of it.
+
+def test_a_signed_out_visitor_can_open_the_tracker(monkeypatch, tmp_path):
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    response = client.get("/pm-task-tracker")
+
+    assert response.status_code == 200
+    assert "pm-calendar-grid" in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/pm-calendar/api/assets",
+        "/pm-calendar/api/summary",
+        "/pm-calendar/api/sync",
+        "/pm-calendar/api/events?assets=1&start=2026-01-01&end=2026-01-31",
+        "/pm-calendar/api/codes?assets=1",
+        "/pm-calendar/api/overdue?assets=1",
+    ],
+)
+def test_the_reads_behind_the_tracker_are_open_too(monkeypatch, tmp_path, path):
+    """An open page whose data is gated is an open page showing nothing.
+
+    The route's "covers" key hands the whole of /pm-calendar/... to the page's
+    rule, so these come open with it. Checked one by one rather than trusting
+    that, because the cost of being wrong is a blank calendar.
+    """
+
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    assert client.get(path).status_code != 403
+
+
+def test_exporting_a_report_needs_an_account(monkeypatch, tmp_path):
+    """Reading a month on screen is open; carrying the history away is not.
+
+    The export packages the whole record of whatever assets are picked into a
+    file, which is a different act from the one the page was opened for.
+    """
+
+    module = _app(monkeypatch, tmp_path)
+
+    visitor = module.app.test_client().get("/pm-calendar/api/export?assets=1&format=html")
+    assert visitor.status_code == 401
+    assert "Log in to export" in visitor.get_json()["error"]
+
+    # Any account will do -- it is not an editor's job, just not a stranger's.
+    signed_in = _client(module, department="facilities", role="viewer")
+    assert signed_in.get("/pm-calendar/api/export?assets=1&format=html").status_code == 200
+
+
+def test_a_visitor_still_sees_the_export_button(monkeypatch, tmp_path):
+    """It explains itself rather than vanishing.
+
+    Same argument as the struck-through sidebar entries: an option that simply
+    disappears reads as a feature GREMLIN does not have, rather than as one
+    more reason to log in. The page marks it so the script can say why.
+    """
+
+    module = _app(monkeypatch, tmp_path)
+
+    visitor = module.app.test_client().get("/pm-task-tracker").get_data(as_text=True)
+    signed_in = _client(module, department="facilities").get(
+        "/pm-task-tracker"
+    ).get_data(as_text=True)
+
+    assert 'id="pm-export-btn"' in visitor
+    assert 'data-needs-account="1"' in visitor
+    assert 'data-needs-account' not in signed_in
+
+
+def test_syncing_from_limble_still_needs_an_editor(monkeypatch, tmp_path):
+    """The one endpoint here that writes. Opening the page must not open this.
+
+    It pulls ~244,000 tasks from Limble, so an anonymous POST would be a way
+    to make GREMLIN hammer somebody else's API.
+    """
+
+    client = _app(monkeypatch, tmp_path).app.test_client()
+
+    response = client.post("/pm-calendar/api/sync", json={})
+
+    assert response.status_code in (401, 403)
+
+
+def test_a_visitor_is_not_offered_the_sync_button(monkeypatch, tmp_path):
+    """Drawing it would offer a 403 as if it were a feature."""
+
+    module = _app(monkeypatch, tmp_path)
+
+    visitor = module.app.test_client().get("/pm-task-tracker").get_data(as_text=True)
+    editor = _client(module, department="operations_maintenance", role="editor").get(
+        "/pm-task-tracker"
+    ).get_data(as_text=True)
+
+    assert 'id="pm-sync-btn"' not in visitor
+    assert 'id="pm-sync-btn"' in editor
+    # The export is a read, so it stays for everybody.
+    assert 'id="pm-export-btn"' in visitor
+
+
+def test_a_signed_out_visitor_is_sent_on_from_the_old_address(monkeypatch, tmp_path):
+    """It used to refuse them here rather than bounce them onto a 403.
+
+    There is no 403 to bounce onto any more -- the tracker is open -- so the
+    old address does for a visitor what it does for everybody else.
+    """
 
     client = _app(monkeypatch, tmp_path).app.test_client()
 
     response = client.get("/pm-calendar")
 
-    assert response.status_code == 403
-    assert b"PM Task Tracker needs an account." in response.data
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/pm-task-tracker")
 
 
 def test_the_sidebar_marks_the_pages_that_are_not_built_yet(monkeypatch, tmp_path):
@@ -568,11 +705,11 @@ def test_the_mark_says_coming_soon_in_words_as_well_as_in_a_shape(
 
 
 def test_a_visitor_sees_the_mark_on_the_locked_entries_too(monkeypatch, tmp_path):
-    """Signed out the three are struck through rather than hidden, and being
+    """Signed out the two are struck through rather than hidden, and being
     locked does not make them any more built than they were."""
     module = _app(monkeypatch, tmp_path)
     sidebar = _sidebar(module.app.test_client())
-    for label in DEPARTMENT_PAGES:
+    for label in LOCKED_FOR_A_VISITOR:
         item = next(
             entry for entry in re.findall(r"<li>(.*?)</li>", sidebar, re.S) if label in entry
         )
@@ -714,18 +851,25 @@ def test_everything_else_stays_in_the_ungrouped_run_above_it(monkeypatch, tmp_pa
     assert first_labels == ["Home"]
 
 
-def test_a_visitor_gets_the_heading_over_the_struck_through_three(
+def test_a_visitor_gets_the_heading_over_the_dashboards_group(
     monkeypatch, tmp_path
 ):
-    """Signed out they are locked rather than gone, so the heading stands over
-    them exactly as it does for the department that owns them."""
+    """Signed out the locked two are locked rather than gone, so the heading
+    stands over the group exactly as it does for the department that owns it.
+
+    The PM Task Tracker sits under the same heading and is not locked: it is
+    open to everybody, which is the one entry in this group a visitor can
+    actually follow.
+    """
+
     module = _app(monkeypatch, tmp_path)
     client = module.app.test_client()
     sections = dict((heading, labels) for heading, labels, _ in _sections(client))
     assert sections[module.NAV_GROUP_DASHBOARDS] == list(DEPARTMENT_PAGES)
-    for label, is_locked in _entries(client):
-        if label in DEPARTMENT_PAGES:
-            assert is_locked, label
+    locked = {label: is_locked for label, is_locked in _entries(client)}
+    for label in LOCKED_FOR_A_VISITOR:
+        assert locked[label], label
+    assert not locked["PM Task Tracker"]
 
 
 def test_no_heading_is_drawn_over_a_group_this_account_has_none_of(

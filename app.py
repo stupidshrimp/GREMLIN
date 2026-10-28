@@ -790,7 +790,7 @@ def _disposition_kind() -> str:
 # checks the role for itself.
 UNLISTED_ROUTES = {"/developer"}
 
-# The four pages GREMLIN is willing to show anybody at all. Everything else in
+# The pages GREMLIN is willing to show anybody at all. Everything else in
 # the sidebar needs an account: signed out, those entries are still drawn, but
 # struck through and inert, because an entry that simply vanished would read as
 # a feature GREMLIN does not have rather than as one more reason to log in --
@@ -803,7 +803,31 @@ UNLISTED_ROUTES = {"/developer"}
 # it says how the numbers are calculated, and it was readable without an account
 # for as long as it existed, so moving it into the sidebar is not a reason to
 # start asking for one.
-OPEN_ROUTES = {"/", "/reliability-links", "/standards-and-documentation", "/configuration"}
+#
+# The PM Task Tracker is here because the answer it gives -- when PM is due on a
+# machine and when it was last done -- is one anybody on the floor may need, and
+# asking a technician at a machine to find an account first is how a page stops
+# being used. Being open is about *reading the calendar*: this route's "covers"
+# key hands the whole of /pm-calendar/... to this rule, so the reads behind the
+# page come open with it. Two endpoints underneath it are gated anyway, each in
+# its own view, because neither is reading a month on screen:
+#
+#   POST /pm-calendar/api/sync     editor -- it writes, and pulls ~244,000 tasks
+#                                  from Limble to do it.
+#   GET  /pm-calendar/api/export   any account -- it packages the whole history
+#                                  of the picked assets into a file to carry
+#                                  away.
+#
+# The page hides the Sync button from a visitor who could not use it, and leaves
+# the Export button drawn but answering with the reason -- the same argument the
+# struck-through sidebar entries are built on.
+OPEN_ROUTES = {
+    "/",
+    "/reliability-links",
+    "/standards-and-documentation",
+    "/configuration",
+    "/pm-task-tracker",
+}
 
 NAV_LINKS = [
     {"label": page["title"], "url": page["route"], "icon": page["icon"]}
@@ -1194,8 +1218,9 @@ def _refuse_a_page_this_account_may_not_open():
             heading=f"{page['title']} needs an account.",
             message=(
                 "GREMLIN keeps Home, Reliability Links, Standards and "
-                "Documentation, and Configuration open to everybody. The rest "
-                "needs a login: use the person icon at the bottom of the sidebar."
+                "Documentation, Configuration and the PM Task Tracker open to "
+                "everybody. The rest needs a login: use the person icon at the "
+                "bottom of the sidebar."
             ),
         )
     return _refuse_page(
@@ -3333,6 +3358,21 @@ def api_pm_calendar_export():
     the alternative is a stack trace in the log and a silent failure on the
     page.
     """
+
+    # The one read here that needs an account. The calendar itself is open --
+    # somebody at a machine should be able to see when its PM is due without
+    # finding a login -- but this packages the whole history of whatever assets
+    # are picked into a file to carry away, and that is a different act from
+    # reading a month on screen. Checked here rather than with requires_role,
+    # which exists for writes and records an audit entry for each one; a read
+    # does not belong in a log of changes.
+    if _resolved_account() is None:
+        return jsonify({
+            "error": (
+                "Log in to export a report. The calendar itself is open to "
+                "everybody."
+            )
+        }), 401
 
     asset_ids = _pm_calendar_asset_ids()
     if not asset_ids:

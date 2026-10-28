@@ -49,8 +49,19 @@
     </div>
 
     <div class="pm-sync-row">
+      {# The page is open to everybody, but pulling from Limble is an editor's
+         job and the endpoint checks for one. Drawing the button for a visitor
+         who cannot use it would offer a 403 as a feature. Everything else here
+         reads, so it stays. #}
+      {% if auth_can_edit %}
       <button id="pm-sync-btn" class="btn-secondary" type="button">Sync from Limble</button>
-      <button id="pm-export-btn" class="btn-secondary" type="button" disabled>Export a report</button>
+      {% endif %}
+      {# Still drawn for a visitor with no account, and still clickable: it
+         answers with the reason rather than vanishing, which is the same
+         argument the struck-through sidebar entries are built on -- an option
+         that simply disappears reads as a feature GREMLIN does not have. #}
+      <button id="pm-export-btn" class="btn-secondary" type="button" disabled
+              {% if not auth_user %}data-needs-account="1"{% endif %}>Export a report</button>
       <button id="pm-tour-btn" class="pm-tour-btn" type="button">Show me around</button>
       <span id="pm-sync-status" class="pm-sync-status" role="status"></span>
     </div>
@@ -653,8 +664,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 overdueCard.disabled = !(summary.overdue > 0) || !selectedAssets.length;
                 // The export needs a selection for the same reason, but not
                 // a backlog: a report of equipment with nothing overdue is a
-                // perfectly good thing to send someone.
-                document.getElementById('pm-export-btn').disabled = !selectedAssets.length;
+                // perfectly good thing to send someone. A visitor's button is
+                // enabled on the same rule -- it has something to say, and a
+                // disabled button cannot be clicked to hear it.
+                exportButton.disabled = !selectedAssets.length;
                 document.getElementById('pm-summary-compliance').textContent =
                     (summary.compliance ?? 0) + '%';
             });
@@ -1245,6 +1258,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // the page knows, and a dialog that disagreed with the chips above it
     // would be worse than no dialog.
 
+    const exportButton = document.getElementById('pm-export-btn');
+    // Set by the template when nobody is signed in. The calendar is open to
+    // everybody; carrying a file of it away is not, and the endpoint refuses
+    // it either way -- this is only so the button says so instead of failing.
+    const exportNeedsAccount = exportButton.dataset.needsAccount === '1';
     const exportModal = document.getElementById('pm-export-modal');
     const exportAssets = document.getElementById('pm-export-assets');
     const exportCustom = document.getElementById('pm-export-custom');
@@ -1261,7 +1279,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function openExport() {
         if (!selectedAssets.length) return;
-        exportTrigger = document.getElementById('pm-export-btn');
+        if (exportNeedsAccount) {
+            showNotice('Log in to export a report. The calendar itself is open to everybody.');
+            return;
+        }
+        exportTrigger = exportButton;
 
         // One row per picked asset, all ticked. Unticking one drops it from
         // the report without touching the calendar behind the dialog --
@@ -1901,18 +1923,22 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch('/pm-calendar/api/sync')
             .then(r => r.json())
             .then(status => {
+                // Absent for a visitor without an editor account: the page
+                // is open to everybody, the Sync button is not. The polling
+                // itself still runs, so somebody reading the calendar while
+                // an editor syncs sees why the figures are about to move.
                 const button = document.getElementById('pm-sync-btn');
 
                 if (status.state === 'running') {
                     syncMessage = 'Syncing… ' + (status.fetched || 0) + ' tasks fetched';
                     syncFailed = false;
                     renderStatus();
-                    button.disabled = true;
+                    if (button) button.disabled = true;
                     setTimeout(pollSyncStatus, 2000);
                     return;
                 }
 
-                button.disabled = false;
+                if (button) button.disabled = false;
 
                 if (status.state === 'succeeded') {
                     syncMessage = 'Synced ' + (status.matched_pm_tasks ?? 0) + ' PM tasks.';
@@ -1944,7 +1970,8 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     }
 
-    document.getElementById('pm-sync-btn').addEventListener('click', () => {
+    const syncButton = document.getElementById('pm-sync-btn');
+    if (syncButton) syncButton.addEventListener('click', () => {
         fetch('/pm-calendar/api/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2018,7 +2045,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('pm-close-day').addEventListener('click', closeDay);
     overdueCard.addEventListener('click', openOverdue);
 
-    document.getElementById('pm-export-btn').addEventListener('click', openExport);
+    exportButton.addEventListener('click', openExport);
     document.getElementById('pm-close-export').addEventListener('click', closeExport);
     exportModal.addEventListener('click', event => {
         if (event.target === exportModal) closeExport();
@@ -2175,7 +2202,11 @@ document.addEventListener('DOMContentLoaded', function () {
             body: 'This pulls the latest PMs and assets from Limble. It takes a few minutes, and the ' +
                   'page keeps working while it runs.',
         },
-    ];
+    // Dropped entirely rather than pointed somewhere else when the button is
+    // not drawn: this page is open to everybody, and a step explaining a
+    // control a visitor does not have is worse than one step fewer. The step
+    // count comes from the array's length, so it reads "of 7" by itself.
+    ].filter(step => step.target !== '#pm-sync-btn' || document.querySelector('#pm-sync-btn'));
 
     const TOUR_SEEN_KEY = 'gremlin.pm-calendar.tour-seen';
     const tour = document.getElementById('pm-tour');
