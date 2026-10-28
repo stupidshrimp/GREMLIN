@@ -536,6 +536,22 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .cl-field .lda-input[readonly] { background: var(--forest-100); color: var(--muted); cursor: not-allowed; }
 .cl-switch { display: inline-flex; align-items: center; gap: 0.5rem; padding-top: 0.45rem; font-size: 0.88rem; cursor: pointer; }
 .cl-switch input { width: 1.05rem; height: 1.05rem; accent-color: var(--accent-solid); }
+/* A new component or part's look-alikes already on the list, shown before it is added. */
+.cl-similar:empty { display: none; }
+.cl-similar { display: grid; gap: 0.4rem; }
+.cl-similar-lead { margin: 0; font-size: 0.86rem; color: var(--warning-ink); }
+.cl-similar-list { display: grid; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.cl-similar-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.cl-similar-text { display: grid; gap: 0.1rem; flex: 1; min-width: 0; }
+.cl-similar-why { font-size: 0.76rem; color: var(--brand-ink); }
 .cl-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
 .cl-form-actions .cl-spacer { flex: 1; }
 .cl-form-actions button { padding: 0.45rem 1.1rem; font-size: 0.86rem; }

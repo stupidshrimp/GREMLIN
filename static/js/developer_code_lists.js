@@ -20,7 +20,7 @@
 
   // The order the Disposition page's dropdowns and the workbook take the lists
   // in; the JSON reply has them alphabetical.
-  const LIST_ORDER = ["COMPONENT", "FAILURE_MECHANISM", "FAILURE_MODE", "FAILURE_CAUSE", "ACTION"];
+  const LIST_ORDER = ["COMPONENT", "PART", "FAILURE_MECHANISM", "FAILURE_MODE", "FAILURE_CAUSE", "ACTION"];
 
   const state = { codeLists: null, list: null, busy: false };
 
@@ -68,7 +68,8 @@
   }
 
   // The codes as the Disposition page's Code lists dialog shows them: each
-  // code's name over its whole description, and chips for the rest.
+  // code's name over its whole description, and chips for the rest. A
+  // component or part is only its name and its description.
   function drawTable() {
     const list = state.codeLists[state.list];
     const meanings = {};
@@ -83,14 +84,14 @@
     const text = (value) => document.createTextNode(String(value));
     // [heading, class, the cell's content]
     const columns = [
-      ["Code", "cl-code", (code) => [el("span", "cl-code-pill", code.code)]],
+      list.named ? null : ["Code", "cl-code", (code) => [el("span", "cl-code-pill", code.code)]],
       ["Name and description", "cl-main", (code) => {
         const name = el("div", "cl-name", code.name);
         if (!code.is_active) name.appendChild(chip("is-retired", "Retired"));
         return code.description ? [name, el("div", "cl-desc", code.description)] : [name];
       }],
-    ];
-    if (list.codes.some((code) => code.iso_ref)) {
+    ].filter(Boolean);
+    if (!list.named && list.codes.some((code) => code.iso_ref)) {
       columns.push(["ISO ref", "cl-meta", (code) => [code.iso_ref ? text(code.iso_ref) : none()]]);
     }
     if (state.list === "FAILURE_MECHANISM") {
@@ -108,7 +109,7 @@
         return [chip("is-meaning", meaning ? meaning.short : code.semantic, meaning ? meaning.label : code.semantic)];
       }]);
     }
-    columns.push(["Order", "cl-meta cl-num", (code) => [text(code.sort_order)]]);
+    if (!list.named) columns.push(["Order", "cl-meta cl-num", (code) => [text(code.sort_order)]]);
 
     const table = el("table", "cl-table");
     const head = el("tr");

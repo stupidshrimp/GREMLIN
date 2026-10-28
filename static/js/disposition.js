@@ -148,7 +148,8 @@
         el("td", { class: "std-title", text: row.task_name || row.request_title || "" }),
         el("td", {}, Form.categoryChip(d.disposition_category, d.source)),
         el("td", { class: "std-sub-asset", text: row.location_label || row.derived.location || "" }),
-        el("td", { text: d.component_code || "" }),
+        // The part, when one is named, rides in its component's cell: "HVAC › Filter".
+        el("td", { text: [d.component_code, d.part_code].filter(Boolean).join(" › ") }),
         el("td", { text: d.failure_mechanism_code || "" }),
         el("td", { text: d.failure_mode_code || "" }),
       ]));
@@ -918,7 +919,7 @@
   const codeState = { lists: null, active: "COMPONENT", editing: null, form: null, query: "", hideRetired: false };
   // The order a disposition is filled in, not the alphabetical order the JSON
   // arrives in.
-  const CODE_LIST_ORDER = ["COMPONENT", "FAILURE_MECHANISM", "FAILURE_MODE", "FAILURE_CAUSE", "ACTION"];
+  const CODE_LIST_ORDER = ["COMPONENT", "PART", "FAILURE_MECHANISM", "FAILURE_MODE", "FAILURE_CAUSE", "ACTION"];
 
   async function openCodeLists() {
     openDialog($("disp-code-dialog"));
@@ -981,11 +982,12 @@
   }
 
   // The columns a list's rows show: code, name over description, then only what
-  // that list's codes can hold.
+  // that list's codes can hold. A component or part is only its name and its
+  // description.
   function codeColumns(listKey, list) {
     const none = () => el("span", { class: "cl-none", text: "—" });
     const columns = [
-      { label: "Code", className: "cl-code", cell: (entry) => [el("span", { class: "cl-code-pill", text: entry.code })] },
+      list.named ? null : { label: "Code", className: "cl-code", cell: (entry) => [el("span", { class: "cl-code-pill", text: entry.code })] },
       {
         label: "Name and description",
         className: "cl-main",
@@ -997,8 +999,8 @@
           entry.description ? el("div", { class: "cl-desc", text: entry.description }) : null,
         ],
       },
-    ];
-    if (list.codes.some((entry) => entry.iso_ref)) {
+    ].filter(Boolean);
+    if (!list.named && list.codes.some((entry) => entry.iso_ref)) {
       columns.push({ label: "ISO ref", className: "cl-meta", cell: (entry) => [entry.iso_ref ? entry.iso_ref : none()] });
     }
     if (listKey === "FAILURE_MECHANISM") {
@@ -1037,7 +1039,7 @@
         },
       });
     }
-    columns.push({ label: "Order", className: "cl-meta cl-num", cell: (entry) => [String(entry.sort_order)] });
+    if (!list.named) columns.push({ label: "Order", className: "cl-meta cl-num", cell: (entry) => [String(entry.sort_order)] });
     columns.push({
       label: "",
       className: "cl-actions",
@@ -1045,7 +1047,7 @@
         type: "button",
         class: "cl-edit-btn",
         text: entry.code === codeState.editing ? "Close" : "Edit",
-        "aria-label": `${entry.code === codeState.editing ? "Close" : "Edit"} ${list.label.toLowerCase()} ${entry.code}`,
+        "aria-label": `${entry.code === codeState.editing ? "Close" : "Edit"} ${list.label.toLowerCase()} ${list.named ? entry.name : entry.code}`,
         onclick: () => openCodeForm(entry.code === codeState.editing ? null : entry.code),
       })],
     });
@@ -1188,33 +1190,79 @@
       el("span", { text: label }),
       el("label", { class: "cl-switch" }, [control, text]),
     ]);
-    const fields = [
-      field("Code", inputs.code),
-      field("Name", inputs.name, "wide"),
-      field("Description", inputs.description, "full"),
-      field("ISO ref", inputs.iso_ref),
-    ];
+    // A component or part is a name and a description, its code made from the
+    // name when it is added; every other code is typed, with what its list holds.
+    const named = Boolean(list.named);
+    const noun = named ? list.label.toLowerCase() : "code";
+    const fields = named
+      ? [field("Name", inputs.name, "wide"), field("Description", inputs.description, "full")]
+      : [
+        field("Code", inputs.code),
+        field("Name", inputs.name, "wide"),
+        field("Description", inputs.description, "full"),
+        field("ISO ref", inputs.iso_ref),
+      ];
     if (listKey === "FAILURE_MECHANISM") fields.push(field("Default cause", inputs.default_cause_code));
     if (listKey === "ACTION") fields.push(toggle("Renews item", inputs.renews_item, "Makes the item as good as new"));
     if (list.semantics.length) fields.push(field("Means", inputs.semantic));
-    fields.push(field("Order", inputs.sort_order));
-    fields.push(toggle("Status", inputs.is_active, "Active, offered on the dropdowns"));
+    if (!named) fields.push(field("Order", inputs.sort_order));
+    fields.push(toggle("Status", inputs.is_active, "Active, offered on the code fields"));
 
-    const submit = el("button", { type: "submit", class: "btn-primary", text: isNew ? "Add code" : "Save changes" });
+    // Before a new component or part is added, the codes already listed that it
+    // may simply be, as the disposition helper finds them. Add again adds it anyway.
+    const addLabel = isNew ? `Add ${noun}` : "Save changes";
+    const similar = el("div", { class: "cl-similar", "aria-live": "polite" });
+    let similarSeen = null;
+    const similarKey = () => JSON.stringify([inputs.name.value.trim().toLowerCase(), inputs.description.value.trim().toLowerCase()]);
+    function showSimilar(matches) {
+      similar.innerHTML = "";
+      if (!matches.length) return;
+      similar.appendChild(el("p", { class: "cl-similar-lead" }, [
+        el("strong", { text: `Already on the ${noun} list?` }),
+        ` ${matches.length === 1 ? "This one" : "These"} may be the same thing; add yours only if it is not.`,
+      ]));
+      similar.appendChild(el("ul", { class: "cl-similar-list" }, matches.map((match) => el("li", {}, [
+        el("div", { class: "cl-similar-text" }, [
+          el("span", { class: "cl-name" }, [
+            match.name,
+            match.is_active ? null : el("span", { class: "cl-chip is-retired", text: "Retired" }),
+          ]),
+          match.description ? el("span", { class: "cl-desc", text: match.description }) : null,
+          (match.reasons || []).length ? el("span", { class: "cl-similar-why", text: match.reasons.join(" · ") }) : null,
+        ]),
+        el("button", {
+          type: "button",
+          class: "cl-edit-btn",
+          text: "Open it",
+          title: `Close this form and open ${match.name}`,
+          onclick: () => openCodeForm(match.code),
+        }),
+      ]))));
+    }
+    if (isNew && named) {
+      [inputs.name, inputs.description].forEach((input) => input.addEventListener("input", () => {
+        if (similarSeen === null) return;
+        similarSeen = null;
+        submit.textContent = addLabel;
+      }));
+    }
+
+    const submit = el("button", { type: "submit", class: "btn-primary", text: addLabel });
     const remove = isNew ? null : el("button", {
       type: "button",
       class: "cl-delete-btn",
-      text: "Delete code",
+      text: `Delete ${noun}`,
       title: "Delete this code. A code in use can only be retired.",
       onclick: async () => {
-        if (!window.confirm(`Delete ${list.label.toLowerCase()} code ${entry.code}? This cannot be undone.`)) return;
+        const what = named ? `${noun} “${entry.name}”` : `${list.label.toLowerCase()} code ${entry.code}`;
+        if (!window.confirm(`Delete ${what}? This cannot be undone.`)) return;
         try {
           const data = await postJson(`${API}/code-lists/delete`, { code_list: listKey, code: entry.code });
           codeState.lists = data.code_lists;
           closeCodeForm();
           renderCodeLists();
           applyCodeLists(data.code_lists);
-          showToast(`${list.label} ${entry.code} deleted.`, "success");
+          showToast(`${list.label} ${named ? `“${entry.name}”` : entry.code} deleted.`, "success");
         } catch (err) {
           if (!err.toastShown) showToast(err.message, "error");
         }
@@ -1225,12 +1273,26 @@
       novalidate: true,
       onsubmit: async (event) => {
         event.preventDefault();
-        const code = inputs.code.value.trim();
+        const typed = named ? null : inputs.code.value.trim();
         submit.disabled = true;
         try {
+          if (isNew && named && inputs.name.value.trim() && similarSeen !== similarKey()) {
+            const found = await postJson(`${API}/code-lists/similar`, {
+              code_list: listKey,
+              name: inputs.name.value,
+              description: inputs.description.value,
+            });
+            showSimilar(found.matches || []);
+            if ((found.matches || []).length) {
+              similarSeen = similarKey();
+              submit.textContent = "Add it anyway";
+              return;
+            }
+          }
           const data = await postJson(`${API}/code-lists`, {
             code_list: listKey,
-            code,
+            code: isNew ? typed : entry.code,
+            is_new: isNew,
             name: inputs.name.value,
             description: inputs.description.value,
             iso_ref: inputs.iso_ref.value,
@@ -1244,11 +1306,12 @@
           closeCodeForm();
           renderCodeLists();
           // A new active code is set on the open work order, ready to save.
-          const used = applyCodeLists(data.code_lists, isNew && inputs.is_active.checked ? listKey : null, code);
+          const used = applyCodeLists(data.code_lists, isNew && inputs.is_active.checked ? listKey : null, data.code);
+          const label = `${list.label} ${named ? `“${inputs.name.value.trim()}”` : data.code}`;
           showToast(
             used
-              ? `${list.label} ${code} added and set on task ${currentRow().task_id}; save the work order to keep it.`
-              : `${list.label} ${code} ${isNew ? "added" : "saved"}.`,
+              ? `${label} added and set on task ${currentRow().task_id}; save the work order to keep it.`
+              : `${label} ${isNew ? "added" : "saved"}.`,
             "success"
           );
         } catch (err) {
@@ -1258,8 +1321,9 @@
         }
       },
     }, [
-      isNew ? el("h3", { class: "cl-form-title", text: `New ${list.label.toLowerCase()} code` }) : null,
+      isNew ? el("h3", { class: "cl-form-title", text: named ? `New ${noun}` : `New ${list.label.toLowerCase()} code` }) : null,
       el("div", { class: "cl-form-grid" }, fields),
+      similar,
       el("div", { class: "cl-form-actions" }, [
         remove,
         el("span", { class: "cl-spacer" }),
@@ -1274,7 +1338,7 @@
     codeState.form = {
       key,
       row,
-      label: isNew ? "the new code" : `${list.label.toLowerCase()} ${entry.code}`,
+      label: isNew ? `the new ${noun}` : `${list.label.toLowerCase()} ${named ? entry.name : entry.code}`,
       changed: () => snapshot() !== opened,
     };
     return row;

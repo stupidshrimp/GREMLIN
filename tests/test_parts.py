@@ -234,7 +234,7 @@ class PartServiceTests(StandardDispositionFixture):
         self.assertEqual(bar["selection"]["parts"], ["FilterElement"])
         # The part Pareto, and a component's bar drilling to its parts.
         by_part = self.analysis.summary({"assets": [PFS]}, group_by="part")["pareto"]
-        self.assertEqual([row["key"] for row in by_part["rows"]], ["FilterElement"])
+        self.assertEqual([(row["key"], row["label"]) for row in by_part["rows"]], [("FilterElement", "Filter element")])
         by_component = self.analysis.summary({"assets": [PFS]}, group_by="component")["pareto"]
         self.assertEqual(by_component["next_group_by"], "part")
 
@@ -275,6 +275,8 @@ class SimilarCodeTests(unittest.TestCase):
         self.assertEqual(self.names(std.COMPONENT, "Combustion air blower")[0][0], "Fan / blower")
         self.assertEqual(self.names(std.COMPONENT, "Fliter")[0], ("Filter / strainer / sieve", "Spelled almost the same"))
         self.assertEqual(self.names(std.COMPONENT, "Mtr")[0][0], "Motor")
+        # A slip in one word of several is read as the word the list spells right.
+        self.assertEqual(self.names(std.COMPONENT, "Fliter housing")[0], ("Filter / strainer / sieve", "Shares the word filter"))
         self.assertEqual(self.names(std.COMPONENT, "Glass panel"), [])
 
     def test_the_same_name_in_other_capitals_or_punctuation_is_the_same(self):

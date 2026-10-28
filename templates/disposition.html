@@ -13,8 +13,9 @@
   <h1>Disposition</h1>
   <p>Disposition each work order once, in fields that serve both the pattern views and Weibull life
      analysis. The ISO 14224 failure mode, mechanism and cause say <em>how</em> something failed; the
-     sub-asset and component say <em>where</em> and <em>what</em>, which is what every Weibull life is
-     measured on. A typical work order is about five picks: everything else is derived.</p>
+     sub-asset, component and (when it was one) the part within it say <em>where</em> and <em>what</em>,
+     which is what every Weibull life is measured on. A typical work order is about five picks, each a
+     search of its code list: everything else is derived.</p>
   <button type="button" class="page-tour-btn" id="disposition-tour-btn">Show me around</button>
   <div class="std-intro-links">
     <a class="btn-secondary" href="{{ url_for('perform_analysis') }}">← Perform an Analysis</a>
@@ -121,9 +122,10 @@
         <p class="eyebrow">Configuration</p>
         <h2 id="disp-code-title">Disposition code lists</h2>
         <p class="std-code-intro">
-          A code is what dispositions and saved analyses store, so it can't be renamed once added;
+          A component or part is just a name and a description; its code is made from the name when it is
+          added. A code is what dispositions and saved analyses store, so it can't be renamed once added;
           everything else about it can change. A code nothing uses can be deleted; one in use can only
-          be retired, which takes it off the dropdowns. Changes reach the open work order at once, and a
+          be retired, which takes it off the code fields. Changes reach the open work order at once, and a
           code you add is set on it, ready to save.
         </p>
       </div>
@@ -239,8 +241,10 @@
           in the file.</li>
         <li><strong>Fill in the disposition columns</strong>, highlighted from the header down:
           <code>disposition_category</code>, <code>record_class</code>, <code>sub_asset</code>,
-          <code>component_code</code>, <code>failure_mechanism_code</code>, <code>failure_mode_code</code>,
-          <code>action_code</code>, <code>evidence</code> and <code>failure_cause_code</code> are dropdowns.
+          <code>component_code</code>, <code>part_code</code>, <code>failure_mechanism_code</code>,
+          <code>failure_mode_code</code>, <code>action_code</code>, <code>evidence</code> and
+          <code>failure_cause_code</code> are dropdowns. <code>part_code</code> is optional: the part within the
+          component that failed or was replaced (a filter, an O-ring), blank when the whole component did.
           <code>renewed_items</code> takes component codes separated by commas; <code>linked_wo</code> the task
           ID a duplicate continues; <code>qty</code> and
           <code>disposition_note</code> are typed. Leave <code>failure_cause_code</code> blank to take the

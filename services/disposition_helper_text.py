@@ -694,7 +694,9 @@ def similar_codes(
     * a near spelling ("Compresor"), of the name or of any of its segments;
     * the same words once stemmed ("filters" is "filter"), weighted so a word few
       codes on the list use counts for most and one most of them use for little,
-      the description counting for less than the name;
+      the description counting for less than the name; a word of five letters or
+      more that no code uses is read as the one they use spelled almost the same
+      ("Fliter housing" shares "filter");
     * a name segment or thesaurus phrase for a code in the new name ("air
       compressor" names the segment "compressor" of "HVAC / compressor / chiller");
     * given ``meaning`` -- the local model's similarity of the new code's text to
@@ -717,6 +719,17 @@ def similar_codes(
     }
     frequency = Counter(stem for named, described in stems.values() for stem in set(named) | set(described))
     total = len(entries)
+
+    # A word no code uses, read as the one they use that it is a slip away from.
+    respelled: dict[str, str] = {}
+    for item in set(query_name) | set(query_description):
+        if item in frequency or len(item) < 5:
+            continue
+        near = [known for known in frequency if _near_spelling(item, known)]
+        if near:
+            respelled[item] = min(near, key=lambda known: (_slips(item, known), -frequency[known], known))
+    query_name = [respelled.get(item, item) for item in query_name]
+    query_description = [respelled.get(item, item) for item in query_description]
 
     def weight(stem: str) -> float:
         return math.log((total + 1) / (frequency.get(stem, 0) + 1)) + 1.0
@@ -751,7 +764,10 @@ def similar_codes(
     named_in: dict[str, str] = {}
     for clause in clauses(query):
         words = _WORD.findall(clause)
-        for mention in _phrases_in([stem(word) for word in words], words, lexicon, "name"):
+        # A word read as another is named by the spelling the list uses.
+        heard = [respelled.get(stem(word), stem(word)) for word in words]
+        shown = [spelled if spelled != stem(word) else word for word, spelled in zip(words, heard)]
+        for mention in _phrases_in(heard, shown, lexicon, "name"):
             if not mention.negated:
                 named_in.setdefault(mention.key, mention.phrase)
     meant = list(meaning(code_text(query, description), [code_text(entry.name, entry.description) for entry in entries])) if meaning else None
@@ -772,6 +788,8 @@ def similar_codes(
         if shared and words >= 0.3:
             score = max(score, words)
             reasons.append(f"Shares the word{'s' if len(shared) > 1 else ''} {', '.join(shared[:4])}")
+            if set(shared) & set(respelled.values()) and "Spelled almost the same" not in reasons:
+                reasons.append("Spelled almost the same")
         if entry.code in named_in:
             score = max(score, 0.75)
             reasons.append(f"\u201c{named_in[entry.code]}\u201d is one of its names")

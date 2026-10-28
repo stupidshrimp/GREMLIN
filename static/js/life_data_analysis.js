@@ -32,11 +32,13 @@
   // What a population can be narrowed by, in the order it is narrowed: where on
   // the asset, what, how. The sub-asset list follows the asset's hierarchy, and a
   // Pareto bar or matrix cell narrows it too. The Weibull offers only the first
-  // three, the ones that say which item fails which way; the other views offer all
-  // six, and the categories.
+  // four, the ones that say which item fails which way; the other views offer all
+  // seven, and the categories. A part is its own item: ticking one fits that part,
+  // and ticking none fits whole components.
   const DIMENSIONS = [
     ["locations", "Sub-asset", true],
     ["components", "Component", true],
+    ["parts", "Part", true],
     ["failure_mechanisms", "Failure mechanism", true],
     ["failure_modes", "Failure mode", false],
     ["failure_causes", "Failure cause", false],
@@ -444,7 +446,7 @@
       // The title the bars on their way will have.
       const group = $("lda-pareto-group");
       const by = group.selectedIndex >= 0 ? group.options[group.selectedIndex].text.toLowerCase() : "sub-asset";
-      $("lda-pareto-title").textContent = isWeibull() ? "Failures by sub-asset, component and mechanism" : `Pareto by ${by}`;
+      $("lda-pareto-title").textContent = isWeibull() ? "Failures by sub-asset, component (or part) and mechanism" : `Pareto by ${by}`;
       $("lda-pareto-legend").innerHTML = "";
       setHidden($("lda-pareto-empty"), true);
       setHidden($("lda-pareto-not-coded"), true);
@@ -1975,8 +1977,8 @@
         ? "Perform Analysis builds the population's lives item by item, fits them, and saves the run with its population definition."
         : "Preview the fit builds and fits the population's lives without saving anything; an editor saves a run.",
       CAN_EDIT
-        ? "Clicking a Pareto bar fits and saves that one sub-asset, component and mechanism instead."
-        : "Clicking a Pareto bar previews the fit of that one sub-asset, component and mechanism instead.",
+        ? "Clicking a Pareto bar fits and saves that one sub-asset, component (or part) and mechanism instead."
+        : "Clicking a Pareto bar previews the fit of that one sub-asset, component (or part) and mechanism instead.",
     ];
     if (readiness.uncoded) pieces.push(`${readiness.uncoded} failures or PM resets have no component yet and are left out until dispositioned.`);
     if (readiness.not_reviewed) pieces.push(`${readiness.not_reviewed} work orders in reach are not reviewed yet.`);
@@ -2000,9 +2002,9 @@
       el("p", {
         class: "lda-hint",
         text: CAN_EDIT
-          ? "Click a Pareto bar to fit and save one sub-asset, component and mechanism, or Perform Analysis to fit the " +
-            "population ticked. A Weibull life is measured on one kind of item, so pick one component at least. Saved " +
-            "fits open from the rankings above."
+          ? "Click a Pareto bar to fit and save one sub-asset, component (or part) and mechanism, or Perform Analysis to " +
+            "fit the population ticked. A Weibull life is measured on one kind of item, so pick one component (or part) at " +
+            "least. Saved fits open from the rankings above."
           : "Click a Pareto bar, or Preview the fit, to see one. Saved fits open from the rankings above.",
       }),
     ]));
@@ -4201,8 +4203,8 @@
       title: "Perform an Analysis",
       body:
         "Pick an asset, narrow it to a population, and the analysis chosen reads that population from the work-order " +
-        "dispositions. The Weibull narrows by sub-asset, component and mechanism, the three that say which item fails " +
-        "which way; Triage and the other views narrow by mode, cause, action and category as well.",
+        "dispositions. The Weibull narrows by sub-asset, component, part and mechanism, the four that say which item " +
+        "fails which way; Triage and the other views narrow by mode, cause, action and category as well.",
     },
     {
       target: "#lda-asset-field",
@@ -4217,7 +4219,7 @@
       target: "#lda-type-field",
       title: "Analysis type",
       body:
-        "Decides which views appear under the Pareto. The sub-asset, component and mechanism ticked stay when you switch; " +
+        "Decides which views appear under the Pareto. The sub-asset, component, part and mechanism ticked stay when you switch; " +
         "the mode, cause, action and categories ticked for Triage and the others wait there while the Weibull is showing.",
     },
     {
@@ -4273,11 +4275,12 @@
       title: "Pareto",
       body: () =>
         isWeibull()
-          ? "The population's failures, one bar per sub-asset, component and mechanism, each split by failure cause and " +
+          ? "The population's failures, one bar per sub-asset, component (or part) and mechanism, each split by failure cause and " +
             "ranked by count or downtime. Each bar is one kind of item failing one way; click it to fit it. The Pareto " +
             "and the population stay as they are."
           : "One bar per value of the dimension chosen, each split by failure cause, ranked by count or downtime. Click a " +
-            "bar to narrow the population to it: a sub-asset opens into its components, a component into its mechanisms.",
+            "bar to narrow the population to it: a sub-asset opens into its components, a component into its parts (or, " +
+            "when its work orders name none, its mechanisms).",
     },
     {
       target: "#lda-drill",
@@ -4516,6 +4519,7 @@
     [
       ["sub_asset", "Sub-asset"],
       ["component", "Component"],
+      ["part", "Part"],
       ["failure_mechanism", "Failure mechanism"],
       ["failure_mode", "Failure mode"],
       ["failure_cause", "Failure cause"],

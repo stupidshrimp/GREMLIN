@@ -371,6 +371,9 @@ class PopulationAnalysisService:
             return NOT_CODED
         if code_list is not None:
             name = codebook.name(code_list, value)
+            if name and code_list in std.NAMED_CODE_LISTS:
+                # A component or part is its name; its code is only made from it.
+                return name
             return f"{value} · {name}" if name and name != value else str(value)
         if value in std.CATEGORY_GUIDE:
             return std.CATEGORY_GUIDE[value]["label"]

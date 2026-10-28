@@ -22,7 +22,11 @@ confirm or change those choices.
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
-moves down the list. Every column of the list sorts and filters from the ▾ on its
+moves down the list. Every code field on the form (component, part, mechanism,
+mode, action, cause, and the renewed items) is a search: typing any part of a
+code, its name or its description lists the codes that hold every word typed,
+best first, and when nothing on the list is what the work order needs an editor
+adds it from the field itself (see *Adding a code from the form* below). Every column of the list sorts and filters from the ▾ on its
 header, server-side, so both reach every row rather than the page on screen. The
 picked work order shows its facts in a labelled grid (asset; created, started and
 completed on the plant's clock; downtime; record class; category), then its
@@ -35,23 +39,24 @@ there.
 selector (the sub-asset list shows the asset, then each sub-asset under its
 parent) and by date. What the selector offers depends on the Analysis Type:
 
-* **Weibull Analysis** narrows by sub-asset, component and mechanism only, plus
-  the induced-failures switch (item 13 below). Its Pareto has one bar per
-  sub-asset + component + mechanism among the population's failures, ranked by
+* **Weibull Analysis** narrows by sub-asset, component, part and mechanism only,
+  plus the induced-failures switch (item 13 below). Its Pareto has one bar per
+  sub-asset + component (or part) + mechanism among the population's failures, ranked by
   count or downtime; clicking a bar fits exactly that (saved for an editor, a
   preview otherwise) without narrowing the population or changing the Pareto.
   When every bar is on one place, as on an asset with no sub-assets, the names
   start at the component.
 * **Triage Analysis** (formerly Failure Mode Trend Analysis), **Downtime Driver**,
-  **PM Effectiveness** and **Repeat Fix Rate** narrow by all six coded fields —
-  sub-asset, component, mechanism, mode, cause and action — and by disposition
-  category. Their Pareto is grouped by the dimension chosen (sub-asset at first,
-  or component for an asset with no sub-assets), and a bar or matrix cell drills
-  down sub-asset → component → mechanism. A breadcrumb right above the bars
+  **PM Effectiveness** and **Repeat Fix Rate** narrow by all seven coded fields —
+  sub-asset, component, part, mechanism, mode, cause and action — and by
+  disposition category. Their Pareto is grouped by the dimension chosen (sub-asset
+  at first, or component for an asset with no sub-assets), and a bar or matrix
+  cell drills down sub-asset → component → part (when the component's work orders
+  name any) → mechanism. A breadcrumb right above the bars
   shows the way the drilling came: each step is a click back to it, with Back
   for the last drill and Start over.
 
-Sub-asset, component and mechanism carry across a switch between the two; the
+Sub-asset, component, part and mechanism carry across a switch between the two; the
 mode, cause, action and categories ticked for the second group wait there while
 the Weibull shows.
 
@@ -66,7 +71,7 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   migrated and still to confirm, failures and PM resets in the population, and
   failures or PM resets with no component (which no life can use).
 * **Pareto** — one bar per value of the dimension chosen (sub-asset by default,
-  where the asset's own work orders are one bar; component, mechanism, mode,
+  where the asset's own work orders are one bar; component, part, mechanism, mode,
   cause, action, category, detection method), ranked by count or downtime, each
   bar split by failure cause. Work orders not coded on that dimension make no bar
   (nor a value in the trend's summary cards); the chart says how many were left out.
@@ -83,7 +88,7 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   PM_RESET that renewed one of its components, or PM-class work there that renewed
   nothing) paired with the next failure of the population found on that sub-asset.
   Ratings as before: Excellent ≥ 180 days, Good ≥ 90, Fair ≥ 30, else Poor.
-* **Repeat fix rate** — item by item (sub-asset + component), a failure is a
+* **Repeat fix rate** — item by item (sub-asset + component, or + part), a failure is a
   repeat when it is found within the window (24 scheduled hours by default) of the
   previous failure's repair being finished, on that sub-asset's Weibull schedule.
 * **Weibull** — the renewal-stream fit below, shown with its population
@@ -91,20 +96,20 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   charts, the interpretation summary, the lives and the event processing table.
   Nothing is fitted, or opened, until asked: picking an asset or changing the
   population leaves the results empty. A Pareto bar fits that one sub-asset,
-  component and mechanism; Perform Analysis (editors) fits and saves the
+  component (or part) and mechanism; Perform Analysis (editors) fits and saves the
   population ticked, Preview the fit (viewers) fits it without saving; a saved
   fit opens from the rankings. Adjusted beta and eta are kept beside a saved run, with the
   reason. **Generate Weibull Report** writes the numbered Word report of a saved
   run with its population definition, items pooled and warnings.
-* **Rankings** — the latest saved fit of each one-component population the
+* **Rankings** — the latest saved fit of each one-item population (one component, or one part) the
   asset reaches, with at least 5 failure lives: by beta, and by the chance that
   one of its items in service fails in the next N weeks
   (1 − Π R(tᵢ + Δᵢ) / R(tᵢ) over the items still in service at the run's cutoff).
 
 ## Data model
 
-* **`disposition_code`** — the five code lists (component, failure mechanism,
-  failure mode, failure cause, action) as configuration. Each list is seeded from
+* **`disposition_code`** — the six code lists (component, part, failure
+  mechanism, failure mode, failure cause, action) as configuration. Each list is seeded from
   spec §3 the first time it is empty and is the team's from then on: a code they
   retire stays retired, a code they delete is not put back. A **code** is the
   stable key dispositions and saved populations store, so it cannot be renamed
@@ -129,13 +134,27 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
   can rename and extend lists freely:
   * `renews_item` on actions (seeded on REPLACE, REPAIR, CLEAN_SERVICE);
   * `default_cause_code` on mechanisms (spec §3.2's "default cause");
-  * `semantic`: `UNKNOWN` (mechanism UNK, cause Unknown, component Unknown),
+  * `semantic`: `UNKNOWN` (mechanism UNK, cause Unknown),
     `INSPECTION_FINDING` (mode DEG → detection method Inspection),
     `NO_FAULT_FOUND` (mode NFF), `INDUCED` (causes Installation and Maintenance
-    error), `REVIEW` (component Other).
+    error).
+
+  **Components and parts are a name and a description**, nothing else: a plant
+  has hundreds, so they carry no ISO reference, meaning or order, and list by
+  name. A new one's code is made from its name (each word's letters and digits,
+  capitalised and run together: *Air compressor* → `AirCompressor`, with a
+  number added if that code is taken), so adding one is typing a name; a name
+  already on the list, in any capitals, is refused as the same item twice. The
+  component is the maintainable item (a compressor, a pump); the part is the
+  part within it that failed or was replaced (a filter, an O-ring). Parts are
+  one list shared by every component. Components named Unknown or Other read as
+  no component to the helper. The code-list workbook takes a component or part
+  row by its name alone and ignores the other columns on it.
 * **`wo_disposition`** — one row per decision, with history (`is_current`), like
-  `event_disposition`. Fields are spec §2's; renewed items are stored as a JSON list
-  of component codes; the linked WO as a `mapped_record_id` (entered as a task ID).
+  `event_disposition`. Fields are spec §2's plus `part_code`, the part within the
+  component (optional, and only with a component); renewed items are stored as a
+  JSON list of component codes; the linked WO as a `mapped_record_id` (entered as
+  a task ID).
   `legacy_disposition_category`, `legacy_failure_mode` and
   `legacy_failure_mechanism` keep the REL values and travel with every later
   disposition of the record.
@@ -150,6 +169,50 @@ Weibull fit can be previewed by any reader; saving it needs an editor.
 
 The categories are fixed in code rather than a table: the engine's rules are
 written against them.
+
+### Parts, in the life engine
+
+A part is its own item. A renewal stream is keyed by sub-asset, component and
+part, the part blank for the whole component, so *Compressor › Filter* has
+lives of its own apart from *Compressor*:
+
+* A failure that names a part ends (and, when its action renews, renews) that
+  part's life, not the component's.
+* Renewing a whole component renews its parts with it: a failure of the
+  compressor whose action renews it, or a PM_RESET or renewed item naming the
+  compressor, ends each of its parts' running lives as a suspension ("renewed
+  with the whole component it is part of") and starts them afresh. Replacing a
+  filter does not renew the compressor.
+* A PM_RESET that names a part renews that part; with a part it needs no
+  renewed items, though it may list components it also renewed.
+* A population with parts ticked is those parts' streams (in one component, or
+  across every component the population holds); with none ticked it is the
+  whole components only, so a Weibull of *Compressor* is the compressor as a
+  whole, and fits saved before parts existed read exactly as they did.
+
+### Adding a code from the form
+
+An editor adds a code from the field that needs it: typing what is not on the
+list offers **Add "…" as a new component** (prominently when nothing matches,
+under the matches otherwise), which opens a small panel under the field. A
+component or part asks only a name and a description; any other code its code
+as well, and a mechanism its default cause, an action whether it renews (what a
+code means and where it sorts stay in the Code lists dialog). The code is added
+to the list for every work order and set on the field, unsaved like any other
+change. A code meant to be new never changes one already listed
+(`is_new`): its code being taken is refused, naming the code that has it.
+
+Before it is added, the **disposition helper looks for one already on the list
+that it may simply be** (`POST /life-data-analysis/api/code-lists/similar`, also
+asked by the Code lists dialog's Add): the same name in other capitals or
+punctuation, a near spelling (one slip in a word of 4–7 letters, two in a longer
+one: *Fliter*, *Compresor*), shared words weighted by how rare they are in the
+list, the new name being one of a code's names or the thesaurus's phrases for
+it (*air compressor* in "HVAC / compressor / chiller"), and, when the local
+model is on, much the same meaning in other words. Up to five come back best
+first, each with why; retired ones too, marked. They are shown as the name is
+typed, each with **Use this**; with any showing, the button reads **Add it
+anyway**, and an Add pressed before they were shown shows them first.
 
 ## Keeping it fast
 
@@ -354,8 +417,9 @@ meaning) about 11 s, and the process peaks at about 450 MB.
 3. **Renewed items** are accepted only on FAILURE and PM_RESET, the categories
    that renew anything in the life engine. On a FAILURE they must not repeat the
    component (its own renewal follows the action). A PM_RESET must list at least
-   one; its component is *not* implicitly renewed — the editor pre-fills the list
-   with it.
+   one, or name the part it replaced; its component is *not* implicitly renewed —
+   the editor pre-fills the list with it unless a part is named. The form picks
+   them from a component search, each shown as a removable chip.
 4. **Mode NFF is refused on FAILURE** ("no fault found" is NON_FAILURE in §2.1).
 5. **A cause override equal to the mechanism's default is not an override** and is
    stored blank, so it needs no note.
@@ -400,7 +464,7 @@ meaning) about 11 s, and the process peaks at about 450 MB.
     that renewed nothing ends no life, and the pattern views leave them out. The
     POP string records `induced=suspensions`, and the "Induced failures present"
     warning names the checkbox the same way.
-13. **The Weibull reads sub-asset, component and mechanism only.** Failure mode,
+13. **The Weibull reads sub-asset, component, part and mechanism only.** Failure mode,
     cause and action narrow Triage and the other views but not the life analysis,
     and the Weibull's selector does not offer them: one
     mechanism presents as several modes, so a mode filter turned same-mechanism
@@ -471,8 +535,8 @@ meaning) about 11 s, and the process peaks at about 450 MB.
     GREMLIN has it; one changed both there and in the workbook is refused. Every
     refused row is listed at once, by sheet row and task, and one refuses the
     upload.
-20. **Rankings** take only one-component populations, so a beta is about one kind
-    of item, and only the latest saved run of each population (none saved with a
+20. **Rankings** take only one-item populations (one component, or one part), so
+    a beta is about one kind of item, and only the latest saved run of each population (none saved with a
     mode, cause or action, item 13).
 
 ## The REL screens
@@ -494,3 +558,5 @@ application writes them any more.
   `MNT-INT`, `EXP-WEAR`, `MGMT`, `UNK`; LOOS's default cause is Maintenance error).
 * Whether Limble capture (ACCA fields) will align with these dropdowns.
 * Decisions 1, 3, 8, 9 and 10 above are the ones most worth the team's review.
+* The disposition helper suggests a component but not yet a part; the part is
+  left for the engineer.
