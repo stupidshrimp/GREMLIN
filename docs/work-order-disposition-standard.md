@@ -22,7 +22,16 @@ confirm or change those choices.
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
-moves down the list. Every code field on the form (component, part, mechanism,
+moves down the list. A bar over the two (sticky below the top bar) switches the
+view: **Side by side**; **Disposition**, the form alone across the page with the
+work order's record on the left (kept in view as the page scrolls) and its
+fields on the right, the work order's place in the list and the ones before and
+after it in the bar, across pages too; or **Work orders**, the list alone across
+the page, where picking a work order opens it in the Disposition view. The
+browser remembers the view picked on the bar. The change is a view transition
+where the browser has one (the card that stays grows or shrinks into place, the
+others slide out and in), a short rise-in otherwise, and none for anyone who has
+asked their system for less motion. Every code field on the form (component, part, mechanism,
 mode, action, cause, and the renewed items) is a search: typing any part of a
 code, its name or its description lists the codes that hold every word typed,
 best first, and when nothing on the list is what the work order needs an editor

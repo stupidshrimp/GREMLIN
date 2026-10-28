@@ -22,7 +22,212 @@
   align-items: start;
 }
 .std-layout > .glass-card { min-width: 0; }
-.std-editor-card { position: sticky; top: 86px; max-height: calc(100vh - 100px); overflow: auto; }
+/* Stuck below the top bar and the view bar (whose height disposition.js keeps in --disp-bar-h). */
+.std-editor-card {
+  position: sticky;
+  top: calc(var(--disp-bar-top, 82px) + var(--disp-bar-h, 52px) + 0.6rem);
+  max-height: calc(100vh - var(--disp-bar-top, 82px) - var(--disp-bar-h, 52px) - 1.4rem);
+  overflow: auto;
+}
+
+/* ---- the Disposition page's views ---------------------------------------------
+   One bar over the workspace switches it between the list and the disposition
+   side by side, the disposition alone across the page, and the list alone. The
+   bar stays in reach below the top bar; a thumb slides to the view chosen. */
+.std-workspace { --disp-bar-top: 82px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+.std-workspace[hidden] { display: none; }
+.std-view-bar {
+  position: sticky;
+  top: var(--disp-bar-top, 82px);
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-sm);
+  view-transition-name: disp-view-bar;
+}
+.std-views {
+  position: relative;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+}
+.std-views-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(var(--shadow-ink), 0.18), 0 0 0 1px var(--border);
+  transition: transform 320ms cubic-bezier(0.3, 0.7, 0.2, 1), width 320ms cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.std-views:not(.is-ready) .std-views-thumb { transition: none; }
+.std-view-btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.9rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 200ms ease;
+}
+.std-view-btn:hover,
+.std-view-btn[aria-checked="true"] { color: var(--forest-900); }
+.std-view-btn:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.std-view-btn svg,
+.std-record-step svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.std-view-hint { margin: 0; }
+
+/* The open work order's place in the list, with the ones either side. */
+.std-record-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1 1 18rem;
+  justify-content: flex-end;
+}
+.std-record-nav[hidden] { display: none; }
+.std-record-where {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+.std-record-where strong { color: var(--forest-900); white-space: nowrap; }
+.std-record-where .std-record-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.std-record-where .std-record-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.std-record-step {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--forest-800);
+  cursor: pointer;
+  transition: background 150ms ease, transform 150ms ease;
+}
+.std-record-step:hover:not(:disabled) { background: var(--forest-100); }
+.std-record-step:active:not(:disabled) { transform: scale(0.94); }
+.std-record-step:disabled { opacity: 0.4; cursor: default; }
+.std-record-step:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+
+/* One card across the page: the other is out of the way. */
+.std-workspace.is-view-focus .std-layout,
+.std-workspace.is-view-list .std-layout { grid-template-columns: minmax(0, 1fr); }
+.std-workspace.is-view-focus #disp-list-card,
+.std-workspace.is-view-list #disp-editor-card { display: none; }
+.std-workspace.is-view-focus .std-editor-card { position: static; max-height: none; overflow: visible; }
+.std-workspace.is-view-list table.lda-table td.std-title { max-width: 80ch; }
+.std-show-list { margin-top: 0.6rem; }
+.std-workspace:not(.is-view-focus) .std-show-list { display: none; }
+
+/* The disposition across the page: the work order on the left, kept in view as
+   the fields on the right are filled in. */
+@media (min-width: 1000px) {
+  .std-workspace.is-view-focus .std-form-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    column-gap: 1.6rem;
+    align-items: start;
+  }
+  .std-workspace.is-view-focus .std-form-wrap > * { grid-column: 2; }
+  .std-workspace.is-view-focus .std-form-wrap > .std-record-text {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    position: sticky;
+    top: calc(var(--disp-bar-top, 82px) + var(--disp-bar-h, 52px) + 0.8rem);
+    max-height: calc(100vh - var(--disp-bar-top, 82px) - var(--disp-bar-h, 52px) - 1.6rem);
+    overflow: auto;
+    padding-right: 0.5rem;
+  }
+  .std-workspace.is-view-focus .std-record-text + .std-form { margin-top: 0; padding-top: 0; border-top: 0; }
+  .std-workspace.is-view-focus .std-form-wrap > .std-helper { margin-top: 0; margin-bottom: 1rem; }
+}
+
+/* Moving between views. Where the browser can, the cards glide from one layout
+   to the next (a view transition): a card that stays grows or shrinks into
+   place, one that goes slides out to its side, one that comes slides in. */
+#disp-list-card { view-transition-name: disp-list; }
+#disp-editor-card { view-transition-name: disp-editor; }
+::view-transition-group(disp-list),
+::view-transition-group(disp-editor) {
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+/* Each card drawn at its own size, cut to the box as it grows or shrinks,
+   rather than stretched. */
+::view-transition-old(disp-list),
+::view-transition-new(disp-list),
+::view-transition-old(disp-editor),
+::view-transition-new(disp-editor) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+::view-transition-old(disp-list),
+::view-transition-old(disp-editor) { animation: 170ms ease-out both std-view-fade-out; }
+::view-transition-new(disp-list),
+::view-transition-new(disp-editor) { animation: 300ms ease-out 70ms both std-view-fade-in; }
+::view-transition-old(disp-list):only-child { animation: 240ms ease-in both std-view-out-left; }
+::view-transition-new(disp-list):only-child { animation: 360ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-left; }
+::view-transition-old(disp-editor):only-child { animation: 240ms ease-in both std-view-out-right; }
+::view-transition-new(disp-editor):only-child { animation: 360ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-right; }
+/* The bar is the same bar throughout: shown live, so its thumb's own slide is what moves. */
+::view-transition-old(disp-view-bar) { display: none; }
+::view-transition-new(disp-view-bar) { animation: none; }
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 200ms; }
+
+@keyframes std-view-fade-out { to { opacity: 0; } }
+@keyframes std-view-fade-in { from { opacity: 0; } }
+@keyframes std-view-out-left { to { opacity: 0; transform: translateX(-28px) scale(0.985); } }
+@keyframes std-view-in-left { from { opacity: 0; transform: translateX(-28px) scale(0.985); } }
+@keyframes std-view-out-right { to { opacity: 0; transform: translateX(28px) scale(0.985); } }
+@keyframes std-view-in-right { from { opacity: 0; transform: translateX(28px) scale(0.985); } }
+
+/* Where a browser can't, the cards of the new view rise in instead. */
+.std-workspace.is-view-changing .std-layout > .glass-card { animation: lda-rise-in 300ms cubic-bezier(0.3, 0.7, 0.2, 1) both; }
+
+/* Stepping to the next or previous work order: the new one slides in from that side. */
+#disp-editor-body.is-step-next > * { animation: 260ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-right; }
+#disp-editor-body.is-step-prev > * { animation: 260ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-left; }
 
 table.lda-table tbody tr.std-row { cursor: pointer; }
 table.lda-table tbody tr.std-row:hover td { background: var(--brand-tint-soft); }
@@ -694,7 +899,7 @@ table.lda-table td.std-suspension { color: var(--success-ink); font-weight: 600;
 
 @media (max-width: 1180px) {
   .std-layout { grid-template-columns: 1fr; }
-  .std-editor-card { position: static; max-height: none; }
+  .std-editor-card { position: static; max-height: none; overflow: visible; }
   .std-pareto-pair { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
@@ -994,6 +1199,10 @@ table.std-helper-table tbody th { text-align: left; font-weight: 600; white-spac
 }
 @media (prefers-reduced-motion: reduce) {
   .std-switch-track, .std-switch-thumb { transition: none; }
+  .std-views-thumb, .std-view-btn, .std-record-step { transition: none; }
+  .std-workspace.is-view-changing .std-layout > .glass-card,
+  #disp-editor-body.is-step-next > *,
+  #disp-editor-body.is-step-prev > * { animation: none; }
 }
 .std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
 .std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
@@ -1002,4 +1211,12 @@ table.std-helper-table td.std-helper-plain { color: var(--muted); }
 @media (max-width: 560px) {
   .std-add-grid { grid-template-columns: 1fr; }
   .std-add-match { flex-wrap: wrap; }
+}
+
+/* A phone: the views share the bar's width, by name alone. */
+@media (max-width: 560px) {
+  .std-views { display: flex; width: 100%; }
+  .std-view-btn { flex: 1 1 0; justify-content: center; padding: 0.45rem 0.4rem; font-size: 0.8rem; }
+  .std-view-btn svg { display: none; }
+  .std-record-nav { flex-basis: 100%; }
 }

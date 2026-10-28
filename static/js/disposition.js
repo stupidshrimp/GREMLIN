@@ -3,7 +3,11 @@
  * Two windows side by side: the asset's work orders on the left, and the one
  * picked on the right in the disposition form (disposition_form.js), with the
  * work order's own words above the fields. Save & next moves down the list, so a
- * backlog is worked through without leaving the keyboard. Each column of the
+ * backlog is worked through without leaving the keyboard. A bar over them
+ * switches the view: side by side, the disposition alone across the page (the
+ * work order beside its fields, with the one before and after a click away), or
+ * the list alone across the page, where picking a work order opens it in the
+ * disposition view. Each column of the
  * list sorts and filters from its header; the server does both, so they reach
  * every row in the selection rather than only the page on screen. The same
  * records can be dispositioned offline in a workbook (Download Excel / Upload
@@ -44,6 +48,8 @@
     helperOn: false,
     helperToken: 0,
     suggestions: new Map(),
+    // The workspace's view: "split", "focus" (the disposition alone) or "list".
+    view: "split",
   };
   const HELPER_KEY = "gremlin.disposition.helper";
 
@@ -80,7 +86,11 @@
   }
 
   // ---- the list ---------------------------------------------------------------
-  async function load(selectId) {
+  // `selectId` is the work order to open once the page is in: LAST for the page's
+  // last, null for its first, undefined for the one open now. `step` says which
+  // way that moved through the list, for the slide it comes in with.
+  const LAST = "last";
+  async function load(selectId, step) {
     if (!state.asset) return;
     const token = ++state.token;
     beginLoading("Loading work orders…");
@@ -93,10 +103,13 @@
       state.suggestions.clear();
       state.page = data.page_index;
       $("disp-workspace").hidden = false;
+      measureBar();
       renderTable();
       const wanted = selectId !== undefined ? selectId : state.selectedId;
-      const target = rows().find((row) => row.mapped_record_id === wanted) || (selectId !== undefined ? rows()[0] : null);
-      if (target) selectRecord(target.mapped_record_id, { force: true });
+      const target = selectId === LAST
+        ? rows()[rows().length - 1]
+        : rows().find((row) => row.mapped_record_id === wanted) || (selectId !== undefined ? rows()[0] : null);
+      if (target) selectRecord(target.mapped_record_id, { force: true, direction: step });
       else clearEditor();
     } catch (err) {
       if (token === state.token) showBanner(err.message, "error");
@@ -135,11 +148,11 @@
         class: "std-row" + (row.mapped_record_id === state.selectedId ? " is-selected" : ""),
         tabindex: "0",
         "data-id": String(row.mapped_record_id),
-        onclick: () => selectRecord(row.mapped_record_id),
+        onclick: () => openRow(row.mapped_record_id),
         onkeydown: (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            selectRecord(row.mapped_record_id);
+            openRow(row.mapped_record_id);
           }
         },
       }, [
@@ -154,6 +167,7 @@
         el("td", { text: d.failure_mode_code || "" }),
       ]));
     });
+    drawRecordNav();
     const pages = data.max_page_index + 1;
     $("disp-page-status").textContent = data.displayed_count
       ? `Page ${data.page_index + 1} of ${pages} · ${data.displayed_count} rows`
@@ -362,6 +376,204 @@
     });
   }
 
+  // ---- views ----------------------------------------------------------------------
+  // How the workspace is laid out, chosen from the bar over it: the list and the
+  // disposition side by side; the disposition alone across the page, the work
+  // order beside its fields; or the list alone across the page. This browser
+  // remembers the view picked there. The change is animated where the browser can
+  // (a view transition: the cards glide to their new places, styled in
+  // standard_disposition.css), and not at all for anyone who asks for less motion.
+  const VIEWS = ["split", "focus", "list"];
+  const VIEW_KEY = "gremlin.disposition.view";
+  const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const moving = () => !REDUCED_MOTION.matches;
+
+  function storedView() {
+    try {
+      const view = localStorage.getItem(VIEW_KEY);
+      return VIEWS.includes(view) ? view : "split";
+    } catch (err) {
+      return "split";
+    }
+  }
+
+  // `remember` keeps the view for the next visit (a pick on the bar); a view the
+  // page moves to on its own (a row opened from the list, the tour) is not kept.
+  // `then` runs once the new view is drawn.
+  function setView(view, { animate = true, remember = true, then = null } = {}) {
+    if (!VIEWS.includes(view)) return;
+    if (remember) {
+      try {
+        localStorage.setItem(VIEW_KEY, view);
+      } catch (err) {
+        /* kept for this visit only */
+      }
+    }
+    if (view === state.view) return;
+    const workspace = $("disp-workspace");
+    const change = () => {
+      state.view = view;
+      drawView();
+      bringIntoView();
+      if (then) then();
+    };
+    const animated = animate && moving() && !workspace.hidden;
+    if (animated && typeof document.startViewTransition === "function") {
+      document.startViewTransition(change);
+      return;
+    }
+    change();
+    if (animated) {
+      workspace.classList.remove("is-view-changing");
+      void workspace.offsetWidth;
+      workspace.classList.add("is-view-changing");
+    }
+  }
+
+  function drawView() {
+    const workspace = $("disp-workspace");
+    VIEWS.forEach((view) => workspace.classList.toggle(`is-view-${view}`, view === state.view));
+    $("disp-views").querySelectorAll(".std-view-btn").forEach((button) => {
+      const on = button.dataset.view === state.view;
+      button.setAttribute("aria-checked", String(on));
+      button.tabIndex = on ? 0 : -1;
+    });
+    placeThumb();
+    drawRecordNav();
+  }
+
+  // A view opened from far down the page starts at its top, under the bar; the
+  // list opens at the work order picked.
+  function bringIntoView() {
+    const workspace = $("disp-workspace");
+    const top = workspace.getBoundingClientRect().top;
+    const stuckAt = parseFloat(getComputedStyle(workspace).getPropertyValue("--disp-bar-top")) || 82;
+    if (top < stuckAt) window.scrollBy(0, top - stuckAt - 8);
+    if (state.view !== "focus") {
+      const row = $("disp-table").querySelector("tr.std-row.is-selected");
+      if (row) {
+        const box = row.getBoundingClientRect();
+        const barBottom = $("disp-view-bar").getBoundingClientRect().bottom;
+        if (box.top < barBottom || box.bottom > window.innerHeight) row.scrollIntoView({ block: "center" });
+      }
+    }
+  }
+
+  // The thumb under the view picked, sliding there once it has first been placed.
+  function placeThumb() {
+    const views = $("disp-views");
+    const active = views.querySelector('.std-view-btn[aria-checked="true"]');
+    if (!active || !active.offsetWidth) return;
+    const thumb = $("disp-views-thumb");
+    thumb.style.width = `${active.offsetWidth}px`;
+    thumb.style.transform = `translateX(${active.offsetLeft - views.clientLeft}px)`;
+    if (!views.classList.contains("is-ready")) requestAnimationFrame(() => views.classList.add("is-ready"));
+  }
+
+  // Where the bar sticks (below the site's top bar, which is taller on a phone)
+  // and how tall it is, for the cards that stick below it.
+  function measureBar() {
+    const workspace = $("disp-workspace");
+    const topbar = document.querySelector(".topbar");
+    if (topbar && ["sticky", "fixed"].includes(getComputedStyle(topbar).position)) {
+      workspace.style.setProperty("--disp-bar-top", `${Math.round(topbar.getBoundingClientRect().height) + 8}px`);
+    }
+    const bar = $("disp-view-bar");
+    if (bar.offsetHeight) workspace.style.setProperty("--disp-bar-h", `${bar.offsetHeight}px`);
+    placeThumb();
+  }
+
+  // Where the open work order is in the whole list, for the disposition view,
+  // which has no list beside it to say so.
+  function drawRecordNav() {
+    const nav = $("disp-record-nav");
+    $("disp-view-hint").hidden = state.view !== "list";
+    const list = rows();
+    const index = list.findIndex((row) => row.mapped_record_id === state.selectedId);
+    nav.hidden = state.view !== "focus" || index < 0 || !state.data;
+    if (nav.hidden) return;
+    const data = state.data;
+    const row = list[index];
+    const position = data.page_index * (data.page_size || list.length) + index + 1;
+    const where = $("disp-record-where");
+    where.innerHTML = "";
+    where.appendChild(el("strong", { text: `Task ${row.task_id ?? "—"}` }));
+    where.appendChild(el("span", { class: "std-record-title", text: row.task_name || row.request_title || "" }));
+    where.appendChild(el("span", {
+      class: "std-record-count",
+      text: `${position.toLocaleString()} of ${Number(data.displayed_count || 0).toLocaleString()}`,
+    }));
+    $("disp-record-prev").disabled = position <= 1;
+    $("disp-record-next").disabled = position >= (data.displayed_count || 0);
+  }
+
+  // The work order before or after the open one, over the edge of the page too.
+  function stepRecord(delta) {
+    const list = rows();
+    const index = list.findIndex((row) => row.mapped_record_id === state.selectedId);
+    const direction = delta > 0 ? "next" : "prev";
+    const target = index >= 0 ? list[index + delta] : null;
+    if (target) {
+      selectRecord(target.mapped_record_id, { direction });
+      return;
+    }
+    const page = state.page + delta;
+    if (!state.data || page < 0 || page > state.data.max_page_index || !confirmDiscard()) return;
+    state.page = page;
+    state.form = null;
+    load(delta > 0 ? null : LAST, direction);
+  }
+
+  // The work order opened sliding in from the side it was stepped to.
+  function slideIn(body, direction) {
+    body.classList.remove("is-step-next", "is-step-prev");
+    if (!direction || !moving()) return;
+    void body.offsetWidth;
+    body.classList.add(`is-step-${direction}`);
+  }
+
+  function initViews() {
+    const views = $("disp-views");
+    const buttons = Array.from(views.querySelectorAll(".std-view-btn"));
+    buttons.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+    // A radio group: the arrows move along it, picking as they go.
+    views.addEventListener("keydown", (event) => {
+      const at = buttons.findIndex((button) => button.dataset.view === state.view);
+      const to = {
+        ArrowRight: at + 1,
+        ArrowDown: at + 1,
+        ArrowLeft: at - 1,
+        ArrowUp: at - 1,
+        Home: 0,
+        End: buttons.length - 1,
+      }[event.key];
+      if (to === undefined) return;
+      event.preventDefault();
+      const next = buttons[(to + buttons.length) % buttons.length];
+      setView(next.dataset.view);
+      next.focus();
+    });
+    $("disp-record-prev").addEventListener("click", () => stepRecord(-1));
+    $("disp-record-next").addEventListener("click", () => stepRecord(1));
+    $("disp-editor-body").addEventListener("animationend", (event) => {
+      if (event.target.parentNode === event.currentTarget) event.currentTarget.classList.remove("is-step-next", "is-step-prev");
+    });
+    $("disp-workspace").addEventListener("animationend", (event) => {
+      if (event.target.closest(".std-layout") && event.target.matches(".std-layout > .glass-card")) {
+        $("disp-workspace").classList.remove("is-view-changing");
+      }
+    });
+    if (typeof window.ResizeObserver === "function") {
+      const watch = new window.ResizeObserver(measureBar);
+      watch.observe($("disp-view-bar"));
+      if (document.querySelector(".topbar")) watch.observe(document.querySelector(".topbar"));
+    }
+    window.addEventListener("resize", measureBar);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(placeThumb);
+    state.view = storedView();
+    drawView();
+  }
+
   // ---- the editor ---------------------------------------------------------------
   function isDirty() {
     return Boolean(state.form && state.form.isDirty());
@@ -373,7 +585,8 @@
     return window.confirm(`Discard the unsaved changes to task ${row ? row.task_id : ""}?`);
   }
 
-  function selectRecord(id, { force } = {}) {
+  // `direction` ("next" or "prev") slides the work order in from that side.
+  function selectRecord(id, { force, direction } = {}) {
     if (!force && id === state.selectedId) return;
     if (!force && !confirmDiscard()) return;
     // A reload after somebody else's save keeps what is being typed here.
@@ -400,8 +613,18 @@
     const body = $("disp-editor-body");
     body.innerHTML = "";
     body.appendChild(state.form.node);
+    slideIn(body, direction);
+    drawRecordNav();
     loadHistory(row.mapped_record_id, state.form);
     if (state.helperOn) loadSuggestion(row, state.form);
+  }
+
+  // A row picked in the list: opened, and, from the list alone, shown in the
+  // disposition view, ready to fill in.
+  function openRow(id) {
+    selectRecord(id);
+    if (state.view !== "list" || state.selectedId !== id) return;
+    setView("focus", { remember: false, then: () => state.form && state.form.focus() });
   }
 
   // ---- the disposition helper ----------------------------------------------------
@@ -782,6 +1005,14 @@
     const body = $("disp-editor-body");
     body.innerHTML = "";
     body.appendChild(el("p", { class: "lda-hint", text: "Choose a work order from the list." }));
+    // With the list out of view, the way to it.
+    body.appendChild(el("button", {
+      type: "button",
+      class: "btn-secondary std-show-list",
+      text: "Show the work orders",
+      onclick: () => setView("list"),
+    }));
+    drawRecordNav();
   }
 
   async function loadHistory(id, form) {
@@ -810,7 +1041,8 @@
         return;
       }
       renderTable();
-      selectRecord(nextId === null ? saved.mapped_record_id : nextId, { force: true });
+      const moved = nextId !== null && nextId !== saved.mapped_record_id;
+      selectRecord(moved ? nextId : saved.mapped_record_id, { force: true, direction: moved ? "next" : null });
     } finally {
       endLoading();
     }
@@ -1433,6 +1665,18 @@
       body: "Narrows the list by task ID, dates, title, notes or the failure narrative, across every page of it.",
     },
     {
+      target: "#disp-views",
+      title: "Three views",
+      body:
+        "Work with the list and the disposition side by side, or give one of them the whole width. The page " +
+        "remembers the view you pick.",
+      points: [
+        ["Side by side", "the list on the left, the work order picked on the right."],
+        ["Disposition", "the work order beside its fields across the page, with the one before and after a click away."],
+        ["Work orders", "the list alone; pick a work order and it opens in the Disposition view."],
+      ],
+    },
+    {
       target: "#disp-list-card",
       title: "The work orders",
       body:
@@ -1522,15 +1766,25 @@
     },
   ];
 
+  // The tour shows the list and the disposition side by side, then puts back
+  // the view it found.
   function startTour() {
     if (!window.gremlinTour || window.gremlinTour.isOpen()) return;
     tourExampleTried = false;
-    window.gremlinTour.start(DISPOSITION_TOUR_STEPS, { seenKey: TOUR_SEEN_KEY });
+    const viewBefore = state.view;
+    setView("split", { animate: false, remember: false });
+    window.gremlinTour.start(DISPOSITION_TOUR_STEPS, {
+      seenKey: TOUR_SEEN_KEY,
+      // The view bar sticks below the top bar: a step is shown below both.
+      pinned: [".topbar", "#disp-view-bar"],
+      onEnd: () => setView(viewBefore, { remember: false }),
+    });
   }
 
   // ---- start -----------------------------------------------------------------------
   function init() {
     renderHeader();
+    initViews();
     $("disp-clear-filters").addEventListener("click", () => applyView({ filters: {} }));
     combobox = G.assetCombobox({
       input: $("lda-asset"),

@@ -83,34 +83,73 @@
   <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
 </section>
 
-<div class="std-layout" id="disp-workspace" hidden>
-  <section class="glass-card lda-card" id="disp-list-card" aria-labelledby="disp-list-title">
-    <h2 id="disp-list-title">Work orders</h2>
-    <p class="lda-hint" id="disp-list-summary"></p>
-    <p class="lda-hint">Sort or filter any column from the ▾ on its header; both reach every work order in the
-       list, not only this page.</p>
-    <div class="std-filter-status" id="disp-filter-status" hidden>
-      <span id="disp-filter-text"></span>
-      <button type="button" class="btn-secondary" id="disp-clear-filters">Clear column filters</button>
+{# The workspace's three views, switched from the bar over it: the list and the
+   disposition side by side; the disposition alone across the page, the work
+   order beside its fields; or the list alone across the page, where picking a
+   work order opens it in the disposition view. disposition.js remembers the
+   choice and animates the change. #}
+<div class="std-workspace is-view-split" id="disp-workspace" hidden>
+  <div class="std-view-bar" id="disp-view-bar">
+    <div class="std-views" id="disp-views" role="radiogroup" aria-label="View">
+      <span class="std-views-thumb" id="disp-views-thumb" aria-hidden="true"></span>
+      <button type="button" class="std-view-btn" role="radio" data-view="split" aria-checked="true"
+              title="The work orders and the disposition side by side">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="2" y="3.5" width="7" height="13" rx="1.6"/><rect x="11" y="3.5" width="7" height="13" rx="1.6"/></svg>
+        <span>Side by side</span>
+      </button>
+      <button type="button" class="std-view-btn" role="radio" data-view="focus" aria-checked="false" tabindex="-1"
+              title="The disposition across the page, the work order beside its fields">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="2" y="3.5" width="16" height="13" rx="1.6"/><path d="M8.5 6.5v7M11 7.5h4.5M11 10h4.5M11 12.5h3"/></svg>
+        <span>Disposition</span>
+      </button>
+      <button type="button" class="std-view-btn" role="radio" data-view="list" aria-checked="false" tabindex="-1"
+              title="The work orders across the page; pick one to disposition it">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+        <span>Work orders</span>
+      </button>
     </div>
-    <div class="lda-table-scroll">
-      <table class="lda-table" id="disp-table">
-        {# disposition.js draws the headers, each with its sort and filter menu. #}
-        <thead id="disp-table-head"><tr></tr></thead>
-        <tbody></tbody>
-      </table>
+    {# In the disposition view: where the open work order is in the list, and the ones either side. #}
+    <div class="std-record-nav" id="disp-record-nav" hidden>
+      <button type="button" class="std-record-step" id="disp-record-prev" aria-label="Previous work order" title="Previous work order">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M12 4.5 6.5 10l5.5 5.5"/></svg>
+      </button>
+      <p class="std-record-where" id="disp-record-where" aria-live="polite"></p>
+      <button type="button" class="std-record-step" id="disp-record-next" aria-label="Next work order" title="Next work order">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M8 4.5 13.5 10 8 15.5"/></svg>
+      </button>
     </div>
-    <div class="lda-pager">
-      <button type="button" class="btn-secondary" id="disp-prev">← Previous</button>
-      <span class="lda-page-status" id="disp-page-status"></span>
-      <button type="button" class="btn-secondary" id="disp-next">Next →</button>
-    </div>
-  </section>
+    <p class="lda-hint std-view-hint" id="disp-view-hint" hidden>Pick a work order to open it in the Disposition view.</p>
+  </div>
 
-  <section class="glass-card lda-card std-editor-card" id="disp-editor-card" aria-labelledby="disp-editor-title">
-    <h2 id="disp-editor-title">Disposition</h2>
-    <div id="disp-editor-body"><p class="lda-hint">Choose a work order from the list.</p></div>
-  </section>
+  <div class="std-layout">
+    <section class="glass-card lda-card" id="disp-list-card" aria-labelledby="disp-list-title">
+      <h2 id="disp-list-title">Work orders</h2>
+      <p class="lda-hint" id="disp-list-summary"></p>
+      <p class="lda-hint">Sort or filter any column from the ▾ on its header; both reach every work order in the
+         list, not only this page.</p>
+      <div class="std-filter-status" id="disp-filter-status" hidden>
+        <span id="disp-filter-text"></span>
+        <button type="button" class="btn-secondary" id="disp-clear-filters">Clear column filters</button>
+      </div>
+      <div class="lda-table-scroll">
+        <table class="lda-table" id="disp-table">
+          {# disposition.js draws the headers, each with its sort and filter menu. #}
+          <thead id="disp-table-head"><tr></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="lda-pager">
+        <button type="button" class="btn-secondary" id="disp-prev">← Previous</button>
+        <span class="lda-page-status" id="disp-page-status"></span>
+        <button type="button" class="btn-secondary" id="disp-next">Next →</button>
+      </div>
+    </section>
+
+    <section class="glass-card lda-card std-editor-card" id="disp-editor-card" aria-labelledby="disp-editor-title">
+      <h2 id="disp-editor-title">Disposition</h2>
+      <div id="disp-editor-body"><p class="lda-hint">Choose a work order from the list.</p></div>
+    </section>
+  </div>
 </div>
 
 {# The code lists are configuration the team owns. Editing one changes what the
