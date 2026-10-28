@@ -124,7 +124,7 @@ def test_no_interval_ever_spans_two_streams():
         assert interval.stream in stream_of[interval.start_record_id]
         if interval.end_record_id is not None:
             assert interval.stream in stream_of[interval.end_record_id]
-    assert analysis.streams == [("4002-S09", "Filter"), ("4002-S11", "Filter")]
+    assert analysis.streams == [("4002-S09", "Filter", ""), ("4002-S11", "Filter", "")]
 
 
 # --- spec section 5.2: what each event does to an interval --------------------
@@ -216,7 +216,7 @@ def test_a_failure_fixed_without_renewal_ends_the_life_and_starts_none():
     # The first reset ends the first life; nothing is a life again until the
     # replacement on Feb 10 renews the filter.
     assert failure_days(analysis) == [10, 30]
-    assert analysis.recurrent_streams == [("L", "Filter")]
+    assert analysis.recurrent_streams == [("L", "Filter", "")]
 
 
 def test_a_pm_reset_resets_only_the_items_it_lists():
@@ -227,7 +227,7 @@ def test_a_pm_reset_resets_only_the_items_it_lists():
     ]
     analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-02-01"))
     assert failure_days(analysis) == [31]
-    assert analysis.streams == [("L", "Filter")]
+    assert analysis.streams == [("L", "Filter", "")]
 
     events.insert(2, pm_reset("L", "2025-01-21", ["Filter", "Belt"]))
     analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-02-01"))
@@ -388,7 +388,7 @@ def test_life_hours_come_from_the_callback_per_stream():
         cutoff=at("2025-02-01"),
         life_hours=hours,
     )
-    assert seen == [("L", "Filter")]
+    assert seen == [("L", "Filter", "")]
 
 
 # --- spec section 5.3: warnings -------------------------------------------------

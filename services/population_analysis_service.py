@@ -50,6 +50,7 @@ GROUP_BY_DIMENSIONS = {
     # asset itself when it names none.
     "sub_asset": ("location", None, "Sub-asset"),
     "component": ("component_code", std.COMPONENT, "Component"),
+    "part": ("part_code", std.PART, "Part"),
     "failure_mode": ("failure_mode_code", std.FAILURE_MODE, "Failure mode"),
     "failure_mechanism": ("failure_mechanism_code", std.FAILURE_MECHANISM, "Failure mechanism"),
     "failure_cause": ("failure_cause_effective", std.FAILURE_CAUSE, "Failure cause"),
@@ -62,18 +63,20 @@ GROUP_BY_DIMENSIONS = {
 GROUP_BY_SELECTION = {
     "sub_asset": "locations",
     "component": "components",
+    "part": "parts",
     "failure_mode": "failure_modes",
     "failure_mechanism": "failure_mechanisms",
     "failure_cause": "failure_causes",
     "action": "actions",
     "category": "categories",
 }
-# The drill-down a Pareto click steps through (spec section 7.2).
-DRILL_DOWN = ("sub_asset", "component", "failure_mechanism")
+# The drill-down a Pareto click steps through (spec section 7.2): a component's
+# bar goes on to its parts when its work orders name any, else to its mechanisms.
+DRILL_DOWN = ("sub_asset", "component", "part", "failure_mechanism")
 # The Weibull view's Pareto: one bar per population a Weibull is best run on,
 # one sub-asset's one component failing by one mechanism.
 WEIBULL_PARETO = "weibull_population"
-WEIBULL_PARETO_LABEL = "Sub-asset, component and mechanism"
+WEIBULL_PARETO_LABEL = "Sub-asset, component (and part) and mechanism"
 RECORDS_LIMIT = 500
 NOT_CODED = "Not coded"
 
@@ -376,12 +379,18 @@ class PopulationAnalysisService:
         return str(value)
 
     @staticmethod
+    def _item(component: str, part: str | None) -> str:
+        """An item as a stream names it: the component, or "Compressor › Filter" for one of its parts."""
+
+        return f"{component} › {part}" if part else component
+
+    @staticmethod
     def _population_label(population: std.Population, tree: AssetTree) -> str:
         """The population in a few words, for headings and the report: "4002-S09 Dry-off oven · Filter · CONT"."""
 
         places = population.locations or population.assets
         parts = [", ".join(tree.label(number) for number in sorted(places))] if places else []
-        for attribute in ("components", "failure_mechanisms", "failure_modes", "failure_causes", "actions"):
+        for attribute in ("components", "parts", "failure_mechanisms", "failure_modes", "failure_causes", "actions"):
             values = getattr(population, attribute)
             if values:
                 parts.append(", ".join(sorted(values)))
@@ -569,6 +578,10 @@ class PopulationAnalysisService:
         next_level = None
         if group_by in DRILL_DOWN and DRILL_DOWN.index(group_by) + 1 < len(DRILL_DOWN):
             next_level = DRILL_DOWN[DRILL_DOWN.index(group_by) + 1]
+        # The part step only where some work order names a part: else a bar would
+        # drill to an empty Pareto, so it goes straight on to the mechanisms.
+        if next_level == "part" and not any(self._pattern_value(record, "part_code") for record in records):
+            next_level = DRILL_DOWN[DRILL_DOWN.index("part") + 1]
         return {
             "group_by": group_by,
             "label": label,
@@ -588,31 +601,36 @@ class PopulationAnalysisService:
         component.
         """
 
-        def key_of(record: Mapping[str, Any]) -> tuple[str, str, str] | None:
+        def key_of(record: Mapping[str, Any]) -> tuple[str, str, str, str] | None:
             component = self._pattern_value(record, "component_code")
             mechanism = self._pattern_value(record, "failure_mechanism_code")
             if record["location"] is None or component is None or mechanism is None:
                 return None
-            return (record["location"], component, mechanism)
+            return (record["location"], component, self._pattern_value(record, "part_code") or "", mechanism)
 
         places: dict[str, str] = {}
 
         def label_of(record: Mapping[str, Any]) -> str:
-            location, component, mechanism = key_of(record)
+            location, component, part, mechanism = key_of(record)
             places.setdefault(location, record["location_label"])
-            return f"{location} · {component} · {mechanism}"
+            return f"{location} · {self._item(component, part)} · {mechanism}"
 
         rows, not_coded = self._bars(records, key_of, label_of, codebook)
         one_place = len(places) == 1
         for row in rows:
-            location, component, mechanism = row["key"]
+            location, component, part, mechanism = row["key"]
             if one_place:
-                row["label"] = f"{component} · {mechanism}"
-            row["key"] = " | ".join(row["key"])
-            row["selection"] = {"locations": [location], "components": [component], "failure_mechanisms": [mechanism]}
+                row["label"] = f"{self._item(component, part)} · {mechanism}"
+            row["key"] = " | ".join(value for value in row["key"] if value)
+            # With no part, the component as a whole: exactly what the bar counted.
+            row["selection"] = {
+                "locations": [location], "components": [component], "parts": [part] if part else [],
+                "failure_mechanisms": [mechanism],
+            }
             row["parts"] = [
                 {"label": "Sub-asset", "value": places[location]},
                 {"label": "Component", "value": self._label(codebook, std.COMPONENT, component)},
+                *([{"label": "Part", "value": self._label(codebook, std.PART, part)}] if part else []),
                 {"label": "Failure mechanism", "value": self._label(codebook, std.FAILURE_MECHANISM, mechanism)},
             ]
         return {
@@ -1081,14 +1099,18 @@ class PopulationAnalysisService:
             if record["event_date"] > now:
                 future += 1
                 continue
-            streams.setdefault((record["location"], record["disposition"]["component_code"]), []).append(record)
+            disposition = record["disposition"]
+            streams.setdefault(
+                (record["location"], disposition["component_code"], disposition.get("part_code") or ""), []
+            ).append(record)
 
         groups = []
         pairs = []
-        for (location, component), events in sorted(streams.items()):
+        for (location, component, part), events in sorted(streams.items()):
             events.sort(key=lambda record: (record["event_date"], record["mapped_record_id"]))
             schedule = schedules[location]
-            label = f"{places.get(location, location)} · {component}"
+            item = self._item(component, part)
+            label = f"{places.get(location, location)} · {item}"
             repeats = 0
             for prior, repeat in zip(events, events[1:]):
                 fixed = prior["renewal_date"] or prior["event_date"]
@@ -1101,10 +1123,11 @@ class PopulationAnalysisService:
                 repeats += 1
                 raw = (repeat["event_date"] - fixed).total_seconds() / 3600.0
                 pairs.append({
-                    "group_key": f"{location}|{component}",
+                    "group_key": f"{location}|{item}",
                     "label": label,
                     "location": location,
                     "component": component,
+                    "part": part or None,
                     "prior_task_id": prior["task_id"],
                     "prior_mapped_record_id": prior["mapped_record_id"],
                     "prior_task_name": prior["task_name"],
@@ -1124,11 +1147,12 @@ class PopulationAnalysisService:
                 })
             intervals = len(events) - 1
             groups.append({
-                "key": f"{location}|{component}",
+                "key": f"{location}|{item}",
                 "label": label,
                 "location": location,
                 "location_label": places.get(location, location),
                 "component": component,
+                "part": part or None,
                 "schedule_name": schedule["schedule_name"],
                 "failures": len(events),
                 "intervals": intervals,
@@ -1263,6 +1287,7 @@ class PopulationAnalysisService:
             category=record["category"],
             location=record["location"],
             component=disposition["component_code"],
+            part=disposition.get("part_code"),
             mechanism=mechanism,
             mode=disposition["failure_mode_code"],
             cause=cause,
@@ -1370,7 +1395,8 @@ class PopulationAnalysisService:
                 "ordered_index": index,
                 "location": interval.location,
                 "component": interval.component,
-                "stream": f"{places.get(interval.location, interval.location)} · {interval.component}",
+                "part": interval.part or None,
+                "stream": f"{places.get(interval.location, interval.location)} · {self._item(interval.component, interval.part)}",
                 "observation_type": observation_type,
                 "failure_indicator": int(interval.end_type == std.FAILURE_END),
                 "is_right_censored": int(interval.end_type != std.FAILURE_END),
@@ -1405,7 +1431,7 @@ class PopulationAnalysisService:
 
         rows = []
         for sequence, note in enumerate(
-            sorted(analysis.notes, key=lambda note: ((note.location, note.component), note.when is None, note.when or datetime.min.replace(tzinfo=timezone.utc))),
+            sorted(analysis.notes, key=lambda note: ((note.location, note.component, note.part), note.when is None, note.when or datetime.min.replace(tzinfo=timezone.utc))),
             start=1,
         ):
             record = by_id.get(note.record_id) or {}
@@ -1413,7 +1439,8 @@ class PopulationAnalysisService:
                 "sequence": sequence,
                 "location": note.location,
                 "component": note.component,
-                "stream": f"{places.get(note.location, note.location)} · {note.component}",
+                "part": note.part or None,
+                "stream": f"{places.get(note.location, note.location)} · {self._item(note.component, note.part)}",
                 "record_id": note.record_id,
                 "mapped_record_id": note.record_id,
                 "task_id": record.get("task_id", note.task_id),
@@ -1542,18 +1569,21 @@ class PopulationAnalysisService:
                         "on the Disposition page (Show: Auto-dispositioned) before relying on this fit."
                     ),
                 })
-            stream_schedules = {location: schedules[location] for location, _ in main.streams}
+            stream_schedules = {location: schedules[location] for location, _, _ in main.streams}
             stream_rows = []
-            for location, component in main.streams:
-                stream_intervals = [i for i in main.intervals if i.stream == (location, component)]
+            for stream in main.streams:
+                location, component, part = stream
+                stream_intervals = [i for i in main.intervals if i.stream == stream]
                 stream_rows.append({
                     "location": location,
                     "location_label": places.get(location, location),
                     "component": component,
                     "component_name": codebook.name(std.COMPONENT, component),
+                    "part": part or None,
+                    "part_name": codebook.name(std.PART, part) if part else None,
                     "failures": sum(1 for i in stream_intervals if i.end_type == std.FAILURE_END),
                     "suspensions": sum(1 for i in stream_intervals if i.end_type == std.SUSPENSION_END),
-                    "recurrent": (location, component) in main.recurrent_streams,
+                    "recurrent": stream in main.recurrent_streams,
                     "schedule_name": schedules[location]["schedule_name"],
                 })
             fit = self._fit(main, "Unknown mechanisms as suspensions" if sensitivity else "Fit")
@@ -1839,7 +1869,7 @@ class PopulationAnalysisService:
         """The latest saved fit of each single-component population the page's population reaches.
 
         Only fits resting on at least the minimum number of failure lives, and only
-        populations of one component: a beta pooled over different items blurs
+        populations of one component, or one part: a beta pooled over different items blurs
         their patterns into one. Each carries what both rankings need -- the fit,
         its R², each stream's current life at the run's cutoff and the schedule it
         was counted on -- and whether it is still current.
@@ -1882,7 +1912,9 @@ class PopulationAnalysisService:
                 continue
             if row["beta"] is None or int(row["failure_count"] or 0) < MIN_WEIBULL_FAILURE_LIVES:
                 continue
-            if len(selection.get("components") or []) != 1:
+            # One kind of item: one part (in one component or pooled across several), or one component.
+            parts = selection.get("parts") or []
+            if (len(parts) != 1) if parts else (len(selection.get("components") or []) != 1):
                 continue
             if reach and not (set(selection.get("assets") or []) | set(selection.get("locations") or [])) & reach:
                 continue

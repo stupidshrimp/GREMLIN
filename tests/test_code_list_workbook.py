@@ -70,7 +70,8 @@ class DownloadTests(CodeListWorkbookFixture):
         codes = [r for r in rows[1:] if any(r)]
         self.assertEqual(len(codes), SEEDED)
         lists = [r[0] for r in codes]
-        self.assertEqual(list(dict.fromkeys(lists)), list(std.CODE_LISTS))
+        # The part list starts empty, so it has no rows yet.
+        self.assertEqual(list(dict.fromkeys(lists)), [code_list for code_list in std.CODE_LISTS if code_list != std.PART])
         belt = self.row(rows, "COMPONENT", "Belt")
         self.assertEqual(belt[rows[0].index("is_active")], "FALSE")
         wear = self.row(rows, "FAILURE_MECHANISM", "WEAR")
@@ -121,8 +122,8 @@ class DownloadTests(CodeListWorkbookFixture):
         self.assertIn("EXP-WEAR", lookup)
         self.assertIn("NO_FAULT_FOUND", lookup)
         # One semantic dropdown serves every row, so each meaning says which lists take it.
-        self.assertIn("Flags the record for review — components only", lookup)
-        self.assertIn("not known&apos; — components, failure mechanisms and failure causes only",
+        self.assertIn("Found on inspection, still running (detection: inspection) — failure modes only", lookup)
+        self.assertIn("not known&apos; — failure mechanisms and failure causes only",
                       lookup.replace("'", "&apos;"))
 
 
@@ -159,10 +160,14 @@ class UploadTests(CodeListWorkbookFixture):
         corr = self.code("FAILURE_MECHANISM", "CORR")
         self.assertEqual((corr["default_cause_code"], corr["iso_ref"], corr["sort_order"]), ("EXT", "2.2", 75))
         self.assertTrue(self.code("ACTION", "MODIFY")["renews_item"])
-        # A new code given no sort order goes to the end of its list, active.
+        # A new code given no sort order goes to the end of its list, active;
+        # components have no order and list by name.
+        actions = self.std.code_lists()["ACTION"]["codes"]
+        self.assertEqual(actions[-1]["code"], "MODIFY")
         components = self.std.code_lists()["COMPONENT"]["codes"]
-        self.assertEqual(components[-1]["code"], "Boiler")
-        self.assertTrue(components[-1]["is_active"])
+        names = [component["name"].lower() for component in components]
+        self.assertEqual(names, sorted(names))
+        self.assertTrue(self.code("COMPONENT", "Boiler")["is_active"])
         self.assertEqual(self.std.codebook().default_cause("CORR"), "EXT")
         with self.life.connect() as conn:
             stamped = {row[0] for row in conn.execute("SELECT code FROM disposition_code WHERE updated_by = 'ana'")}
@@ -182,6 +187,7 @@ class UploadTests(CodeListWorkbookFixture):
         header = rows[0].index
         replace = self.row(rows, "ACTION", "REPLACE")
         self.assertEqual(replace[header("renews_item")], "TRUE")
+        order = self.code("ACTION", "REPLACE")["sort_order"]
         replace[header("renews_item")] = None
         replace[header("sort_order")] = None
         filt = self.row(rows, "COMPONENT", "Filter")
@@ -190,7 +196,7 @@ class UploadTests(CodeListWorkbookFixture):
         filt[header("description")] = None
         self.upload(rows)
         self.assertTrue(self.code("ACTION", "REPLACE")["renews_item"])
-        self.assertEqual(self.code("COMPONENT", "Filter")["sort_order"], before["sort_order"])
+        self.assertEqual(self.code("ACTION", "REPLACE")["sort_order"], order)
         self.assertIsNone(self.code("COMPONENT", "Filter")["description"])
 
     def test_one_bad_row_refuses_the_whole_upload(self):
@@ -198,7 +204,7 @@ class UploadTests(CodeListWorkbookFixture):
         self.fill(rows, code_list="COMPONENT", code="Boiler", name="Boiler")
         self.fill(rows, code_list="COMPONENT", code="Light")
         self.row(rows, "COMPONENT", "Filter")[rows[0].index("name")] = "Filter element"
-        with self.assertRaisesRegex(ValueError, r"^Row \d+ \(Component Light\): Give the code a name\. Nothing was saved\.$"):
+        with self.assertRaisesRegex(ValueError, r"^Row \d+ \(Component Light\): Give the component a name\. Nothing was saved\.$"):
             self.upload(rows)
         self.assertIsNone(self.code("COMPONENT", "Boiler"))
         self.assertEqual(self.code("COMPONENT", "Filter")["name"], "Filter / strainer / sieve")
@@ -259,10 +265,10 @@ class UploadTests(CodeListWorkbookFixture):
             ({"code_list": "FAILURE_MECHANISM", "code": "CORR", "name": "Corrosion", "default_cause_code": "RUST"},
              r"default cause 'RUST' is not in the failure cause list"),
             ({"code_list": "ACTION", "code": "X", "name": "X", "semantic": "UNKNOWN"},
-             r"Semantic UNKNOWN is for components, failure mechanisms and failure causes only\. "
+             r"Semantic UNKNOWN is for failure mechanisms and failure causes only\. "
              r"An action can mean nothing to the engine: leave semantic blank\."),
             ({"code_list": "FAILURE_MECHANISM", "code": "OTH", "name": "Other", "semantic": "REVIEW"},
-             r"Semantic REVIEW is for components only\. A failure mechanism can mean UNKNOWN, or leave semantic blank\."),
+             r"Semantic REVIEW is not one GREMLIN knows\. A failure mechanism can mean UNKNOWN, or leave semantic blank\."),
             ({"code_list": "FAILURE_MODE", "code": "UNK", "name": "Unknown", "semantic": "NOPE"},
              r"Semantic NOPE is not one GREMLIN knows\. A failure mode can mean INSPECTION_FINDING or NO_FAULT_FOUND"),
             ({"code_list": "ACTION", "code": "X", "name": "X", "is_active": "maybe"}, r"is_active 'maybe' is not TRUE or FALSE"),

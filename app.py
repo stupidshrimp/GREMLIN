@@ -2631,7 +2631,10 @@ def api_save_code():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         raise LifeDataApiError("Send the code as JSON.", status_code=400)
-    return jsonify({"code_lists": _standard_service().save_code(payload, updated_by=_username())})
+    service = _standard_service()
+    # The code saved: for a component or part added by name, the one made from it.
+    code = service.put_code(payload, updated_by=_username())
+    return jsonify({"code_lists": service.code_lists(), "code": code})
 
 
 def _disposition_list_view() -> dict:

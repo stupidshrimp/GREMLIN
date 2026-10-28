@@ -442,9 +442,12 @@ def build_lexicon(codebook: std.CodeBook) -> Lexicon:
     lists = (std.COMPONENT, std.FAILURE_MECHANISM, std.FAILURE_MODE, std.ACTION, std.FAILURE_CAUSE)
     for code_list in lists:
         for entry in codebook.entries(code_list):
-            if entry.semantic in (std.SEMANTIC_UNKNOWN, std.SEMANTIC_REVIEW):
+            if entry.semantic in (std.SEMANTIC_UNKNOWN, std.SEMANTIC_REVIEW) or (
+                code_list in std.NAMED_CODE_LISTS and entry.name.strip().lower() in ("unknown", "other")
+            ):
                 # "Unknown" and "Other" are what is left when nothing is read,
-                # never something to read off a work order.
+                # never something to read off a work order. A component has no
+                # meaning to say so, so its name does.
                 continue
             key = f"{code_list}:{entry.code}"
             for segment in _name_segments(entry.name):

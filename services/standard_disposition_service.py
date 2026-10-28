@@ -99,6 +99,7 @@ EXCEL_DISPOSITION_COLUMNS = (
     "record_class",
     "sub_asset",
     "component_code",
+    "part_code",
     "failure_mechanism_code",
     "failure_mode_code",
     "action_code",
@@ -121,7 +122,8 @@ EXCEL_HEADER_ALIASES = {
     "disposition_category": ("category", "disposition"),
     "record_class": ("class",),
     "sub_asset": ("subasset", "location"),
-    "component_code": ("component",),
+    "component_code": ("component", "maintainable item"),
+    "part_code": ("part",),
     "failure_mechanism_code": ("failure mechanism", "mechanism", "mech"),
     "failure_mode_code": ("failure mode", "mode"),
     "action_code": ("action",),
@@ -134,6 +136,7 @@ EXCEL_HEADER_ALIASES = {
 # The code list behind each coded column's dropdown.
 EXCEL_CODE_COLUMNS = {
     "component_code": std.COMPONENT,
+    "part_code": std.PART,
     "failure_mechanism_code": std.FAILURE_MECHANISM,
     "failure_mode_code": std.FAILURE_MODE,
     "action_code": std.ACTION,
@@ -408,6 +411,17 @@ class StandardDispositionService:
         with self.life.connect() as conn:
             return load_codebook(conn)
 
+    @classmethod
+    def _comparable(cls, entry: std.CodeEntry) -> dict[str, Any]:
+        """A code as an upload compares it: a component or part by its name, description
+        and status alone, whatever ISO reference, meaning or order it was saved with
+        when components still had them."""
+
+        values = cls._entry_dict(entry)
+        if entry.code_list in std.NAMED_CODE_LISTS:
+            values.update(iso_ref=None, semantic=None, sort_order=0)
+        return values
+
     @staticmethod
     def _entry_dict(entry: std.CodeEntry) -> dict[str, Any]:
         return {
@@ -429,6 +443,7 @@ class StandardDispositionService:
         return {
             code_list: {
                 "label": std.CODE_LIST_LABELS[code_list],
+                "named": code_list in std.NAMED_CODE_LISTS,
                 "semantics": [
                     {"code": semantic, "label": std.SEMANTIC_LABELS[semantic], "short": std.SEMANTIC_SHORT_LABELS[semantic]}
                     for semantic in std.CODE_LIST_SEMANTICS[code_list]
@@ -443,6 +458,7 @@ class StandardDispositionService:
     # The wo_disposition column each list's codes are stored in.
     _CODE_COLUMNS = {
         std.COMPONENT: "component_code",
+        std.PART: "part_code",
         std.FAILURE_MECHANISM: "failure_mechanism_code",
         std.FAILURE_MODE: "failure_mode_code",
         std.ACTION: "action_code",
@@ -451,6 +467,7 @@ class StandardDispositionService:
     # The Population field a saved analysis keeps each list's codes in.
     _SELECTION_KEYS = {
         std.COMPONENT: "components",
+        std.PART: "parts",
         std.FAILURE_MECHANISM: "failure_mechanisms",
         std.FAILURE_MODE: "failure_modes",
         std.ACTION: "actions",
@@ -545,15 +562,19 @@ class StandardDispositionService:
         code_list = (_clean(values.get("code_list")) or "").upper()
         if code_list not in std.CODE_LISTS:
             raise ValueError(f"Choose one of the code lists: {', '.join(std.CODE_LISTS)}.")
+        # A component or part is a name and a description: no ISO reference,
+        # meaning or order, and a new one's code is made from its name (code None
+        # here, for put_code to make).
+        named = code_list in std.NAMED_CODE_LISTS
         code = _clean(values.get("code"))
-        if code is None or not std.CODE_PATTERN.match(code):
+        if (code is None and not named) or (code is not None and not std.CODE_PATTERN.match(code)):
             raise ValueError(
                 "A code is 1-32 letters, digits, '-', '_' or '.', starting with a letter or digit (e.g. CONT, MNT-INT)."
             )
         name = std.clean_text(values.get("name"))
         if name is None:
-            raise ValueError("Give the code a name.")
-        semantic = _clean(values.get("semantic"))
+            raise ValueError(f"Give the {std.CODE_LIST_LABELS[code_list].lower()} a name." if named else "Give the code a name.")
+        semantic = None if named else _clean(values.get("semantic"))
         if semantic is not None:
             semantic = semantic.upper()
             if semantic not in std.CODE_LIST_SEMANTICS[code_list]:
@@ -562,7 +583,7 @@ class StandardDispositionService:
         if code_list != std.FAILURE_MECHANISM:
             default_cause = None
         try:
-            sort_order = int(values.get("sort_order") or 0)
+            sort_order = 0 if named else int(values.get("sort_order") or 0)
         except (TypeError, ValueError):
             raise ValueError("Sort order must be a whole number.") from None
         is_active = values.get("is_active")
@@ -571,7 +592,7 @@ class StandardDispositionService:
             "code": code,
             "name": name,
             "description": std.clean_text(values.get("description")),
-            "iso_ref": std.clean_text(values.get("iso_ref")),
+            "iso_ref": None if named else std.clean_text(values.get("iso_ref")),
             "default_cause_code": default_cause,
             "renews_item": bool(values.get("renews_item")) if code_list == std.ACTION else False,
             "semantic": semantic,
@@ -627,8 +648,28 @@ class StandardDispositionService:
         that use it still read.
         """
 
-        fields = self._code_fields(values)
+        self.put_code(values, updated_by=updated_by)
+        return self.code_lists()
+
+    def put_code(self, values: Mapping[str, Any], *, updated_by: str | None = None) -> str:
+        """``save_code``, returning the code saved: for a component or part added by
+        name alone, the code made from its name.
+
+        A new component or part may not share its name with one already in its
+        list, in any capitals: that is the same item twice.
+        """
+
+        fields = dict(self._code_fields(values))
         with self.life.write_connection() as conn:
+            if fields["code_list"] in std.NAMED_CODE_LISTS and fields["code"] is None:
+                rows = conn.execute(
+                    "SELECT code, name FROM disposition_code WHERE code_list = ?", (fields["code_list"],)
+                ).fetchall()
+                same = next((row for row in rows if row[1].casefold() == fields["name"].casefold()), None)
+                if same is not None:
+                    label = std.CODE_LIST_LABELS[fields["code_list"]].lower()
+                    raise ValueError(f"The {label} list already has {same[1]!r}; use that one, or name this one differently.")
+                fields["code"] = std.code_from_name(fields["name"], [row[0] for row in rows])
             default_cause = fields["default_cause_code"]
             if default_cause is not None:
                 cause = conn.execute(
@@ -638,7 +679,7 @@ class StandardDispositionService:
                 if cause is None:
                     raise ValueError(f"Default cause {default_cause!r} is not in the failure cause list.")
             self._write_code(conn, fields, updated_by)
-        return self.code_lists()
+        return fields["code"]
 
     def _code_use_counts(self, conn: sqlite3.Connection) -> dict[tuple[str, str], int]:
         """How many work orders' current dispositions use each code, counted as ``code_uses`` counts one."""
@@ -700,6 +741,9 @@ class StandardDispositionService:
                 # Only an action renews items; on any other list the column is left empty rather than FALSE.
                 if code_list != std.ACTION:
                     values["renews_item"] = None
+                # A component or part is a name and a description, and lists by name.
+                if code_list in std.NAMED_CODE_LISTS:
+                    values.update(iso_ref=None, semantic=None, sort_order=None)
                 sheet_rows.append([values[column] for column in CODE_EXCEL_COLUMNS])
         written = len(sheet_rows) - 1
         sheet_rows.extend([None] * len(CODE_EXCEL_COLUMNS) for _ in range(CODE_EXCEL_BLANK_ROWS))
@@ -834,6 +878,12 @@ class StandardDispositionService:
             for entry in codebook.entries(code_list, include_inactive=True)
         }
         spelled = {(code_list, code.casefold()): code for code_list, code in existing}
+        # For the components and parts a row names without a code.
+        taken = {code_list: {code for listed, code in existing if listed == code_list} for code_list in std.CODE_LISTS}
+        by_name = {
+            code_list: {entry.name.casefold(): entry.code for (listed, _), entry in existing.items() if listed == code_list}
+            for code_list in std.NAMED_CODE_LISTS
+        }
         seen: dict[tuple[str, str], int] = {}
         uploaded: list[tuple[int, str, dict[str, Any], bool]] = []
         # Every row is checked before any is refused, so one upload names them all.
@@ -851,13 +901,22 @@ class StandardDispositionService:
             if cells.get("semantic") is not None:
                 cells["semantic"] = read_semantic(cells["semantic"])
             list_text, code = cells["code_list"], cells["code"]
-            if list_text is None or code is None:
-                problems.append((row_number, f"Row {row_number}: give the code's list and the code itself."))
+            code_list = lists_by_key.get(list_key(list_text)) if list_text is not None else None
+            named = code_list in std.NAMED_CODE_LISTS
+            if list_text is None or (code is None and not (named and cells.get("name"))):
+                problems.append((row_number, f"Row {row_number}: give the code's list and the code itself."
+                                 + (" A component or part needs only its name." if named else "")))
                 continue
-            code_list = lists_by_key.get(list_key(list_text))
             if code_list is None:
                 problems.append((row_number, f"Row {row_number}: {list_text!r} is not a code list. Use one of {', '.join(std.CODE_LISTS)}."))
                 continue
+            if code is None:
+                # A component or part may come by its name alone: the one of that name
+                # already, or a new one under a code made from the name.
+                code = by_name[code_list].get(cells["name"].casefold()) or std.code_from_name(cells["name"], taken[code_list])
+            taken[code_list].add(code)
+            if named and cells.get("name"):
+                by_name[code_list].setdefault(cells["name"].casefold(), code)
             label = std.CODE_LIST_LABELS[code_list]
             where = f"Row {row_number} ({label} {code})"
             folded = (code_list, code.casefold())
@@ -944,7 +1003,7 @@ class StandardDispositionService:
             }
             if before is None:
                 added.append(summary)
-            elif any(fields[key] != self._entry_dict(before)[key] for key in _CODE_FIELDS):
+            elif any(fields[key] != self._comparable(before)[key] for key in _CODE_FIELDS):
                 updated.append(summary)
         if added or updated:
             changed = {(item["code_list"], item["code"]) for item in (*added, *updated)}
@@ -1004,7 +1063,7 @@ class StandardDispositionService:
         CASE WHEN m.downtime_hours IS NULL THEN NULL WHEN m.downtime_hours < 0 THEN 0 ELSE m.downtime_hours END AS downtime_hours,
         TRIM(m.asset_number) AS asset_number, m.asset_name,
         COALESCE(m.record_class_final, m.record_class_auto) AS record_class, m.record_class_auto,
-        w.wo_disposition_id, w.disposition_category, w.sub_asset, w.component_code, w.failure_mechanism_code,
+        w.wo_disposition_id, w.disposition_category, w.sub_asset, w.component_code, w.part_code, w.failure_mechanism_code,
         w.failure_mode_code, w.action_code, w.evidence, w.failure_cause_code, w.renewed_items_json, w.qty,
         w.linked_mapped_record_id, w.disposition_note, w.legacy_disposition_category,
         w.legacy_failure_mode, w.legacy_failure_mechanism, w.source, w.review_flag, w.decided_by, w.decided_at,
@@ -1100,6 +1159,7 @@ class StandardDispositionService:
                 "disposition_category": std.NOT_REVIEWED,
                 "sub_asset": None,
                 "component_code": None,
+                "part_code": None,
                 "failure_mechanism_code": None,
                 "failure_mode_code": None,
                 "action_code": None,
@@ -1123,6 +1183,7 @@ class StandardDispositionService:
             "disposition_category": row["disposition_category"] or std.NOT_REVIEWED,
             "sub_asset": row["sub_asset"],
             "component_code": row["component_code"],
+            "part_code": row["part_code"],
             "failure_mechanism_code": row["failure_mechanism_code"],
             "failure_mode_code": row["failure_mode_code"],
             "action_code": row["action_code"],
@@ -1380,7 +1441,7 @@ class StandardDispositionService:
         with self.life.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT disposition_category, sub_asset, component_code, failure_mechanism_code, failure_mode_code,
+                SELECT disposition_category, sub_asset, component_code, part_code, failure_mechanism_code, failure_mode_code,
                        action_code, evidence, failure_cause_code, renewed_items_json, qty,
                        linked_mapped_record_id, disposition_note, source, review_flag, decided_by, decided_at, is_current
                 FROM wo_disposition WHERE mapped_record_id = ?
@@ -1744,6 +1805,7 @@ class StandardDispositionService:
             "record_class": record["record_class"],
             "sub_asset": disposition["sub_asset"],
             "component_code": disposition["component_code"],
+            "part_code": disposition["part_code"],
             "failure_mechanism_code": disposition["failure_mechanism_code"],
             "failure_mode_code": disposition["failure_mode_code"],
             "action_code": disposition["action_code"],
@@ -2147,6 +2209,7 @@ class StandardDispositionService:
                         "record_class": row["record_class"],
                         "sub_asset": row["sub_asset"],
                         "component_code": row["component_code"],
+                        "part_code": row["part_code"],
                         "failure_mechanism_code": row["failure_mechanism_code"],
                         "failure_mode_code": row["failure_mode_code"],
                         "action_code": row["action_code"],

@@ -304,11 +304,11 @@ class CodeListWorkbookMistakeTests(StandardDispositionFixture):
         self.sheet.cell(1, 1).value = "Code lists, as of today"
         row = self.sheet.max_row + 1
         headings = {cell.value: cell.column for cell in self.sheet[2]}
-        for heading, value in {"List": "Component", "code": "Gizmo", "name": "Gizmo", "Means": "Unknown"}.items():
+        for heading, value in {"List": "Failure mechanism", "code": "GIZMO", "name": "Gizmo", "Means": "Unknown"}.items():
             self.sheet.cell(row, headings[heading]).value = value
         outcome = self.upload()
-        self.assertEqual([item["code"] for item in outcome["added"]], ["Gizmo"])
-        self.assertEqual(self.code("COMPONENT", "Gizmo")["semantic"], "UNKNOWN")
+        self.assertEqual([item["code"] for item in outcome["added"]], ["GIZMO"])
+        self.assertEqual(self.code("FAILURE_MECHANISM", "GIZMO")["semantic"], "UNKNOWN")
 
     def test_a_column_twice_refuses_the_workbook(self):
         self.sheet.cell(1, self.sheet.max_column + 1).value = "Code"

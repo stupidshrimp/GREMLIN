@@ -61,6 +61,7 @@ _STATEMENTS = (
         disposition_category TEXT NOT NULL DEFAULT 'NOT_REVIEWED',
         sub_asset TEXT,
         component_code TEXT,
+        part_code TEXT,
         failure_mechanism_code TEXT,
         failure_mode_code TEXT,
         action_code TEXT,
@@ -174,6 +175,8 @@ def ensure_standard_disposition_schema(conn: sqlite3.Connection) -> None:
 _ADDED_COLUMNS = {
     "wo_disposition": {
         "record_class": "TEXT",
+        # The part of the component (maintainable item) the work was on, if any.
+        "part_code": "TEXT",
         # The disposition helper's batch run that saved this disposition, and
         # what the helper suggested when one was on screen for the save.
         "helper_run_id": "INTEGER",
@@ -752,18 +755,19 @@ def insert_wo_disposition(conn: sqlite3.Connection, mapped_record_id: int, value
         conn.execute(
             """
             INSERT INTO wo_disposition(
-                mapped_record_id, disposition_category, sub_asset, component_code, failure_mechanism_code,
+                mapped_record_id, disposition_category, sub_asset, component_code, part_code, failure_mechanism_code,
                 failure_mode_code, action_code, evidence, failure_cause_code, renewed_items_json, qty,
                 linked_mapped_record_id, disposition_note, record_class, legacy_disposition_category,
                 legacy_failure_mode, legacy_failure_mechanism, source, migrated_from_event_disposition_id,
                 review_flag, decided_by, helper_run_id, suggestion_json, replaced_wo_disposition_id, is_current
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 mapped_record_id,
                 values.get("disposition_category") or std.NOT_REVIEWED,
                 values.get("sub_asset"),
                 values.get("component_code"),
+                values.get("part_code"),
                 values.get("failure_mechanism_code"),
                 values.get("failure_mode_code"),
                 values.get("action_code"),

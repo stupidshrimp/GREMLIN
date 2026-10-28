@@ -48,7 +48,10 @@ class PopulationViewTests(StandardDispositionFixture):
             "4002-S11 · Nozzle · PLUG": (1, 2.0),
         })
         top = pareto["rows"][0]
-        self.assertEqual(top["selection"], {"locations": [S09], "components": ["Filter"], "failure_mechanisms": ["CONT"]})
+        # No part: the component as a whole, which is what the bar counted.
+        self.assertEqual(
+            top["selection"], {"locations": [S09], "components": ["Filter"], "parts": [], "failure_mechanisms": ["CONT"]}
+        )
         self.assertEqual([part["label"] for part in top["parts"]], ["Sub-asset", "Component", "Failure mechanism"])
         self.assertEqual(pareto["not_coded"]["count"], 0)
         self.assertEqual(summary["readiness"]["failures"], 7)

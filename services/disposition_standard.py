@@ -120,14 +120,23 @@ PM_RECORD_CLASSES = ("PM", "PM_RESET_CANDIDATE")
 # ---------------------------------------------------------------------------
 # Code lists (spec section 3) -- configuration, stored in disposition_code
 # ---------------------------------------------------------------------------
+# A component is the maintainable item (ISO 14224's level 8: a compressor, a
+# blower); a part is what it is made of (level 9: a filter, an O-ring), from one
+# list shared by every component, so "every filter on S09" can be asked whatever
+# each filter is in.
 COMPONENT = "COMPONENT"
+PART = "PART"
 FAILURE_MECHANISM = "FAILURE_MECHANISM"
 FAILURE_MODE = "FAILURE_MODE"
 FAILURE_CAUSE = "FAILURE_CAUSE"
 ACTION = "ACTION"
-CODE_LISTS = (COMPONENT, FAILURE_MECHANISM, FAILURE_MODE, FAILURE_CAUSE, ACTION)
+CODE_LISTS = (COMPONENT, PART, FAILURE_MECHANISM, FAILURE_MODE, FAILURE_CAUSE, ACTION)
+# The lists whose codes are just a name and a description: no ISO reference,
+# meaning or order (they list by name), and a new one's code is made from its name.
+NAMED_CODE_LISTS = (COMPONENT, PART)
 CODE_LIST_LABELS = {
     COMPONENT: "Component",
+    PART: "Part",
     FAILURE_MECHANISM: "Failure mechanism",
     FAILURE_MODE: "Failure mode",
     FAILURE_CAUSE: "Failure cause",
@@ -138,12 +147,14 @@ CODE_LIST_LABELS = {
 # string and name; the engine only ever asks these questions of them, so a list
 # can be renamed or extended without touching the method.
 SEMANTIC_UNKNOWN = "UNKNOWN"
+# Once a component's; no list takes it now, but a component saved with it still reads.
 SEMANTIC_REVIEW = "REVIEW"
 SEMANTIC_INSPECTION_FINDING = "INSPECTION_FINDING"
 SEMANTIC_NO_FAULT_FOUND = "NO_FAULT_FOUND"
 SEMANTIC_INDUCED = "INDUCED"
 CODE_LIST_SEMANTICS = {
-    COMPONENT: (SEMANTIC_UNKNOWN, SEMANTIC_REVIEW),
+    COMPONENT: (),
+    PART: (),
     FAILURE_MECHANISM: (SEMANTIC_UNKNOWN,),
     FAILURE_MODE: (SEMANTIC_INSPECTION_FINDING, SEMANTIC_NO_FAULT_FOUND),
     FAILURE_CAUSE: (SEMANTIC_UNKNOWN, SEMANTIC_INDUCED),
@@ -151,7 +162,6 @@ CODE_LIST_SEMANTICS = {
 }
 SEMANTIC_LABELS = {
     SEMANTIC_UNKNOWN: "Means 'not known'",
-    SEMANTIC_REVIEW: "Flags the record for review",
     SEMANTIC_INSPECTION_FINDING: "Found on inspection, still running (detection: inspection)",
     SEMANTIC_NO_FAULT_FOUND: "No fault found (never a FAILURE)",
     SEMANTIC_INDUCED: "Induced failure (maintenance or installation)",
@@ -159,7 +169,6 @@ SEMANTIC_LABELS = {
 # The same, as a word or two for a chip in a list of codes.
 SEMANTIC_SHORT_LABELS = {
     SEMANTIC_UNKNOWN: "Unknown",
-    SEMANTIC_REVIEW: "Review",
     SEMANTIC_INSPECTION_FINDING: "Inspection finding",
     SEMANTIC_NO_FAULT_FOUND: "No fault found",
     SEMANTIC_INDUCED: "Induced",
@@ -168,6 +177,22 @@ SEMANTIC_SHORT_LABELS = {
 # A code is a short stable key: it is what dispositions store and what a saved
 # population definition names, so it never changes once used. Names can.
 CODE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,31}$")
+
+
+def code_from_name(name: str, taken: Iterable[str] = ()) -> str:
+    """The code a component or part named ``name`` is kept under: its words run
+    together ("Air compressor" -> AirCompressor), cut to fit, and numbered on
+    when ``taken`` (in any capitals) already has it."""
+
+    words = re.findall(r"[A-Za-z0-9]+", name or "")
+    base = "".join(word[:1].upper() + word[1:] for word in words)[:32] or "Item"
+    used = {code.casefold() for code in taken}
+    code, number = base, 1
+    while code.casefold() in used:
+        number += 1
+        suffix = str(number)
+        code = base[: 32 - len(suffix)] + suffix
+    return code
 
 
 @dataclass(frozen=True)
@@ -224,9 +249,11 @@ SEED_CODES: dict[str, tuple[CodeEntry, ...]] = {
         ("Electrical", "Electrical: fuse / breaker / wiring / disconnect"),
         ("Door", "Door / guard / cover / latch / hardware"),
         ("HVAC", "HVAC / compressor / chiller"),
-        ("Other", "Other (flag for review)", {"semantic": SEMANTIC_REVIEW}),
-        ("Unknown", "Unknown", {"semantic": SEMANTIC_UNKNOWN}),
+        ("Other", "Other"),
+        ("Unknown", "Unknown"),
     )),
+    # Parts start empty: the team adds them as work orders name them.
+    PART: (),
     FAILURE_MECHANISM: _seed(FAILURE_MECHANISM, (
         ("WEAR", "Wear", {"iso_ref": "2.4", "default_cause_code": "EXP-WEAR"}),
         ("PLUG", "Plugged / blocked", {"iso_ref": "5.1", "default_cause_code": "EXP-WEAR"}),
@@ -291,6 +318,9 @@ class CodeBook:
 
     def entries(self, code_list: str, *, include_inactive: bool = False) -> list[CodeEntry]:
         rows = [entry for entry in self._by_list.get(code_list, {}).values() if include_inactive or entry.is_active]
+        if code_list in NAMED_CODE_LISTS:
+            # Components and parts have no order of their own: they list by name.
+            return sorted(rows, key=lambda entry: (entry.name.lower(), entry.code))
         return sorted(rows, key=lambda entry: (entry.sort_order, entry.name.lower(), entry.code))
 
     def name(self, code_list: str, code: str | None) -> str | None:
@@ -325,6 +355,7 @@ FIELD_LABELS = {
     "disposition_category": "Disposition category",
     "sub_asset": "Sub-asset",
     "component_code": "Component",
+    "part_code": "Part",
     "failure_mechanism_code": "Failure mechanism",
     "failure_mode_code": "Failure mode",
     "action_code": "Action",
@@ -337,6 +368,7 @@ FIELD_LABELS = {
 }
 CODED_FIELDS = (
     ("component_code", COMPONENT),
+    ("part_code", PART),
     ("failure_mechanism_code", FAILURE_MECHANISM),
     ("failure_mode_code", FAILURE_MODE),
     ("action_code", ACTION),
@@ -407,6 +439,7 @@ def normalize_disposition(
         "disposition_category": category,
         "sub_asset": None,
         "component_code": None,
+        "part_code": None,
         "failure_mechanism_code": None,
         "failure_mode_code": None,
         "action_code": None,
@@ -470,6 +503,8 @@ def normalize_disposition(
 
     for field_name, code_list in CODED_FIELDS:
         result[field_name] = checked_code(field_name, code_list)
+    if result["part_code"] is not None and result["component_code"] is None and clean_text(values.get("component_code")) is None:
+        problems.append("A part needs its component: choose the component (the maintainable item) the part is in.")
     evidence = clean_text(values.get("evidence"))
     if evidence is not None:
         evidence = evidence.upper()
@@ -514,8 +549,10 @@ def normalize_disposition(
             "Renewed items repeats the component: list only the other items the work renewed. Whether the "
             "component itself was renewed follows from the action."
         )
-    if category == PM_RESET and not renewed:
-        problems.append("PM_RESET needs the renewed items: each one gets a fresh life clock.")
+    if category == PM_RESET and not renewed and result["part_code"] is None:
+        problems.append(
+            "PM_RESET needs the renewed items, or the part it renewed: each one gets a fresh life clock."
+        )
     result["renewed_items"] = tuple(renewed)
 
     qty = values.get("qty")
@@ -551,6 +588,7 @@ def derive_fields(
     mechanism = disposition.get("failure_mechanism_code")
     cause = disposition.get("failure_cause_code") or codebook.default_cause(mechanism)
     component = disposition.get("component_code")
+    part = disposition.get("part_code")
     detection = None
     if category not in (DUPLICATE_MISFILED, NOT_REVIEWED):
         if codebook.has_semantic(FAILURE_MODE, disposition.get("failure_mode_code"), SEMANTIC_INSPECTION_FINDING):
@@ -565,7 +603,7 @@ def derive_fields(
         "failure_cause_is_override": bool(disposition.get("failure_cause_code")),
         "detection_method": detection,
         "renews_item": codebook.renews(disposition.get("action_code")),
-        "renewal_stream_key": f"{location} | {component}" if component else None,
+        "renewal_stream_key": (f"{location} | {component}" + (f" | {part}" if part else "")) if component else None,
     }
 
 
@@ -677,6 +715,7 @@ POPULATION_DIMENSIONS = (
     ("assets", "asset", "asset"),
     ("locations", "location", "location"),
     ("components", "component_code", "component"),
+    ("parts", "part_code", "part"),
     ("failure_modes", "failure_mode_code", "failure_mode"),
     ("failure_mechanisms", "failure_mechanism_code", "failure_mech"),
     ("failure_causes", "failure_cause_effective", "failure_cause"),
@@ -693,8 +732,10 @@ INDUCED_SWITCH_LABEL = "Count induced failures (installation and maintenance err
 class Population:
     """Which work orders an analysis reads.
 
-    ``assets`` picks the records (an asset and its sub-assets); ``locations`` and
-    ``components`` pick the renewal streams that are pooled; ``failure_mechanisms``
+    ``assets`` picks the records (an asset and its sub-assets); ``locations``,
+    ``components`` and ``parts`` pick the renewal streams that are pooled (with no
+    part picked, each component as a whole; with parts, those parts, in the
+    components picked or in any); ``failure_mechanisms``
     picks which failures in those streams count as failures. Empty means no
     restriction. ``failure_modes``, ``failure_causes``, ``actions`` and
     ``categories`` narrow the pattern views only (``PATTERN_ONLY_DIMENSIONS``): a
@@ -706,6 +747,7 @@ class Population:
     assets: frozenset[str] = frozenset()
     locations: frozenset[str] = frozenset()
     components: frozenset[str] = frozenset()
+    parts: frozenset[str] = frozenset()
     failure_modes: frozenset[str] = frozenset()
     failure_mechanisms: frozenset[str] = frozenset()
     failure_causes: frozenset[str] = frozenset()
@@ -736,6 +778,7 @@ class Population:
             assets=values_of("assets"),
             locations=values_of("locations"),
             components=values_of("components"),
+            parts=values_of("parts"),
             failure_modes=values_of("failure_modes"),
             failure_mechanisms=values_of("failure_mechanisms"),
             failure_causes=values_of("failure_causes"),
@@ -749,6 +792,7 @@ class Population:
             "assets": sorted(self.assets),
             "locations": sorted(self.locations),
             "components": sorted(self.components),
+            "parts": sorted(self.parts),
             "failure_modes": sorted(self.failure_modes),
             "failure_mechanisms": sorted(self.failure_mechanisms),
             "failure_causes": sorted(self.failure_causes),
@@ -757,10 +801,13 @@ class Population:
             "exclude_induced": self.exclude_induced,
         }
 
-    def stream_selected(self, location: str, component: str) -> bool:
-        return (not self.locations or location in self.locations) and (
-            not self.components or component in self.components
-        )
+    def stream_selected(self, location: str, component: str, part: str = "") -> bool:
+        """Whether a stream is pooled: a component's own stream when no part is
+        picked, else the picked parts' streams."""
+
+        if (self.locations and location not in self.locations) or (self.components and component not in self.components):
+            return False
+        return part in self.parts if self.parts else not part
 
     def for_life_analysis(self) -> "Population":
         """This population as the Weibull reads it: without the pattern-only narrowing."""
@@ -840,7 +887,8 @@ ROLE_EXCLUDED = "EXCLUDED"
 # below about 5-6, so a fit on exactly five is made and still flagged.
 SMALL_N_FAILURES = 6
 
-StreamKey = tuple[str, str]
+# (location, component, part): the part is "" for the component as a whole.
+StreamKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -852,6 +900,7 @@ class StreamEvent:
     location: str
     component: str | None
     mechanism: str | None = None
+    part: str | None = None
     mode: str | None = None
     cause: str | None = None
     action: str | None = None
@@ -879,10 +928,11 @@ class LifeInterval:
     end_record_id: int | None
     life_hours: float
     raw_hours: float
+    part: str = ""
 
     @property
     def stream(self) -> StreamKey:
-        return (self.location, self.component)
+        return (self.location, self.component, self.part)
 
     @property
     def raw_days(self) -> float:
@@ -898,6 +948,7 @@ class StreamEventNote:
     when: datetime | None
     role: str
     note: str
+    part: str = ""
 
 
 @dataclass
@@ -938,32 +989,68 @@ class _Touch:
     primary: bool
     exposure_end: datetime | None
     renewal: datetime | None
+    # Renewed because the whole component it is part of was.
+    with_component: bool = False
 
 
 def stream_touches(event: StreamEvent) -> list[tuple[StreamKey, _Touch]]:
     """The streams an event touches, and how.
 
-    A failure touches its component's stream (ending the exposure when it was
-    found, renewing when the repair finished if the action renews), and every other
-    item it renewed (exposure ending with the stop, renewed with the repair). A PM
-    reset touches each item it renewed: the item ran until the PM was done, which
-    is both when its exposure ends and when its new life starts.
+    A failure touches its item's stream -- its part's when it names one, else its
+    component's -- ending the exposure when it was found and renewing when the
+    repair finished if the action renews; and every other component it renewed
+    (exposure ending with the stop, renewed with the repair). A PM reset touches
+    each component it renewed, and the part it names: the item ran until the PM
+    was done, which is both when its exposure ends and when its new life starts.
+
+    A renewed component's parts are renewed with it; ``build_renewal_intervals``
+    adds those touches, since one event can't know which parts a component has.
     """
 
     touches: list[tuple[StreamKey, _Touch]] = []
+    part = event.part or ""
     if event.category == FAILURE:
         if event.component:
             touches.append((
-                (event.location, event.component),
+                (event.location, event.component, part),
                 _Touch(event, True, event.event_date, event.renewal_date if event.renews_item else None),
             ))
         for item in event.renewed_items:
             if item != event.component:
-                touches.append(((event.location, item), _Touch(event, False, event.event_date, event.renewal_date)))
+                touches.append(((event.location, item, ""), _Touch(event, False, event.event_date, event.renewal_date)))
     elif event.category == PM_RESET:
         for item in event.renewed_items:
-            touches.append(((event.location, item), _Touch(event, False, event.renewal_date, event.renewal_date)))
+            touches.append(((event.location, item, ""), _Touch(event, False, event.renewal_date, event.renewal_date)))
+        if event.component and part:
+            touches.append((
+                (event.location, event.component, part), _Touch(event, False, event.renewal_date, event.renewal_date)
+            ))
     return touches
+
+
+def _with_parts(touches: list[tuple[StreamKey, _Touch]]) -> list[tuple[StreamKey, _Touch]]:
+    """``touches`` and, for each one renewing a whole component, the same renewal of
+    each of that component's parts at that location: a compressor replaced is a
+    new filter and new O-rings too. Replacing a part renews nothing else."""
+
+    parts: dict[tuple[str, str], set[str]] = {}
+    for (location, component, part), _ in touches:
+        if part:
+            parts.setdefault((location, component), set()).add(part)
+    # A stream an event already touches (a PM naming the part as well as its component) once is enough.
+    touched = {(touch.event.record_id, key) for key, touch in touches}
+    renewed = []
+    for (location, component, part), touch in touches:
+        if part or touch.renewal is None:
+            continue
+        for each in sorted(parts.get((location, component), ())):
+            if (touch.event.record_id, (location, component, each)) in touched:
+                continue
+            renewed.append((
+                (location, component, each),
+                _Touch(touch.event, False, touch.exposure_end, touch.renewal, with_component=True),
+            ))
+    return touches + renewed
 
 
 def _raw_hours(start: datetime, end: datetime) -> float:
@@ -981,7 +1068,7 @@ def build_renewal_intervals(
 ) -> RenewalAnalysis:
     """Every life in the population's pooled streams (spec section 5.2).
 
-    Events are grouped into renewal streams (location + component) *first*, and
+    Events are grouped into renewal streams (location + component + part) *first*, and
     each stream's intervals run from one renewal of that item to the next event in
     that same stream. Only then are streams pooled. ``life_hours`` measures an
     interval on a stream's schedule; raw elapsed hours without it.
@@ -1009,15 +1096,14 @@ def build_renewal_intervals(
     measure = life_hours or (lambda _stream, begin, end: _raw_hours(begin, end))
     by_stream: dict[StreamKey, list[_Touch]] = {}
     analysis = RenewalAnalysis()
-    for event in events:
-        for key, touch in stream_touches(event):
-            if population.stream_selected(*key):
-                by_stream.setdefault(key, []).append(touch)
+    for key, touch in _with_parts([pair for event in events for pair in stream_touches(event)]):
+        if population.stream_selected(*key):
+            by_stream.setdefault(key, []).append(touch)
 
     seen_events: set[int] = set()
     for key in sorted(by_stream):
         analysis.streams.append(key)
-        location, component = key
+        location, component, part = key
         recurrent = False
         touches = sorted(
             by_stream[key],
@@ -1028,7 +1114,7 @@ def build_renewal_intervals(
 
         def note(touch: _Touch, role: str, text: str) -> None:
             analysis.notes.append(StreamEventNote(
-                location, component, touch.event.record_id, touch.event.task_id, touch.exposure_end, role, text
+                location, component, touch.event.record_id, touch.event.task_id, touch.exposure_end, role, text, part
             ))
 
         for touch in touches:
@@ -1105,13 +1191,15 @@ def build_renewal_intervals(
                                "suspension; it renewed the item, resetting the clock.")
                     else:
                         why = "Suspension: a failure of another kind renewed the item, resetting the clock."
+                elif touch.with_component:
+                    why = "Suspension: renewed with the whole component it is part of."
                 elif event.category == PM_RESET:
                     why = "Suspension: renewed by planned work."
                 else:
                     why = "Suspension: renewed while repairing another item."
                 analysis.intervals.append(LifeInterval(
                     location, component, clock, touch.exposure_end, effect, why,
-                    clock_record, event.record_id, hours, raw,
+                    clock_record, event.record_id, hours, raw, part,
                 ))
                 note(touch, ROLE_FAILURE if effect == FAILURE_END else ROLE_SUSPENSION, why)
 
@@ -1129,7 +1217,7 @@ def build_renewal_intervals(
                 analysis.intervals.append(LifeInterval(
                     location, component, clock, cutoff, SUSPENSION_END,
                     "Suspension: still in service at the analysis cutoff.", clock_record, None,
-                    hours, _raw_hours(clock, cutoff),
+                    hours, _raw_hours(clock, cutoff), part,
                 ))
         if recurrent:
             analysis.recurrent_streams.append(key)
@@ -1161,14 +1249,16 @@ def validity_warnings(
     def warn(code: str, title: str, message: str, level: str = "warning") -> None:
         warnings.append({"code": code, "level": level, "title": title, "message": message})
 
-    components = sorted({component for _, component in analysis.streams})
-    if len(components) > 1:
+    # A kind of item is its part, when the streams are parts' (every filter is
+    # one kind, whatever it is in), else its component.
+    kinds = sorted({name(PART, part) if part else name(COMPONENT, component) for _, component, part in analysis.streams})
+    if len(kinds) > 1:
         warn(
             "MIXED_COMPONENTS",
             "Mixed components",
             "Pattern-only; intervals mix different items. Each life is still measured on one item, but "
-            f"{len(components)} kinds of item are pooled into one fit ({', '.join(name(COMPONENT, c) for c in components)}). "
-            "Narrow the population to one component before acting on beta.",
+            f"{len(kinds)} kinds of item are pooled into one fit ({', '.join(kinds)}). "
+            "Narrow the population to one component, or one part, before acting on beta.",
         )
     if population.narrows_patterns_only():
         warn(

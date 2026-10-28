@@ -352,7 +352,7 @@ def test_the_code_lists_workbook_is_an_administrators(monkeypatch, tmp_path):
         content_type="multipart/form-data",
     )
     assert bad.status_code == 400
-    assert "(Component Light): Give the code a name." in bad.get_json()["error"]
+    assert "(Component Light): Give the component a name." in bad.get_json()["error"]
     garbage = admin.post(
         excel,
         data={"file": (io.BytesIO(b"not a workbook"), "code_lists.xlsx"), "csrf_token": token},
