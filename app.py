@@ -3165,6 +3165,37 @@ def api_pm_calendar_assets():
     return jsonify({"assets": assets})
 
 
+def _pm_calendar_codes() -> list[str] | None:
+    """The cadence filter from ?codes=M,Q,none -- None when it is not set.
+
+    "none" is a real value here, not a missing one: it means the PMs whose
+    name carries no cadence at all, which on this account is most of them.
+    """
+
+    raw = request.args.get("codes")
+    if raw is None:
+        return None
+    codes = [part.strip() for part in raw.split(",") if part.strip()]
+    return codes or None
+
+
+@app.route("/pm-calendar/api/codes")
+def api_pm_calendar_codes():
+    # Which cadences the picked assets carry, for the filter chips. Needs a
+    # selection for the same reason the other two do: without one this is a
+    # read of the whole table.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        codes = pm_calendar_service.cadence_codes(
+            asset_ids, exclude=_pm_calendar_asset_ids("exclude")
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"codes": codes})
+
+
 @app.route("/pm-calendar/api/events")
 def api_pm_calendar_events():
     start = request.values.get("start")
@@ -3173,6 +3204,7 @@ def api_pm_calendar_events():
         return jsonify({"error": "'start' and 'end' query parameters are required (YYYY-MM-DD)."}), 400
     try:
         events = pm_calendar_service.events(
+            codes=_pm_calendar_codes(),
             asset_ids=_pm_calendar_asset_ids(),
             start_date=start,
             end_date=end,
@@ -3198,11 +3230,33 @@ def api_pm_calendar_last_completed():
     return jsonify({"pm": pm})
 
 
+@app.route("/pm-calendar/api/overdue")
+def api_pm_calendar_overdue():
+    # The list behind the "PMs overdue" figure. `assets` is required for the
+    # same reason it is on last-completed: without a selection this would be
+    # the whole table's backlog, which is neither what the page shows nor a
+    # read worth serving.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        overdue = pm_calendar_service.overdue(
+            asset_ids,
+            exclude=_pm_calendar_asset_ids("exclude"),
+            codes=_pm_calendar_codes(),
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify(overdue)
+
+
 @app.route("/pm-calendar/api/summary")
 def api_pm_calendar_summary():
     try:
         summary = pm_calendar_service.summary(
-            asset_ids=_pm_calendar_asset_ids(), exclude=_pm_calendar_asset_ids("exclude")
+            asset_ids=_pm_calendar_asset_ids(),
+            exclude=_pm_calendar_asset_ids("exclude"),
+            codes=_pm_calendar_codes(),
         )
     except PmCalendarUnavailableError as exc:
         return jsonify({"error": str(exc)}), 503

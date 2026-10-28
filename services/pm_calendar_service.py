@@ -264,6 +264,61 @@ _MIN_OCCURRENCES_TO_PROJECT = 2
 _ESTABLISHED_LINE_OCCURRENCES = 4
 
 
+# The most overdue PMs the list behind the "PMs overdue" figure will return.
+#
+# A guard, not a page size. The whole backlog on this account is 947 PMs
+# across every asset, and the list is always drawn for a selection rather
+# than for all of them, so this is comfortably above anything real -- it
+# exists so that a database in some unexpected state cannot hand the page
+# tens of thousands of rows. When it does bite, the figure beside the list
+# is still the true total and the page says it is showing the oldest of a
+# longer list.
+_OVERDUE_LIST_LIMIT = 1000
+
+
+# How far the overdue backlog is read when a cadence filter is on and the
+# count has to be done here rather than in SQL. Higher than the list limit
+# because it decides a *number* the page shows: the figure should stay right
+# even when the list beside it is trimmed. The whole backlog on this account,
+# across every asset, is 947.
+_OVERDUE_COUNT_LIMIT = 20000
+
+
+# What the cadence filter calls a PM whose name carries no recognisable code.
+#
+# On this account that is not an edge case: **84% of PM rows have no cadence
+# in their name at all** -- "TOYOTA LIFT TRUCK PM INSPECTION", "Econo Lift
+# Tables PM Inspection", "WASHROOMS". Only 12,716 of 77,115 follow the
+# "<asset> - <CODE> - <description>" convention the projection relies on.
+#
+# So the filter has to be able to say something about them, or switching it
+# on would hide most of the calendar and look like a bug. They get a value of
+# their own, offered as its own chip, and are included like any other.
+_NO_CADENCE = "none"
+
+
+def _codes_of(task_name: Any) -> str:
+    """The cadence code this PM filters under: its code, or _NO_CADENCE."""
+
+    return _cadence_code(task_name) or _NO_CADENCE
+
+
+def _only_codes(rows: list[dict[str, Any]], codes: list[str] | None) -> list[dict[str, Any]]:
+    """`rows` narrowed to the cadences asked for.
+
+    An empty or missing list means no filter rather than "nothing", because
+    that is what an absent query parameter should mean -- and because a page
+    that silently showed nothing would look broken rather than filtered.
+    """
+
+    if not codes:
+        return rows
+    wanted = {str(code).strip().upper() for code in codes if str(code).strip()}
+    if not wanted:
+        return rows
+    return [row for row in rows if _codes_of(row.get("task_name")).upper() in wanted]
+
+
 # How far a walk up the tree will go before giving up. Same guard, and the
 # same number, as the Excel hierarchy macro this mirrors: real hierarchies are
 # a handful of levels deep, so anything longer is bad data, not a deep tree.
@@ -508,7 +563,12 @@ class PmCalendarService:
             "asset_number": asset_id_str,
             "asset_name": asset_names.get(asset_id_str),
             "task_name": task.get("name"),
-            "status_raw": task.get("status") or task.get("statusID"),
+            # Two fields, two columns. These used to be folded together with
+            # `status or statusID`, and 0 is falsy in Python, so every task
+            # whose status was 0 recorded its statusID instead -- one column
+            # holding two different things.
+            "status_raw": task.get("status"),
+            "status_id": task.get("statusID"),
             "created_date": created_date,
             "due_date": due_date,
             "completed_date": completed_date,
@@ -763,6 +823,18 @@ class PmCalendarService:
             completed_dates = [
                 date.fromisoformat(r["completed_date"][:10]) for r in rows if r.get("completed_date")
             ]
+            # Where this line's real occurrences actually sit on the calendar:
+            # the completion date for the ones that are done, the due date for
+            # the rest. Only the duplicate check below uses this, and it has
+            # to, because what it is asking is "would this estimate land on
+            # top of a pill that is already there". The anchor arithmetic
+            # keeps using due_dates and completed_dates -- when a PM was done
+            # is what the cadence counts from, however it is drawn.
+            drawn_dates = sorted(
+                date.fromisoformat((r.get("completed_date") or r.get("due_date"))[:10])
+                for r in rows
+                if r.get("completed_date") or r.get("due_date")
+            )
 
             # A line that has gone quiet is not projected at all. See
             # _STALE_AFTER_INTERVALS for what "quiet" means and why an open
@@ -819,13 +891,24 @@ class PmCalendarService:
                 key=lambda r: r.get("due_date") or "",
                 default=None,
             )
-            # A real occurrence is drawn on its DUE date, never its completed
-            # date, so that is where a jump has to land -- see the calendar's
-            # own grouping. The completion date goes along for the label.
+            # Where the anchor's own pill is drawn, which is where "Based on
+            # the PM completed ..." has to land. That is its completion date
+            # when it has one -- it used to be its due date, back when a
+            # completed PM stayed on the day it was due, and the comment here
+            # warned that landing on the completion date would open an empty
+            # day. Moving completed PMs onto their completion date turns that
+            # exactly around, and the field is named for the question it
+            # answers rather than for either column.
+            anchor_shown = None
+            if anchor_row:
+                anchor_shown = (
+                    (anchor_row.get("completed_date") or anchor_row.get("due_date") or "")[:10]
+                    or None
+                )
             anchor_details = {
                 "anchor_task_id": anchor_row.get("task_id") if anchor_row else None,
                 "anchor_task_name": anchor_row.get("task_name") if anchor_row else None,
-                "anchor_due_date": (anchor_row.get("due_date") or "")[:10] if anchor_row else None,
+                "anchor_shown_date": anchor_shown,
                 "anchor_completed_date": (
                     (anchor_row.get("completed_date") or "")[:10] or None if anchor_row else None
                 ),
@@ -901,7 +984,7 @@ class PmCalendarService:
                 # one nearby estimate is shown, never the rest of the
                 # series. The sequence itself always advances a fixed
                 # interval from the completed-anchor, full stop.
-                if _near_any(candidate, due_dates, interval_days / 2):
+                if _near_any(candidate, drawn_dates, interval_days / 2):
                     continue
 
                 due = candidate.isoformat()
@@ -913,8 +996,12 @@ class PmCalendarService:
                         "asset_name": sample.get("asset_name"),
                         "task_name": sample.get("task_name"),
                         "status_raw": None,
+                        "status_id": None,
                         "due_date": due,
                         "completed_date": None,
+                        # Nothing has happened yet, so the date it is drawn on
+                        # is the date it is due.
+                        "effective_date": due,
                         "is_completed": 0,
                         "is_projected": True,
                         # Only when there is something to expand.
@@ -1156,6 +1243,7 @@ class PmCalendarService:
         start_date: str | None = None,
         end_date: str | None = None,
         exclude: list[str] | None = None,
+        codes: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if asset_ids is not None and len(asset_ids) == 0:
             return []
@@ -1166,7 +1254,17 @@ class PmCalendarService:
             # fetch_tasks would mean "every asset", so stop here.
             if not asset_ids:
                 return []
-        real = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=start_date, due_until=end_date)
+        # By effective_date, not due_date: a PM is drawn on the day it was
+        # completed once it has been, so that is the date the month has to be
+        # selected on, or a PM due in July and finished in October would be
+        # fetched for July and drawn in October -- which is to say, never
+        # drawn at all.
+        real = self.repo.fetch_tasks(
+            asset_ids=asset_ids,
+            due_since=start_date,
+            due_until=end_date,
+            date_field="effective_date",
+        )
 
         # Projecting reads each series' full history, with no date bound, to
         # find its last completed occurrence -- that anchor is often months
@@ -1176,14 +1274,85 @@ class PmCalendarService:
         # always sends its selection; an unfiltered request gets real rows
         # only.
         if asset_ids is None:
-            return real
+            return _only_codes(real, codes)
 
         history = self.repo.fetch_tasks(asset_ids=asset_ids)
         projected = self._project_future_events(history, start_date, end_date)
+        # Neighbours come from the whole history on purpose, before the
+        # cadence filter: walking back through a line's own occurrences
+        # should not depend on which cadences happen to be ticked.
+        self._add_neighbours(real, history)
 
-        combined = real + projected
-        combined.sort(key=lambda row: row["due_date"] or "")
+        combined = _only_codes(real + projected, codes)
+        combined.sort(key=lambda row: row["effective_date"] or row["due_date"] or "")
         return combined
+
+    @staticmethod
+    def _add_neighbours(real: list[dict[str, Any]], history: list[dict[str, Any]]) -> None:
+        """Hang the previous and next time each PM ran on its own card.
+
+        One PM line is one job repeating -- a semi-annual on a laser, say --
+        and the question a card most often raises is "when did we last do
+        this one?". The answer is already in the history read above, so this
+        walks it rather than asking the database again.
+
+        The chain is of **completed** occurrences, in the order the work
+        actually happened. That makes it the same chain the calendar now
+        draws, since a completed PM sits on the day it was done, and it means
+        following it backwards walks real history rather than a list of
+        intentions. An outstanding PM has no next, and its previous is simply
+        the last time the job was done -- which is the useful thing to know
+        when you are looking at one that is late.
+
+        Nothing is added where there is nothing to point at, so the page can
+        take the field's presence as "there is somewhere to go".
+        """
+
+        # One chain per PM line, exactly as _series_key defines a line
+        # elsewhere: the same asset and the same name, give or take case,
+        # spacing and a duration on the end.
+        chains: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in history:
+            asset_id = row.get("asset_id")
+            if not asset_id or not row.get("completed_date"):
+                continue
+            chains.setdefault((asset_id, _series_key(row.get("task_name"))), []).append(row)
+        for chain in chains.values():
+            # task_id breaks a tie, so two occurrences completed on the same
+            # day still have a definite order and neither is its own
+            # neighbour.
+            chain.sort(key=lambda r: (r["completed_date"][:10], str(r.get("task_id"))))
+
+        def point_at(row: dict[str, Any] | None, prefix: str, target: dict[str, Any]) -> None:
+            if not row:
+                return
+            target[f"{prefix}_task_id"] = row.get("task_id")
+            target[f"{prefix}_shown_date"] = (row.get("completed_date") or "")[:10]
+
+        for row in real:
+            asset_id = row.get("asset_id")
+            if not asset_id:
+                continue
+            chain = chains.get((asset_id, _series_key(row.get("task_name"))))
+            if not chain:
+                continue
+
+            if row.get("completed_date"):
+                # Where this occurrence sits in its own chain. Found by
+                # task_id rather than by date, because a line can have two
+                # completions on one day.
+                here = next(
+                    (i for i, r in enumerate(chain) if r.get("task_id") == row.get("task_id")),
+                    None,
+                )
+                if here is None:
+                    continue
+                point_at(chain[here - 1] if here > 0 else None, "previous", row)
+                point_at(chain[here + 1] if here + 1 < len(chain) else None, "next", row)
+            else:
+                # Not done yet, so it is in no chain of its own. The useful
+                # neighbour is the last time this job was finished.
+                point_at(chain[-1], "previous", row)
 
     def last_completed(
         self, asset_ids: list[str], exclude: list[str] | None = None
@@ -1204,8 +1373,80 @@ class PmCalendarService:
         # its expanded view isn't a candidate.
         return self.repo.fetch_last_completed(self._selection(asset_ids, exclude))
 
+    def overdue(
+        self,
+        asset_ids: list[str],
+        exclude: list[str] | None = None,
+        limit: int = _OVERDUE_LIST_LIMIT,
+        codes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """The overdue PMs behind the figure on the page, oldest first.
+
+        Returns the `total` as well as the `pms`, because the two can differ:
+        the figure counts the whole backlog and the list is capped (see
+        _OVERDUE_LIST_LIMIT), so the page can say it is showing the worst of
+        a longer list rather than silently cutting it off.
+
+        Real rows only, and no projection anywhere near this: an estimate is
+        a date this page made up, and nothing made up can be overdue.
+        """
+
+        if not asset_ids:
+            return {"total": 0, "pms": []}
+        self._ensure_schema()
+        # The chip's current view, exactly as events() and summary() read it.
+        selection = self._selection(asset_ids, exclude)
+        if not selection:
+            return {"total": 0, "pms": []}
+        today = _today().isoformat()
+        if codes:
+            # Same reasoning as the figure above: the cadence lives in the
+            # name, so the rows are read and narrowed here. Reading to the
+            # count limit rather than the list limit keeps the total honest.
+            matching = _only_codes(
+                self.repo.fetch_overdue(selection, today, _OVERDUE_COUNT_LIMIT), codes
+            )
+            return {"total": len(matching), "pms": matching[:limit]}
+        return {
+            "total": self.repo.count_overdue(selection, today),
+            "pms": self.repo.fetch_overdue(selection, today, limit),
+        }
+
+    def cadence_codes(
+        self, asset_ids: list[str], exclude: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Which cadences the picked assets actually carry, and how many each.
+
+        Read across the whole selection rather than the month on screen, so
+        the chips stay put while months are paged. A chip that came and went
+        as you navigated would be unusable.
+
+        Returned newest-cadence-first in the order of _CADENCE_DAYS -- daily
+        through five-yearly -- with PMs that carry no cadence at the end,
+        because that is the order they read in rather than alphabetical.
+        """
+
+        if not asset_ids:
+            return []
+        self._ensure_schema()
+        selection = self._selection(asset_ids, exclude)
+        if not selection:
+            return []
+
+        counts: dict[str, int] = {}
+        for row in self.repo.fetch_tasks(asset_ids=selection):
+            code = _codes_of(row.get("task_name"))
+            counts[code] = counts.get(code, 0) + 1
+
+        order = {code: i for i, code in enumerate(_CADENCE_DAYS)}
+        present = sorted(counts, key=lambda c: (c == _NO_CADENCE, order.get(c, len(order)), c))
+        return [{"code": code, "count": counts[code]} for code in present]
+
     def summary(
-        self, asset_ids: list[str] | None = None, exclude: list[str] | None = None
+        self,
+        asset_ids: list[str] | None = None,
+        exclude: list[str] | None = None,
+        codes: list[str] | None = None,
     ) -> dict[str, Any]:
         empty = {"scheduled": 0, "completed": 0, "overdue": 0, "compliance": 0.0}
         if asset_ids is not None and len(asset_ids) == 0:
@@ -1218,15 +1459,34 @@ class PmCalendarService:
                 return empty
         today = _today().isoformat()
         year_start = _today().replace(month=1, day=1).isoformat()
-        due_ytd = self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today)
+        due_ytd = _only_codes(
+            self.repo.fetch_tasks(asset_ids=asset_ids, due_since=year_start, due_until=today),
+            codes,
+        )
 
         scheduled = len(due_ytd)
         completed = sum(1 for task in due_ytd if task["completed_date"])
-        overdue = sum(
-            1
-            for task in due_ytd
-            if not task["completed_date"] and task["due_date"] and task["due_date"] < today
-        )
+        # Overdue is the one figure here that is NOT year-to-date. The other
+        # three answer "how is this year going", and a ratio needs both sides
+        # measured over the same window. Overdue answers a different question
+        # -- "what is outstanding right now" -- and a PM that went past its
+        # date last year and still has not been done is outstanding, however
+        # old it is. Capping it at January would have been a figure that
+        # quietly reset every New Year's Day while the work stayed undone.
+        #
+        # It also has to agree with the list the page opens when the figure
+        # is clicked, which is the whole backlog. Counted in SQL rather than
+        # from due_ytd, since it is no longer a subset of it.
+        if codes:
+            # count_overdue counts in SQL, which cannot parse a cadence out
+            # of a task name. With a filter on, the backlog is read and
+            # counted here instead -- bounded by the selection, and a few
+            # hundred rows at this account's worst.
+            overdue = len(_only_codes(
+                self.repo.fetch_overdue(asset_ids, today, _OVERDUE_COUNT_LIMIT), codes
+            ))
+        else:
+            overdue = self.repo.count_overdue(asset_ids, today)
         compliance = round((completed / scheduled) * 100, 1) if scheduled else 0.0
 
         return {

@@ -60,6 +60,80 @@
   color: var(--muted);
 }
 
+/* The overdue tile is a button. It keeps the look of the three cards beside
+   it -- a tile that shouted would read as an alert rather than a figure --
+   and earns its interactivity on hover and focus instead. */
+.pm-summary-card-opens {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pm-summary-card-opens:hover:not(:disabled),
+.pm-summary-card-opens:focus-visible:not(:disabled) {
+  border-color: var(--forest-500);
+  background: var(--surface);
+}
+
+/* Nothing to open: no pointer, and no hover promising otherwise. The figure
+   stays perfectly readable, because it is still the answer. */
+.pm-summary-card-opens:disabled {
+  cursor: default;
+}
+
+/* "all outstanding" under the overdue figure: the one tile under a "Year to
+   date" heading that doesn't mean year to date. */
+.pm-summary-note {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* ---- the overdue list ---------------------------------------------------- */
+
+.pm-overdue-note {
+  margin: 0 0 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Each row is a button but has to sit in the list like the day dialog's
+   cards, so it takes the card's own layout back from the UA stylesheet. */
+.pm-overdue-row {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-overdue-row:hover,
+.pm-overdue-row:focus-visible {
+  border-color: var(--forest-500);
+}
+
+/* How late, beside the asset name, where the day dialog puts its status
+   badge -- the same place the eye already looks for "what about this one". */
+.pm-overdue-late {
+  flex: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--danger-ink);
+  white-space: nowrap;
+}
+
+.pm-overdue-go {
+  justify-self: start;
+  color: var(--forest-700);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.pm-overdue-row:hover .pm-overdue-go {
+  color: var(--forest-900);
+}
+
 .pm-summary-value {
   font-size: 1.7rem;
   font-weight: 700;
@@ -878,6 +952,101 @@
   50% { outline-color: transparent; }
 }
 
+/* ---- the cadence filter -------------------------------------------------- */
+
+.pm-cadence-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.7rem;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.pm-cadence-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pm-cadence-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* On is the resting state: everything shows until something is turned off,
+   so a ticked chip should look ordinary and an unticked one should look
+   deliberately set aside. */
+.pm-cadence-chip {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.pm-cadence-chip.is-on {
+  border-color: var(--forest-500);
+  background: var(--surface);
+  color: var(--forest-900);
+}
+
+.pm-cadence-chip:not(.is-on) {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.pm-cadence-chip:hover {
+  border-color: var(--forest-700);
+}
+
+.pm-cadence-reset {
+  border: 0;
+  background: none;
+  color: var(--forest-700);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pm-cadence-reset:hover {
+  color: var(--forest-900);
+  text-decoration: underline;
+}
+
+/* ---- walking a PM line's history ----------------------------------------- */
+
+.pm-day-item-walk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.9rem;
+}
+
+.pm-day-item-step {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--forest-700);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-day-item-step:hover {
+  color: var(--forest-900);
+  text-decoration: underline;
+}
+
 /* Link colour the rest of GREMLIN uses inside a card: forest, not the
    browser's blue, which no token owns. */
 .pm-day-item-link {
@@ -1123,6 +1292,11 @@
 .pm-asset-option:focus-visible,
 .pm-day.has-events:focus-visible,
 .pm-day-item-anchor:focus-visible,
+.pm-summary-card-opens:focus-visible,
+.pm-cadence-chip:focus-visible,
+.pm-cadence-reset:focus-visible,
+.pm-day-item-step:focus-visible,
+.pm-overdue-row:focus-visible,
 .pm-day-item-link:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;
