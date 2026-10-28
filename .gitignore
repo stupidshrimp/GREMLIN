@@ -7,3 +7,4 @@ __pycache__/
 .vscode/
 .pytest_cache/
 PM_Calendar_local.db
+Claude outputs/
