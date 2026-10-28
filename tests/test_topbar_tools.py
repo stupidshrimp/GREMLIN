@@ -192,7 +192,6 @@ TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "templates"
     [
         ("metrics.html", "metrics.js"),
         ("perform_analysis.html", "life_data_analysis.js"),
-        ("disposition.html", "life_data_analysis.js"),
     ],
 )
 def test_chart_theme_is_ordered_before_the_script_that_uses_it(template, script):
@@ -200,8 +199,8 @@ def test_chart_theme_is_ordered_before_the_script_that_uses_it(template, script)
     palette at load time, so chart_theme.js arriving second would throw on a
     missing global and take the whole page's script down with it.
 
-    Read from the template rather than from a response because disposition.html
-    is editor-only, and an anonymous request renders the 403 page instead.
+    Read from the template rather than from a response, so it holds whoever
+    the page would be served to.
     """
     source = (TEMPLATES / template).read_text()
     assert "chart_theme.js" in source, template

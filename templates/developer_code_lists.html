@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/developer_dashboard.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/code_lists.css') }}">
+{% endblock %}
+
+{% block content %}
+{% include "developer_subnav.html" %}
+
+<section class="glass-card fade-in-up dev-hero">
+  <div class="dev-hero-copy">
+    <p class="eyebrow">Developer</p>
+    <h1>Code lists</h1>
+    <p>
+      The codes every disposition is made from: components, failure mechanisms,
+      failure modes, failure causes and actions. Download them as a workbook, edit
+      them or add new ones in Excel, and upload it back. The Code lists dialog on the
+      Disposition page edits the same lists one code at a time; this page does many
+      at once. An upload writes to the database, so it is kept to administrators.
+    </p>
+    <p class="dev-hero-path">Database: <code>{{ db_path }}</code></p>
+  </div>
+</section>
+
+<div id="dev-status" class="dev-banner" role="status" hidden></div>
+
+<section class="dev-panel is-active" data-panel="code-lists" aria-label="Code lists">
+  <div class="glass-card slide-in">
+    <h2>The lists today</h2>
+    <div class="dev-stat-grid" id="dev-codes-stats"><p class="dev-muted">Loading&hellip;</p></div>
+  </div>
+
+  <div class="dev-panel-grid">
+    <div class="glass-card slide-in">
+      <h2>Download</h2>
+      <p class="dev-muted">
+        One row per code, retired codes included, list by list in the order the
+        dropdowns show them.
+      </p>
+      <ul class="dev-code-rules">
+        <li>The <strong>yellow columns</strong> are the ones an upload reads. The grey
+          <code>work_orders_using</code> column is there to read: how many work orders'
+          current dispositions use the code.</li>
+        <li>The <strong>empty yellow rows</strong> under the codes are for new ones.
+          Add as many more rows as you need.</li>
+        <li><code>code_list</code>, <code>semantic</code>, <code>renews_item</code> and
+          <code>is_active</code> have dropdowns, and <code>default_cause_code</code>
+          suggests the failure causes. Each list takes only some semantics: the
+          <strong>Lookup Lists</strong> sheet says which.</li>
+      </ul>
+      <div class="dev-controls">
+        <a class="btn-primary" id="dev-codes-download" href="{{ url_for('api_dev_code_lists_excel') }}" download>
+          Download code lists (.xlsx)
+        </a>
+      </div>
+    </div>
+
+    <div class="glass-card slide-in">
+      <h2>Upload</h2>
+      <p class="dev-muted">
+        Each row is one code, found by its <code>code_list</code> and <code>code</code>.
+        A new pair adds a code; an existing one is changed to read as the row does, and
+        a row that already reads that way is left alone.
+      </p>
+      <ul class="dev-code-rules">
+        <li>A code's spelling is its key. Retyping one adds a new code rather than
+          renaming the old one; change its <code>name</code> instead.</li>
+        <li>Codes left out of the workbook are kept: an upload never deletes. Set
+          <code>is_active</code> to FALSE to take a code off the dropdowns, or delete
+          one nothing uses from the Code lists dialog on the Disposition page.</li>
+        <li>An empty <code>sort_order</code> puts a new code at the end of its list. An
+          empty <code>is_active</code> or <code>renews_item</code> keeps what the code
+          had (a new code is active and renews nothing).</li>
+        <li><code>default_cause_code</code> is read for failure mechanisms only, and
+          <code>renews_item</code> for actions only.</li>
+        <li>The headings and columns are locked so they stay where the upload looks; every cell
+          under them, and new rows, can be filled in, sorted and filtered. Headings retyped in other
+          capitals or as this page shows them (List, Means, Order, Active) still read, as does a meaning
+          typed as its label (Unknown, Induced).</li>
+        <li>Every row is checked before anything is saved. One refused row refuses the
+          upload and nothing changes; every refused row is listed, so they can all be
+          fixed at once.</li>
+      </ul>
+      <div class="dev-controls">
+        <input type="file" id="dev-codes-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+        <input type="hidden" id="dev-codes-csrf" value="{{ csrf_token }}">
+        <button type="button" class="btn-primary" id="dev-codes-upload">Upload code lists&hellip;</button>
+      </div>
+      <div id="dev-codes-result" class="dev-code-result" hidden></div>
+    </div>
+  </div>
+
+  <div class="glass-card slide-in">
+    <h2>Codes</h2>
+    <div class="dev-controls">
+      <div class="dev-field">
+        <label for="dev-codes-list">List</label>
+        <select id="dev-codes-list"></select>
+      </div>
+    </div>
+    <div class="dev-table-scroll" id="dev-codes-table"><p class="dev-muted">Loading&hellip;</p></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/developer_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/developer_code_lists.js') }}"></script>
+{% endblock %}

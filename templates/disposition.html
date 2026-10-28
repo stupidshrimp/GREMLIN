@@ -2,198 +2,339 @@
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/standard_disposition.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/code_lists.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
 {% endblock %}
 
 {% block content %}
-<section class="glass-card fade-in-up" id="lda-disp-intro">
+<section class="glass-card fade-in-up" id="disp-intro">
   <p class="eyebrow">Life Data Analysis</p>
   <h1>Disposition</h1>
-  <p>Disposition corrective work orders and PM reset events for a selected Asset Number. Assign
-     defensible failure modes and mechanisms, set record classes, and mark the observations that
-     should feed the REL-style Weibull analysis.</p>
+  <p>Disposition each work order once, in fields that serve both the pattern views and Weibull life
+     analysis. The ISO 14224 failure mode, mechanism and cause say <em>how</em> something failed; the
+     sub-asset, component and (when it was one) the part within it say <em>where</em> and <em>what</em>,
+     which is what every Weibull life is measured on. A typical work order is about five picks, each a
+     search of its code list: everything else is derived.</p>
   <button type="button" class="page-tour-btn" id="disposition-tour-btn">Show me around</button>
-  <div class="lda-row-actions" style="justify-content:flex-start; margin-top:0.9rem">
-    <a class="btn-secondary" href="{{ url_for('perform_analysis') }}">← Back to Perform an Analysis</a>
+  <div class="std-intro-links">
+    <a class="btn-secondary" href="{{ url_for('perform_analysis') }}">← Perform an Analysis</a>
+    <button type="button" class="btn-secondary" id="disp-code-lists-btn">Code lists</button>
   </div>
 </section>
 
 <div id="lda-status" class="lda-banner" role="status" hidden></div>
 
-<section class="glass-card slide-in lda-card" aria-labelledby="lda-disp-step-1">
+<section class="glass-card slide-in lda-card" aria-labelledby="disp-step-1">
   <p class="eyebrow">Step 1</p>
-  <h2 id="lda-disp-step-1">Select asset and disposition scope</h2>
-  <div class="lda-disp-controls">
+  <h2 id="disp-step-1">Select asset and work orders</h2>
+  <div class="std-controls">
     <div class="lda-field" id="lda-asset-field">
       <label for="lda-asset">Asset Number</label>
-      <div class="lda-combobox" id="lda-asset-combobox">
+      <div class="lda-combobox">
         <input id="lda-asset" name="asset" autocomplete="off" role="combobox"
                aria-autocomplete="list" aria-expanded="false" aria-controls="lda-asset-list"
                placeholder="Search imported Asset Number values…">
         <ul id="lda-asset-list" class="lda-combobox-list" role="listbox" hidden></ul>
       </div>
     </div>
-    <div class="lda-field" id="lda-disp-kind-field">
-      <label for="lda-disp-kind">Record Type</label>
-      <select id="lda-disp-kind" class="lda-select">
-        <option value="wo" selected>Work Orders</option>
-        <option value="pm">PM Reset Events</option>
+    <div class="lda-field" id="disp-scope-field">
+      <label for="disp-scope">Show</label>
+      <select id="disp-scope" class="lda-select">
+        <option value="all" selected>All work orders</option>
+        <option value="not_reviewed">Only not reviewed</option>
+        <option value="migrated">Migrated from REL categories (to confirm)</option>
+        <option value="auto">Auto-dispositioned (to confirm)</option>
       </select>
     </div>
-    <div class="lda-field" id="lda-disp-scope-field">
-      <label for="lda-disp-scope">Rows</label>
-      <select id="lda-disp-scope" class="lda-select">
-        <option value="all" selected>All eligible rows</option>
-        <option value="new">Only new / undispositioned</option>
-      </select>
+    <div class="lda-field" id="disp-search-field">
+      <label for="disp-search">Search</label>
+      <input id="disp-search" type="search" class="lda-input" autocomplete="off"
+             placeholder="Task ID, dates, titles, notes, area/condition/cause/action…">
     </div>
   </div>
-  <div class="lda-field lda-disp-search-field" id="lda-disp-search-field">
-    <label for="lda-disp-search">Search</label>
-    <input id="lda-disp-search" type="search" class="lda-input" autocomplete="off"
-           placeholder="Filter by task ID, dates, downtime, notes, titles, area/condition/cause/action…">
-    <p class="lda-hint">Type text or numbers to filter the entries below across every column.</p>
+  <div class="std-excel" id="disp-excel">
+    <button type="button" class="btn-secondary" id="disp-excel-download">Download Excel</button>
+    <button type="button" class="btn-secondary" id="disp-excel-upload">Upload Excel</button>
+    <button type="button" class="btn-secondary lda-help-button" id="disp-excel-help" aria-haspopup="dialog"
+            aria-controls="lda-excel-help-dialog">How Excel dispositioning works</button>
+    <input type="file" id="disp-excel-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+  </div>
+  {# The disposition helper: on, each work order opened is read and filled in
+     from the code lists for the engineer to check and save. #}
+  <div class="std-helper-bar" id="disp-helper-bar">
+    <label class="std-switch" for="disp-helper-toggle">
+      <input type="checkbox" id="disp-helper-toggle" role="switch" aria-describedby="disp-helper-status">
+      <span class="std-switch-track" aria-hidden="true"><span class="std-switch-thumb"></span></span>
+      <span class="std-switch-label">Auto-disposition</span>
+    </label>
+    <p class="lda-hint std-helper-status" id="disp-helper-status">
+      Off. Turn it on and the disposition helper reads each work order you open and fills in its disposition from
+      the code lists, for you to check and save.
+    </p>
+    <p class="lda-hint std-helper-meaning" id="disp-helper-meaning" hidden></p>
+    <div class="std-helper-tools">
+      <button type="button" class="btn-secondary" id="disp-helper-batch" aria-haspopup="dialog"
+              aria-controls="disp-helper-dialog">Auto-disposition the backlog…</button>
+      <button type="button" class="btn-secondary" id="disp-helper-accuracy" aria-haspopup="dialog"
+              aria-controls="disp-helper-accuracy-dialog">How accurate is it?</button>
+    </div>
   </div>
   <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
 </section>
 
-<div id="lda-disposition-root" hidden></div>
-<div id="lda-workspace" class="lda-workspace"></div>
+{# The workspace's three views, switched from the bar over it: the list and the
+   disposition side by side; the disposition alone across the page, the work
+   order beside its fields; or the list alone across the page, where picking a
+   work order opens it in the disposition view. disposition.js remembers the
+   choice and animates the change. #}
+<div class="std-workspace is-view-split" id="disp-workspace" hidden>
+  <div class="std-view-bar" id="disp-view-bar">
+    <div class="std-views" id="disp-views" role="radiogroup" aria-label="View">
+      <span class="std-views-thumb" id="disp-views-thumb" aria-hidden="true"></span>
+      <button type="button" class="std-view-btn" role="radio" data-view="split" aria-checked="true"
+              title="The work orders and the disposition side by side">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="2" y="3.5" width="7" height="13" rx="1.6"/><rect x="11" y="3.5" width="7" height="13" rx="1.6"/></svg>
+        <span>Side by side</span>
+      </button>
+      <button type="button" class="std-view-btn" role="radio" data-view="focus" aria-checked="false" tabindex="-1"
+              title="The disposition across the page, the work order beside its fields">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect x="2" y="3.5" width="16" height="13" rx="1.6"/><path d="M8.5 6.5v7M11 7.5h4.5M11 10h4.5M11 12.5h3"/></svg>
+        <span>Disposition</span>
+      </button>
+      <button type="button" class="std-view-btn" role="radio" data-view="list" aria-checked="false" tabindex="-1"
+              title="The work orders across the page; pick one to disposition it">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+        <span>Work orders</span>
+      </button>
+    </div>
+    {# In the disposition view: where the open work order is in the list, and the ones either side. #}
+    <div class="std-record-nav" id="disp-record-nav" hidden>
+      <button type="button" class="std-record-step" id="disp-record-prev" aria-label="Previous work order" title="Previous work order">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M12 4.5 6.5 10l5.5 5.5"/></svg>
+      </button>
+      <p class="std-record-where" id="disp-record-where" aria-live="polite"></p>
+      <button type="button" class="std-record-step" id="disp-record-next" aria-label="Next work order" title="Next work order">
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M8 4.5 13.5 10 8 15.5"/></svg>
+      </button>
+    </div>
+    <p class="lda-hint std-view-hint" id="disp-view-hint" hidden>Pick a work order to open it in the Disposition view.</p>
+  </div>
 
-{# The Excel explainer for the two buttons under the disposition table. The
-   editor itself is built in JS, but this stays markup so the wording is
-   reviewable in the template -- the same shape as the availability explainer on
-   Metrics: a native <dialog>, opened by the Life Data Analysis client script. #}
+  <div class="std-layout">
+    <section class="glass-card lda-card" id="disp-list-card" aria-labelledby="disp-list-title">
+      <h2 id="disp-list-title">Work orders</h2>
+      <p class="lda-hint" id="disp-list-summary"></p>
+      <p class="lda-hint">Sort or filter any column from the ▾ on its header; both reach every work order in the
+         list, not only this page.</p>
+      <div class="std-filter-status" id="disp-filter-status" hidden>
+        <span id="disp-filter-text"></span>
+        <button type="button" class="btn-secondary" id="disp-clear-filters">Clear column filters</button>
+      </div>
+      <div class="lda-table-scroll">
+        <table class="lda-table" id="disp-table">
+          {# disposition.js draws the headers, each with its sort and filter menu. #}
+          <thead id="disp-table-head"><tr></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="lda-pager">
+        <button type="button" class="btn-secondary" id="disp-prev">← Previous</button>
+        <span class="lda-page-status" id="disp-page-status"></span>
+        <button type="button" class="btn-secondary" id="disp-next">Next →</button>
+      </div>
+    </section>
+
+    <section class="glass-card lda-card std-editor-card" id="disp-editor-card" aria-labelledby="disp-editor-title">
+      <h2 id="disp-editor-title">Disposition</h2>
+      <div id="disp-editor-body"><p class="lda-hint">Choose a work order from the list.</p></div>
+    </section>
+  </div>
+</div>
+
+{# The code lists are configuration the team owns. Editing one changes what the
+   editor offers from then on; a code already used stays readable when retired. #}
+<dialog class="lda-help-dialog std-code-dialog" id="disp-code-dialog" aria-labelledby="disp-code-title">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Configuration</p>
+        <h2 id="disp-code-title">Disposition code lists</h2>
+        <p class="std-code-intro">
+          A component or part is just a name and a description; its code is made from the name when it is
+          added. A code is what dispositions and saved analyses store, so it can't be renamed once added;
+          everything else about it can change. A code nothing uses can be deleted; one in use can only
+          be retired, which takes it off the code fields. Changes reach the open work order at once, and a
+          code you add is set on it, ready to save.
+        </p>
+      </div>
+      <button type="button" class="lda-help-close" id="disp-code-close" aria-label="Close the code lists">&times;</button>
+    </header>
+    <div class="std-code-toolbar">
+      <div class="cl-tabs" id="disp-code-tabs" role="tablist" aria-label="Code list"></div>
+      <div class="std-code-tools">
+        <label class="std-code-search">
+          <span class="visually-hidden">Search this list</span>
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.5 2a6.5 6.5 0 0 1 5.15 10.47l4.44 4.44-1.18 1.18-4.44-4.44A6.5 6.5 0 1 1 8.5 2Zm0 1.67a4.83 4.83 0 1 0 0 9.66 4.83 4.83 0 0 0 0-9.66Z"/></svg>
+          <input type="search" id="disp-code-search" placeholder="Search codes, names and descriptions" autocomplete="off">
+        </label>
+        <label class="std-code-toggle"><input type="checkbox" id="disp-code-hide-retired"> Hide retired</label>
+        <button type="button" class="btn-primary std-code-add" id="disp-code-add">+ Add code</button>
+      </div>
+    </div>
+    <div class="std-code-body" id="disp-code-body">
+      <table class="cl-table" id="disp-code-table"></table>
+    </div>
+  </div>
+</dialog>
+
+{# The disposition helper's batch run over the list's not-reviewed work orders. #}
+<dialog class="lda-help-dialog std-helper-dialog" id="disp-helper-dialog" aria-labelledby="disp-helper-dialog-title">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Disposition helper</p>
+        <h2 id="disp-helper-dialog-title">Auto-disposition the backlog</h2>
+      </div>
+      <button type="button" class="lda-help-close" id="disp-helper-close" aria-label="Close auto-disposition">&times;</button>
+    </header>
+    <div class="lda-help-body">
+      <p>The helper reads every <strong>not-reviewed</strong> work order in the list (its search and column filters
+        apply) and dispositions the ones it is at least as sure of as you set here. Each is saved marked
+        <strong>Auto</strong>, with a review flag, and stays unconfirmed until an engineer opens it and saves it.
+        Perform an Analysis warns when a fit reads any. The whole run can be undone.</p>
+      <div class="std-helper-threshold">
+        <label for="disp-helper-threshold">Only work orders it is at least
+          <output id="disp-helper-threshold-out" for="disp-helper-threshold">90%</output> sure of</label>
+        <input type="range" id="disp-helper-threshold" min="60" max="99" step="1" value="90">
+        <button type="button" class="btn-secondary" id="disp-helper-preview">Preview</button>
+      </div>
+      <div id="disp-helper-preview-body" class="std-helper-preview" aria-live="polite"></div>
+      <div class="std-helper-dialog-actions">
+        <button type="button" class="btn-primary" id="disp-helper-apply" disabled>Auto-disposition</button>
+      </div>
+      <h3 class="std-helper-subhead">Earlier runs on this asset</h3>
+      <div id="disp-helper-runs"></div>
+    </div>
+  </div>
+</dialog>
+
+{# How often the helper agrees with the team: replayed on decided work orders, and in use. #}
+<dialog class="lda-help-dialog std-helper-dialog" id="disp-helper-accuracy-dialog" aria-labelledby="disp-helper-accuracy-title">
+  <div class="lda-help-content">
+    <header class="lda-help-head">
+      <div>
+        <p class="eyebrow">Disposition helper</p>
+        <h2 id="disp-helper-accuracy-title">How accurate is it?</h2>
+      </div>
+      <button type="button" class="lda-help-close" id="disp-helper-accuracy-close" aria-label="Close the accuracy report">&times;</button>
+    </header>
+    <div class="lda-help-body">
+      <p>The helper reads a work order two ways: it finds the work orders the team has already dispositioned that
+        read most like it, and lets them vote for their codes; and it reads what the work order says outright
+        (“clogged”, “won't light”, “replaced”, “S09”) against the code lists and a thesaurus of maintenance wording.
+        Where the two agree it is sure; where they disagree, or there is little of either, it says so. With meaning
+        matching on, a small model run on this server also finds work orders that say the same thing in other words
+        (“no flame on startup” for “won't light”); it helps find what failed, and the category is still read from the
+        wording.</p>
+      <p>To measure itself, it dispositions work orders the team has already decided as if they were new, each one
+        without its own decision, and compares. A confidence of 90% means that nine in ten of its suggestions that
+        sure matched the engineer's disposition.</p>
+      <div id="disp-helper-accuracy-body" aria-live="polite"></div>
+    </div>
+  </div>
+</dialog>
+
+{# The Excel explainer. Markup rather than script so the wording is reviewable here. #}
 <dialog class="lda-help-dialog" id="lda-excel-help-dialog"
         aria-labelledby="lda-excel-help-title" aria-describedby="lda-excel-help-summary">
   <div class="lda-help-content">
     <header class="lda-help-head">
       <div>
         <p class="eyebrow">Dispositioning explained</p>
-        <h2 id="lda-excel-help-title">How dispositioning on Excel works</h2>
+        <h2 id="lda-excel-help-title">How dispositioning in Excel works</h2>
       </div>
       <button type="button" class="lda-help-close" id="lda-excel-help-close"
               aria-label="Close the Excel dispositioning explanation">&times;</button>
     </header>
 
     <div class="lda-help-body">
-      <p id="lda-excel-help-summary">Excel is the offline version of the table on this page. Download the
-        entries for the asset you selected, fill in the disposition columns in Excel, then upload the same
-        workbook to save them all at once. Nothing reaches the database until you upload it back.</p>
+      <p id="lda-excel-help-summary">Excel is the offline version of the list on this page. Download the
+        work orders for the asset you selected, fill in the disposition columns, then upload the same
+        workbook to save them all at once. Nothing reaches the database until you upload it.</p>
 
       <div class="lda-help-flow" aria-label="Excel dispositioning flow">
         <span>Download Excel</span>
         <span class="lda-help-flow-arrow" aria-hidden="true">→</span>
         <span>Fill in the disposition columns</span>
         <span class="lda-help-flow-arrow" aria-hidden="true">→</span>
-        <span>Disposition via Excel</span>
+        <span>Upload Excel</span>
       </div>
 
       <ol class="lda-help-steps">
-        <li><strong>Select the asset, record type and rows first.</strong> The workbook is built from the
-          Asset Number, Record Type and Rows chosen in Step 1: leave Rows on <em>All eligible rows</em> for
-          every entry, or set it to <em>Only new / undispositioned</em> to get just the backlog. The search
-          box and the page you are on do not narrow it; those change what you are looking at, while Rows
-          says which records are outstanding.</li>
-        <li><strong>Click Download Excel.</strong> You get
-          <code>&lt;asset&gt;_wo_dispositions.xlsx</code> (or <code>_pm_</code> for PM reset events, and
-          <code>_new_</code> in the name when you asked for only the new rows, so the two are told apart on
-          your desktop). The first sheet is one row per record; the second sheet,
-          <strong>Lookup Lists</strong>, feeds the dropdowns, so leave it in the file. Dates, task IDs and
-          downtime arrive as real dates and numbers, so Sort and Filter on the header row order them the way
-          the table does rather than alphabetically.</li>
-        <li><strong>Fill in the disposition columns.</strong> They are the last columns on the sheet,
-          <strong>highlighted yellow</strong> from the header down, and most of them are dropdowns:
-          <div class="lda-help-columns">
-            <div>
-              <h3>Both record types</h3>
-              <ul>
-                <li><code>disposition_notes</code>: free text. Required for
-                  <code>HELD_AMBIGUOUS</code> and <code>EXCLUDED_MIXED_CONTAMINATING</code>.</li>
-                <li><code>disposition_category</code>: dropdown.</li>
-                <li><code>record_class</code>: dropdown.</li>
-                <li><code>include_in_weibull_candidate</code>: <strong>set this to <code>TRUE</code> on
-                  every row the analysis should use.</strong> It arrives <code>FALSE</code> on any row nobody
-                  has dispositioned yet, and the import keeps whatever the cell says, so a row left at
-                  <code>FALSE</code> saves fine and is still left out of the Weibull.</li>
-              </ul>
-            </div>
-            <div>
-              <h3>Work orders</h3>
-              <ul>
-                <li><code>failure_mode</code> and <code>failure_mechanism</code>: pick from the dropdown,
-                  or type a brand-new name and it is created for this asset on import. A WO becomes
-                  Weibull-usable only as <code>INCLUDED_FAILURE</code> with a failure mode and
-                  <code>include_in_weibull_candidate</code> at <code>TRUE</code>.</li>
-              </ul>
-              <h3>PM reset events</h3>
-              <ul>
-                <li><code>pm_reset_decision</code>, <code>reset_target_failure_mode</code>,
-                  <code>reset_target_failure_mechanism</code>, <code>pm_reset_renewal_rationale</code>.
-                  A PM becomes Weibull-usable only as <code>INCLUDED_PM_RESET_EVENT</code> with
-                  <code>APPROVED_RESET</code>, a reset target, a rationale, and
-                  <code>include_in_weibull_candidate</code> at <code>TRUE</code>.</li>
-              </ul>
-            </div>
-          </div>
-        </li>
-        <li><strong>Leave the rest of the sheet alone.</strong> Every column with a grey header is
-          read-only. <code>mapped_record_id</code> is how each row finds its record: never edit it, delete a
-          row, or add one. The task, date, downtime, note and failure-narrative columns are ignored on
-          import, so the workbook can never overwrite what the maintenance team recorded in Limble.</li>
-        <li><strong>Click Disposition via Excel and choose the file.</strong> Rows are matched back by
-          <code>mapped_record_id</code>. Every row whose values differ from the saved disposition is written
-          as the current one, with the same result as editing it here and clicking Save Dispositions. Rows
-          that already match are skipped. What the workbook is compared against is the database, not
-          anything half-typed in the table below: the page reloads on a successful import, so it asks before
-          discarding unsaved edits, the same way paging and the selectors do.</li>
+        <li><strong>Select the asset and what to show first.</strong> The workbook holds the work orders
+          that <em>Show</em> is set to: all of them, only those not reviewed yet, or the migrated ones still
+          to confirm. The search box and the page you are on do not narrow it.</li>
+        <li><strong>Click Download Excel.</strong> The first sheet is one row per work order. The second,
+          <strong>Lookup Lists</strong>, holds every code with its name and feeds the dropdowns, so leave it
+          in the file.</li>
+        <li><strong>Fill in the disposition columns</strong>, highlighted from the header down:
+          <code>disposition_category</code>, <code>record_class</code>, <code>sub_asset</code>,
+          <code>component_code</code>, <code>part_code</code>, <code>failure_mechanism_code</code>,
+          <code>failure_mode_code</code>, <code>action_code</code>, <code>evidence</code> and
+          <code>failure_cause_code</code> are dropdowns. <code>part_code</code> is optional: the part within the
+          component that failed or was replaced (a filter, an O-ring), blank when the whole component did.
+          <code>renewed_items</code> takes component codes separated by commas; <code>linked_wo</code> the task
+          ID a duplicate continues; <code>qty</code> and
+          <code>disposition_note</code> are typed. Leave <code>failure_cause_code</code> blank to take the
+          mechanism's default cause. A code typed rather than picked can be in any capitals, or its name
+          (<em>Contamination</em> for CONT, <em>PM reset</em> for PM_RESET).</li>
+        <li><strong>Leave the rest alone.</strong> The grey columns are the work order as Limble recorded it
+          and are never written back. <code>mapped_record_id</code> and <code>task_id</code> are how each row
+          finds its work order: don't edit them, and don't copy a row.</li>
+        <li><strong>Click Upload Excel and choose the file.</strong> Only rows whose disposition columns
+          differ from what is saved are saved, through the same checks as Save here, and recorded against
+          your account.</li>
       </ol>
 
       <div class="lda-help-note">
         <strong>Worth knowing</strong>
-        <p><strong>Changing a failure mode or mechanism?</strong> Clear <em>both</em> of that row's
-          <code>failure_mode_id</code> and <code>failure_mechanism_id</code> cells (or the
-          <code>reset_target_…_id</code> pair for PMs). The id columns win whenever they are filled in, so
-          a new name typed beside an old id is read as no change at all.</p>
-        <p><strong>Moving a row to another failure mode moves its mechanism too.</strong> Clearing the ids
-          is not enough on its own; the mechanism has to be one that belongs to the new mode, so pick one
-          of its mechanisms, type a new name for it, or leave the mechanism cell empty. A mechanism carried
-          over from the old mode is refused, and refusing one row is refusing the file.</p>
-        <p><strong>PMs cannot invent taxonomy.</strong> A reset target has to be an existing work-order
-          failure mode/mechanism, so choose those from the dropdown. Work orders are the only place a new
-          mode or mechanism can be named.</p>
-        <p><strong>One wrong row stops the whole import.</strong> Nothing at all is saved when a single row
-          is refused, whether it is a <code>mapped_record_id</code> that does not belong to the selected asset and record
-          type (usually a workbook downloaded for a different one), or a mechanism sitting under the wrong
-          failure mode. Fix that row and upload the file again.</p>
-        <p><strong>A workbook is a snapshot, and uploading it does not merge.</strong> Each row is compared
-          against the database as it stands when you upload, not against the sheet as it was downloaded. So
-          if somebody else dispositioned one of these records while your copy sat on your desktop, your
-          untouched row still counts as a difference and puts the older values back over theirs. Download a
-          fresh workbook if yours has been sitting around, and try not to have two people on one asset at
-          the same time.</p>
-        <p><strong>Downloading is open to everyone; importing writes,</strong> so it needs an editor
-          account. Uploading the same file twice in a row is harmless: the second pass finds the database
-          already matching.</p>
+        <p><strong>The headings and columns are locked; the cells aren't.</strong> Sort, filter, resize, and
+          add or delete rows as you like, but the headings can't be retyped and columns can't be added,
+          deleted or moved, so the upload always finds them. Review &gt; Unprotect Sheet lifts the lock if you
+          must; the upload still reads headings in other capitals or under the names this page uses, a
+          column moved, and a title typed above the table, and tells you about any column it didn't read.</p>
+        <p><strong>One refused row saves none.</strong> The upload lists every refused row at once, by the row
+          number Excel shows, its task and why; fix them and upload the file again.</p>
+        <p><strong>Your team's newer work is kept.</strong> Each row remembers the disposition it was
+          downloaded with. If somebody changes a work order here after your download and you leave its row
+          alone, the upload keeps their newer one and says so. If you both changed it, the upload stops and
+          names the row: delete it to keep theirs, or download a fresh workbook and redo it there.</p>
+        <p><strong>Uploading the same file twice is harmless:</strong> the second time every row already
+          matches.</p>
       </div>
     </div>
   </div>
 </dialog>
 
 <div id="lda-loading" class="lda-loading" hidden>
-  <div class="lda-spinner" aria-hidden="true"></div>
-  <span id="lda-loading-text">Working…</span>
+  <div class="lda-loading-card" role="status" aria-live="polite">
+    <div class="lda-spinner" aria-hidden="true"></div>
+    <div class="lda-loading-words">
+      <span id="lda-loading-text">Working…</span>
+      <span id="lda-loading-elapsed" class="lda-loading-elapsed"></span>
+    </div>
+    <div class="lda-loading-bar" aria-hidden="true"></div>
+  </div>
 </div>
 
 {% include "page_tour.html" %}
 {% endblock %}
 
 {% block scripts %}
-  {# Before the chart script: it reads the palette out of the stylesheet at load
-     time, and a canvas cannot be themed by the cascade the way the rest of the
-     page is. #}
-  <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
-  {# Before life_data_analysis.js, which gives it the steps. #}
+  {# Before disposition.js, which gives it the steps. #}
   <script src="{{ url_for('static', filename='js/page_tour.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/standard_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/disposition_form.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/disposition.js') }}"></script>
 {% endblock %}

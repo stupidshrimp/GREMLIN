@@ -1,0 +1,1222 @@
+/* Life Data Analysis's two pages, read from the work-order disposition standard:
+   Disposition (the list and the disposition window side by side) and Perform an
+   Analysis (the population selector, matrix, warnings and the record editor that
+   opens over it). Built on life_data_analysis.css (fields, tables, banners, the
+   loading veil), which both pages load first; only what is new lives here. Every
+   colour is a theme token, so both pages follow the light and dark themes. */
+
+.std-intro-links { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; }
+
+.std-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 1fr) minmax(220px, 1.4fr);
+  gap: 0.9rem;
+  align-items: end;
+}
+
+/* ---- disposition editor ------------------------------------------------- */
+.std-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 1.2rem;
+  align-items: start;
+}
+.std-layout > .glass-card { min-width: 0; }
+/* Stuck below the top bar and the view bar (whose height disposition.js keeps in --disp-bar-h). */
+.std-editor-card {
+  position: sticky;
+  top: calc(var(--disp-bar-top, 82px) + var(--disp-bar-h, 52px) + 0.6rem);
+  max-height: calc(100vh - var(--disp-bar-top, 82px) - var(--disp-bar-h, 52px) - 1.4rem);
+  overflow: auto;
+}
+
+/* ---- the Disposition page's views ---------------------------------------------
+   One bar over the workspace switches it between the list and the disposition
+   side by side, the disposition alone across the page, and the list alone. The
+   bar stays in reach below the top bar; a thumb slides to the view chosen. */
+.std-workspace { --disp-bar-top: 82px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+.std-workspace[hidden] { display: none; }
+.std-view-bar {
+  position: sticky;
+  top: var(--disp-bar-top, 82px);
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-sm);
+  view-transition-name: disp-view-bar;
+}
+.std-views {
+  position: relative;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+}
+.std-views-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(var(--shadow-ink), 0.18), 0 0 0 1px var(--border);
+  transition: transform 320ms cubic-bezier(0.3, 0.7, 0.2, 1), width 320ms cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.std-views:not(.is-ready) .std-views-thumb { transition: none; }
+.std-view-btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.9rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 200ms ease;
+}
+.std-view-btn:hover,
+.std-view-btn[aria-checked="true"] { color: var(--forest-900); }
+.std-view-btn:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.std-view-btn svg,
+.std-record-step svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.std-view-hint { margin: 0; }
+
+/* The open work order's place in the list, with the ones either side. */
+.std-record-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1 1 18rem;
+  justify-content: flex-end;
+}
+.std-record-nav[hidden] { display: none; }
+.std-record-where {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+.std-record-where strong { color: var(--forest-900); white-space: nowrap; }
+.std-record-where .std-record-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.std-record-where .std-record-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.std-record-step {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--forest-800);
+  cursor: pointer;
+  transition: background 150ms ease, transform 150ms ease;
+}
+.std-record-step:hover:not(:disabled) { background: var(--forest-100); }
+.std-record-step:active:not(:disabled) { transform: scale(0.94); }
+.std-record-step:disabled { opacity: 0.4; cursor: default; }
+.std-record-step:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+
+/* One card across the page: the other is out of the way. */
+.std-workspace.is-view-focus .std-layout,
+.std-workspace.is-view-list .std-layout { grid-template-columns: minmax(0, 1fr); }
+.std-workspace.is-view-focus #disp-list-card,
+.std-workspace.is-view-list #disp-editor-card { display: none; }
+.std-workspace.is-view-focus .std-editor-card { position: static; max-height: none; overflow: visible; }
+.std-workspace.is-view-list table.lda-table td.std-title { max-width: 80ch; }
+.std-show-list { margin-top: 0.6rem; }
+.std-workspace:not(.is-view-focus) .std-show-list { display: none; }
+
+/* The disposition across the page: the work order on the left, kept in view as
+   the fields on the right are filled in. */
+@media (min-width: 1000px) {
+  .std-workspace.is-view-focus .std-form-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    column-gap: 1.6rem;
+    align-items: start;
+  }
+  .std-workspace.is-view-focus .std-form-wrap > * { grid-column: 2; }
+  .std-workspace.is-view-focus .std-form-wrap > .std-record-text {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    position: sticky;
+    top: calc(var(--disp-bar-top, 82px) + var(--disp-bar-h, 52px) + 0.8rem);
+    max-height: calc(100vh - var(--disp-bar-top, 82px) - var(--disp-bar-h, 52px) - 1.6rem);
+    overflow: auto;
+    padding-right: 0.5rem;
+  }
+  .std-workspace.is-view-focus .std-record-text + .std-form { margin-top: 0; padding-top: 0; border-top: 0; }
+  .std-workspace.is-view-focus .std-form-wrap > .std-helper { margin-top: 0; margin-bottom: 1rem; }
+}
+
+/* Moving between views. Where the browser can, the cards glide from one layout
+   to the next (a view transition): a card that stays grows or shrinks into
+   place, one that goes slides out to its side, one that comes slides in. */
+#disp-list-card { view-transition-name: disp-list; }
+#disp-editor-card { view-transition-name: disp-editor; }
+::view-transition-group(disp-list),
+::view-transition-group(disp-editor) {
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+/* Each card drawn at its own size, cut to the box as it grows or shrinks,
+   rather than stretched. */
+::view-transition-old(disp-list),
+::view-transition-new(disp-list),
+::view-transition-old(disp-editor),
+::view-transition-new(disp-editor) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+::view-transition-old(disp-list),
+::view-transition-old(disp-editor) { animation: 170ms ease-out both std-view-fade-out; }
+::view-transition-new(disp-list),
+::view-transition-new(disp-editor) { animation: 300ms ease-out 70ms both std-view-fade-in; }
+::view-transition-old(disp-list):only-child { animation: 240ms ease-in both std-view-out-left; }
+::view-transition-new(disp-list):only-child { animation: 360ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-left; }
+::view-transition-old(disp-editor):only-child { animation: 240ms ease-in both std-view-out-right; }
+::view-transition-new(disp-editor):only-child { animation: 360ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-right; }
+/* The bar is the same bar throughout: shown live, so its thumb's own slide is what moves. */
+::view-transition-old(disp-view-bar) { display: none; }
+::view-transition-new(disp-view-bar) { animation: none; }
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 200ms; }
+
+@keyframes std-view-fade-out { to { opacity: 0; } }
+@keyframes std-view-fade-in { from { opacity: 0; } }
+@keyframes std-view-out-left { to { opacity: 0; transform: translateX(-28px) scale(0.985); } }
+@keyframes std-view-in-left { from { opacity: 0; transform: translateX(-28px) scale(0.985); } }
+@keyframes std-view-out-right { to { opacity: 0; transform: translateX(28px) scale(0.985); } }
+@keyframes std-view-in-right { from { opacity: 0; transform: translateX(28px) scale(0.985); } }
+
+/* Where a browser can't, the cards of the new view rise in instead. */
+.std-workspace.is-view-changing .std-layout > .glass-card { animation: lda-rise-in 300ms cubic-bezier(0.3, 0.7, 0.2, 1) both; }
+
+/* Stepping to the next or previous work order: the new one slides in from that side. */
+#disp-editor-body.is-step-next > * { animation: 260ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-right; }
+#disp-editor-body.is-step-prev > * { animation: 260ms cubic-bezier(0.3, 0.7, 0.2, 1) both std-view-in-left; }
+
+table.lda-table tbody tr.std-row { cursor: pointer; }
+table.lda-table tbody tr.std-row:hover td { background: var(--brand-tint-soft); }
+table.lda-table tbody tr.std-row.is-selected td,
+table.lda-table tbody tr.std-row.is-selected:nth-child(even) td { background: var(--row-focus); }
+table.lda-table td.std-title { min-width: 16ch; max-width: 40ch; overflow-wrap: anywhere; }
+table.lda-table td.std-nowrap { white-space: nowrap; }
+table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wrap: anywhere; }
+
+/* The Disposition list's column filters: what is narrowing it, and the count of
+   work orders beside each value in a column's menu. */
+.std-filter-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.std-filter-status .btn-secondary { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
+.lda-col-menu-value .std-col-count {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.lda-col-menu-sort.is-active { outline: 2px solid var(--forest-500); outline-offset: -2px; }
+
+.std-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.std-chip.is-failure { background: var(--danger-tint-soft); border-color: var(--danger-tint-border); color: var(--danger-ink); }
+.std-chip.is-pm-reset { background: var(--success-bg); border-color: var(--success-border); color: var(--success-ink); }
+.std-chip.is-held,
+.std-chip.is-migrated { background: var(--warning-tint); border-color: var(--warning-tint); color: var(--warning-ink); }
+.std-chip.is-not-reviewed { color: var(--muted); }
+
+/* The work order above the disposition fields: a labelled grid of its facts,
+   then its request, failure narrative and notes, each under its own heading. */
+.std-record-text { display: grid; gap: 0.75rem; font-size: 0.88rem; }
+.std-record-head { display: grid; gap: 0.1rem; }
+.std-record-task {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.std-record-text h3 { margin: 0; font-size: 1.05rem; color: var(--forest-900); overflow-wrap: anywhere; }
+.std-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.55rem 1rem;
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-veil-soft);
+}
+.std-fact { min-width: 0; }
+.std-fact-wide { grid-column: 1 / -1; }
+.std-facts dt,
+.std-record-field dt {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.std-facts dd { margin: 0.1rem 0 0; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.std-record-section { display: grid; gap: 0.4rem; }
+.std-record-section h4 {
+  margin: 0;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--forest-900);
+}
+.std-record-section .lda-hint { margin: 0; }
+.std-record-fields { margin: 0; display: grid; gap: 0.45rem; }
+.std-record-field dd { margin: 0.1rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.std-narrative {
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-solid);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-narrative h4 { border-bottom: none; padding-bottom: 0; }
+.std-missing { color: var(--muted); font-style: italic; font-weight: 400; }
+
+.std-flag {
+  border: 1px solid var(--warning-tint);
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.84rem;
+}
+
+/* A field whose control is a group (category buttons, a checklist) is captioned
+   by a span rather than a <label>, and reads like one. */
+.lda-field .lda-field-label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
+
+.std-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 0.9rem; }
+/* A field keeps its own height when the one beside it grows. */
+.std-form > .lda-field { align-content: start; }
+/* The fields start below a rule, apart from the record they are read off. */
+.std-record-text + .std-form { margin-top: 1rem; padding-top: 0.9rem; border-top: 2px solid var(--border); }
+.std-form .std-wide { grid-column: 1 / -1; }
+.std-form .lda-field label .std-required { color: var(--danger-strong); margin-left: 0.15rem; }
+.std-form .lda-hint { margin: 0; font-size: 0.78rem; }
+
+.std-categories { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.std-category {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--forest-800);
+  cursor: pointer;
+}
+.std-category:hover { background: var(--forest-100); }
+.std-category:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.std-category.is-active { background: var(--accent-solid); border-color: var(--accent-solid); color: var(--accent-solid-ink); }
+
+.std-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  max-height: 150px;
+  overflow: auto;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+/* A code field: a search box over its list, the matches dropping below it. */
+.std-picker-wrap { display: grid; gap: 0.5rem; }
+.std-picker { position: relative; }
+.std-picker-box { position: relative; display: flex; align-items: center; }
+.std-form .lda-field .std-picker-input { padding-right: 3.2rem; text-overflow: ellipsis; }
+.std-picker.has-value .std-picker-input:not(:focus) { font-weight: 600; color: var(--forest-900); }
+.std-picker.is-disabled .std-picker-input { background: var(--forest-100); color: var(--muted); cursor: not-allowed; }
+.std-picker-caret {
+  position: absolute;
+  right: 0.7rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: translateY(-25%) rotate(45deg);
+  pointer-events: none;
+}
+.std-picker-clear {
+  position: absolute;
+  right: 1.75rem;
+  display: grid;
+  place-items: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.std-picker-clear:hover { background: var(--forest-100); color: var(--text); }
+.std-picker-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(var(--shadow-ink), 0.2);
+}
+.std-picker-list[hidden] { display: none; }
+.std-picker-group {
+  padding: 0.45rem 0.55rem 0.2rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.std-picker-option {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.std-picker-option:hover,
+.std-picker-option.is-active { background: var(--forest-100); }
+.std-picker-option.is-chosen { box-shadow: inset 3px 0 0 var(--accent-solid); }
+.std-picker-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.45rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--forest-900);
+}
+.std-picker-code {
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--forest-800);
+}
+.std-picker-desc {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.std-picker-note { padding: 0.5rem 0.55rem; font-size: 0.82rem; color: var(--muted); }
+.std-picker-note.is-empty { color: var(--text); }
+.std-picker-add-row { padding: 0.25rem 0.1rem 0.1rem; border-top: 1px solid var(--border); margin-top: 0.25rem; }
+.std-picker-add-row:first-child { border-top: 0; margin-top: 0; }
+.std-picker-add {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-align: left;
+  color: var(--brand-ink);
+  cursor: pointer;
+}
+.std-picker-add:hover { background: var(--brand-tint-soft); }
+.std-picker-add.is-prominent { background: var(--brand-tint); border: 1px solid var(--brand-tint-strong); }
+.std-picker-add.is-prominent:hover { background: var(--brand-tint-strong); }
+.std-picker-add-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: var(--brand-ink);
+  color: var(--surface);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+/* Adding a code from a field: a small panel under it. */
+.std-add {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--brand-tint-strong);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-add-head { display: grid; gap: 0.15rem; }
+.std-add-head h4 { margin: 0; font-size: 0.92rem; color: var(--forest-900); }
+.std-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 0.7rem; }
+.std-add-field { display: grid; gap: 0.25rem; align-content: start; }
+.std-add-field.is-wide { grid-column: 1 / -1; }
+.std-add-field > label,
+.std-add-label { font-size: 0.8rem; font-weight: 600; color: var(--forest-800); }
+.std-add-field .lda-textarea { min-height: 3.2rem; }
+.std-add-similar:empty { display: none; }
+.std-add-similar p { margin: 0; font-size: 0.82rem; }
+.std-add-none { color: var(--success-ink); }
+.std-add-lead { color: var(--warning-ink); }
+.std-add-matches { display: grid; gap: 0.35rem; margin: 0.4rem 0 0; padding: 0; list-style: none; }
+.std-add-match {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.std-add-match.is-retired { opacity: 0.8; }
+.std-add-match-text { display: grid; gap: 0.1rem; flex: 1; min-width: 0; }
+.std-add-match-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.45rem; font-weight: 600; font-size: 0.86rem; }
+.std-add-match-desc { font-size: 0.78rem; color: var(--muted); }
+.std-add-match-why { font-size: 0.74rem; color: var(--brand-ink); }
+.std-add .std-add-use { flex: none; padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+.std-add-retired { flex: none; max-width: 11rem; font-size: 0.74rem; color: var(--muted); }
+.std-add-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.std-add-actions .btn-primary,
+.std-add-actions .btn-secondary { padding: 0.4rem 0.95rem; font-size: 0.84rem; }
+.std-add .lda-banner { margin: 0; }
+
+/* The components a work order renewed: removable chips over a search to add one. */
+.std-renewed-field { display: grid; gap: 0.45rem; }
+.std-renewed { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.std-renewed-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.3rem 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--forest-100);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--forest-900);
+}
+.std-renewed-remove {
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.std-renewed-remove:hover { background: var(--surface); color: var(--danger-strong); }
+
+.std-derived {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.2rem 0.8rem;
+  font-size: 0.82rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-derived dt { color: var(--muted); }
+.std-derived dd { margin: 0; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+
+.std-history { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.3rem; font-size: 0.8rem; color: var(--muted); }
+
+/* ---- code lists dialog --------------------------------------------------- */
+/* The Code lists dialog: header and toolbar stay put while the list scrolls. */
+.std-code-dialog {
+  width: min(1200px, calc(100vw - 32px));
+  height: min(88vh, 900px);
+  max-height: min(88vh, 900px);
+}
+.std-code-dialog .lda-help-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: none;
+  overflow: hidden;
+}
+.std-code-intro { margin: 0.45rem 0 0; max-width: 88ch; color: var(--muted); font-size: 0.85rem; line-height: 1.55; }
+/* The lists on top; search, the retired switch and Add code under them. */
+.std-code-toolbar {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 1.3rem;
+  border-bottom: 1px solid var(--border);
+}
+.std-code-toolbar .cl-tabs { justify-self: start; }
+.std-code-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.9rem; }
+.std-code-tools .std-code-add { margin-left: auto; }
+.std-code-search {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: min(340px, 100%);
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.std-code-search:focus-within { border-color: var(--forest-500); box-shadow: 0 0 0 3px rgba(85, 116, 143, 0.18); }
+.std-code-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+}
+.std-code-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.std-code-add { padding: 0.45rem 1rem; font-size: 0.86rem; }
+.std-code-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 1.3rem 1.3rem; }
+
+/* The lists, as a segmented control with each list's count. */
+.cl-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--forest-100);
+}
+.cl-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.8rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.cl-tab:hover { color: var(--text); }
+.cl-tab:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.cl-tab.is-active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(var(--shadow-ink), 0.16); }
+.cl-tab-count {
+  min-width: 1.5rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-veil-strong);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.cl-tab.is-active .cl-tab-count { background: var(--forest-100); }
+
+.cl-actions { width: 1%; white-space: nowrap; text-align: right; }
+.cl-edit-btn {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--forest-800);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 140ms ease, border-color 140ms ease;
+}
+.cl-row:hover .cl-edit-btn,
+.cl-edit-btn:focus-visible { opacity: 1; border-color: var(--forest-500); }
+
+/* One code's form, opened under its row (or at the top, for a new one). */
+.cl-form-row > td { padding: 0 0 0.9rem; background: var(--brand-tint-soft); }
+.cl-form {
+  display: grid;
+  gap: 1rem;
+  margin: 0 0.85rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgba(var(--shadow-ink), 0.08);
+}
+.cl-form-title { margin: 0; font-size: 0.95rem; color: var(--text); }
+.cl-form-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+}
+.cl-field { display: grid; gap: 0.3rem; grid-column: span 2; align-content: start; }
+.cl-field.is-wide { grid-column: span 4; }
+.cl-field.is-full { grid-column: 1 / -1; }
+.cl-field > span { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.cl-field .lda-textarea { min-height: 96px; max-height: 50vh; line-height: 1.55; }
+.cl-field .lda-input[readonly] { background: var(--forest-100); color: var(--muted); cursor: not-allowed; }
+.cl-switch { display: inline-flex; align-items: center; gap: 0.5rem; padding-top: 0.45rem; font-size: 0.88rem; cursor: pointer; }
+.cl-switch input { width: 1.05rem; height: 1.05rem; accent-color: var(--accent-solid); }
+/* A new component or part's look-alikes already on the list, shown before it is added. */
+.cl-similar:empty { display: none; }
+.cl-similar { display: grid; gap: 0.4rem; }
+.cl-similar-lead { margin: 0; font-size: 0.86rem; color: var(--warning-ink); }
+.cl-similar-list { display: grid; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.cl-similar-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.cl-similar-text { display: grid; gap: 0.1rem; flex: 1; min-width: 0; }
+.cl-similar-why { font-size: 0.76rem; color: var(--brand-ink); }
+.cl-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.cl-form-actions .cl-spacer { flex: 1; }
+.cl-form-actions button { padding: 0.45rem 1.1rem; font-size: 0.86rem; }
+.cl-delete-btn {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--danger-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cl-delete-btn:hover { background: var(--danger-tint-soft); border-color: var(--danger-tint-border); }
+
+@media (max-width: 760px) {
+  .cl-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .cl-field,
+  .cl-field.is-wide { grid-column: 1 / -1; }
+  .std-code-search { width: 100%; }
+}
+
+/* ---- Perform an Analysis: the population --------------------------------- */
+.std-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.8rem 1rem;
+}
+/* A short list sits under its heading rather than at the foot of a row a long
+   one made tall. */
+.std-selector > .lda-field { align-content: start; }
+.std-multi {
+  display: grid;
+  gap: 0.2rem;
+  max-height: 168px;
+  overflow: auto;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 0.82rem;
+}
+.std-multi label { display: flex; gap: 0.4rem; align-items: flex-start; font-weight: 400; color: var(--text); cursor: pointer; text-align: left; }
+/* .lda-field gives every input in it a text box's full width and padding; a
+   checkbox in one of these lists is a checkbox. */
+.lda-field .std-multi input[type="checkbox"],
+.lda-field .std-checklist input[type="checkbox"],
+.lda-field .std-add input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  padding: 0;
+  margin: 0.15rem 0 0;
+  border-radius: 3px;
+}
+.std-multi .std-count { color: var(--muted); font-size: 0.74rem; margin-left: auto; }
+.std-multi-empty { color: var(--muted); font-style: italic; }
+.std-multi-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+.std-multi-head button {
+  font: inherit;
+  font-size: 0.74rem;
+  border: none;
+  background: none;
+  color: var(--brand-accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+.std-pop-string {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  overflow-wrap: anywhere;
+}
+
+.std-pareto-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.std-chart { display: grid; gap: 0.4rem; min-width: 0; }
+.std-chart h3 { margin: 0; font-size: 0.98rem; color: var(--forest-800); }
+/* Drawn at the container's own pixel width (the scripts measure it), so text
+   stays at its set size instead of scaling with the chart. */
+.std-chart svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.std-chart svg text { fill: var(--chart-label); font-size: 11px; font-family: inherit; }
+.std-chart svg .std-axis { stroke: var(--chart-axis); stroke-width: 1; }
+.std-chart svg .std-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.std-chart svg .std-bar { cursor: pointer; }
+.std-chart svg .std-bar:hover,
+.std-chart svg .std-bar:focus { opacity: 0.8; outline: none; }
+.std-chart svg .std-cum { fill: none; stroke: var(--chart-highlight); stroke-width: 2; }
+.std-chart svg .std-value { fill: var(--chart-ink); font-weight: 600; }
+
+.std-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; font-size: 0.78rem; color: var(--muted); }
+.std-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.std-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+.std-matrix-scroll { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 12px; }
+/* A matrix wider than the window has to scroll inside its own box, not drag the
+   page sideways. A grid item's min-width resolves to its min-content size --
+   the whole matrix, straight through the scroll box -- so the cards between the
+   page and the matrix take a zero minimum. The panel itself is a block, not the
+   grid .lda-panel is: Chrome puts a <details>'s contents in a box of its own,
+   which as a grid item sized itself to the matrix whatever its child said. */
+#lda-summary-card,
+.lda-matrix-panel { min-width: 0; }
+.lda-matrix-panel { display: block; }
+.lda-matrix-panel > * + * { margin-top: 0.55rem; }
+.lda-matrix-panel > .lda-hint { margin-bottom: 0; }
+table.std-matrix { border-collapse: collapse; font-size: 0.8rem; min-width: 100%; }
+table.std-matrix th,
+table.std-matrix td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: center; }
+table.std-matrix thead th { position: sticky; top: 0; background: var(--accent-solid); color: var(--accent-solid-ink); z-index: 1; }
+table.std-matrix tbody th { text-align: left; background: var(--surface); position: sticky; left: 0; white-space: nowrap; }
+table.std-matrix td.has-count { cursor: pointer; font-weight: 600; color: var(--forest-900); }
+table.std-matrix td.is-zero { color: var(--muted); }
+
+.std-warnings { display: grid; gap: 0.5rem; }
+.std-warning {
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--warning-tint);
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  font-size: 0.86rem;
+}
+.std-warning.is-info { border-color: var(--forest-200); background: var(--forest-100); color: var(--forest-800); }
+.std-warning strong { display: block; }
+
+.std-fits { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+.std-fit { display: grid; gap: 0.35rem; padding: 0.75rem 0.9rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.std-fit h3 { margin: 0; font-size: 0.98rem; color: var(--forest-800); }
+.std-fit .std-params { font-size: 1.2rem; font-weight: 700; color: var(--forest-900); }
+.std-fit dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.15rem 0.7rem; margin: 0; font-size: 0.82rem; }
+.std-fit dt { color: var(--muted); }
+.std-fit dd { margin: 0; }
+
+table.lda-table td.std-failure { color: var(--danger-ink); font-weight: 600; }
+table.lda-table td.std-suspension { color: var(--success-ink); font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .std-layout { grid-template-columns: 1fr; }
+  .std-editor-card { position: static; max-height: none; overflow: visible; }
+  .std-pareto-pair { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .std-controls,
+  .std-form { grid-template-columns: 1fr; }
+  .lda-modal.lda-record-modal { padding: 1rem; }
+}
+
+/* ---- Disposition page --------------------------------------------------- */
+.std-excel { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; align-items: center; }
+
+.lda-population-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.4rem;
+  align-items: flex-end;
+  margin-top: 0.9rem;
+}
+.lda-population-row #lda-categories-field { flex: 1 1 340px; }
+.lda-population-row .std-checklist { max-height: none; }
+/* Right above the Pareto's bars: the way the drilling came, each step a click
+   back to it, with Back and Start over; or the filters ticked by hand as chips. */
+.lda-drill {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.lda-drill .lda-hint { margin: 0; }
+.lda-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 0.3rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.84rem;
+}
+.lda-crumbs li { display: inline-flex; align-items: center; gap: 0.3rem; }
+.lda-crumbs li + li::before { content: "›"; color: var(--muted); }
+button.lda-crumb {
+  font: inherit;
+  font-weight: 600;
+  color: var(--forest-700);
+  background: none;
+  border: none;
+  padding: 0.1rem 0.25rem;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.lda-crumb:hover,
+button.lda-crumb:focus-visible { background: var(--forest-100); color: var(--forest-900); }
+.lda-crumb.is-current { font-weight: 700; color: var(--text); padding: 0.1rem 0.25rem; }
+.lda-drill-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.lda-drill-btn { padding: 0.3rem 0.8rem; font-size: 0.8rem; }
+.lda-drill-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+button.lda-drill-chip { cursor: pointer; font: inherit; font-size: 0.78rem; font-weight: 600; }
+button.lda-drill-chip:hover { background: var(--forest-100); }
+
+.lda-matrix-panel > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+.lda-matrix-panel[open] > summary { margin-bottom: 0.4rem; }
+
+.lda-rankings .lda-ranking-link {
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.lda-rankings .lda-ranking-link:hover { text-decoration-style: solid; }
+
+/* The disposition form opened over Perform an Analysis: the same form as the
+   Disposition page's right-hand window, given room. */
+.lda-modal.lda-record-modal { width: min(920px, 100%); max-height: 92vh; position: relative; }
+.lda-record-modal .lda-record-close { position: absolute; top: 0.7rem; right: 0.8rem; }
+.lda-record-modal .std-record-text h3 { padding-right: 2.4rem; }
+.lda-empty-result h2 { margin-top: 0; }
+
+/* ---- The disposition helper --------------------------------------------- */
+/* The bar under Step 1: the Auto-disposition switch, what it is doing, and the
+   backlog run and accuracy report beside it. */
+.std-helper-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  margin-top: 0.9rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-helper-status { flex: 1 1 22rem; margin: 0; font-size: 0.84rem; }
+.std-helper-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.std-switch { position: relative; display: inline-flex; align-items: center; gap: 0.55rem; cursor: pointer; font-weight: 700; color: var(--forest-900); }
+.std-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.std-switch-track {
+  position: relative;
+  flex: none;
+  width: 2.5rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: var(--forest-200);
+  border: 1px solid var(--border);
+  transition: background 150ms ease;
+}
+.std-switch-thumb {
+  position: absolute;
+  top: 0.13rem;
+  left: 0.15rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 150ms ease;
+}
+.std-switch input:checked + .std-switch-track { background: var(--brand-accent); border-color: var(--brand-accent); }
+.std-switch input:checked + .std-switch-track .std-switch-thumb { transform: translateX(1.08rem); }
+.std-switch input:focus-visible + .std-switch-track { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+
+/* How sure the helper is: a chip beside a field's label (its value as a button
+   when the field holds something else), coloured by band. */
+.std-field-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.5rem; }
+.std-helper-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  color: var(--muted);
+}
+.std-helper-chip.is-high { background: var(--success-bg); border-color: var(--success-border); color: var(--success-ink); }
+.std-helper-chip.is-mid { background: var(--warning-tint); border-color: var(--warning-tint); color: var(--warning-ink); }
+.std-helper-chip.is-low { color: var(--muted); }
+button.std-helper-chip.is-offer { cursor: pointer; border-style: dashed; font-weight: 600; }
+button.std-helper-chip.is-offer:hover { border-style: solid; }
+button.std-helper-chip.is-offer:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
+.std-form .lda-field.is-helper-filled select,
+.std-form .lda-field.is-helper-filled .std-picker-input,
+.std-form .lda-field.is-helper-filled .std-categories { box-shadow: 0 0 0 2px var(--brand-tint-strong); border-radius: 8px; }
+
+/* The panel above the fields: how sure it is overall, what it filled, why. */
+.std-helper {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-accent);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+  font-size: 0.86rem;
+}
+.std-helper-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 0.8rem; }
+.std-helper-title { display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 700; color: var(--forest-900); }
+.std-helper-icon { color: var(--brand-accent); }
+.std-helper-head .lda-hint { display: inline-flex; align-items: center; gap: 0.35rem; margin: 0; }
+.std-helper-overall { display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.std-helper-overall.is-high { color: var(--success-ink); }
+.std-helper-overall.is-mid { color: var(--warning-ink); }
+.std-helper-overall.is-low { color: var(--muted); }
+.std-helper-meter {
+  display: inline-block;
+  width: 5rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--forest-200);
+  overflow: hidden;
+}
+.std-helper-meter > span { display: block; height: 100%; border-radius: inherit; background: currentColor; }
+.std-helper-summary { margin: 0; color: var(--text); }
+.std-helper-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.std-helper-actions .btn-secondary { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
+.std-helper-note { margin: 0; color: var(--muted); font-size: 0.8rem; }
+.std-helper-note.is-warning {
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: var(--warning-tint);
+  color: var(--warning-ink);
+  font-size: 0.82rem;
+}
+.std-link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.std-helper-why > summary { cursor: pointer; font-weight: 600; color: var(--forest-800); }
+.std-helper-why[open] > summary { margin-bottom: 0.35rem; }
+.std-helper-reasons { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.3rem 0.8rem; margin: 0; }
+.std-helper-reasons dt { color: var(--muted); font-weight: 600; }
+.std-helper-reasons dd { margin: 0; overflow-wrap: anywhere; }
+.std-helper-because { color: var(--muted); }
+.std-helper-alts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.2rem; color: var(--muted); font-size: 0.78rem; }
+.std-helper-alt {
+  padding: 0.05rem 0.45rem;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.std-helper-alt:hover { border-style: solid; }
+.std-helper-similar { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+.std-helper-similar li {
+  display: grid;
+  grid-template-columns: 3rem auto minmax(0, 1fr);
+  gap: 0.1rem 0.6rem;
+  align-items: baseline;
+}
+.std-helper-sim { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--forest-800); }
+.std-helper-sim-task { color: var(--muted); white-space: nowrap; }
+.std-helper-sim-title { overflow-wrap: anywhere; }
+.std-helper-sim-codes { grid-column: 2 / -1; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+
+.std-chip.is-auto { background: var(--brand-tint); border-color: var(--brand-tint-strong); color: var(--brand-ink); }
+
+/* The backlog run and the accuracy report. */
+.std-helper-dialog { width: min(1040px, calc(100vw - 2rem)); }
+.std-helper-threshold { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin: 0.6rem 0; }
+.std-helper-threshold label { font-weight: 600; color: var(--forest-800); }
+.std-helper-threshold output { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--brand-ink); }
+.std-helper-threshold input[type="range"] { flex: 1 1 12rem; accent-color: var(--brand-accent); }
+.std-helper-preview { position: relative; min-height: 2.5rem; display: grid; gap: 0.6rem; }
+.std-helper-preview-summary { margin: 0; }
+.std-helper-histogram {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.4rem;
+  align-items: end;
+  height: 7rem;
+  padding: 0.3rem 0 0;
+}
+.std-helper-bar-col { display: grid; grid-template-rows: auto 1fr auto; height: 100%; text-align: center; font-size: 0.74rem; color: var(--muted); }
+.std-helper-bar-fill { align-self: end; min-height: 2px; border-radius: 4px 4px 0 0; background: var(--forest-200); }
+.std-helper-bar-col.is-applied .std-helper-bar-fill { background: var(--brand-accent); }
+.std-helper-bar-col.is-applied { color: var(--brand-ink); font-weight: 700; }
+.std-helper-bar-count { font-variant-numeric: tabular-nums; }
+.std-helper-table-scroll { max-height: 22rem; }
+table.std-helper-table { font-size: 0.82rem; }
+table.std-helper-table tr.is-skipped td { color: var(--muted); }
+table.std-helper-table tbody th { text-align: left; font-weight: 600; white-space: nowrap; }
+.std-helper-dialog-actions { display: flex; justify-content: flex-end; margin: 0.8rem 0; }
+.std-helper-subhead { margin: 1rem 0 0.4rem; font-size: 0.95rem; color: var(--forest-900); }
+.std-helper-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.85rem; }
+.std-helper-runs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.std-helper-runs .btn-secondary { padding: 0.25rem 0.7rem; font-size: 0.8rem; }
+.std-helper-mistakes { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.2rem; font-size: 0.85rem; }
+
+@media (max-width: 720px) {
+  .std-helper-bar { align-items: flex-start; }
+  .std-helper-tools { width: 100%; }
+  .std-helper-tools .btn-secondary { flex: 1 1 auto; }
+  .std-helper-reasons { grid-template-columns: 1fr; }
+  .std-helper-similar li { grid-template-columns: 3rem minmax(0, 1fr); }
+  .std-helper-sim-title { grid-column: 2 / -1; }
+  .std-helper-histogram { height: 5.5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .std-switch-track, .std-switch-thumb { transition: none; }
+  .std-views-thumb, .std-view-btn, .std-record-step { transition: none; }
+  .std-workspace.is-view-changing .std-layout > .glass-card,
+  #disp-editor-body.is-step-next > *,
+  #disp-editor-body.is-step-prev > * { animation: none; }
+}
+.std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
+.std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
+table.std-helper-table td.std-helper-plain { color: var(--muted); }
+
+@media (max-width: 560px) {
+  .std-add-grid { grid-template-columns: 1fr; }
+  .std-add-match { flex-wrap: wrap; }
+}
+
+/* A phone: the views share the bar's width, by name alone. */
+@media (max-width: 560px) {
+  .std-views { display: flex; width: 100%; }
+  .std-view-btn { flex: 1 1 0; justify-content: center; padding: 0.45rem 0.4rem; font-size: 0.8rem; }
+  .std-view-btn svg { display: none; }
+  .std-record-nav { flex-basis: 100%; }
+}

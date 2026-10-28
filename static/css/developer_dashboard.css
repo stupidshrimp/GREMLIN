@@ -200,6 +200,8 @@
   background: var(--forest-100);
   color: var(--text);
   font-weight: 500;
+  /* A refused upload lists each refused row on its own line. */
+  white-space: pre-line;
 }
 
 .dev-banner.is-error {
@@ -264,8 +266,15 @@ body:has(.dev-panel) .content,
 }
 
 .dev-panel .glass-card + .glass-card,
-.dev-panel .dev-panel-grid + .glass-card {
+.dev-panel .dev-panel-grid + .glass-card,
+.dev-panel .glass-card + .dev-panel-grid {
   margin-top: 18px;
+}
+
+/* Side by side in a grid, cards share a top edge: the rule above is for cards
+   stacked one under another, and pushed the second of a pair down. */
+.dev-panel .dev-panel-grid > .glass-card + .glass-card {
+  margin-top: 0;
 }
 
 .dev-panel-grid {
@@ -1042,3 +1051,27 @@ body:has(.dev-panel) .content,
   color: var(--danger-strong);
   border-color: var(--danger-tint-border);
 }
+
+/* --- Code lists ---------------------------------------------------------- */
+
+.dev-code-rules {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 0.88rem;
+}
+
+.dev-code-result {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.dev-code-result-summary {
+  margin: 0;
+  font-weight: 600;
+}
+
+/* The code lists wrap each description in full, so rows run taller: more room. */
+#dev-codes-table { max-height: min(72vh, 760px); }

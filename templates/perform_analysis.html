@@ -2,6 +2,7 @@
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/standard_disposition.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
 {% endblock %}
 
@@ -9,8 +10,10 @@
 <section class="glass-card fade-in-up">
   <p class="eyebrow">Life Data Analysis</p>
   <h1>Perform an Analysis</h1>
-  <p>Select an Asset Number from mapped CMMS data, disposition corrective work orders and PM reset
-     events, then run a REL-style Weibull analysis using only valid observations.</p>
+  <p>Choose an asset and narrow it to the population you want to understand. The Weibull narrows by
+     sub-asset, component and failure mechanism, and each bar of its Pareto is one of each, ready to fit.
+     Triage and the other analyses narrow by mode, cause, action and category as well, and every view under
+     them reads that same population from the work-order dispositions.</p>
   <button type="button" class="page-tour-btn" id="analysis-tour-btn">Show me around</button>
 </section>
 
@@ -33,7 +36,7 @@
       <label for="lda-analysis-type">Analysis Type</label>
       <select id="lda-analysis-type" name="analysis_type">
         <option value="Weibull Analysis" selected>Weibull Analysis</option>
-        <option value="Failure Mode Trend Analysis">Failure Mode Trend Analysis</option>
+        <option value="Triage Analysis">Triage Analysis</option>
         <option value="Downtime Driver Analysis">Downtime Driver Analysis</option>
         <option value="PM Effectiveness Analysis">PM Effectiveness Analysis</option>
         <option value="Repeat Fix Rate Analysis">Repeat Fix Rate Analysis</option>
@@ -43,250 +46,215 @@
   <p class="lda-hint" id="lda-asset-hint">Loading Asset Numbers…</p>
 </section>
 
-<section id="lda-summary-card" class="glass-card slide-in lda-card" aria-labelledby="lda-step-2" hidden>
+<section class="glass-card slide-in lda-card" id="lda-population-card" aria-labelledby="lda-step-2" hidden>
   <p class="eyebrow">Step 2</p>
-  <h2 id="lda-step-2">Asset Weibull readiness summary</h2>
+  <h2 id="lda-step-2">Analysis population</h2>
+  <p class="lda-hint" id="lda-population-hint-weibull">Leave a list unticked for no restriction on it. Sub-asset and
+     component choose which items' lives are pooled, and mechanism which of their failures count. The sub-asset list
+     follows the asset's hierarchy. A Pareto bar below is one of each: clicking it fits that one.</p>
+  <p class="lda-hint" id="lda-population-hint-triage" hidden>Leave a list unticked for no restriction on it. The
+     sub-asset list follows the asset's hierarchy; clicking a Pareto bar or a matrix cell below narrows it for you
+     too.</p>
+  <div class="std-selector" id="lda-population-selector"></div>
+  <div class="lda-population-row">
+    <div class="lda-field" id="lda-categories-field">
+      <span class="lda-field-label">Disposition categories</span>
+      <div class="std-checklist" id="lda-categories" role="group" aria-label="Disposition categories"></div>
+    </div>
+    <div class="lda-trend-controls" id="lda-dates">
+      <div class="lda-field">
+        <label for="lda-date-from">From</label>
+        <input type="date" id="lda-date-from">
+      </div>
+      <div class="lda-field">
+        <label for="lda-date-to">To</label>
+        <input type="date" id="lda-date-to">
+      </div>
+      <button type="button" class="btn-secondary" id="lda-date-reset">All dates</button>
+    </div>
+    <label class="lda-checkbox" id="lda-induced-field">
+      <input type="checkbox" id="lda-exclude-induced">
+      Count induced failures (installation and maintenance errors) as suspensions
+    </label>
+  </div>
+  <p class="std-pop-string" id="lda-pop-string" title="The population definition every saved Weibull run keeps"></p>
+</section>
 
-  <!-- Secondary analysis panel: controlled by the selected Analysis Type. The
-       Pareto section below is intentionally NOT part of this and stays visible for
-       every analysis type. -->
+<section id="lda-summary-card" class="glass-card slide-in lda-card" aria-labelledby="lda-step-3" hidden>
+  <p class="eyebrow">Step 3</p>
+  <h2 id="lda-step-3">Weibull readiness</h2>
 
-  <!-- Weibull readiness metrics (Weibull Analysis only). -->
   <div id="lda-weibull-summary">
     <div id="lda-summary-grid" class="lda-summary-grid"></div>
   </div>
-
-  <!-- Failure Mode Trend summary cards (Failure Mode Trend Analysis only). -->
   <div id="lda-trend-summary" hidden>
     <div id="lda-trend-cards" class="lda-summary-grid"></div>
+    <p class="lda-hint" id="lda-trend-note" hidden></p>
   </div>
-
-  <!-- PM Effectiveness summary cards (PM Effectiveness Analysis only). -->
   <div id="lda-pm-summary" hidden>
     <div id="lda-pm-cards" class="lda-summary-grid"></div>
     <p class="lda-hint" id="lda-pm-message" hidden></p>
   </div>
-
-  <!-- Downtime Driver summary cards (Downtime Driver Analysis only). -->
   <div id="lda-downtime-summary" hidden>
     <div id="lda-downtime-cards" class="lda-summary-grid lda-summary-grid-5"></div>
     <p class="lda-hint" id="lda-downtime-message" hidden></p>
   </div>
-
-  <!-- Repeat Fix Rate summary cards (Repeat Fix Rate Analysis only). -->
   <div id="lda-repeat-summary" hidden>
     <div id="lda-repeat-cards" class="lda-summary-grid"></div>
     <p class="lda-hint" id="lda-repeat-message" hidden></p>
   </div>
 
-  <!-- Placeholder for analysis types that are not implemented yet. -->
-  <div id="lda-placeholder-summary" hidden>
-    <p class="lda-hint" id="lda-placeholder-text">Coming soon.</p>
-  </div>
-
-  <!-- Highest-beta mechanisms (Weibull-specific). Rendered above the Pareto so the
-       Pareto can span the full page width on every analysis type. -->
   <div class="lda-panel" id="lda-beta-panel">
-    <h3>Highest-beta mechanisms</h3>
-    <p class="lda-hint">Where an age-based PM is most likely to pay off: the top 5 failure mechanisms by beta, using
-       the latest saved Weibull result for each failure-mechanism population on this asset that rests on at least
-       5 lives ending in a failure. Plot R² is how straight that fit's probability plot is.</p>
+    <h3>Highest-beta populations</h3>
+    <p class="lda-hint">Where an age-based PM is most likely to pay off: the top 5 saved Weibull fits on this
+       asset by beta, each the latest fit of a one-component population resting on at least 5 lives ending in a
+       failure. Click one to open it.</p>
     <ol id="lda-beta-rankings" class="lda-rankings"></ol>
   </div>
-
-  <!-- Most likely to fail soon: the same saved fits, ranked by the chance the current
-       life ends in a failure within the window (REL-WBL-MTH-001 §8.1). -->
   <div class="lda-panel" id="lda-risk-panel">
     <h3>Most likely to fail soon</h3>
-    <p class="lda-hint">What needs attention before the next planning cycle: the top 5 failure mechanisms by the
-       chance of failing in the next
+    <p class="lda-hint">What needs attention before the next planning cycle: the same saved fits by the chance one
+       of their items in service fails in the next
        <input id="lda-risk-weeks" class="lda-input lda-risk-weeks" type="number" min="1" max="52" step="1" value="4"
-              aria-label="Weeks ahead"> weeks, given how long each current life has already run, from the same saved
-       results. Each is measured from its run's cutoff.</p>
+              aria-label="Weeks ahead"> weeks, given how long each has already run. Each is measured from its run's
+       cutoff.</p>
     <ol id="lda-risk-rankings" class="lda-rankings"></ol>
   </div>
 
-  <!-- Failure Pareto: always visible and full-width, regardless of analysis type. -->
   <div class="lda-subgrid">
     <div class="lda-panel" id="lda-pareto-panel">
       <div class="lda-pareto-head">
-        <h3 id="lda-pareto-title">Failure mechanism Pareto</h3>
-        <!-- What each bar is and what it is ranked by. Plain buttons with
-             aria-pressed, the same as the other view switches in the app. -->
+        <h3 id="lda-pareto-title">Pareto by sub-asset</h3>
         <div class="lda-pareto-toolbar">
-          <div class="lda-pareto-option">
-            <span class="lda-pareto-option-label" id="lda-pareto-group-label">Group by</span>
-            <div class="lda-segmented" id="lda-pareto-group" role="group" aria-labelledby="lda-pareto-group-label">
-              <button type="button" class="lda-segmented-btn" data-group="mode" aria-pressed="false"
-                      title="One bar per failure mode, with every mechanism under it added up">Failure mode</button>
-              <button type="button" class="lda-segmented-btn is-active" data-group="mechanism" aria-pressed="true"
-                      title="One bar per failure mechanism">Failure mechanism</button>
-            </div>
+          <div class="lda-pareto-option" id="lda-pareto-group-field">
+            <label class="lda-pareto-option-label" for="lda-pareto-group">Group by</label>
+            <select id="lda-pareto-group" class="lda-select"></select>
           </div>
           <div class="lda-pareto-option">
             <span class="lda-pareto-option-label" id="lda-pareto-metric-label">Rank by</span>
             <div class="lda-segmented" id="lda-pareto-metric" role="group" aria-labelledby="lda-pareto-metric-label">
-              <button type="button" class="lda-segmented-btn is-active" data-metric="downtime_hours" aria-pressed="true"
+              <button type="button" class="lda-segmented-btn is-active" data-metric="count" aria-pressed="true"
+                      title="Bar height and order by number of work orders">Count</button>
+              <button type="button" class="lda-segmented-btn" data-metric="downtime_hours" aria-pressed="false"
                       title="Bar height and order by downtime hours">Downtime hours</button>
-              <button type="button" class="lda-segmented-btn" data-metric="failure_count" aria-pressed="false"
-                      title="Bar height and order by number of included failures">Failure count</button>
             </div>
           </div>
         </div>
       </div>
-      <!-- Shown when a failure mode bar was opened into its mechanisms. -->
-      <div class="lda-pareto-focus" id="lda-pareto-focus" hidden>
-        <span class="lda-hint" id="lda-pareto-focus-text"></span>
-        <button type="button" class="btn-secondary" id="lda-pareto-focus-clear">Show every mechanism</button>
-      </div>
-      <!-- Date filter for the Pareto and every analysis run from it. Blank on
-           either side means no bound there. -->
-      <div class="lda-trend-controls" id="lda-dates">
-        <div class="lda-field">
-          <label for="lda-date-from">From</label>
-          <input type="date" id="lda-date-from">
-        </div>
-        <div class="lda-field">
-          <label for="lda-date-to">To</label>
-          <input type="date" id="lda-date-to">
-        </div>
-        <button type="button" class="btn-secondary" id="lda-date-reset">All dates</button>
-      </div>
-      <p class="lda-hint" id="lda-dates-hint">Leave both dates blank to use every included failure. With a date set, the
-         Pareto and the analysis below count only failures whose work order date (completed, else start, else created)
-         falls in the range.{% if auth_can_edit %} A Weibull fit is run with them as its start and cutoff dates.{% else %}
-         A saved Weibull fit shows the dates it was run with.{% endif %}</p>
+      {#- How the Pareto got here, right above its bars: each drill a step to go back
+          to, or the filters ticked by hand, with Back and Start over. -#}
+      <nav class="lda-drill" id="lda-drill" aria-label="Pareto drill-down" aria-live="polite"></nav>
       <div class="lda-chart-wrap">
-        <canvas id="lda-pareto-chart" class="lda-canvas" height="320"></canvas>
+        <canvas id="lda-pareto-chart" class="lda-canvas" height="340"></canvas>
+        <div class="lda-skeleton-chart" id="lda-pareto-skeleton" aria-hidden="true" hidden>
+          <div class="lda-skeleton" style="height: 92%"></div>
+          <div class="lda-skeleton" style="height: 70%"></div>
+          <div class="lda-skeleton" style="height: 52%"></div>
+          <div class="lda-skeleton" style="height: 38%"></div>
+          <div class="lda-skeleton" style="height: 26%"></div>
+          <div class="lda-skeleton" style="height: 18%"></div>
+          <div class="lda-skeleton" style="height: 12%"></div>
+        </div>
       </div>
-      <p class="lda-hint" id="lda-pareto-empty" hidden>No included failure mechanisms to chart yet.</p>
+      <div class="std-legend" id="lda-pareto-legend"></div>
+      <p class="lda-hint" id="lda-pareto-weibull-hint">The population's failures, one bar per sub-asset, component and
+         mechanism: each is one kind of item failing one way, the population a Weibull is best run on. Click a bar to
+         fit it{% if auth_can_edit %} and save the run{% endif %}; the Pareto and the population above stay as they are.</p>
+      <p class="lda-hint" id="lda-pareto-empty" hidden>No work orders in this population yet.</p>
+      <p class="lda-hint" id="lda-pareto-not-coded" hidden></p>
     </div>
   </div>
 
-  <!-- Action bar: sits directly below the Pareto so the buttons appear in the
-       same place for every analysis type (in Weibull the Pareto is the last
-       panel; the other analyses render their extra panels below this bar). -->
-  <div id="lda-actions" class="lda-action-bar" hidden>
-    <button type="button" class="btn-primary" id="lda-perform" {% if not auth_can_edit %}hidden{% endif %}>Perform Analysis</button>
-    <button type="button" class="btn-secondary" id="lda-disposition-wo" {% if not auth_can_edit %}hidden{% endif %}>Disposition Work Orders</button>
-    <button type="button" class="btn-secondary" id="lda-disposition-pm" {% if not auth_can_edit %}hidden{% endif %}>Disposition PMs</button>
-  </div>
+  <details class="lda-panel lda-matrix-panel" id="lda-matrix-panel">
+    <summary>Where it happens: sub-asset × component</summary>
+    <p class="lda-hint">Work orders in the population by where (rows) and what (columns), failures only on the
+       Weibull. Click a cell to narrow the population to that sub-asset and component.</p>
+    <div class="std-matrix-scroll" id="lda-matrix-wrap"></div>
+  </details>
 
-  <!-- Failure Mode Trend chart (Failure Mode Trend Analysis only). -->
+  <div id="lda-actions" class="lda-action-bar">
+    <button type="button" class="btn-primary" id="lda-perform">{% if auth_can_edit %}Perform Analysis{% else %}Preview the fit{% endif %}</button>
+    {% if auth_can_edit %}<a class="btn-secondary" id="lda-disposition-link" href="{{ url_for('disposition') }}">Disposition work orders</a>{% endif %}
+  </div>
+  <p class="lda-hint" id="lda-perform-hint"></p>
+
   <div class="lda-panel" id="lda-trend-chart-panel" hidden>
-    <h3>Failure Mode Trend</h3>
-    <p class="lda-hint" id="lda-trend-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to view the trend.</p>
-    <div class="lda-trend-controls" id="lda-trend-controls" hidden>
-      <div class="lda-field">
-        <label for="lda-trend-from">From</label>
-        <input type="month" id="lda-trend-from">
-      </div>
-      <div class="lda-field">
-        <label for="lda-trend-to">To</label>
-        <input type="month" id="lda-trend-to">
-      </div>
-      <button type="button" class="btn-secondary" id="lda-trend-reset">Reset range</button>
-    </div>
+    <h3>Failure trend</h3>
+    <p class="lda-hint" id="lda-trend-selection"></p>
     <div class="lda-chart-wrap">
       <canvas id="lda-trend-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
-
-  <!-- Failure Mode Trend detail table (feeds the trend chart above). -->
   <div class="lda-panel" id="lda-trend-table-panel" hidden>
-    <h3>Failure Mode Trend Detail</h3>
-    <p class="lda-hint" id="lda-trend-table-hint">Monthly occurrence counts for the selected failure mode or mechanism are the values plotted above. Click a month to show only its work orders below.</p>
+    <h3>Trend detail</h3>
+    <p class="lda-hint" id="lda-trend-table-hint">Each month's work orders, and how each value of the Pareto's
+       dimension moved. Click a month to list only its work orders below.</p>
     <div class="lda-table-scroll" id="lda-trend-table-wrap"></div>
   </div>
-
-  <!-- Work orders backing the trend (filterable by clicking a month/data point). -->
   <div class="lda-panel" id="lda-trend-wo-panel" hidden>
-    <h3>Work Orders in Trend</h3>
-    <p class="lda-hint" id="lda-trend-wo-hint">The specific work orders that populate the months plotted above.</p>
+    <h3>Work orders in the trend</h3>
+    <p class="lda-hint" id="lda-trend-wo-hint"></p>
     <div class="lda-table-scroll" id="lda-trend-wo-wrap"></div>
   </div>
 
-  <!-- Failures Following PM trend chart (PM Effectiveness Analysis only). -->
   <div class="lda-panel" id="lda-pm-chart-panel" hidden>
-    <h3>Failures Following PM</h3>
-    <p class="lda-hint" id="lda-pm-selection">Select a failure mode or mechanism from the Pareto chart or analysis controls to evaluate PM effectiveness.</p>
-    <div class="lda-trend-controls" id="lda-pm-controls" hidden>
-      <div class="lda-field">
-        <label for="lda-pm-from">From</label>
-        <input type="month" id="lda-pm-from">
-      </div>
-      <div class="lda-field">
-        <label for="lda-pm-to">To</label>
-        <input type="month" id="lda-pm-to">
-      </div>
-      <button type="button" class="btn-secondary" id="lda-pm-reset">Reset range</button>
-    </div>
+    <h3>Failures following a PM</h3>
+    <p class="lda-hint" id="lda-pm-selection"></p>
     <div class="lda-chart-wrap">
       <canvas id="lda-pm-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
-
-  <!-- PM-to-Failure summary table (PM Effectiveness Analysis only). -->
   <div class="lda-panel" id="lda-pm-table-panel" hidden>
-    <h3>PM-to-Failure Detail</h3>
-    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM paired with the next corrective work order for the selected failure mechanism on the same asset.{% if auth_can_edit %} Click a Corrective WO Number to review or change its disposition.{% endif %}</p>
+    <h3>PM-to-failure detail</h3>
+    <p class="lda-hint" id="lda-pm-table-hint">Each completed PM on the asset or one of its sub-assets, paired with
+       the next failure of the population found there after it.</p>
     <div class="lda-table-scroll" id="lda-pm-table-wrap"></div>
   </div>
 
-  <!-- Repeat fix rate per mechanism (Repeat Fix Rate Analysis only). -->
   <div class="lda-panel" id="lda-repeat-rate-panel" hidden>
-    <h3>Repeat fix rate by mechanism</h3>
-    <p class="lda-hint">A failure is a repeat when it comes back within
+    <h3>Repeat fix rate by item</h3>
+    <p class="lda-hint">A failure is a repeat when it is found within
       <input id="lda-repeat-window" class="lda-input lda-risk-weeks" type="number" min="0" max="720" step="any" value="24"
-             aria-label="Repeat window in scheduled hours"> scheduled hours of the mechanism's last one, counted on the
-      asset's Weibull schedule just as a Weibull life is. The rate is repeats over the gaps between failures. Click a
-      Pareto bar or a row to list only its repeats below.</p>
+             aria-label="Repeat window in scheduled hours"> scheduled hours of the previous failure's repair being
+      finished, on that sub-asset's Weibull schedule, item by item (sub-asset and component). The rate is repeats over
+      the gaps between failures. Click a row to list only its repeats.</p>
     <p class="lda-hint" id="lda-repeat-basis"></p>
     <div class="lda-table-scroll" id="lda-repeat-rate-wrap"></div>
   </div>
-
-  <!-- The repeat pairs behind the rates (Repeat Fix Rate Analysis only). -->
   <div class="lda-panel" id="lda-repeat-pairs-panel" hidden>
     <h3>Repeat failures</h3>
-    <p class="lda-hint" id="lda-repeat-pairs-hint">Each failure that came back within the window, with the one before it.{% if auth_can_edit %} Click a WO number to review or change its disposition.{% endif %}</p>
+    <p class="lda-hint" id="lda-repeat-pairs-hint">Each failure that came back within the window, with the one
+       before it.</p>
     <div class="lda-trend-controls" id="lda-repeat-filter" hidden>
       <span class="lda-hint" id="lda-repeat-filter-text"></span>
-      <button type="button" class="btn-secondary" id="lda-repeat-filter-clear">Show every mechanism</button>
+      <button type="button" class="btn-secondary" id="lda-repeat-filter-clear">Show every item</button>
     </div>
     <div class="lda-table-scroll" id="lda-repeat-pairs-wrap"></div>
   </div>
 
-  <!-- Monthly Downtime Trend chart (Downtime Driver Analysis only). -->
   <div class="lda-panel" id="lda-downtime-trend-panel" hidden>
-    <h3>Monthly Downtime Trend</h3>
-    <p class="lda-hint" id="lda-downtime-trend-hint">Select a failure mode or mechanism from the Pareto chart or analysis controls to analyze downtime drivers.</p>
+    <h3>Monthly downtime</h3>
     <div class="lda-chart-wrap">
       <canvas id="lda-downtime-trend-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
-
-  <!-- Downtime Distribution histogram (Downtime Driver Analysis only). -->
   <div class="lda-panel" id="lda-downtime-dist-panel" hidden>
-    <h3>Downtime Distribution</h3>
-    <p class="lda-hint" id="lda-downtime-dist-hint">Work order count by downtime range shows whether downtime comes from many short events or a few long ones.</p>
+    <h3>Downtime distribution</h3>
+    <p class="lda-hint">Work orders by length of stop: many short stops, or a few long ones.</p>
     <div class="lda-chart-wrap">
       <canvas id="lda-downtime-dist-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
-
-  <!-- Downtime by Asset / Location bar chart (Downtime Driver Analysis only). -->
   <div class="lda-panel" id="lda-downtime-asset-panel" hidden>
-    <h3>Downtime by Asset / Location</h3>
-    <p class="lda-hint" id="lda-downtime-asset-hint">Total downtime hours grouped by asset (or location when no asset is recorded), highest first.</p>
+    <h3>Downtime by sub-asset</h3>
+    <p class="lda-hint">Total downtime hours by the sub-asset the work order was dispositioned to (or the asset itself), highest first.</p>
     <div class="lda-chart-wrap">
       <canvas id="lda-downtime-asset-chart" class="lda-canvas" height="320"></canvas>
     </div>
   </div>
-
-  <!-- Top Downtime Events table (Downtime Driver Analysis only). -->
   <div class="lda-panel" id="lda-downtime-events-panel" hidden>
-    <h3>Top Downtime Events</h3>
-    <p class="lda-hint" id="lda-downtime-events-hint">The highest-downtime work orders for the selected failure mechanism, sorted by downtime (top 10).</p>
+    <h3>Top downtime events</h3>
+    <p class="lda-hint" id="lda-downtime-events-hint">The ten work orders with the most downtime.</p>
     <div class="lda-table-scroll" id="lda-downtime-events-wrap"></div>
   </div>
 </section>
@@ -294,8 +262,14 @@
 <div id="lda-workspace" class="lda-workspace"></div>
 
 <div id="lda-loading" class="lda-loading" hidden>
-  <div class="lda-spinner" aria-hidden="true"></div>
-  <span id="lda-loading-text">Working…</span>
+  <div class="lda-loading-card" role="status" aria-live="polite">
+    <div class="lda-spinner" aria-hidden="true"></div>
+    <div class="lda-loading-words">
+      <span id="lda-loading-text">Working…</span>
+      <span id="lda-loading-elapsed" class="lda-loading-elapsed"></span>
+    </div>
+    <div class="lda-loading-bar" aria-hidden="true"></div>
+  </div>
 </div>
 
 {% include "page_tour.html" %}
@@ -308,5 +282,7 @@
   <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
   {# Before life_data_analysis.js, which gives it the steps. #}
   <script src="{{ url_for('static', filename='js/page_tour.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/standard_common.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/disposition_form.js') }}"></script>
   <script src="{{ url_for('static', filename='js/life_data_analysis.js') }}"></script>
 {% endblock %}

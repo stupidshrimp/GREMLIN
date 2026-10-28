@@ -5,13 +5,18 @@ import unittest
 from pathlib import Path
 
 from services.life_data_service import (
-    DISPLAY_COLUMNS,
-    EXCEL_WO_DISPOSITION_COLUMNS,
     LifeDataService,
 )
 from repositories.raw_repo import INSTRUCTIONS_READ_ERROR
 from services.ingestion_service import INSTRUCTIONS_READ_AT
 from services.wo_narrative import NARRATIVE_KEYS, extract_narrative
+from services.standard_disposition_service import EXCEL_COLUMNS, StandardDispositionService
+
+
+def disposition_rows(service: LifeDataService, asset_number: str, **view) -> list[dict]:
+    """The Disposition page's rows for an asset, as its list reads them."""
+
+    return StandardDispositionService(service).disposition_page(asset_number, **view)["rows"]
 
 
 class ExtractNarrativeTests(unittest.TestCase):
@@ -275,7 +280,7 @@ class NarrativeMappingTests(unittest.TestCase):
             "Cause": "Loss of lubrication",
             "Action": "Replaced bearing",
         })
-        rows = service.disposition_rows("7", "wo")
+        rows = disposition_rows(service, "7")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["cause"], "Loss of lubrication")
         self.assertEqual(rows[0]["action_taken"], "Replaced bearing")
@@ -291,9 +296,8 @@ class NarrativeMappingTests(unittest.TestCase):
             "name": "Corrective repair",
             "Cause": "Misalignment",
         })
-        self.assertEqual(len(service.disposition_rows("7", "wo", search="misalignment")), 1)
-        self.assertEqual(len(service.disposition_rows("7", "wo", search="cavitation")), 0)
-        self.assertEqual(service.disposition_row_count("7", "wo", search="misalignment"), 1)
+        self.assertEqual(len(disposition_rows(service, "7", search="misalignment")), 1)
+        self.assertEqual(len(disposition_rows(service, "7", search="cavitation")), 0)
 
     def test_narrative_predating_the_template_change_stays_blank(self):
         service, _ = self._service_with_task({
@@ -304,16 +308,14 @@ class NarrativeMappingTests(unittest.TestCase):
             "name": "Old repair",
             "completionNotes": "Everything in one box, as it used to be.",
         })
-        row = service.disposition_rows("7", "wo")[0]
+        row = disposition_rows(service, "7")[0]
         for key in NARRATIVE_KEYS:
             self.assertIsNone(row[key])
 
     def test_excel_template_keeps_the_boxes_as_their_own_columns(self):
-        # One stacked column on screen, four columns in the workbook, so each can
-        # be sorted and filtered there.
+        # Four columns in the workbook, so each can be sorted and filtered there.
         for key in NARRATIVE_KEYS:
-            self.assertIn(key, EXCEL_WO_DISPOSITION_COLUMNS)
-            self.assertNotIn(key, DISPLAY_COLUMNS)
+            self.assertIn(key, EXCEL_COLUMNS)
 
 
 if __name__ == "__main__":
@@ -1046,8 +1048,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("instructions", stored)
 
         # And the disposition page's own query returns them, markup stripped.
-        rows = LifeDataService(db_path, refresh_on_startup=False).disposition_rows("2288", "wo")
-        self.assertEqual(len(rows), 1, "the work order should be eligible for WO disposition")
+        rows = disposition_rows(LifeDataService(db_path, refresh_on_startup=False), "2288")
+        self.assertEqual(len(rows), 1, "the work order should be on the disposition page")
         row = rows[0]
         self.assertEqual(row["area_affected"], "Timing belt")
         self.assertEqual(row["condition_found"], "Worn")
@@ -1152,5 +1154,5 @@ class EndToEndTests(unittest.TestCase):
             ).sync_all()
 
         self.assertEqual(len(asked), 1, "the second sync should skip a task already answered")
-        rows = LifeDataService(db_path, refresh_on_startup=False).disposition_rows("2288", "wo")
+        rows = disposition_rows(LifeDataService(db_path, refresh_on_startup=False), "2288")
         self.assertEqual(rows[0]["cause"], "Aging", "a re-sync must not blank what it did not re-fetch")

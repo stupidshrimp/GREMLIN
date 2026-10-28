@@ -1,0 +1,119 @@
+/* Code lists, as the Disposition page's Code lists dialog and Developer > Code
+   lists both draw them: one row per code, its name over its description in full,
+   and the few things a code can be besides (its meaning to the engine, its
+   default cause, whether it renews the item, retired) as small chips. */
+
+.cl-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+.cl-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.65rem 0.85rem;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.cl-table td {
+  padding: 0.8rem 0.85rem;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.cl-table tbody tr:last-child td { border-bottom: 0; }
+.cl-table th.cl-num,
+.cl-table td.cl-num { text-align: right; }
+
+.cl-row td { transition: background 140ms ease; }
+/* Scrolled to, a row stops below the sticky column headings. */
+.cl-row,
+.cl-form-row { scroll-margin-top: 2.75rem; }
+.cl-row:hover td { background: var(--row-zebra); }
+.cl-row.is-clickable { cursor: pointer; }
+.cl-row.is-editing td { background: var(--brand-tint-soft); border-bottom-color: transparent; }
+/* Its form below holds the description, in full and editable. */
+.cl-row.is-editing .cl-desc { display: none; }
+
+.cl-code { width: 1%; white-space: nowrap; }
+.cl-code-pill {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* The name and the whole description: the column that gets the room. */
+.cl-main { min-width: 20rem; }
+.cl-name { font-weight: 600; line-height: 1.35; }
+.cl-desc {
+  margin-top: 0.25rem;
+  max-width: 78ch;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.cl-meta {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A column of chips or numbers takes only what it needs; the description takes the rest. */
+.cl-fit { width: 1%; white-space: nowrap; }
+.cl-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--forest-100);
+  color: var(--forest-800);
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.cl-chip.is-meaning { background: var(--brand-tint); color: var(--brand-ink); }
+.cl-chip.is-renews { background: var(--success-bg); border-color: var(--success-border); color: var(--success-ink); }
+.cl-chip.is-retired { background: transparent; border-color: var(--border); border-style: dashed; color: var(--muted); }
+.cl-none { color: var(--muted); opacity: 0.6; }
+
+.cl-row.is-retired .cl-code-pill,
+.cl-row.is-retired .cl-name,
+.cl-row.is-retired .cl-desc,
+.cl-row.is-retired .cl-meta { opacity: 0.55; }
+
+.cl-empty {
+  padding: 2.2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+}
+.cl-name .cl-chip { margin-left: 0.5rem; vertical-align: 1px; }
+
+@media (max-width: 760px) {
+  .cl-main { min-width: 12rem; }
+  .cl-table td,
+  .cl-table thead th { padding-left: 0.55rem; padding-right: 0.55rem; }
+  /* The order is in each code's form; on a phone the description needs the room. */
+  .cl-table th.cl-num,
+  .cl-table td.cl-num { display: none; }
+}

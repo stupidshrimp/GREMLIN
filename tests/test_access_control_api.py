@@ -18,7 +18,8 @@ def test_write_routes_require_login(monkeypatch, tmp_path):
         "/life-data-analysis/api/refresh-mapping",
         "/life-data-analysis/api/dispositions/save",
         "/life-data-analysis/api/dispositions/excel",
-        "/life-data-analysis/api/perform-analysis",
+        "/life-data-analysis/api/code-lists",
+        "/life-data-analysis/api/weibull/save",
         "/life-data-analysis/api/parameter-adjustment",
         "/life-data-analysis/api/weibull-report",
     ]
@@ -27,22 +28,18 @@ def test_write_routes_require_login(monkeypatch, tmp_path):
     assert client.get("/life-data-analysis/api/assets?refresh=1").status_code == 405
 
 
-def test_saved_analysis_is_readable_without_logging_in(monkeypatch, tmp_path):
-    """The read-only twin of perform-analysis must stay open to viewers and visitors.
-
-    Performing an analysis writes, so it is editor-only; reading back an already-saved
-    fit is what lets a signed-out visitor open the Weibull view. Asserting on the exact
-    status would only restate the empty temp database, so this checks the request is not
-    turned away by the role gate.
-    """
+def test_saved_analysis_and_a_preview_are_readable_without_logging_in(monkeypatch, tmp_path):
+    """Saving a Weibull run writes, so it is editor-only; reading back a saved fit,
+    or fitting one without saving it, writes nothing and stays open. Asserting on
+    the exact status would only restate the empty temp database, so this checks
+    the request is not turned away by the role gate."""
     monkeypatch.setenv("GREMLIN_DB_PATH", str(tmp_path / "gremlin.db"))
     module = _app(monkeypatch, tmp_path)
-    response = module.app.test_client().get(
-        "/life-data-analysis/api/saved-analysis?asset=A-1&grouping_level=FAILURE_MECHANISM"
-        "&failure_mode_id=1&failure_mechanism_id=1"
-    )
-    assert response.status_code not in (401, 403, 405)
-    assert response.is_json
+    client = module.app.test_client()
+    for path in ("saved-analysis", "weibull"):
+        response = client.post(f"/life-data-analysis/api/{path}", json={"selection": {"assets": ["A-1"]}})
+        assert response.status_code not in (401, 403, 405), path
+        assert response.is_json
 
 
 def test_fresh_database_has_no_published_login(monkeypatch, tmp_path):
@@ -181,7 +178,7 @@ def test_disposition_spreadsheet_import_requires_csrf(monkeypatch, tmp_path):
     client = module.app.test_client()
     assert client.post("/auth/login", json={"username": "editor", "pin": "2468"}).status_code == 200
 
-    url = "/life-data-analysis/api/dispositions/excel?asset=A1&kind=wo"
+    url = "/life-data-analysis/api/dispositions/excel?asset=A1"
     response = client.post(url, data={"file": (b"not-a-workbook", "attack.xlsx")})
     assert response.status_code == 403
     assert "form expired" in response.get_json()["error"].lower()
@@ -212,10 +209,12 @@ def _assert_read_only_ui(client, *, has_account=True):
     # Named rather than silently missing: the section says who may edit it.
     assert b"editable by authorized users only" in configuration
     if has_account:
+        # Previewing a fit writes nothing, so a reader gets that instead of the
+        # editor's Perform Analysis, and no way into Disposition.
         analysis = client.get("/life-data-analysis/perform-analysis").data
-        assert b'id="lda-perform" hidden' in analysis
-        assert b'id="lda-disposition-wo" hidden' in analysis
-        assert b'id="lda-disposition-pm" hidden' in analysis
+        assert b"Preview the fit" in analysis
+        assert b">Perform Analysis<" not in analysis
+        assert b'id="lda-disposition-link"' not in analysis
     else:
         refused = client.get("/life-data-analysis/perform-analysis")
         assert refused.status_code == 403
@@ -274,7 +273,8 @@ def test_editor_ui_exposes_editing_and_disposition_controls(monkeypatch, tmp_pat
     assert b"Asset group schedules" in configuration
     assert b"Refresh CMMS mapping" in configuration
     analysis = client.get("/life-data-analysis/perform-analysis").data
-    assert b'id="lda-perform" hidden' not in analysis
+    assert b">Perform Analysis<" in analysis
+    assert b'id="lda-disposition-link"' in analysis
     assert client.get("/life-data-analysis/disposition").status_code == 200
     # An editor gets the card as a working link, with nothing left to explain.
     landing = client.get("/").data

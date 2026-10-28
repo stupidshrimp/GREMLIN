@@ -17,6 +17,9 @@
   <a class="dev-subnav-link{% if dev_section == 'access' %} is-active{% endif %}"
      href="{{ url_for('developer_access') }}"
      {% if dev_section == 'access' %}aria-current="page"{% endif %}>Access control</a>
+  <a class="dev-subnav-link{% if dev_section == 'code_lists' %} is-active{% endif %}"
+     href="{{ url_for('developer_code_lists') }}"
+     {% if dev_section == 'code_lists' %}aria-current="page"{% endif %}>Code lists</a>
   <a class="dev-subnav-link{% if dev_section == 'activity' %} is-active{% endif %}"
      href="{{ url_for('developer_activity') }}"
      {% if dev_section == 'activity' %}aria-current="page"{% endif %}>User activity</a>

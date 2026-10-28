@@ -5,3 +5,9 @@ python-dotenv
 # is deployed. Without this, zoneinfo cannot load the plant timezone and monthly
 # availability would silently bucket work orders in UTC.
 tzdata
+# The disposition helper's meaning matching: a small embedding model run on this
+# machine (tools/fetch_embedding_model.py puts the model in place). Without
+# these, or the model, the helper matches work orders by their words alone.
+numpy
+onnxruntime
+tokenizers
