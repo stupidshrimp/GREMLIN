@@ -21,10 +21,12 @@ it. Everything here is plain data and functions, with no database.
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from services import disposition_standard as std
 
@@ -624,3 +626,168 @@ def _phrases_in(stems: list[str], words: list[str], lexicon: Lexicon, field_name
         if token in _NEGATOR_STEMS:
             negated_until = index + NEGATION_REACH
         index += 1
+
+
+# ---------------------------------------------------------------------------
+# A code about to be added: is it one the list has already?
+# ---------------------------------------------------------------------------
+# How alike a new code must be to one on the list to be offered instead, and how
+# many are offered.
+SIMILAR_FLOOR = 0.45
+SIMILAR_LIMIT = 5
+
+
+def _slips(one: str, other: str) -> int:
+    """How many letters typed wrong, missed, added or swapped turn one into the
+    other (optimal string alignment distance), counted only as far as 3."""
+
+    if abs(len(one) - len(other)) > 2:
+        return 3
+    previous2: list[int] = []
+    previous = list(range(len(other) + 1))
+    for i, letter in enumerate(one, start=1):
+        current = [i] + [0] * len(other)
+        for j, theirs in enumerate(other, start=1):
+            current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (letter != theirs))
+            if i > 1 and j > 1 and letter == other[j - 2] and one[i - 2] == theirs:
+                current[j] = min(current[j], previous2[j - 2] + 1)
+        previous2, previous = previous, current
+    return min(previous[-1], 3)
+
+
+def _near_spelling(one: str, other: str) -> bool:
+    """A typo's distance: one slip in a name of 4 to 7 letters, two in a longer one."""
+
+    if one == other or min(len(one), len(other)) < 4:
+        return False
+    return _slips(one, other) <= (1 if max(len(one), len(other)) < 8 else 2)
+
+
+def _content_stems(text: Any) -> list[str]:
+    return [token for clause in clauses(text) for token in tokens(clause) if is_content(token)]
+
+
+def _plain(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+def code_text(name: str, description: str | None) -> str:
+    """A code as the model reads it: its name, then what it is."""
+
+    return f"{name}. {description}" if description else name
+
+
+def similar_codes(
+    codebook: std.CodeBook,
+    code_list: str,
+    name: str,
+    description: str | None = None,
+    *,
+    meaning: Callable[[str, Sequence[str]], Sequence[float]] | None = None,
+    limit: int = SIMILAR_LIMIT,
+) -> list[dict[str, Any]]:
+    """The codes already on ``code_list`` that a new one named ``name`` may simply be.
+
+    Read the way the helper reads a work order:
+
+    * the same name, in any capitals or punctuation ("O ring" is "O-ring");
+    * a near spelling ("Compresor"), of the name or of any of its segments;
+    * the same words once stemmed ("filters" is "filter"), weighted so a word few
+      codes on the list use counts for most and one most of them use for little,
+      the description counting for less than the name;
+    * a name segment or thesaurus phrase for a code in the new name ("air
+      compressor" names the segment "compressor" of "HVAC / compressor / chiller");
+    * given ``meaning`` -- the local model's similarity of the new code's text to
+      each code's -- the same thing in other words.
+
+    Each match carries why, best first. Retired codes are offered too, marked, so
+    a code retired once is not added again under its own name.
+    """
+
+    entries = codebook.entries(code_list, include_inactive=True)
+    query = std.clean_text(name)
+    if not entries or query is None:
+        return []
+    query_plain = _plain(query)
+    query_name = _content_stems(query)
+    query_description = _content_stems(description)
+    stems = {
+        entry.code: (_content_stems(entry.name) + _content_stems(split_identifier(entry.code)), _content_stems(entry.description))
+        for entry in entries
+    }
+    frequency = Counter(stem for named, described in stems.values() for stem in set(named) | set(described))
+    total = len(entries)
+
+    def weight(stem: str) -> float:
+        return math.log((total + 1) / (frequency.get(stem, 0) + 1)) + 1.0
+
+    def vector(named: Sequence[str], described: Sequence[str]) -> Counter:
+        weights: Counter = Counter()
+        for stem in named:
+            weights[stem] += weight(stem)
+        for stem in described:
+            weights[stem] += 0.4 * weight(stem)
+        return weights
+
+    def cosine(one: Counter, other: Counter) -> float:
+        shared = set(one) & set(other)
+        if not shared:
+            return 0.0
+        dot = sum(one[stem] * other[stem] for stem in shared)
+        return dot / math.sqrt(sum(value * value for value in one.values()) * sum(value * value for value in other.values()))
+
+    asked = vector(query_name, query_description)
+    lexicon = Lexicon()
+    for entry in entries:
+        for segment in _name_segments(entry.name):
+            lexicon.add(segment, entry.code, 1.0, "name")
+        lexicon.add(split_identifier(entry.code), entry.code, 1.0, "name")
+    if code_list == std.COMPONENT:
+        for code, phrases in COMPONENT_PHRASES.items():
+            if codebook.entry(code_list, code) is not None:
+                for phrase in phrases:
+                    lexicon.add(phrase, code, 0.9, "thesaurus")
+    lexicon.finish()
+    named_in: dict[str, str] = {}
+    for clause in clauses(query):
+        words = _WORD.findall(clause)
+        for mention in _phrases_in([stem(word) for word in words], words, lexicon, "name"):
+            if not mention.negated:
+                named_in.setdefault(mention.key, mention.phrase)
+    meant = list(meaning(code_text(query, description), [code_text(entry.name, entry.description) for entry in entries])) if meaning else None
+
+    found = []
+    for index, entry in enumerate(entries):
+        reasons: list[str] = []
+        score = 0.0
+        spellings = [entry.name, *_name_segments(entry.name), split_identifier(entry.code)]
+        if query_plain and query_plain in {_plain(text) for text in spellings}:
+            score = 1.0
+            reasons.append("The same name")
+        elif any(_near_spelling(query_plain, _plain(text)) for text in spellings):
+            score = 0.85
+            reasons.append("Spelled almost the same")
+        words = cosine(asked, vector(*stems[entry.code]))
+        shared = sorted((set(query_name) | set(query_description)) & (set(stems[entry.code][0]) | set(stems[entry.code][1])))
+        if shared and words >= 0.3:
+            score = max(score, words)
+            reasons.append(f"Shares the word{'s' if len(shared) > 1 else ''} {', '.join(shared[:4])}")
+        if entry.code in named_in:
+            score = max(score, 0.75)
+            reasons.append(f"\u201c{named_in[entry.code]}\u201d is one of its names")
+        if meant is not None:
+            alike = min(1.0, max(0.0, (meant[index] - 0.35) / 0.45))
+            if alike >= SIMILAR_FLOOR:
+                score = max(score, alike * 0.9)
+                reasons.append("Means much the same")
+        if score >= SIMILAR_FLOOR:
+            found.append({
+                "code": entry.code,
+                "name": entry.name,
+                "description": entry.description,
+                "is_active": entry.is_active,
+                "score": round(score, 2),
+                "reasons": reasons,
+            })
+    found.sort(key=lambda match: (-match["score"], match["name"].lower()))
+    return found[:limit]

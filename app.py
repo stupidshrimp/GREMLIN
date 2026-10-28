@@ -2658,6 +2658,20 @@ def _disposition_list_view() -> dict:
     }
 
 
+@app.route("/life-data-analysis/api/code-lists/similar", methods=["POST"])
+@life_data_api
+@requires_role("editor")
+def api_similar_codes():
+    """The codes already on a list that a new one may simply be, asked before it is added."""
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise LifeDataApiError("Send the new code as JSON.", status_code=400)
+    return jsonify(_disposition_helper().similar_codes(
+        payload.get("code_list") or "", payload.get("name") or "", payload.get("description"),
+    ))
+
+
 @app.route("/life-data-analysis/api/code-lists/delete", methods=["POST"])
 @life_data_api
 @requires_role("editor")

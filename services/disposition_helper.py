@@ -522,6 +522,13 @@ def reset_cache() -> None:
         _KNOWLEDGE.clear()
 
 
+# Code texts' meaning vectors, for the similar-code check: a few thousand codes'
+# worth, by their text, so renaming a code reads it afresh.
+CODE_VECTORS_KEPT = 5000
+_CODE_VECTORS: dict[str, Any] = {}
+_CODE_VECTORS_LOCK = threading.Lock()
+
+
 class DispositionHelper:
     """Suggestions, batch runs and the accuracy report, over the disposition standard's service."""
 
@@ -1746,6 +1753,49 @@ class DispositionHelper:
             "overall": suggestion.get("overall_confidence"),
             "fields": kept,
         }, separators=(",", ":"))
+
+    def similar_codes(self, code_list: str, name: str, description: str | None = None) -> dict[str, Any]:
+        """The codes already on a list that a new one may simply be, before it is added.
+
+        Read as the helper reads a work order (``text.similar_codes``), and, with
+        the local model installed and meaning matching on, by meaning too: a new
+        "combustion air blower" finds "Fan / blower" in other words. The model is
+        the one the helper's index uses; the codes' vectors are kept by their text.
+        """
+
+        code_list = (std.clean_text(code_list) or "").upper()
+        if code_list not in std.CODE_LISTS:
+            raise ValueError(f"Choose one of the code lists: {', '.join(std.CODE_LISTS)}.")
+        codebook = self.records.codebook()
+        meaning, status = self._code_meaning()
+        matches = text.similar_codes(codebook, code_list, name, description, meaning=meaning)
+        return {"code_list": code_list, "matches": matches, "meaning": status}
+
+    def _code_meaning(self) -> tuple[Any, dict[str, Any]]:
+        """How alike in meaning a text is to each of some others, by the local model, or None without it."""
+
+        db_path = getattr(self.life, "db_path", None)
+        if db_path is None:
+            return None, {"enabled": False, "model": embedding.MODEL_NAME, "reason": "No database path."}
+        encoder, status = embedding.availability(db_path, load=embedding.LOADER)
+        if encoder is None:
+            return None, status
+
+        def meaning(asked: str, texts: Sequence[str]) -> list[float]:
+            with _CODE_VECTORS_LOCK:
+                missing = [textual for textual in dict.fromkeys(texts) if textual not in _CODE_VECTORS]
+            if missing:
+                for textual, vector in zip(missing, encoder.encode(missing)):
+                    with _CODE_VECTORS_LOCK:
+                        _CODE_VECTORS[textual] = vector
+                        if len(_CODE_VECTORS) > CODE_VECTORS_KEPT:
+                            _CODE_VECTORS.pop(next(iter(_CODE_VECTORS)))
+            query = encoder.encode([asked])[0]
+            with _CODE_VECTORS_LOCK:
+                vectors = [_CODE_VECTORS.get(textual) for textual in texts]
+            return [float(vector @ query) if vector is not None else 0.0 for vector in vectors]
+
+        return meaning, status
 
     def status(self) -> dict[str, Any]:
         """Whether meaning matching is on (and how far it has read), and whether the helper has measured itself."""

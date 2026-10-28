@@ -15,6 +15,7 @@ from pathlib import Path
 
 import openpyxl
 
+from services import disposition_helper_text as helper_text
 from services import disposition_standard as std
 from services.disposition_standard import (
     CodeBook,
@@ -237,6 +238,54 @@ class PartServiceTests(StandardDispositionFixture):
         workbook.save(path)
         self.assertEqual(self.std.import_excel(PFS, path)["saved"], 1)
         self.assertEqual(self.std.disposition_record(701)["disposition"]["part_code"], "FilterElement")
+
+
+
+class SimilarCodeTests(unittest.TestCase):
+    def names(self, code_list, name, description=None, *, codebook=CODES, meaning=None):
+        return [
+            (match["name"], match["reasons"][0])
+            for match in helper_text.similar_codes(codebook, code_list, name, description, meaning=meaning)
+        ]
+
+    def test_a_new_component_finds_the_ones_it_may_be(self):
+        # A segment of an existing name, a thesaurus phrase, a typo, and plain shared words.
+        self.assertEqual(self.names(std.COMPONENT, "Air compressor")[0], ("HVAC / compressor / chiller", "\u201ccompressor\u201d is one of its names"))
+        self.assertEqual(self.names(std.COMPONENT, "Combustion air blower")[0][0], "Fan / blower")
+        self.assertEqual(self.names(std.COMPONENT, "Fliter")[0], ("Filter / strainer / sieve", "Spelled almost the same"))
+        self.assertEqual(self.names(std.COMPONENT, "Mtr")[0][0], "Motor")
+        self.assertEqual(self.names(std.COMPONENT, "Glass panel"), [])
+
+    def test_the_same_name_in_other_capitals_or_punctuation_is_the_same(self):
+        self.assertEqual(self.names(std.PART, "o ring"), [("O-ring", "The same name")])
+
+    def test_a_retired_code_is_offered_and_marked(self):
+        match = helper_text.similar_codes(CODES, std.PART, "Old seals")[0]
+        self.assertEqual((match["code"], match["is_active"]), ("OldSeal", False))
+
+    def test_the_model_finds_the_same_thing_in_other_words(self):
+        def meaning(asked, texts):
+            # A stand-in model: "spark electrode" means much what "Burner / flame rod / igniter" does.
+            return [0.8 if text.startswith("Burner") else 0.1 for text in texts]
+
+        self.assertEqual(self.names(std.COMPONENT, "Spark electrode"), [])
+        self.assertEqual(
+            self.names(std.COMPONENT, "Spark electrode", meaning=meaning),
+            [("Burner / flame rod / igniter", "Means much the same")],
+        )
+
+
+class SimilarCodeServiceTests(StandardDispositionFixture):
+    def test_the_helper_checks_the_list_as_it_is_now(self):
+        from services.disposition_helper import DispositionHelper
+
+        self.std.put_code({"code_list": "PART", "name": "O-ring", "description": "Rubber seal ring"})
+        found = DispositionHelper(self.std).similar_codes("part", "O rings")
+        self.assertEqual(found["code_list"], "PART")
+        self.assertEqual([match["code"] for match in found["matches"]], ["ORing"])
+        self.assertIn("enabled", found["meaning"])
+        with self.assertRaisesRegex(ValueError, "Choose one of the code lists"):
+            DispositionHelper(self.std).similar_codes("GADGETS", "x")
 
 
 if __name__ == "__main__":

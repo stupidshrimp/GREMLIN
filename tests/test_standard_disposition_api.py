@@ -362,3 +362,16 @@ def test_the_code_lists_workbook_is_an_administrators(monkeypatch, tmp_path):
     assert "not a workbook" in garbage.get_json()["error"]
     missing = admin.post(excel, data={"csrf_token": token}, content_type="multipart/form-data")
     assert missing.status_code == 400
+
+
+def test_an_editor_asks_whether_a_new_component_is_one_already_listed(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    editor = _client(module, role="editor")
+    found = editor.post(f"{API}/code-lists/similar", json={"code_list": "COMPONENT", "name": "Air compressor"}).get_json()
+    assert found["matches"][0]["code"] == "HVAC"
+    assert _client(module).post(f"{API}/code-lists/similar", json={"code_list": "COMPONENT", "name": "x"}).status_code in (401, 403)
+    # Added by name alone, a component comes back with the code made for it.
+    added = editor.post(f"{API}/code-lists", json={"code_list": "COMPONENT", "name": "Air compressor"}).get_json()
+    assert added["code"] == "AirCompressor"
+    assert any(code["code"] == "AirCompressor" for code in added["code_lists"]["COMPONENT"]["codes"])
