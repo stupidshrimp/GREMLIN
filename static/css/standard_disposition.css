@@ -143,6 +143,8 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .lda-field .lda-field-label { font-weight: 600; font-size: 0.9rem; color: var(--forest-800); }
 
 .std-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 0.9rem; }
+/* A field keeps its own height when the one beside it grows. */
+.std-form > .lda-field { align-content: start; }
 /* The fields start below a rule, apart from the record they are read off. */
 .std-record-text + .std-form { margin-top: 1rem; padding-top: 0.9rem; border-top: 2px solid var(--border); }
 .std-form .std-wide { grid-column: 1 / -1; }
@@ -176,6 +178,213 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
   border-radius: 10px;
   background: var(--surface);
 }
+
+/* A code field: a search box over its list, the matches dropping below it. */
+.std-picker-wrap { display: grid; gap: 0.5rem; }
+.std-picker { position: relative; }
+.std-picker-box { position: relative; display: flex; align-items: center; }
+.std-form .lda-field .std-picker-input { padding-right: 3.2rem; text-overflow: ellipsis; }
+.std-picker.has-value .std-picker-input:not(:focus) { font-weight: 600; color: var(--forest-900); }
+.std-picker.is-disabled .std-picker-input { background: var(--forest-100); color: var(--muted); cursor: not-allowed; }
+.std-picker-caret {
+  position: absolute;
+  right: 0.7rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: translateY(-25%) rotate(45deg);
+  pointer-events: none;
+}
+.std-picker-clear {
+  position: absolute;
+  right: 1.75rem;
+  display: grid;
+  place-items: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.std-picker-clear:hover { background: var(--forest-100); color: var(--text); }
+.std-picker-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(var(--shadow-ink), 0.2);
+}
+.std-picker-list[hidden] { display: none; }
+.std-picker-group {
+  padding: 0.45rem 0.55rem 0.2rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.std-picker-option {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.std-picker-option:hover,
+.std-picker-option.is-active { background: var(--forest-100); }
+.std-picker-option.is-chosen { box-shadow: inset 3px 0 0 var(--accent-solid); }
+.std-picker-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.45rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--forest-900);
+}
+.std-picker-code {
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: var(--forest-100);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--forest-800);
+}
+.std-picker-desc {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.std-picker-note { padding: 0.5rem 0.55rem; font-size: 0.82rem; color: var(--muted); }
+.std-picker-note.is-empty { color: var(--text); }
+.std-picker-add-row { padding: 0.25rem 0.1rem 0.1rem; border-top: 1px solid var(--border); margin-top: 0.25rem; }
+.std-picker-add-row:first-child { border-top: 0; margin-top: 0; }
+.std-picker-add {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-align: left;
+  color: var(--brand-ink);
+  cursor: pointer;
+}
+.std-picker-add:hover { background: var(--brand-tint-soft); }
+.std-picker-add.is-prominent { background: var(--brand-tint); border: 1px solid var(--brand-tint-strong); }
+.std-picker-add.is-prominent:hover { background: var(--brand-tint-strong); }
+.std-picker-add-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: var(--brand-ink);
+  color: var(--surface);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+/* Adding a code from a field: a small panel under it. */
+.std-add {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--brand-tint-strong);
+  border-radius: 10px;
+  background: var(--brand-tint-soft);
+}
+.std-add-head { display: grid; gap: 0.15rem; }
+.std-add-head h4 { margin: 0; font-size: 0.92rem; color: var(--forest-900); }
+.std-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 0.7rem; }
+.std-add-field { display: grid; gap: 0.25rem; align-content: start; }
+.std-add-field.is-wide { grid-column: 1 / -1; }
+.std-add-field > label,
+.std-add-label { font-size: 0.8rem; font-weight: 600; color: var(--forest-800); }
+.std-add-field .lda-textarea { min-height: 3.2rem; }
+.std-add-similar:empty { display: none; }
+.std-add-similar p { margin: 0; font-size: 0.82rem; }
+.std-add-none { color: var(--success-ink); }
+.std-add-lead { color: var(--warning-ink); }
+.std-add-matches { display: grid; gap: 0.35rem; margin: 0.4rem 0 0; padding: 0; list-style: none; }
+.std-add-match {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.std-add-match.is-retired { opacity: 0.8; }
+.std-add-match-text { display: grid; gap: 0.1rem; flex: 1; min-width: 0; }
+.std-add-match-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.45rem; font-weight: 600; font-size: 0.86rem; }
+.std-add-match-desc { font-size: 0.78rem; color: var(--muted); }
+.std-add-match-why { font-size: 0.74rem; color: var(--brand-ink); }
+.std-add .std-add-use { flex: none; padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+.std-add-retired { flex: none; max-width: 11rem; font-size: 0.74rem; color: var(--muted); }
+.std-add-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.std-add-actions .btn-primary,
+.std-add-actions .btn-secondary { padding: 0.4rem 0.95rem; font-size: 0.84rem; }
+.std-add .lda-banner { margin: 0; }
+
+/* The components a work order renewed: removable chips over a search to add one. */
+.std-renewed-field { display: grid; gap: 0.45rem; }
+.std-renewed { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+.std-renewed-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.3rem 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--forest-100);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--forest-900);
+}
+.std-renewed-remove {
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.std-renewed-remove:hover { background: var(--surface); color: var(--danger-strong); }
 
 .std-derived {
   display: grid;
@@ -373,7 +582,8 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 /* .lda-field gives every input in it a text box's full width and padding; a
    checkbox in one of these lists is a checkbox. */
 .lda-field .std-multi input[type="checkbox"],
-.lda-field .std-checklist input[type="checkbox"] {
+.lda-field .std-checklist input[type="checkbox"],
+.lda-field .std-add input[type="checkbox"] {
   width: 15px;
   height: 15px;
   flex: none;
@@ -630,6 +840,7 @@ button.std-helper-chip.is-offer { cursor: pointer; border-style: dashed; font-we
 button.std-helper-chip.is-offer:hover { border-style: solid; }
 button.std-helper-chip.is-offer:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 1px; }
 .std-form .lda-field.is-helper-filled select,
+.std-form .lda-field.is-helper-filled .std-picker-input,
 .std-form .lda-field.is-helper-filled .std-categories { box-shadow: 0 0 0 2px var(--brand-tint-strong); border-radius: 8px; }
 
 /* The panel above the fields: how sure it is overall, what it filled, why. */
@@ -771,3 +982,8 @@ table.std-helper-table tbody th { text-align: left; font-weight: 600; white-spac
 .std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
 .std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
 table.std-helper-table td.std-helper-plain { color: var(--muted); }
+
+@media (max-width: 560px) {
+  .std-add-grid { grid-template-columns: 1fr; }
+  .std-add-match { flex-wrap: wrap; }
+}

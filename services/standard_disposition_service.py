@@ -656,11 +656,28 @@ class StandardDispositionService:
         name alone, the code made from its name.
 
         A new component or part may not share its name with one already in its
-        list, in any capitals: that is the same item twice.
+        list, in any capitals: that is the same item twice. ``is_new`` says the
+        code is meant to be added, so one already on the list is refused rather
+        than changed, and a new code with no order given goes after the last.
         """
 
         fields = dict(self._code_fields(values))
         with self.life.write_connection() as conn:
+            if values.get("is_new") and fields["code"] is not None:
+                same = conn.execute(
+                    "SELECT name FROM disposition_code WHERE code_list = ? AND code = ?",
+                    (fields["code_list"], fields["code"]),
+                ).fetchone()
+                if same is not None:
+                    label = std.CODE_LIST_LABELS[fields["code_list"]].lower()
+                    raise ValueError(
+                        f"The {label} list already has code {fields['code']} ({same[0]}); choose it, or give this one another code."
+                    )
+            if values.get("is_new") and fields["code_list"] not in std.NAMED_CODE_LISTS and values.get("sort_order") in (None, ""):
+                last = conn.execute(
+                    "SELECT MAX(sort_order) FROM disposition_code WHERE code_list = ?", (fields["code_list"],)
+                ).fetchone()[0]
+                fields["sort_order"] = int(last or 0) + 10
             if fields["code_list"] in std.NAMED_CODE_LISTS and fields["code"] is None:
                 rows = conn.execute(
                     "SELECT code, name FROM disposition_code WHERE code_list = ?", (fields["code_list"],)
@@ -1031,6 +1048,17 @@ class StandardDispositionService:
             codebook = load_codebook(conn)
             tree = self.asset_tree(conn)
             sub_assets = tree.descendants(asset_number)
+            # The parts each component's work orders have named, most used first,
+            # anywhere in the plant: offered first when that component is chosen.
+            part_usage: dict[str, list[str]] = {}
+            for component, part in conn.execute(
+                """
+                SELECT component_code, part_code FROM wo_disposition
+                WHERE is_current = 1 AND component_code IS NOT NULL AND part_code IS NOT NULL
+                GROUP BY component_code, part_code ORDER BY component_code, COUNT(*) DESC, part_code
+                """
+            ):
+                part_usage.setdefault(component, []).append(part)
         return {
             "asset_number": asset_number,
             "categories": [
@@ -1044,6 +1072,7 @@ class StandardDispositionService:
                 code_list: [self._entry_dict(entry) for entry in codebook.entries(code_list)]
                 for code_list in std.CODE_LISTS
             },
+            "part_usage": part_usage,
             "sub_assets": sub_assets,
             "sub_asset_note": tree.hierarchy_note(asset_number),
             "record_classes": list(self._record_classes()),

@@ -6,11 +6,17 @@
  * the same choices and says the same things wherever it is opened.
  *
  * Category first, since it decides which fields apply; then where (sub-asset)
- * and what (component) failed, how (mechanism, mode), what was done (action),
- * and how sure the record is (evidence). The derived fields are shown as they
- * will be stored, so the renewal stream a work order lands in is visible before
- * it is saved. The server enforces every rule (services/disposition_standard.py);
- * the form only shows them.
+ * and what (component, and the part within it) failed, how (mechanism, mode),
+ * what was done (action), and how sure the record is (evidence). The derived
+ * fields are shown as they will be stored, so the renewal stream a work order
+ * lands in is visible before it is saved. The server enforces every rule
+ * (services/disposition_standard.py); the form only shows them.
+ *
+ * Every code field is a search over its list: type any part of a code, its name
+ * or its description and pick from what matches. When nothing on the list is
+ * what the work order needs, an editor adds it from the field itself; a new
+ * component or part is only a name and a description, and before it is added
+ * the disposition helper looks for one already listed that it may simply be.
  *
  *   const form = GremlinDispositionForm.create({ row, options, onSave, onSaveNext });
  *   container.appendChild(form.node);
@@ -25,7 +31,7 @@
 (function () {
   "use strict";
 
-  const { el, day, fmt } = window.GremlinStandard;
+  const { API, CAN_EDIT, el, day, fmt, postJson, showToast } = window.GremlinStandard;
 
   const NARRATIVE = [
     ["area_affected", "Area affected"],
@@ -80,6 +86,7 @@
       record_class: row.record_class || "",
       sub_asset: d.sub_asset || "",
       component_code: d.component_code || "",
+      part_code: d.part_code || "",
       failure_mechanism_code: d.failure_mechanism_code || "",
       failure_mode_code: d.failure_mode_code || "",
       action_code: d.action_code || "",
@@ -95,11 +102,48 @@
   // The field of a disposition each code list fills.
   const CODE_FIELDS = {
     COMPONENT: "component_code",
+    PART: "part_code",
     FAILURE_MECHANISM: "failure_mechanism_code",
     FAILURE_MODE: "failure_mode_code",
     ACTION: "action_code",
     FAILURE_CAUSE: "failure_cause_code",
   };
+
+  // The lists whose codes are a name and a description, a new one's code made
+  // from its name; every other list's codes are typed.
+  const NAMED_LISTS = ["COMPONENT", "PART"];
+  const LIST_NOUNS = {
+    COMPONENT: "component",
+    PART: "part",
+    FAILURE_MECHANISM: "failure mechanism",
+    FAILURE_MODE: "failure mode",
+    ACTION: "action",
+    FAILURE_CAUSE: "failure cause",
+  };
+  // At most this many codes are listed under a field at once; typing narrows them.
+  const PICKER_LIMIT = 80;
+  const later = (fn) => setTimeout(fn, 0);
+  // Text as a search compares it: lower case, punctuation as spaces.
+  const plain = (text) => String(text || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+  // A word typed as it is looked for: a plural as its singular ("rings" finds "O-ring").
+  const singular = (word) => (word.length > 3 ? word.replace(/(?<=[^s])s$/, "") : word);
+
+  // How well a code answers what was typed, best 0; null when it does not.
+  // Every word typed must be in its code, name or description. A name starting
+  // with what was typed (or the very code) comes first, then a name holding it,
+  // then a code and name holding every word, then a match in the description.
+  function matchRank(entry, query) {
+    if (!query) return 0;
+    const name = plain(entry.name);
+    const code = plain(entry.code);
+    const words = query.split(" ").map(singular);
+    if (!words.every((word) => `${code} ${name} ${plain(entry.description)}`.includes(word))) return null;
+    if (name.startsWith(query) || code === query) return 0;
+    if (name.includes(query) || code.startsWith(query)) return 1;
+    if (words.every((word) => `${code} ${name}`.includes(word))) return 2;
+    return 3;
+  }
 
   let formSeq = 0;
 
@@ -107,8 +151,10 @@
    * record's asset; `history` its past dispositions when already known.
    * `onSave(payload)` is awaited on Save, and `onSaveNext(payload)` on Save &
    * next, offered only when given. Either may throw: its message is shown on the
-   * form, which keeps what was typed. */
-  function create({ row, options, history, onSave, onSaveNext, onCancel, saveLabel }) {
+   * form, which keeps what was typed. A code added to a list from one of the
+   * fields hands every list, as the server now has them, to
+   * `onCodeListsChanged(codeLists)`. */
+  function create({ row, options, history, onSave, onSaveNext, onCancel, saveLabel, onCodeListsChanged }) {
     const id = (name) => `dform-${formSeq}-${name}`;
     formSeq += 1;
     let draft = draftOf(row);
@@ -120,6 +166,12 @@
     let helper = { status: "off", suggestion: null, error: null };
     // The fields filled in from the suggestion, to mark them until changed.
     const filled = new Set();
+    // What is being typed into a code field, kept across a redraw: { name, text }.
+    let search = null;
+    // A code being added to its list from one of the fields, while its panel is open.
+    let adding = null;
+    // The element to focus once the form is next drawn, by id.
+    let focusNext = null;
     const node = el("div", { class: "std-form-wrap" });
 
     const codes = (list) => (options && options.code_lists && options.code_lists[list]) || [];
@@ -153,7 +205,9 @@
         cause,
         detection,
         renews: Boolean(action && action.renews_item),
-        stream: draft.component_code ? `${location} | ${draft.component_code}` : null,
+        stream: draft.component_code
+          ? `${location} | ${draft.component_code}${draft.part_code ? ` › ${draft.part_code}` : ""}`
+          : null,
       };
     }
 
@@ -219,21 +273,553 @@
       return el("div", { class: "std-record-text", id: id("record") }, blocks);
     }
 
-    function codeSelect(name, list, value, blankLabel) {
-      const select = el("select", { id: id(name), class: "lda-select" }, [el("option", { value: "", text: blankLabel || "—" })]);
-      const entries = codes(list);
-      entries.forEach((entry) => {
-        select.appendChild(el("option", { value: entry.code, text: entry.name !== entry.code ? `${entry.code} · ${entry.name}` : entry.code }));
+    // How a chosen code reads in its field: a component or part by its name,
+    // any other code with its name.
+    function pickedText(list, code) {
+      if (!code) return "";
+      const entry = codeEntry(list, code);
+      if (!entry) return `${code} (retired)`;
+      return NAMED_LISTS.includes(list) ? entry.name : codeLabel(list, code);
+    }
+
+    /* A code field: type any part of a code, its name or its description, and
+     * pick from what matches. `value` is the code chosen ("" for none), and
+     * `onPick(code)` gets the code picked, or "" when the field is cleared. When
+     * nothing on the list is what was typed, an editor can add it from here.
+     * `first` = { label, codes } lists those codes ahead of the rest, and the
+     * `exclude` codes are not offered. */
+    function codePicker(name, list, value, { placeholder, onPick, first, exclude, disabled } = {}) {
+      const noun = LIST_NOUNS[list];
+      const named = NAMED_LISTS.includes(list);
+      const input = el("input", {
+        id: id(name),
+        type: "text",
+        class: "lda-input std-picker-input",
+        role: "combobox",
+        autocomplete: "off",
+        spellcheck: "false",
+        "aria-autocomplete": "list",
+        "aria-expanded": "false",
+        "aria-controls": id(`${name}-list`),
+        placeholder: placeholder || "Type to search",
+        disabled: Boolean(disabled),
       });
-      if (value && !entries.some((entry) => entry.code === value)) {
-        // A code retired since it was chosen: still shown, so the record reads true.
-        select.appendChild(el("option", { value, text: `${value} (retired)` }));
+      input.value = pickedText(list, value);
+      const menu = el("ul", { id: id(`${name}-list`), class: "std-picker-list", role: "listbox", "aria-label": `${noun} codes`, hidden: true });
+      let shown = [];
+      let active = -1;
+      const typing = () => Boolean(search && search.name === name);
+      const typed = () => (typing() ? search.text.trim() : "");
+      // Whether what was typed is already a name or code on the list.
+      const listed = (text) => codes(list).some((entry) => plain(entry.name) === plain(text) || plain(entry.code) === plain(text));
+      const firstCodes = (first && first.codes) || [];
+
+      function matching() {
+        const query = plain(typed());
+        const skip = new Set(exclude || []);
+        const place = (code) => {
+          const at = firstCodes.indexOf(code);
+          return at < 0 ? Infinity : at;
+        };
+        return codes(list)
+          .map((entry, index) => ({ entry, index, rank: skip.has(entry.code) ? null : matchRank(entry, query), first: place(entry.code) }))
+          .filter((item) => item.rank !== null)
+          .sort((a, b) => (Number(a.first === Infinity) - Number(b.first === Infinity)) ||
+            (a.rank - b.rank) || (a.first - b.first) || (a.index - b.index))
+          .map((item) => item.entry);
       }
-      select.value = value || "";
-      return select;
+
+      function addButton(text, prominent) {
+        return el("li", { class: "std-picker-add-row", role: "presentation" }, [el("button", {
+          type: "button",
+          class: "std-picker-add" + (prominent ? " is-prominent" : ""),
+          onmousedown: (event) => event.preventDefault(),
+          onclick: () => startAdding(name, list, text, onPick),
+        }, [
+          el("span", { class: "std-picker-add-icon", "aria-hidden": "true", text: "+" }),
+          text ? `Add “${text}” as a new ${noun}` : `Add a new ${noun}`,
+        ])]);
+      }
+
+      function draw() {
+        menu.innerHTML = "";
+        const found = matching();
+        shown = found.slice(0, PICKER_LIMIT);
+        if (active >= shown.length) active = shown.length - 1;
+        let group = null;
+        shown.forEach((entry, index) => {
+          if (firstCodes.length) {
+            const label = firstCodes.includes(entry.code) ? first.label : `Every ${noun}`;
+            if (label !== group) {
+              group = label;
+              menu.appendChild(el("li", { class: "std-picker-group", role: "presentation", text: label }));
+            }
+          }
+          menu.appendChild(el("li", {
+            id: id(`${name}-option-${index}`),
+            class: "std-picker-option" + (index === active ? " is-active" : "") + (entry.code === value ? " is-chosen" : ""),
+            role: "option",
+            "aria-selected": String(entry.code === value),
+            onmousedown: (event) => event.preventDefault(),
+            onclick: () => pick(entry.code),
+          }, [
+            el("span", { class: "std-picker-name" }, [
+              el("span", { text: entry.name }),
+              named ? null : el("span", { class: "std-picker-code", text: entry.code }),
+            ]),
+            entry.description ? el("span", { class: "std-picker-desc", text: entry.description }) : null,
+          ]));
+        });
+        const text = typed();
+        if (found.length > shown.length) {
+          menu.appendChild(el("li", {
+            class: "std-picker-note",
+            role: "presentation",
+            text: `Showing ${shown.length} of ${found.length}; keep typing to narrow them.`,
+          }));
+        }
+        if (!found.length) {
+          menu.appendChild(el("li", {
+            class: "std-picker-note is-empty",
+            role: "presentation",
+            text: text
+              ? `No ${noun} on the list matches “${text}”.${CAN_EDIT ? "" : " Ask an editor to add it."}`
+              : `The ${noun} list is empty.`,
+          }));
+        }
+        // Nothing matching is the cue to add it; with matches, adding stays on offer below them.
+        if (CAN_EDIT && !(text && listed(text))) menu.appendChild(addButton(text, !found.length));
+        if (active >= 0) input.setAttribute("aria-activedescendant", id(`${name}-option-${active}`));
+        else input.removeAttribute("aria-activedescendant");
+      }
+
+      function open() {
+        if (disabled) return;
+        draw();
+        menu.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+      }
+      function close() {
+        menu.hidden = true;
+        input.setAttribute("aria-expanded", "false");
+        input.removeAttribute("aria-activedescendant");
+        active = -1;
+      }
+      // The form is drawn again after the pick, once the event that made it is
+      // done, so a Tab that picked still moves on to the next field.
+      function pick(code) {
+        search = null;
+        close();
+        input.value = pickedText(list, code);
+        if (code !== value) later(() => onPick(code));
+      }
+      function restore() {
+        search = null;
+        input.value = pickedText(list, value);
+        close();
+      }
+
+      input.addEventListener("input", () => {
+        search = { name, text: input.value };
+        active = input.value.trim() ? 0 : -1;
+        open();
+      });
+      input.addEventListener("click", () => {
+        if (!menu.hidden) return;
+        if (!typing()) input.select();
+        open();
+      });
+      input.addEventListener("blur", () => {
+        if (!typing()) {
+          close();
+          return;
+        }
+        // Leaving a field emptied clears it; leaving it half typed keeps what it held.
+        const cleared = !typed() && value;
+        restore();
+        if (cleared) later(() => onPick(""));
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (menu.hidden) open();
+          if (!shown.length) return;
+          const down = event.key === "ArrowDown";
+          active = active < 0 ? (down ? 0 : shown.length - 1) : (active + (down ? 1 : -1) + shown.length) % shown.length;
+          draw();
+          const option = menu.querySelector(".std-picker-option.is-active");
+          if (option) option.scrollIntoView({ block: "nearest" });
+        } else if (event.key === "Enter") {
+          // Never the disposition's Save: Enter here picks.
+          event.preventDefault();
+          if (menu.hidden) open();
+          else if (active >= 0 && shown[active]) pick(shown[active].code);
+          else if (CAN_EDIT && typed() && !shown.length) startAdding(name, list, typed(), onPick);
+        } else if (event.key === "Escape") {
+          if (menu.hidden && !typing()) return;
+          event.preventDefault();
+          event.stopPropagation();
+          restore();
+        } else if (event.key === "Tab" && typing() && !menu.hidden && active >= 0 && shown[active]) {
+          pick(shown[active].code);
+        }
+      });
+
+      const clear = value && !disabled ? el("button", {
+        type: "button",
+        class: "std-picker-clear",
+        tabindex: "-1",
+        title: `Clear the ${noun}`,
+        "aria-label": `Clear the ${noun}`,
+        text: "×",
+        onclick: () => {
+          search = null;
+          focusNext = id(name);
+          onPick("");
+        },
+      }) : null;
+      if (typing()) {
+        // Drawn again mid-search (the helper answered, say): carry on where it was.
+        input.value = search.text;
+        later(() => {
+          if (document.activeElement === input) open();
+        });
+      }
+      return el("div", { class: "std-picker" + (disabled ? " is-disabled" : "") + (value ? " has-value" : "") }, [
+        el("div", { class: "std-picker-box" }, [input, clear, el("span", { class: "std-picker-caret", "aria-hidden": "true" })]),
+        menu,
+      ]);
+    }
+
+    // A code field and, under it, the panel adding a code to its list when
+    // it is the field that asked.
+    function pickerControl(name, list, value, settings) {
+      return el("div", { class: "std-picker-wrap" }, [
+        codePicker(name, list, value, settings),
+        adding && adding.field === name ? addPanel() : null,
+      ]);
+    }
+
+    // ---- adding a code from a field ------------------------------------------
+    const addId = (key) => id(`${adding.field}-add-${key}`);
+    const addKey = (values) => JSON.stringify([plain(values.name), plain(values.description)]);
+    let checkTimer = null;
+
+    function startAdding(field, list, text, use) {
+      const named = NAMED_LISTS.includes(list);
+      search = null;
+      clearTimeout(checkTimer);
+      adding = {
+        field,
+        list,
+        use,
+        values: { code: "", name: text || "", description: "", default_cause_code: "", renews_item: false },
+        check: null,
+        // The check whose matches have been shown, so Add knows they were seen.
+        seen: null,
+        saving: false,
+        error: null,
+      };
+      focusNext = addId(!named ? "code" : text ? "description" : "name");
+      render();
+      if (text) checkSimilar();
+    }
+
+    function cancelAdding() {
+      const field = adding.field;
+      clearTimeout(checkTimer);
+      adding = null;
+      focusNext = id(field);
+      render();
+    }
+
+    // The codes already listed that the new one may simply be, as the
+    // disposition helper finds them: asked as the name and description are
+    // typed, and again on Add when the last answer is not for what is there now.
+    function checkSimilar() {
+      clearTimeout(checkTimer);
+      const current = adding;
+      if (!current) return Promise.resolve(null);
+      const key = addKey(current.values);
+      if (current.check && current.check.key === key) return current.check.promise;
+      if (!plain(current.values.name)) {
+        current.check = null;
+        showCheck();
+        return Promise.resolve(null);
+      }
+      const check = { key, status: "checking", matches: [] };
+      check.promise = postJson(`${API}/code-lists/similar`, {
+        code_list: current.list,
+        name: current.values.name,
+        description: current.values.description,
+      })
+        .then((data) => {
+          check.status = "done";
+          check.matches = data.matches || [];
+        })
+        .catch((err) => {
+          check.status = "error";
+          check.error = err && err.message;
+        })
+        .then(() => {
+          if (adding === current && current.check === check) showCheck();
+          return check;
+        });
+      current.check = check;
+      showCheck();
+      return check.promise;
+    }
+
+    function checkSoon() {
+      clearTimeout(checkTimer);
+      checkTimer = setTimeout(checkSimilar, 350);
+    }
+
+    // The check's answer, and the Add button that goes with it, shown in place:
+    // the rest of the panel is left alone, so typing carries on undisturbed.
+    function showCheck() {
+      const shownNow = document.getElementById(addId("similar"));
+      if (shownNow) shownNow.replaceWith(similarBlock());
+      const button = document.getElementById(addId("submit"));
+      if (button) {
+        button.textContent = addLabel();
+        button.disabled = adding.saving;
+      }
+    }
+
+    function freshMatches() {
+      const check = adding.check;
+      return check && check.status === "done" && check.key === addKey(adding.values) ? check.matches : [];
+    }
+
+    function addLabel() {
+      const noun = LIST_NOUNS[adding.list];
+      if (adding.saving) return "Adding…";
+      return freshMatches().length ? "Add it anyway" : `Add ${noun}`;
+    }
+
+    function similarBlock() {
+      const a = adding;
+      const noun = LIST_NOUNS[a.list];
+      const named = NAMED_LISTS.includes(a.list);
+      const block = el("div", { class: "std-add-similar", id: addId("similar"), "aria-live": "polite" });
+      const check = a.check;
+      if (!check) return block;
+      if (check.status === "checking") {
+        block.appendChild(el("p", { class: "lda-hint" }, [
+          el("span", { class: "lda-spinner is-small", "aria-hidden": "true" }),
+          ` Checking the ${noun} list for one like it…`,
+        ]));
+        return block;
+      }
+      if (check.status === "error") {
+        block.appendChild(el("p", { class: "lda-hint", text: `The ${noun} list could not be checked for one like it.` }));
+        return block;
+      }
+      if (!check.matches.length) {
+        block.appendChild(el("p", { class: "std-add-none", text: `Nothing like it on the ${noun} list.` }));
+        return block;
+      }
+      a.seen = check.key;
+      block.appendChild(el("p", { class: "std-add-lead" }, [
+        el("strong", { text: `Already on the ${noun} list?` }),
+        ` ${check.matches.length === 1 ? "This one" : "These"} may be the same thing.`,
+      ]));
+      block.appendChild(el("ul", { class: "std-add-matches" }, check.matches.map((match) => el("li", {
+        class: "std-add-match" + (match.is_active ? "" : " is-retired"),
+      }, [
+        el("div", { class: "std-add-match-text" }, [
+          el("span", { class: "std-add-match-name" }, [
+            el("span", { text: match.name }),
+            named ? null : el("span", { class: "std-picker-code", text: match.code }),
+            match.is_active ? null : el("span", { class: "std-chip", text: "Retired" }),
+          ]),
+          match.description ? el("span", { class: "std-add-match-desc", text: match.description }) : null,
+          (match.reasons || []).length ? el("span", { class: "std-add-match-why", text: match.reasons.join(" · ") }) : null,
+        ]),
+        match.is_active
+          ? el("button", {
+            type: "button",
+            class: "btn-secondary std-add-use",
+            text: "Use this",
+            onclick: () => {
+              const use = a.use;
+              clearTimeout(checkTimer);
+              adding = null;
+              focusNext = id(a.field);
+              use(match.code);
+            },
+          })
+          : el("span", { class: "std-add-retired", text: "Retired: an editor can bring it back from Code lists." }),
+      ]))));
+      return block;
+    }
+
+    function addPanel() {
+      const a = adding;
+      const named = NAMED_LISTS.includes(a.list);
+      const noun = LIST_NOUNS[a.list];
+      const onKey = (event) => {
+        if (event.key === "Enter" && event.target.tagName !== "TEXTAREA") {
+          // Never the disposition's Save: Enter here adds the code.
+          event.preventDefault();
+          addCode();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelAdding();
+        }
+      };
+      const typed = (key, checks) => (event) => {
+        a.values[key] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+        a.error = null;
+        if (checks) checkSoon();
+        showCheck();
+      };
+      const text = (key, attrs, checks) => {
+        const input = el("input", { id: addId(key), type: "text", class: "lda-input", ...attrs });
+        input.value = a.values[key];
+        input.addEventListener("input", typed(key, checks));
+        input.addEventListener("keydown", onKey);
+        return input;
+      };
+      const description = el("textarea", {
+        id: addId("description"),
+        class: "lda-textarea",
+        rows: "2",
+        maxlength: "2000",
+        placeholder: named ? `What it is, to tell it apart from others` : null,
+      });
+      description.value = a.values.description;
+      description.addEventListener("input", typed("description", true));
+      description.addEventListener("keydown", onKey);
+      const labelled = (key, label, control, wide) => el("div", { class: "std-add-field" + (wide ? " is-wide" : "") }, [
+        el("label", { for: addId(key), text: label }),
+        control,
+      ]);
+      const fields = [];
+      if (!named) {
+        fields.push(labelled("code", "Code", text("code", {
+          maxlength: "32",
+          placeholder: "e.g. VIB",
+          title: "1-32 letters, digits, '-', '_' or '.'. It can't be changed once added.",
+        })));
+      }
+      fields.push(labelled("name", "Name", text("name", {
+        maxlength: "200",
+        placeholder: named ? (a.list === "PART" ? "e.g. O-ring" : "e.g. Air compressor") : null,
+      }, true), named));
+      fields.push(labelled("description", "Description", description, true));
+      if (a.list === "FAILURE_MECHANISM") {
+        const cause = el("select", { id: addId("default_cause_code"), class: "lda-select" }, [
+          el("option", { value: "", text: "None" }),
+          ...codes("FAILURE_CAUSE").map((entry) => el("option", { value: entry.code, text: codeLabel("FAILURE_CAUSE", entry.code) })),
+        ]);
+        cause.value = a.values.default_cause_code;
+        cause.addEventListener("change", typed("default_cause_code"));
+        fields.push(labelled("default_cause_code", "Default cause", cause));
+      }
+      if (a.list === "ACTION") {
+        const renews = el("input", { id: addId("renews_item"), type: "checkbox", checked: a.values.renews_item });
+        renews.addEventListener("change", typed("renews_item"));
+        fields.push(el("div", { class: "std-add-field" }, [
+          el("span", { class: "std-add-label", text: "Renews item" }),
+          el("label", { class: "lda-checkbox" }, [renews, "Leaves the item as good as new"]),
+        ]));
+      }
+      return el("div", { class: "std-add", id: addId("panel"), role: "group", "aria-labelledby": addId("title") }, [
+        el("div", { class: "std-add-head" }, [
+          el("h4", { id: addId("title"), text: `New ${noun}` }),
+          el("p", {
+            class: "lda-hint",
+            text: named
+              ? `A name and a description. It joins the ${noun} list for every work order.`
+              : `It joins the ${noun} list for every work order; what it means and where it sorts can be set in Code lists.`,
+          }),
+        ]),
+        el("div", { class: "std-add-grid" }, fields),
+        similarBlock(),
+        a.error ? el("div", { class: "lda-banner is-error", role: "alert", text: a.error }) : null,
+        el("div", { class: "std-add-actions" }, [
+          el("button", { type: "button", class: "btn-secondary", text: "Cancel", onclick: cancelAdding }),
+          el("button", {
+            type: "button",
+            class: "btn-primary",
+            id: addId("submit"),
+            text: addLabel(),
+            disabled: a.saving,
+            onclick: addCode,
+          }),
+        ]),
+      ]);
+    }
+
+    function failAdding(message, key) {
+      adding.error = message;
+      focusNext = key ? addId(key) : null;
+      render();
+    }
+
+    // Adds the code and sets it on the field that asked, as an unsaved change.
+    // Codes like it that have not been shown yet are shown first; Add again adds
+    // it anyway.
+    async function addCode() {
+      const a = adding;
+      if (!a || a.saving) return;
+      const named = NAMED_LISTS.includes(a.list);
+      const noun = LIST_NOUNS[a.list];
+      const name = a.values.name.trim();
+      if (!named && !a.values.code.trim()) return failAdding(`Give the new ${noun} a code.`, "code");
+      if (!name) return failAdding(`Give the new ${noun} a name.`, "name");
+      const seenBefore = a.seen === addKey(a.values);
+      a.saving = true;
+      showCheck();
+      const check = await checkSimilar();
+      if (adding !== a) return;
+      if (check && check.status === "done" && check.matches.length && !seenBefore) {
+        a.saving = false;
+        showCheck();
+        return;
+      }
+      try {
+        const data = await postJson(`${API}/code-lists`, {
+          code_list: a.list,
+          code: named ? null : a.values.code.trim(),
+          name,
+          description: a.values.description,
+          default_cause_code: a.values.default_cause_code,
+          renews_item: a.values.renews_item,
+          is_active: true,
+          is_new: true,
+        });
+        codeListsChanged(data.code_lists);
+        if (adding !== a) return;
+        adding = null;
+        focusNext = id(a.field);
+        showToast(`${noun[0].toUpperCase()}${noun.slice(1)} “${name}” added to the list and set here; save the work order to keep it.`, "success");
+        a.use(data.code);
+      } catch (err) {
+        a.saving = false;
+        if (adding !== a) return;
+        a.error = err && err.toastShown ? null : (err && err.message) || `The ${noun} could not be added.`;
+        render();
+      }
+    }
+
+    // The lists as the server now has them: the active codes are offered here
+    // at once, and the page hears of every list.
+    function codeListsChanged(codeLists) {
+      const active = {};
+      Object.entries(codeLists).forEach(([key, list]) => {
+        active[key] = list.codes.filter((entry) => entry.is_active);
+      });
+      options = { ...options, code_lists: active };
+      if (onCodeListsChanged) onCodeListsChanged(codeLists);
     }
 
     function field(name, labelText, control, { required, hint, wide, fieldId, helperKey } = {}) {
+      // A field adding a code to its list spans the form, so the panel has room.
+      if (adding && adding.field === name) wide = true;
       return el("div", { class: "lda-field" + (wide ? " std-wide" : "") + (helperKey && isFilled(helperKey) ? " is-helper-filled" : ""), id: fieldId || null }, [
         el("div", { class: "std-field-head" }, [
           el("label", { for: id(name) }, [labelText, required ? el("span", { class: "std-required", text: "*", title: "Required for this category" }) : null]),
@@ -489,7 +1075,8 @@
     }
 
     function render() {
-      const focused = document.activeElement && node.contains(document.activeElement) ? document.activeElement.id : null;
+      const focused = focusNext || (document.activeElement && node.contains(document.activeElement) ? document.activeElement.id : null);
+      focusNext = null;
       node.innerHTML = "";
       node.appendChild(recordText());
       const panel = helperPanel();
@@ -579,34 +1166,55 @@
           hint: "Where it failed; leave at the whole asset when the work order does not say. " +
             ((options && options.sub_asset_note) || ""),
         }));
-        const component = codeSelect("component", "COMPONENT", draft.component_code);
-        component.addEventListener("change", (event) => {
-          draft.component_code = event.target.value;
-          // A PM resets what it renewed: start the list from the component chosen.
-          if (category === "PM_RESET" && draft.component_code && !draft.renewed_items.length) {
-            draft.renewed_items = [draft.component_code];
-          }
-          if (category === "FAILURE") draft.renewed_items = draft.renewed_items.filter((code) => code !== draft.component_code);
-          render();
+        const component = pickerControl("component", "COMPONENT", draft.component_code, {
+          onPick: (code) => {
+            draft.component_code = code;
+            // A part is a part of its component: no component, no part.
+            if (!code) draft.part_code = "";
+            // A PM resets what it renewed: start the list from the component chosen,
+            // unless it names the part it replaced.
+            if (category === "PM_RESET" && code && !draft.part_code && !draft.renewed_items.length) {
+              draft.renewed_items = [code];
+            }
+            if (category === "FAILURE") draft.renewed_items = draft.renewed_items.filter((item) => item !== code);
+            render();
+          },
         });
         form.appendChild(field("component", "Component", component, {
-          helperKey: "component_code", required: coded, hint: "The item found failed, not the one named in the request title.",
+          helperKey: "component_code",
+          required: coded,
+          hint: "The maintainable item found failed (a compressor, a pump), not the one named in the request title.",
         }));
-        const mechanism = codeSelect("mechanism", "FAILURE_MECHANISM", draft.failure_mechanism_code);
-        mechanism.addEventListener("change", update("failure_mechanism_code", true));
-        form.appendChild(field("mechanism", "Failure mechanism", mechanism, {
-          helperKey: "failure_mechanism_code", required: coded, hint: "The physical process. UNK rather than a guess.",
+        // The parts work orders have named with this component come first.
+        const usedParts = (((options && options.part_usage) || {})[draft.component_code] || [])
+          .filter((code) => codeEntry("PART", code));
+        const part = pickerControl("part", "PART", draft.part_code, {
+          disabled: !draft.component_code,
+          placeholder: draft.component_code ? "None (whole component)" : "Pick a component first",
+          first: usedParts.length ? { label: `Used with ${pickedText("COMPONENT", draft.component_code)}`, codes: usedParts } : null,
+          onPick: (code) => {
+            draft.part_code = code;
+            // A PM that replaced a part renews that part, not its whole component.
+            if (category === "PM_RESET" && code && draft.renewed_items.length === 1 && draft.renewed_items[0] === draft.component_code) {
+              draft.renewed_items = [];
+            }
+            render();
+          },
+        });
+        form.appendChild(field("part", "Part", part, {
+          hint: category === "PM_RESET"
+            ? "Optional: the part within the component the PM replaced (a filter, a belt). It gets a fresh life clock of its own."
+            : "Optional: the part within the component that failed (a filter, an O-ring). Leave it blank when the whole component did.",
         }));
-        const mode = codeSelect("mode", "FAILURE_MODE", draft.failure_mode_code);
-        mode.addEventListener("change", update("failure_mode_code", true));
-        form.appendChild(field("mode", "Failure mode", mode, {
-          helperKey: "failure_mode_code", required: coded, hint: "What the equipment or operator experienced.",
-        }));
-        const action = codeSelect("action", "ACTION", draft.action_code);
-        action.addEventListener("change", update("action_code", true));
-        form.appendChild(field("action", "Action", action, {
-          helperKey: "action_code", required: coded, hint: "The most significant work done.",
-        }));
+        const coding = (name, label, list, key, hint) => form.appendChild(field(name, label, pickerControl(name, list, draft[key], {
+          onPick: (code) => {
+            draft[key] = code;
+            render();
+          },
+        }), { helperKey: key, required: coded, hint }));
+        coding("mechanism", "Failure mechanism", "FAILURE_MECHANISM", "failure_mechanism_code", "The physical process. UNK rather than a guess.");
+        coding("mode", "Failure mode", "FAILURE_MODE", "failure_mode_code", "What the equipment or operator experienced.");
+        coding("action", "Action", "ACTION", "action_code", "The most significant work done.");
         const evidence = el("select", { id: id("evidence"), class: "lda-select" }, [
           el("option", { value: "", text: "—" }),
           ...((options && options.evidence) || []).map((option) => el("option", { value: option.code, text: option.label })),
@@ -616,46 +1224,61 @@
         form.appendChild(field("evidence", "Evidence", evidence, { required: coded }));
 
         const facts = derived();
-        const defaultName = facts.defaultCause ? codeLabel("FAILURE_CAUSE", facts.defaultCause) : "none (choose a mechanism)";
-        const cause = codeSelect("cause", "FAILURE_CAUSE", draft.failure_cause_code, `Default: ${defaultName}`);
-        cause.addEventListener("change", update("failure_cause_code", true));
+        const defaultEntry = facts.defaultCause ? codeEntry("FAILURE_CAUSE", facts.defaultCause) : null;
+        const defaultName = facts.defaultCause ? (defaultEntry ? defaultEntry.name : facts.defaultCause) : "none (pick a mechanism)";
+        const cause = pickerControl("cause", "FAILURE_CAUSE", draft.failure_cause_code, {
+          placeholder: `Default: ${defaultName}`,
+          onPick: (code) => {
+            draft.failure_cause_code = code;
+            render();
+          },
+        });
         form.appendChild(field("cause", "Failure cause", cause, {
           hint: "Leave on the default unless the record says otherwise; an override needs a note.",
         }));
 
         if (isRenewing(category)) {
-          const list = el("div", { class: "std-checklist", id: id("renewed"), role: "group", "aria-label": "Renewed items" });
-          const offered = codes("COMPONENT").map((entry) => entry.code);
-          draft.renewed_items.forEach((code) => offered.includes(code) || offered.push(code));
-          offered.forEach((code) => {
-            const isPrimary = category === "FAILURE" && code === draft.component_code;
-            const box = el("input", {
-              type: "checkbox",
-              value: code,
-              checked: draft.renewed_items.includes(code),
-              disabled: isPrimary,
-              onchange: (event) => {
-                draft.renewed_items = event.target.checked
-                  ? draft.renewed_items.concat([code])
-                  : draft.renewed_items.filter((item) => item !== code);
-                refreshDerived();
-              },
-            });
-            list.appendChild(el("label", { class: "lda-checkbox", title: isPrimary ? "The component's own renewal follows the action." : null }, [box, codeLabel("COMPONENT", code)]));
+          // The components renewed, each removable, and a search to add another:
+          // with a long component list, picking beats ticking.
+          const primary = category === "FAILURE" ? draft.component_code : null;
+          const chosen = el("ul", { class: "std-renewed", id: id("renewed"), "aria-label": "Renewed items" }, draft.renewed_items.map((code) => {
+            const label = pickedText("COMPONENT", code);
+            return el("li", { class: "std-renewed-item" }, [
+              el("span", { text: label }),
+              el("button", {
+                type: "button",
+                class: "std-renewed-remove",
+                title: `Remove ${label}`,
+                "aria-label": `Remove ${label} from the renewed items`,
+                text: "×",
+                onclick: () => {
+                  draft.renewed_items = draft.renewed_items.filter((item) => item !== code);
+                  focusNext = id("renewed-add");
+                  render();
+                },
+              }),
+            ]);
+          }));
+          const adder = pickerControl("renewed-add", "COMPONENT", "", {
+            placeholder: draft.renewed_items.length ? "Add another component" : "Search the component list to add one",
+            exclude: [...draft.renewed_items, primary].filter(Boolean),
+            onPick: (code) => {
+              if (code && !draft.renewed_items.includes(code)) draft.renewed_items = draft.renewed_items.concat([code]);
+              focusNext = id("renewed-add");
+              render();
+            },
           });
-          form.appendChild(el("div", { class: "lda-field std-wide" }, [
-            el("span", { class: "lda-field-label" }, [
-              "Renewed items",
-              category === "PM_RESET" ? el("span", { class: "std-required", text: "*" }) : null,
-            ]),
-            list,
-            el("p", {
-              class: "lda-hint",
-              text: category === "PM_RESET"
-                ? "Each item the PM renewed gets a suspension and a fresh life clock in its own stream."
-                : "Other items this work renewed besides the component (two failures in one work order).",
-            }),
-          ]));
+          form.appendChild(field("renewed-add", "Renewed items", el("div", { class: "std-renewed-field" }, [
+            draft.renewed_items.length ? chosen : null,
+            adder,
+          ]), {
+            wide: true,
+            required: category === "PM_RESET" && !draft.part_code,
+            hint: category === "PM_RESET"
+              ? "Each component the PM renewed gets a suspension and a fresh life clock in its own stream, and so do its parts. " +
+                "A PM that replaced only a part names the part above instead."
+              : "Other components this work renewed besides the component (two failures in one work order). A renewed component's parts are renewed with it.",
+          }));
         }
 
         const qty = el("input", { id: id("qty"), type: "number", min: "1", step: "1", class: "lda-input", value: draft.qty });
@@ -741,7 +1364,8 @@
       }
       if (!historyEntries.length) list.appendChild(el("li", { text: "Never dispositioned under this standard." }));
       historyEntries.forEach((entry) => {
-        const codesText = [entry.sub_asset, entry.component_code, entry.failure_mechanism_code, entry.failure_mode_code, entry.action_code]
+        const item = [entry.component_code, entry.part_code].filter(Boolean).join(" › ");
+        const codesText = [entry.sub_asset, item, entry.failure_mechanism_code, entry.failure_mode_code, entry.action_code]
           .filter(Boolean).join(" · ");
         list.appendChild(el("li", {
           text: `${day(entry.decided_at)} ${entry.decided_by || ""} — ${entry.disposition_category}` +
@@ -777,6 +1401,7 @@
         ...base,
         sub_asset: blank(draft.sub_asset),
         component_code: blank(draft.component_code),
+        part_code: blank(draft.part_code),
         failure_mechanism_code: blank(draft.failure_mechanism_code),
         failure_mode_code: blank(draft.failure_mode_code),
         action_code: blank(draft.action_code),
@@ -820,6 +1445,7 @@
       useCode(codeList, code) {
         const field = CODE_FIELDS[codeList];
         if (!field || draft.disposition_category === "DUPLICATE_MISFILED") return false;
+        if (codeList === "PART" && !draft.component_code) return false;
         draft[field] = code;
         render();
         return true;

@@ -389,6 +389,12 @@
       options: state.options,
       onSave: (payload) => save(payload, row.mapped_record_id),
       onSaveNext: (payload) => save(payload, nextId === null ? row.mapped_record_id : nextId),
+      // A code added from one of the form's fields: the page's lists, and the
+      // next work order opened, have it too.
+      onCodeListsChanged: (codeLists) => {
+        codeState.lists = codeLists;
+        if (state.options) state.options = { ...state.options, code_lists: activeCodes(codeLists) };
+      },
     });
     const body = $("disp-editor-body");
     body.innerHTML = "";
@@ -1274,14 +1280,20 @@
     return row;
   }
 
-  // A change to the code lists reaches the open work order at once: its
-  // dropdowns offer the lists as they now are, with everything typed kept, and a
-  // code just added is set on its field, ready to save. Returns whether it was.
-  function applyCodeLists(codeLists, addedList, addedCode) {
+  // Each list's active codes, the ones a disposition may be given.
+  function activeCodes(codeLists) {
     const active = {};
     Object.entries(codeLists).forEach(([key, list]) => {
       active[key] = list.codes.filter((entry) => entry.is_active);
     });
+    return active;
+  }
+
+  // A change to the code lists reaches the open work order at once: its
+  // dropdowns offer the lists as they now are, with everything typed kept, and a
+  // code just added is set on its field, ready to save. Returns whether it was.
+  function applyCodeLists(codeLists, addedList, addedCode) {
+    const active = activeCodes(codeLists);
     if (state.options) state.options = { ...state.options, code_lists: active };
     if (!state.form) return false;
     state.form.setCodeLists(active);

@@ -198,6 +198,27 @@ class PartServiceTests(StandardDispositionFixture):
         with self.assertRaisesRegex(ValueError, "The part list already has 'O-ring'; use that one"):
             self.std.put_code({"code_list": "PART", "name": "o-RING"})
 
+    def test_a_code_meant_to_be_new_never_changes_one_already_listed(self):
+        before = self.std.codebook().entry(std.FAILURE_MECHANISM, "LEAK")
+        with self.assertRaisesRegex(ValueError, "already has code LEAK \\(Leak\\)"):
+            self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "LEAK", "name": "Seeping", "is_new": True})
+        self.assertEqual(self.std.codebook().entry(std.FAILURE_MECHANISM, "LEAK").name, before.name)
+        # Added with no order of its own, it goes after the last.
+        last = max(entry.sort_order for entry in self.std.codebook().entries(std.FAILURE_MECHANISM, include_inactive=True))
+        self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "CAVX", "name": "Cavitation erosion", "is_new": True})
+        self.assertEqual(self.std.codebook().entry(std.FAILURE_MECHANISM, "CAVX").sort_order, last + 10)
+
+    def test_the_form_offers_first_the_parts_used_with_a_component(self):
+        for name in ("Filter element", "O-ring", "Belt"):
+            self.std.put_code({"code_list": "PART", "name": name})
+        self.add_record(703, PFS, "Compressor O-ring leak", "2024-03-01", "2024-03-01")
+        self.std.save_dispositions([
+            {"mapped_record_id": 701, **coded(component="HVAC", part_code="ORing")},
+            {"mapped_record_id": 702, **coded(component="HVAC", part_code="FilterElement")},
+            {"mapped_record_id": 703, **coded(component="HVAC", part_code="ORing")},
+        ])
+        self.assertEqual(self.std.editor_options(PFS)["part_usage"], {"HVAC": ["ORing", "FilterElement"]})
+
     def test_a_disposition_keeps_its_part_and_the_analyses_read_it(self):
         self.std.put_code({"code_list": "PART", "name": "Filter element"})
         self.std.save_dispositions([
