@@ -53,9 +53,11 @@ CREATE TABLE IF NOT EXISTS pm_task (
     asset_name TEXT,
     task_name TEXT,
     status_raw TEXT,
+    status_id TEXT,
     created_date TEXT,
     due_date TEXT,
     completed_date TEXT,
+    effective_date TEXT,
     is_completed INTEGER NOT NULL DEFAULT 0,
     synced_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
@@ -65,7 +67,31 @@ CREATE TABLE IF NOT EXISTS pm_task (
 # leaves an existing table exactly as it is, and SQLite has no ADD COLUMN IF
 # NOT EXISTS, so the shape on disk is read and anything missing is ALTERed in.
 # Existing rows get NULL until the next sync rewrites them.
-_ADDED_TASK_COLUMNS: dict[str, str] = {"created_date": "TEXT"}
+_ADDED_TASK_COLUMNS: dict[str, str] = {
+    "created_date": "TEXT",
+    # Limble's statusID, kept apart from the status in status_raw. They used
+    # to be folded together with `status or statusID`, and because 0 is falsy
+    # in Python that quietly recorded the statusID of every task whose status
+    # was 0 -- one column holding two different fields, which is why this
+    # account's values read as 1, 0, and then 730 / 742 / 744 out of nowhere.
+    "status_id": "TEXT",
+    # The date a PM is drawn on: the day it was completed once it has been,
+    # and the day it is due until then. See _BACKFILL_EFFECTIVE_DATE_SQL.
+    "effective_date": "TEXT",
+}
+
+# Fill effective_date for rows written before the column existed, so the
+# change shows up on a restart rather than waiting for a sync -- there are
+# 77,000 rows of history here and re-syncing them takes minutes.
+#
+# Only rows that have none: a sync writes the column explicitly, so this must
+# never overwrite what one has already said. NULLIF catches the completions
+# stored as "" rather than NULL, the same ones count_overdue has to allow for.
+_BACKFILL_EFFECTIVE_DATE_SQL = """
+UPDATE pm_task
+   SET effective_date = COALESCE(NULLIF(completed_date, ''), due_date)
+ WHERE effective_date IS NULL
+"""
 
 # The asset hierarchy, as far as the calendar needs it: every asset that has
 # PMs, plus every asset above one of those (a parent like 4002 can have no PMs
@@ -116,6 +142,10 @@ _CREATE_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_id ON pm_task(asset_id)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_due_date ON pm_task(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_due ON pm_task(asset_id, due_date)",
+    # The month query reads by effective_date now that a completed PM is drawn
+    # on the day it was done; without these it would be a full scan per month.
+    "CREATE INDEX IF NOT EXISTS idx_pm_task_effective_date ON pm_task(effective_date)",
+    "CREATE INDEX IF NOT EXISTS idx_pm_task_asset_effective ON pm_task(asset_id, effective_date)",
     "CREATE INDEX IF NOT EXISTS idx_pm_asset_parent ON pm_asset(parent_asset_id)",
 )
 
@@ -129,11 +159,26 @@ _TASK_COLUMNS = (
     "asset_name",
     "task_name",
     "status_raw",
+    "status_id",
     "created_date",
     "due_date",
     "completed_date",
+    "effective_date",
     "is_completed",
 )
+
+
+def _effective_date(row: dict[str, Any]) -> Any:
+    """The date a PM is drawn on: when it was done, or when it is due.
+
+    The empty string is treated as no completion, the same as NULL -- rows
+    written before the column existed, and rows from callers that pass "",
+    both show up that way, and reading one as "finished" would move a PM that
+    is still outstanding onto the day it was due to be finished.
+    """
+
+    completed = row.get("completed_date")
+    return completed if completed else row.get("due_date")
 
 
 class PmCalendarUnavailableError(RuntimeError):
@@ -263,6 +308,7 @@ class PmCalendarRepository:
             conn.execute(_CREATE_ASSET_TABLE_SQL)
             self._add_missing_columns(conn, "pm_task", _ADDED_TASK_COLUMNS)
             self._add_missing_asset_columns(conn)
+            conn.execute(_BACKFILL_EFFECTIVE_DATE_SQL)
             for statement in _CREATE_INDEX_STATEMENTS:
                 conn.execute(statement)
 
@@ -293,6 +339,13 @@ class PmCalendarRepository:
         Each dict in `rows` should have some or all of the keys in
         _TASK_COLUMNS; anything missing is stored as NULL. Returns
         {"upserted": <count>}.
+
+        `effective_date` is the exception: it is derived here rather than
+        taken from the caller, because it is not a fact about the task but a
+        restatement of two columns that are -- the completion date once there
+        is one, the due date until then. Deriving it in the one place rows are
+        written means a caller cannot forget it, and a row that forgot it
+        would be invisible to the calendar, which selects a month by it.
         """
 
         if not rows:
@@ -313,6 +366,7 @@ class PmCalendarRepository:
                 # Fill in any column this row didn't provide with None, so the
                 # named placeholders above always have a matching value.
                 params = {column: row.get(column) for column in _TASK_COLUMNS}
+                params["effective_date"] = _effective_date(row)
                 conn.execute(sql, params)
 
         return {"upserted": len(rows)}
@@ -387,13 +441,26 @@ class PmCalendarRepository:
         asset_ids: list[str] | None = None,
         due_since: str | None = None,
         due_until: str | None = None,
+        date_field: str = "due_date",
     ) -> list[dict[str, Any]]:
-        """Return PM tasks, optionally filtered by asset and/or due-date range.
+        """Return PM tasks, optionally filtered by asset and/or a date range.
 
         `due_since`/`due_until` are inclusive whole days, given as
         "YYYY-MM-DD" (a full ISO datetime is accepted; only its date part is
         read). Leave either as None to leave that side open. `asset_ids` of
         None or [] means "every asset."
+
+        `date_field` chooses which date the range applies to, and the two
+        callers deliberately want different ones:
+
+        * The calendar asks for a month by **effective_date**, because that
+          is where a PM is drawn -- the day it was completed once it has
+          been, the day it is due until then. A PM due in July and finished
+          in October belongs in October's query, or it would be drawn in a
+          month the page never fetched it for.
+        * The year-to-date figures ask by **due_date**, because they measure
+          whether this year's schedule was met. Counting a PM in the year it
+          was finished would credit this year with last year's backlog.
 
         Both bounds mean the whole day, which the upper one has to work at:
         due dates are stored as they arrive from Limble, with a time on them
@@ -414,19 +481,24 @@ class PmCalendarRepository:
             placeholders = ", ".join("?" for _ in asset_ids)
             clauses.append(f"asset_id IN ({placeholders})")
             params.extend(asset_ids)
+        # Interpolated into SQL, so it is checked against the two columns
+        # this is allowed to range over rather than trusted.
+        if date_field not in ("due_date", "effective_date"):
+            raise ValueError(f"fetch_tasks cannot range over {date_field!r}")
+
         if due_since:
             # The lower bound needs no such care: any time on the day sorts
             # after the bare date, so "2026-07-01T07:00" >= "2026-07-01".
-            clauses.append("due_date >= ?")
+            clauses.append(f"{date_field} >= ?")
             params.append(due_since[:10])
         if due_until:
-            clauses.append("due_date < ?")
+            clauses.append(f"{date_field} < ?")
             params.append((date.fromisoformat(due_until[:10]) + timedelta(days=1)).isoformat())
 
         sql = "SELECT * FROM pm_task"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY due_date"
+        sql += f" ORDER BY {date_field}"
 
         with self._reporting_failures():
             conn = self.connect()
@@ -462,6 +534,90 @@ class PmCalendarRepository:
             finally:
                 conn.close()
         return _row_to_dict(row) if row else None
+
+    # A PM is overdue when nobody has finished it and its due date has been
+    # and gone. Both halves are worth spelling out:
+    #
+    # * "Nobody has finished it" is `completed_date IS NULL OR = ''`. The empty
+    #   string matters -- a row that came through a sync with no completion
+    #   stores NULL, but one written before `created_date` existed, or by a
+    #   caller passing "", stores the empty string, and a plain IS NULL check
+    #   would call those finished.
+    # * "Its due date has been and gone" is `due_date < <today's bare date>`.
+    #   Due dates carry a time ("2026-10-27T07:00:00+00:00") and these are
+    #   string comparisons, so a bare "2026-10-27" sorts before every time on
+    #   that day -- which is exactly right here: a PM due today still has
+    #   today to be done in, and is not overdue. (The same fact is a trap on
+    #   the *upper* bound of a range; see fetch_tasks.)
+    #
+    # Unlike the year-to-date figures there is no lower bound: a PM that went
+    # past its date in 2024 and was never done is still outstanding today.
+    _OVERDUE_WHERE = (
+        "(completed_date IS NULL OR completed_date = '') "
+        "AND due_date IS NOT NULL AND due_date != '' AND due_date < ?"
+    )
+
+    def count_overdue(self, asset_ids: list[str] | None, before: str) -> int:
+        """How many PMs among `asset_ids` are past due and unfinished.
+
+        `asset_ids` of None or [] means "every asset", the same as
+        fetch_tasks -- the summary figure this feeds is drawn with or without
+        an asset filter, and the caller guards the one case where an empty
+        selection means "nothing" rather than "everything".
+
+        Counted in SQL rather than by reading the rows, because the figure on
+        the page is for the whole backlog while the list beside it is capped.
+        """
+
+        clause, params = self._overdue_clause(asset_ids, before)
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                return int(conn.execute(f"SELECT COUNT(*) FROM pm_task WHERE {clause}", params).fetchone()[0])
+            finally:
+                conn.close()
+
+    def fetch_overdue(
+        self, asset_ids: list[str] | None, before: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """The overdue PMs among `asset_ids`, longest overdue first.
+
+        Oldest first because that is the order somebody working through a
+        backlog wants it in, and because a truncated list should keep the
+        worst of it rather than the newest. `limit` is a guard, not a page
+        size: the caller asks for more than the backlog is ever expected to
+        be, and reports the total separately when it does bite.
+        """
+
+        if limit <= 0:
+            return []
+        clause, params = self._overdue_clause(asset_ids, before)
+        sql = f"SELECT * FROM pm_task WHERE {clause} ORDER BY due_date, task_id LIMIT ?"
+        with self._reporting_failures():
+            conn = self.connect()
+            try:
+                rows = conn.execute(sql, [*params, limit]).fetchall()
+            finally:
+                conn.close()
+        return [_row_to_dict(row) for row in rows]
+
+    @classmethod
+    def _overdue_clause(
+        cls, asset_ids: list[str] | None, before: str
+    ) -> tuple[str, list[Any]]:
+        """The shared WHERE for the two reads above, so they cannot disagree.
+
+        A count and a list that applied different rules would put a number on
+        the page and a list behind it that did not add up to it.
+        """
+
+        clause = cls._OVERDUE_WHERE
+        params: list[Any] = [before[:10]]
+        if asset_ids:
+            placeholders = ", ".join("?" for _ in asset_ids)
+            clause = f"asset_id IN ({placeholders}) AND {clause}"
+            params = [*asset_ids, *params]
+        return clause, params
 
     def asset_options(self) -> list[dict[str, Any]]:
         """Distinct assets that currently have at least one stored PM task."""

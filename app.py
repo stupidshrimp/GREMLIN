@@ -78,6 +78,8 @@ from services.sync_service import (
     load_dotenv_files,
 )
 from services.pm_calendar_service import PmCalendarService
+from services.pm_export_service import PmExportService, window_for
+from services import html_to_pdf
 from repositories.pm_calendar_repo import (
     PM_CALENDAR_DB_FILENAME,
     PmCalendarUnavailableError,
@@ -181,6 +183,55 @@ app.jinja_env.globals.update(
     department_label=department_label,
     staff_level_label=staff_level_label,
 )
+
+
+def _pm_short_date(value: str | None) -> str:
+    """"2026-05-08" as "Fri, May 8, 2026", for the export's tables.
+
+    Anything that is not a plain ISO date comes back unchanged rather than
+    raising: this runs over every cell of a report, and one odd value in
+    Limble should cost that cell's formatting, not the whole download.
+    """
+
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%a, %b %-d, %Y")
+    except (TypeError, ValueError):
+        try:
+            # %-d is not portable; Windows wants %#d. Falling back rather
+            # than branching on the platform keeps one path for both.
+            return date.fromisoformat(str(value)[:10]).strftime("%a, %b %d, %Y")
+        except (TypeError, ValueError):
+            return value or ""
+
+
+def _pm_long_date(value: str | None) -> str:
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime("%B %-d, %Y")
+    except (TypeError, ValueError):
+        try:
+            return date.fromisoformat(str(value)[:10]).strftime("%B %d, %Y")
+        except (TypeError, ValueError):
+            return value or ""
+
+
+def _pm_number(value: object) -> str:
+    """A figure without a pointless decimal: 60.0 -> "60", 22.5 -> "22.5".
+
+    The service rounds rates and averages to one place because some of them
+    need it. Printing the place when it is zero makes a clean 60% look like
+    a measurement taken to a precision nobody claimed.
+    """
+
+    if value is None:
+        return "—"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+app.jinja_env.filters["pm_short_date"] = _pm_short_date
+app.jinja_env.filters["pm_long_date"] = _pm_long_date
+app.jinja_env.filters["pm_number"] = _pm_number
 
 
 def current_user() -> dict | None:
@@ -626,6 +677,10 @@ PM_CALENDAR_DB_PATH = Path(
 # folder and the file are created the first time the calendar is actually used,
 # so a path this machine cannot write to costs one page rather than startup.
 pm_calendar_service = PmCalendarService(PM_CALENDAR_DB_PATH)
+
+# The manager export reads everything through the service above, so it holds
+# no database of its own and costs nothing to construct.
+pm_export_service = PmExportService(pm_calendar_service)
 
 # The release history lives in a Word document on the engineering share, not in
 # this repository: a team member edits it and the change is live on the next page
@@ -3165,6 +3220,37 @@ def api_pm_calendar_assets():
     return jsonify({"assets": assets})
 
 
+def _pm_calendar_codes() -> list[str] | None:
+    """The cadence filter from ?codes=M,Q,none -- None when it is not set.
+
+    "none" is a real value here, not a missing one: it means the PMs whose
+    name carries no cadence at all, which on this account is most of them.
+    """
+
+    raw = request.args.get("codes")
+    if raw is None:
+        return None
+    codes = [part.strip() for part in raw.split(",") if part.strip()]
+    return codes or None
+
+
+@app.route("/pm-calendar/api/codes")
+def api_pm_calendar_codes():
+    # Which cadences the picked assets carry, for the filter chips. Needs a
+    # selection for the same reason the other two do: without one this is a
+    # read of the whole table.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        codes = pm_calendar_service.cadence_codes(
+            asset_ids, exclude=_pm_calendar_asset_ids("exclude")
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"codes": codes})
+
+
 @app.route("/pm-calendar/api/events")
 def api_pm_calendar_events():
     start = request.values.get("start")
@@ -3173,6 +3259,7 @@ def api_pm_calendar_events():
         return jsonify({"error": "'start' and 'end' query parameters are required (YYYY-MM-DD)."}), 400
     try:
         events = pm_calendar_service.events(
+            codes=_pm_calendar_codes(),
             asset_ids=_pm_calendar_asset_ids(),
             start_date=start,
             end_date=end,
@@ -3198,15 +3285,96 @@ def api_pm_calendar_last_completed():
     return jsonify({"pm": pm})
 
 
+@app.route("/pm-calendar/api/overdue")
+def api_pm_calendar_overdue():
+    # The list behind the "PMs overdue" figure. `assets` is required for the
+    # same reason it is on last-completed: without a selection this would be
+    # the whole table's backlog, which is neither what the page shows nor a
+    # read worth serving.
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+    try:
+        overdue = pm_calendar_service.overdue(
+            asset_ids,
+            exclude=_pm_calendar_asset_ids("exclude"),
+            codes=_pm_calendar_codes(),
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify(overdue)
+
+
 @app.route("/pm-calendar/api/summary")
 def api_pm_calendar_summary():
     try:
         summary = pm_calendar_service.summary(
-            asset_ids=_pm_calendar_asset_ids(), exclude=_pm_calendar_asset_ids("exclude")
+            asset_ids=_pm_calendar_asset_ids(),
+            exclude=_pm_calendar_asset_ids("exclude"),
+            codes=_pm_calendar_codes(),
         )
     except PmCalendarUnavailableError as exc:
         return jsonify({"error": str(exc)}), 503
     return jsonify({"summary": summary})
+
+
+@app.route("/pm-calendar/api/export")
+def api_pm_calendar_export():
+    """The manager export, as a self-contained .html file or as a PDF.
+
+    A download rather than a page: this is something to attach to an email,
+    and serving it inline would leave it at a URL nobody can find again.
+    `assets` is required, like the other reads that would otherwise scan the
+    whole table.
+
+    The PDF is the HTML printed by a headless browser, so there is one
+    layout, not two -- see services/html_to_pdf.py. When that browser is not
+    installed the answer is a 503 naming the command that fixes it, because
+    the alternative is a stack trace in the log and a silent failure on the
+    page.
+    """
+
+    asset_ids = _pm_calendar_asset_ids()
+    if not asset_ids:
+        return jsonify({"error": "'assets' query parameter is required."}), 400
+
+    wanted = (request.values.get("format") or "pdf").strip().lower()
+    if wanted not in ("pdf", "html"):
+        return jsonify({"error": "'format' must be 'pdf' or 'html'."}), 400
+
+    try:
+        report = pm_export_service.report(
+            asset_ids,
+            exclude=_pm_calendar_asset_ids("exclude"),
+            codes=_pm_calendar_codes(),
+            preset=request.values.get("preset"),
+            start=request.values.get("start"),
+            end=request.values.get("end"),
+        )
+    except PmCalendarUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    html = render_template("pm_export_report.html", report=report)
+    # Named for the period it covers, so two reports downloaded a month apart
+    # are told apart on disk without opening them.
+    stem = f"PM_report_{report['window']['start'][:7]}_to_{report['window']['end'][:7]}"
+
+    if wanted == "html":
+        response = make_response(html)
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response.headers["Content-Disposition"] = f'attachment; filename="{stem}.html"'
+        return response
+
+    try:
+        pdf = html_to_pdf.render(html)
+    except html_to_pdf.PdfUnavailable as exc:
+        return jsonify({"error": str(exc), "hint": exc.hint}), 503
+    return send_file(
+        io.BytesIO(pdf),
+        as_attachment=True,
+        download_name=f"{stem}.pdf",
+        mimetype="application/pdf",
+    )
 
 
 @app.route("/pm-calendar/api/sync")

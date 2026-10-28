@@ -60,6 +60,80 @@
   color: var(--muted);
 }
 
+/* The overdue tile is a button. It keeps the look of the three cards beside
+   it -- a tile that shouted would read as an alert rather than a figure --
+   and earns its interactivity on hover and focus instead. */
+.pm-summary-card-opens {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pm-summary-card-opens:hover:not(:disabled),
+.pm-summary-card-opens:focus-visible:not(:disabled) {
+  border-color: var(--forest-500);
+  background: var(--surface);
+}
+
+/* Nothing to open: no pointer, and no hover promising otherwise. The figure
+   stays perfectly readable, because it is still the answer. */
+.pm-summary-card-opens:disabled {
+  cursor: default;
+}
+
+/* "all outstanding" under the overdue figure: the one tile under a "Year to
+   date" heading that doesn't mean year to date. */
+.pm-summary-note {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* ---- the overdue list ---------------------------------------------------- */
+
+.pm-overdue-note {
+  margin: 0 0 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Each row is a button but has to sit in the list like the day dialog's
+   cards, so it takes the card's own layout back from the UA stylesheet. */
+.pm-overdue-row {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-overdue-row:hover,
+.pm-overdue-row:focus-visible {
+  border-color: var(--forest-500);
+}
+
+/* How late, beside the asset name, where the day dialog puts its status
+   badge -- the same place the eye already looks for "what about this one". */
+.pm-overdue-late {
+  flex: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--danger-ink);
+  white-space: nowrap;
+}
+
+.pm-overdue-go {
+  justify-self: start;
+  color: var(--forest-700);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.pm-overdue-row:hover .pm-overdue-go {
+  color: var(--forest-900);
+}
+
 .pm-summary-value {
   font-size: 1.7rem;
   font-weight: 700;
@@ -878,6 +952,101 @@
   50% { outline-color: transparent; }
 }
 
+/* ---- the cadence filter -------------------------------------------------- */
+
+.pm-cadence-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.7rem;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.pm-cadence-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pm-cadence-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* On is the resting state: everything shows until something is turned off,
+   so a ticked chip should look ordinary and an unticked one should look
+   deliberately set aside. */
+.pm-cadence-chip {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.pm-cadence-chip.is-on {
+  border-color: var(--forest-500);
+  background: var(--surface);
+  color: var(--forest-900);
+}
+
+.pm-cadence-chip:not(.is-on) {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.pm-cadence-chip:hover {
+  border-color: var(--forest-700);
+}
+
+.pm-cadence-reset {
+  border: 0;
+  background: none;
+  color: var(--forest-700);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pm-cadence-reset:hover {
+  color: var(--forest-900);
+  text-decoration: underline;
+}
+
+/* ---- walking a PM line's history ----------------------------------------- */
+
+.pm-day-item-walk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.9rem;
+}
+
+.pm-day-item-step {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--forest-700);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-day-item-step:hover {
+  color: var(--forest-900);
+  text-decoration: underline;
+}
+
 /* Link colour the rest of GREMLIN uses inside a card: forest, not the
    browser's blue, which no token owns. */
 .pm-day-item-link {
@@ -1123,6 +1292,11 @@
 .pm-asset-option:focus-visible,
 .pm-day.has-events:focus-visible,
 .pm-day-item-anchor:focus-visible,
+.pm-summary-card-opens:focus-visible,
+.pm-cadence-chip:focus-visible,
+.pm-cadence-reset:focus-visible,
+.pm-day-item-step:focus-visible,
+.pm-overdue-row:focus-visible,
 .pm-day-item-link:focus-visible {
   outline: 2px solid var(--forest-500);
   outline-offset: 2px;
@@ -1194,5 +1368,171 @@
   /* The ring stays; only the pulse goes. */
   .pm-day.is-highlighted {
     animation: none;
+  }
+}
+
+/* ---- the manager export dialog ------------------------------------------ */
+/* Taller than the other two dialogs because it is a form rather than a list,
+   and the whole of it has to be reachable without the page behind scrolling. */
+.pm-modal.pm-export {
+  width: min(560px, 100%);
+  gap: 0;
+  overflow-y: auto;
+}
+
+.pm-export-lede {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.pm-export-field {
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.pm-export-field h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The asset list can run long -- a picked parent brings its whole branch --
+   so it scrolls inside the dialog rather than pushing Download off the end. */
+.pm-export-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+
+.pm-export-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.22rem 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pm-export-check input {
+  margin-top: 0.2rem;
+  flex: 0 0 auto;
+}
+
+.pm-export-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pm-export-preset {
+  padding: 0.32rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-veil);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pm-export-preset:hover {
+  border-color: var(--forest-500);
+  color: inherit;
+}
+
+.pm-export-preset.is-on {
+  border-color: var(--forest-500);
+  background: var(--surface);
+  color: inherit;
+  font-weight: 600;
+}
+
+.pm-export-preset:focus-visible,
+.pm-export-check input:focus-visible {
+  outline: 2px solid var(--forest-500);
+  outline-offset: 2px;
+}
+
+.pm-export-custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 0.6rem;
+}
+
+/* A `display` rule beats the hidden attribute's own `display: none`, so the
+   two fields that only belong to the custom range need this to stay hidden
+   while a preset is chosen. Same for the frequency block, which is only
+   offered when there is a filter on the page to carry over. */
+.pm-export-custom[hidden],
+.pm-export-field[hidden] {
+  display: none;
+}
+
+.pm-export-custom label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.pm-export-custom input {
+  padding: 0.28rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.pm-export-hint {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.pm-export-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.pm-export-error {
+  margin: 0.8rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid var(--rust-500, #c0392b);
+  background: var(--surface-veil);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.pm-export-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.pm-export-status {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pm-export-preset {
+    transition: none;
   }
 }

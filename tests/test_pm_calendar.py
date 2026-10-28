@@ -388,24 +388,34 @@ def _seeded_with_real_timestamps(tmp_path):
             "status_raw": "open", "due_date": "2026-09-21T07:00:00+00:00",
             "completed_date": None, "is_completed": 0,
         },
+        {
+            # Due on a month's last day and still outstanding, so it stays on
+            # that day. Task 1 is due on one too but was finished the week
+            # after, and now sits in August -- which is the right answer, and
+            # no use for guarding the month-end bound.
+            "task_id": "3", "asset_id": "4756", "asset_number": "4756",
+            "asset_name": "Salvagnini Panel Bender", "task_name": "3102 - Q - Salvagnini P4",
+            "status_raw": "open", "due_date": "2026-10-31T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
     ])
     return service
 
 
 def test_a_pm_due_on_the_last_day_of_a_month_is_in_that_month(tmp_path):
-    """The bound is a whole day, whatever time the due date carries.
+    """The bound is a whole day, whatever time the date carries.
 
-    Stored due dates have a time on them, and these are string comparisons,
-    so an upper bound of "2026-07-31" used to sort before
-    "2026-07-31T07:00:00+00:00" and drop it. Every PM due on the last day of
-    a month vanished from that month -- 3,040 rows on this account.
+    Stored dates have a time on them, and these are string comparisons, so
+    an upper bound of "2026-10-31" used to sort before
+    "2026-10-31T07:00:00+00:00" and drop it. Every PM on the last day of a
+    month vanished from that month -- 3,040 rows on this account.
     """
 
     service = _seeded_with_real_timestamps(tmp_path)
 
-    events = service.events(asset_ids=["4756"], start_date="2026-07-01", end_date="2026-07-31")
+    events = service.events(asset_ids=["4756"], start_date="2026-10-01", end_date="2026-10-31")
 
-    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["1"]
+    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["3"]
 
 
 def test_the_first_day_of_a_window_is_included_too(tmp_path):
@@ -413,9 +423,666 @@ def test_the_first_day_of_a_window_is_included_too(tmp_path):
 
     service = _seeded_with_real_timestamps(tmp_path)
 
-    events = service.events(asset_ids=["4756"], start_date="2026-07-31", end_date="2026-08-31")
+    events = service.events(asset_ids=["4756"], start_date="2026-10-31", end_date="2026-11-30")
 
-    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["1"]
+    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["3"]
+
+
+def test_a_pm_finished_late_is_drawn_on_the_day_it_was_finished(tmp_path):
+    """Task 1 was due 31 July and finished on 6 August. It belongs to August.
+
+    This is the whole point of the move: a PM that ran months late used to
+    sit on the month it was scheduled for, which read as though the work had
+    happened then. July no longer shows it at all.
+    """
+
+    service = _seeded_with_real_timestamps(tmp_path)
+
+    july = service.events(asset_ids=["4756"], start_date="2026-07-01", end_date="2026-07-31")
+    august = service.events(asset_ids=["4756"], start_date="2026-08-01", end_date="2026-08-31")
+
+    assert [e["task_id"] for e in july if not e.get("is_projected")] == []
+    assert [e["task_id"] for e in august if not e.get("is_projected")] == ["1"]
+    # And it still says when it was due, so nothing is hidden by the move.
+    done = [e for e in august if e["task_id"] == "1"][0]
+    assert done["due_date"].startswith("2026-07-31")
+    assert done["effective_date"].startswith("2026-08-06")
+
+
+def test_an_outstanding_pm_stays_on_the_day_it_is_due(tmp_path):
+    """The other half: until it is done, a PM is a plan, drawn where planned."""
+
+    service = _seeded_with_real_timestamps(tmp_path)
+
+    events = service.events(asset_ids=["4756"], start_date="2026-09-01", end_date="2026-09-30")
+
+    shown = [e for e in events if e["task_id"] == "2"][0]
+    assert shown["effective_date"] == shown["due_date"]
+
+
+def _with_an_old_backlog(tmp_path):
+    """One asset carrying PMs overdue from three different years.
+
+    Due dates carry a time, as a sync stores them, because the overdue bound
+    is a string comparison against a bare date and that is exactly where it
+    could go wrong.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": "old", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - A - Press inspection",
+            "status_raw": "open", "due_date": "2024-12-02T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
+        {
+            "task_id": "last-year", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - Q - Press guards",
+            "status_raw": "open", "due_date": "2025-06-10T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
+        {
+            "task_id": "this-year", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "open", "due_date": "2026-08-14T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
+        {
+            "task_id": "due-today", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "open", "due_date": "2026-09-21T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
+        {
+            "task_id": "done", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "done", "due_date": "2026-07-17T07:00:00+00:00",
+            "completed_date": "2026-07-20T09:00:00+00:00", "is_completed": 1,
+        },
+        {
+            # Written with "" rather than NULL for the completion, which is
+            # what an older row looks like. It is not finished.
+            "task_id": "blank", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - SA - Press belts",
+            "status_raw": "open", "due_date": "2026-05-01T07:00:00+00:00",
+            "completed_date": "", "is_completed": 0,
+        },
+    ])
+    return service
+
+
+def test_the_overdue_figure_counts_every_year_not_just_this_one(tmp_path):
+    """The one tile that isn't year-to-date, and why.
+
+    A PM that went past its date in 2024 and was never done is still
+    outstanding today. Counting only this year would have been a figure that
+    reset every New Year's Day while the work stayed undone. Its three
+    neighbours stay year-to-date, so scheduled and completed here count only
+    2026's rows.
+    """
+
+    service = _with_an_old_backlog(tmp_path)
+
+    summary = service.summary(asset_ids=["777"])
+
+    # old + last-year + this-year + blank. Not "due-today" (the day isn't
+    # over) and not "done".
+    assert summary["overdue"] == 4
+    # Year to date, and so blind to the two older rows.
+    assert summary["scheduled"] == 4
+    assert summary["completed"] == 1
+
+
+def test_the_overdue_list_is_the_backlog_longest_overdue_first(tmp_path):
+    """What the figure opens: the same PMs, oldest first.
+
+    Oldest first because that is the order somebody working through a
+    backlog wants, and because a truncated list should keep the worst of it.
+    """
+
+    service = _with_an_old_backlog(tmp_path)
+
+    overdue = service.overdue(["777"])
+
+    assert overdue["total"] == 4
+    assert [pm["task_id"] for pm in overdue["pms"]] == [
+        "old", "last-year", "blank", "this-year",
+    ]
+
+
+def test_a_pm_due_today_is_not_in_the_overdue_list(tmp_path):
+    """The boundary, which is where a string comparison could go wrong.
+
+    Due dates are stored with a time on them, so the bound is a bare date
+    that sorts before every time on the day: a PM due today still has today
+    to be done in.
+    """
+
+    service = _with_an_old_backlog(tmp_path)
+
+    assert "due-today" not in {pm["task_id"] for pm in service.overdue(["777"])["pms"]}
+
+
+def test_a_completed_pm_is_never_overdue_however_late_it_was_done(tmp_path):
+    """Task "done" was finished three days after its date. It is finished."""
+
+    service = _with_an_old_backlog(tmp_path)
+
+    assert "done" not in {pm["task_id"] for pm in service.overdue(["777"])["pms"]}
+
+
+def test_the_overdue_list_says_how_many_it_left_out(tmp_path):
+    """The figure is the whole backlog; the list is capped. Both are returned.
+
+    Otherwise the page would show a number and a shorter list under it with
+    nothing to explain the difference.
+    """
+
+    service = _with_an_old_backlog(tmp_path)
+
+    overdue = service.overdue(["777"], limit=2)
+
+    assert overdue["total"] == 4
+    assert [pm["task_id"] for pm in overdue["pms"]] == ["old", "last-year"]
+
+
+def test_the_overdue_list_follows_the_selection(tmp_path):
+    """A parent's chip covers its branch here as it does everywhere else.
+
+    Built here rather than from _panel_line, whose PMs are all in the
+    future: a fixture with nothing overdue would make every assertion below
+    true by being empty.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": f"wo-{asset}", "asset_id": asset, "asset_number": asset,
+            "asset_name": name, "task_name": f"{asset} - M - {name}",
+            "status_raw": "open", "due_date": "2026-08-14T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        }
+        for asset, name in [
+            ("4002", "Panel Finishing System"),
+            ("S1", "Sander"),
+            ("S1A", "Sander Dust Collector"),
+            ("9", "Unrelated Press"),
+        ]
+    ])
+    service.repo.replace_assets([
+        {"asset_id": "4002", "asset_name": "Panel Finishing System", "parent_asset_id": None},
+        {"asset_id": "S1", "asset_name": "Sander", "parent_asset_id": "4002"},
+        {"asset_id": "S1A", "asset_name": "Sander Dust Collector", "parent_asset_id": "S1"},
+        {"asset_id": "9", "asset_name": "Unrelated Press", "parent_asset_id": None},
+    ])
+
+    whole_branch = service.overdue(["4002"])
+    assert whole_branch["total"] == 3
+    assert {pm["asset_id"] for pm in whole_branch["pms"]} == {"4002", "S1", "S1A"}
+
+    # And a sub-asset unticked in the chip's expanded view drops out of both
+    # the figure and the list, the way it does on the calendar itself.
+    hiding_one = service.overdue(["4002"], exclude=["S1A"])
+    assert hiding_one["total"] == 2
+    assert {pm["asset_id"] for pm in hiding_one["pms"]} == {"4002", "S1"}
+
+
+def test_an_empty_selection_lists_nothing(tmp_path):
+    service = _with_an_old_backlog(tmp_path)
+
+    assert service.overdue([]) == {"total": 0, "pms": []}
+
+
+def test_status_and_status_id_are_stored_apart(tmp_path, monkeypatch):
+    """One column used to hold two different fields.
+
+    The sync stored `task.get("status") or task.get("statusID")`, and 0 is
+    falsy in Python, so every task whose status was 0 recorded its statusID
+    instead. On this account that produced a column reading 1, then 0, then
+    730 / 742 / 744 out of nowhere -- the custom statuses showing through
+    the gap. A status of 0 is a status, not a missing value.
+    """
+
+    class _StubClient:
+        def __init__(self, config):
+            pass
+
+        def get_tasks(self, on_page=None):
+            return [
+                {"taskID": 1, "type": 1, "assetID": 4101, "name": "4101 - M - Sander",
+                 "status": 0, "statusID": 730, "dueDate": 1790000000, "dateCompleted": 0},
+                {"taskID": 2, "type": 1, "assetID": 4101, "name": "4101 - Q - Sander",
+                 "status": 1, "statusID": 2, "dueDate": 1790000000, "dateCompleted": 1790500000},
+            ]
+
+        def get_assets(self):
+            return [{"assetID": 4101, "name": "Sander", "parentAssetID": 0}]
+
+    monkeypatch.setattr(pm_calendar_service_module, "LimbleClient", _StubClient)
+    monkeypatch.setattr(pm_calendar_service_module.LimbleConfig, "from_env", classmethod(lambda cls: None))
+    monkeypatch.setattr(pm_calendar_service_module, "load_dotenv_files", lambda **kwargs: None)
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._run_sync()
+
+    stored = {task["task_id"]: task for task in service.repo.fetch_tasks(asset_ids=["4101"])}
+    assert stored["1"]["status_raw"] == "0"
+    assert stored["1"]["status_id"] == "730"
+    assert stored["2"]["status_raw"] == "1"
+    assert stored["2"]["status_id"] == "2"
+
+
+def test_an_existing_database_gains_the_new_columns_and_is_backfilled(tmp_path):
+    """77,000 rows of history should not need a re-sync to move.
+
+    The column a PM is drawn by is added to a database that predates it and
+    filled from the two columns it restates, so the change is visible on a
+    restart. A row completed late moves; one still outstanding does not.
+    """
+
+    db = tmp_path / "pm.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE pm_task (task_id TEXT PRIMARY KEY, asset_id TEXT, asset_number TEXT, "
+        "asset_name TEXT, task_name TEXT, status_raw TEXT, due_date TEXT, completed_date TEXT, "
+        "is_completed INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    conn.executemany(
+        "INSERT INTO pm_task (task_id, asset_id, asset_number, asset_name, task_name, "
+        "due_date, completed_date) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("late", "7", "7", "Pump", "7 - M - Pump", "2026-07-31", "2026-10-15"),
+            ("open", "7", "7", "Pump", "7 - M - Pump", "2026-09-30", None),
+            # Stored as "" rather than NULL, which is what some older rows
+            # look like. It is not finished, so it must not move.
+            ("blank", "7", "7", "Pump", "7 - M - Pump", "2026-08-31", ""),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    service = PmCalendarService(db)
+    service._ensure_schema()
+
+    stored = {task["task_id"]: task for task in service.repo.fetch_tasks(asset_ids=["7"])}
+    assert stored["late"]["effective_date"] == "2026-10-15"
+    assert stored["open"]["effective_date"] == "2026-09-30"
+    assert stored["blank"]["effective_date"] == "2026-08-31"
+    assert stored["late"]["status_id"] is None
+
+
+def test_a_caller_cannot_put_a_pm_on_the_wrong_day(tmp_path):
+    """The drawn date is derived where rows are written, not taken on trust.
+
+    A caller passing a contradictory one would make a PM appear on a day
+    neither of its real dates names -- and one that simply forgot would make
+    it appear nowhere, since the month is selected by this column.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([{
+        "task_id": "1", "asset_id": "7", "asset_number": "7",
+        "asset_name": "Pump", "task_name": "7 - M - Pump",
+        "due_date": "2026-07-31", "completed_date": "2026-10-15",
+        "effective_date": "1999-01-01", "is_completed": 1,
+    }])
+
+    (stored,) = service.repo.fetch_tasks(asset_ids=["7"])
+    assert stored["effective_date"] == "2026-10-15"
+
+
+def test_compliance_still_measures_the_year_the_pm_was_due(tmp_path):
+    """The figures stayed on due dates while the tiles moved.
+
+    A PM due last December and finished this January belongs to last year's
+    compliance, where it was due. Counting it here would credit this year
+    with last year's backlog -- and this is the one place the calendar and
+    the figures deliberately disagree.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": "last-year", "asset_id": "7", "asset_number": "7",
+            "asset_name": "Pump", "task_name": "7 - M - Pump",
+            "status_raw": "done", "due_date": "2025-12-18T07:00:00+00:00",
+            "completed_date": "2026-01-09T09:00:00+00:00", "is_completed": 1,
+        },
+        {
+            "task_id": "this-year", "asset_id": "7", "asset_number": "7",
+            "asset_name": "Pump", "task_name": "7 - M - Pump",
+            "status_raw": "done", "due_date": "2026-02-13T07:00:00+00:00",
+            "completed_date": "2026-02-20T09:00:00+00:00", "is_completed": 1,
+        },
+    ])
+
+    summary = service.summary(asset_ids=["7"])
+
+    # Only the one due this year is counted, though both were finished in it.
+    assert summary["scheduled"] == 1
+    assert summary["completed"] == 1
+    assert summary["compliance"] == 100.0
+    # And the one due last December is drawn in January, where it was done.
+    january = service.events(asset_ids=["7"], start_date="2026-01-01", end_date="2026-01-31")
+    assert [e["task_id"] for e in january if not e.get("is_projected")] == ["last-year"]
+
+
+def test_an_estimate_yields_to_a_completed_pm_where_it_now_sits(tmp_path):
+    """Suppression follows the pill, not the due date it came from.
+
+    A completed PM that moved to the day it was done can land where an
+    estimate was going to go, and showing both would be the same PM twice.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": f"{i}", "asset_id": "777", "asset_number": "777",
+            "asset_name": "Press", "task_name": "777 - M - Press lube",
+            "status_raw": "done",
+            "due_date": (date(2026, 8, 21) - timedelta(days=28 * i)).isoformat(),
+            "completed_date": (date(2026, 8, 21) - timedelta(days=28 * i)).isoformat(),
+            "is_completed": 1,
+        }
+        for i in range(4)
+    ])
+    # Due in June, finished on 2026-10-16 -- which is exactly where the line's
+    # own cadence would otherwise have drawn an estimate (2026-08-21 + 56).
+    service.repo.upsert_tasks([{
+        "task_id": "ran-late", "asset_id": "777", "asset_number": "777",
+        "asset_name": "Press", "task_name": "777 - M - Press lube",
+        "status_raw": "done", "due_date": "2026-06-12",
+        "completed_date": "2026-10-16", "is_completed": 1,
+    }])
+
+    october = service.events(asset_ids=["777"], start_date="2026-10-01", end_date="2026-10-31")
+
+    assert [e["task_id"] for e in october] == ["ran-late"]
+
+
+def _a_line_with_history(tmp_path):
+    """One semi-annual on 4757, completed four times, plus one still open.
+
+    Dates are deliberately uneven -- the work happened when it happened --
+    so a test that walked by cadence rather than by history would show it.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": task_id, "asset_id": "4757", "asset_number": "4757",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - SA - Salvagnini Laser",
+            "status_raw": "done" if done else "open",
+            "due_date": due, "completed_date": done, "is_completed": 1 if done else 0,
+        }
+        for task_id, due, done in [
+            ("w1", "2024-11-08", "2024-11-12"),
+            ("w2", "2025-05-09", "2025-05-30"),
+            ("w3", "2025-11-07", "2025-11-07"),
+            ("w4", "2026-05-08", "2026-06-18"),
+            ("open", "2026-11-06", None),
+        ]
+    ])
+    return service
+
+
+def test_a_completed_pm_points_at_the_time_before_and_after(tmp_path):
+    """The chain is of completions, in the order the work actually happened."""
+
+    service = _a_line_with_history(tmp_path)
+
+    events = service.events(asset_ids=["4757"], start_date="2025-11-01", end_date="2025-11-30")
+    (w3,) = [e for e in events if e["task_id"] == "w3"]
+
+    assert w3["previous_task_id"] == "w2"
+    assert w3["previous_shown_date"] == "2025-05-30"
+    assert w3["next_task_id"] == "w4"
+    assert w3["next_shown_date"] == "2026-06-18"
+
+
+def test_the_first_and_last_occurrence_have_nowhere_to_go(tmp_path):
+    """No field at all, so the page can take its presence as "there is a card"."""
+
+    service = _a_line_with_history(tmp_path)
+
+    first = service.events(asset_ids=["4757"], start_date="2024-11-01", end_date="2024-11-30")[0]
+    last = service.events(asset_ids=["4757"], start_date="2026-06-01", end_date="2026-06-30")[0]
+
+    assert "previous_task_id" not in first
+    assert first["next_task_id"] == "w2"
+    assert last["previous_task_id"] == "w3"
+    assert "next_task_id" not in last
+
+
+def test_an_outstanding_pm_points_back_at_the_last_time_it_was_done(tmp_path):
+    """Which is the thing worth knowing when you are looking at a late one.
+
+    It is in no chain of its own -- it has not happened -- so it has no next.
+    """
+
+    service = _a_line_with_history(tmp_path)
+
+    events = service.events(asset_ids=["4757"], start_date="2026-11-01", end_date="2026-11-30")
+    (still_open,) = [e for e in events if e["task_id"] == "open"]
+
+    assert still_open["previous_task_id"] == "w4"
+    assert "next_task_id" not in still_open
+
+
+def test_walking_back_follows_the_line_not_the_cadence(tmp_path):
+    """Two semi-annuals on one asset keep their own histories.
+
+    An asset can carry two PMs of the same frequency -- the user's own
+    example was a laser with more than one. Stepping back from one must not
+    land on the other.
+    """
+
+    service = _a_line_with_history(tmp_path)
+    service.repo.upsert_tasks([
+        {
+            "task_id": "other-1", "asset_id": "4757", "asset_number": "4757",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - SA - Laser chiller",
+            "status_raw": "done", "due_date": "2025-07-04",
+            "completed_date": "2025-07-04", "is_completed": 1,
+        },
+        {
+            "task_id": "other-2", "asset_id": "4757", "asset_number": "4757",
+            "asset_name": "Salvagnini Laser", "task_name": "3103 - SA - Laser chiller",
+            "status_raw": "done", "due_date": "2026-01-02",
+            "completed_date": "2026-01-02", "is_completed": 1,
+        },
+    ])
+
+    events = service.events(asset_ids=["4757"], start_date="2026-01-01", end_date="2026-01-31")
+    (chiller,) = [e for e in events if e["task_id"] == "other-2"]
+
+    # Its own line, though the laser's own SA was completed in between.
+    assert chiller["previous_task_id"] == "other-1"
+
+
+def test_a_renamed_pm_is_still_one_chain(tmp_path):
+    """Names drift; a line does not. The same rule the rest of the page uses."""
+
+    service = _a_line_with_history(tmp_path)
+    service.repo.upsert_tasks([{
+        "task_id": "w5", "asset_id": "4757", "asset_number": "4757",
+        "asset_name": "Salvagnini Laser",
+        "task_name": "3103 - SA - Salvagnini Laser - 2 Hours Req.",
+        "status_raw": "done", "due_date": "2026-09-04",
+        "completed_date": "2026-09-04", "is_completed": 1,
+    }])
+
+    events = service.events(asset_ids=["4757"], start_date="2026-09-01", end_date="2026-09-30")
+    (renamed,) = [e for e in events if e["task_id"] == "w5"]
+
+    assert renamed["previous_task_id"] == "w4"
+
+
+def test_an_estimate_has_no_previous_of_its_own(tmp_path):
+    """It has not happened. "Based on the PM completed ..." is its version."""
+
+    service = _a_line_with_history(tmp_path)
+
+    events = service.events(asset_ids=["4757"], start_date="2026-01-01", end_date="2027-12-31")
+
+    assert all("previous_task_id" not in e for e in events if e.get("is_projected"))
+
+
+# ----------------------------------------------------------------------
+# Filtering by how often a PM comes round
+# ----------------------------------------------------------------------
+def _three_cadences(tmp_path):
+    """One asset carrying a monthly, a quarterly, and a PM with no code.
+
+    The third is not a curiosity: 84% of this account's PM names carry no
+    cadence at all, so the filter has to have something to say about them.
+    """
+
+    service = PmCalendarService(tmp_path / "pm.db")
+    service._ensure_schema()
+    service.repo.upsert_tasks([
+        {
+            "task_id": task_id, "asset_id": "7", "asset_number": "7",
+            "asset_name": "Pump", "task_name": name,
+            "status_raw": "done" if done else "open",
+            "due_date": due, "completed_date": done, "is_completed": 1 if done else 0,
+        }
+        for task_id, name, due, done in [
+            ("m1", "7 - M - Pump lube", "2026-09-04", "2026-09-04"),
+            ("m2", "7 - M - Pump lube", "2026-08-07", "2026-08-07"),
+            ("q1", "7 - Q - Pump inspection", "2026-09-11", "2026-09-11"),
+            ("plain", "TOYOTA LIFT TRUCK PM INSPECTION", "2026-09-18", "2026-09-18"),
+            ("late", "7 - Q - Pump inspection", "2026-06-05", None),
+        ]
+    ])
+    return service
+
+
+def test_the_codes_a_selection_carries_are_listed_with_counts(tmp_path):
+    """For the filter chips. Read across the selection, not the month shown,
+    so a chip does not come and go as months are paged. Ordered by how often
+    the PM comes round, with the uncoded ones last."""
+
+    service = _three_cadences(tmp_path)
+
+    assert service.cadence_codes(["7"]) == [
+        {"code": "M", "count": 2},
+        {"code": "Q", "count": 2},
+        {"code": "none", "count": 1},
+    ]
+
+
+def test_filtering_to_one_cadence_narrows_the_calendar(tmp_path):
+    service = _three_cadences(tmp_path)
+
+    events = service.events(
+        asset_ids=["7"], start_date="2026-09-01", end_date="2026-09-30", codes=["M"]
+    )
+
+    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["m1"]
+
+
+def test_pms_with_no_cadence_in_the_name_can_be_asked_for(tmp_path):
+    """They are most of this account, so "none" is a value, not an absence."""
+
+    service = _three_cadences(tmp_path)
+
+    events = service.events(
+        asset_ids=["7"], start_date="2026-09-01", end_date="2026-09-30", codes=["none"]
+    )
+
+    assert [e["task_id"] for e in events] == ["plain"]
+
+
+def test_the_filter_reaches_the_figures_and_the_backlog(tmp_path):
+    """Asked for, so that "how are we doing on quarterlies" has an answer.
+
+    Unfiltered there are five PMs due this year, four done and one overdue.
+    Narrowed to the quarterly line: two due, one done, one overdue.
+    """
+
+    service = _three_cadences(tmp_path)
+
+    assert service.summary(asset_ids=["7"])["scheduled"] == 5
+    quarterly = service.summary(asset_ids=["7"], codes=["Q"])
+    assert quarterly["scheduled"] == 2
+    assert quarterly["completed"] == 1
+    assert quarterly["overdue"] == 1
+
+    assert service.overdue(["7"])["total"] == 1
+    assert service.overdue(["7"], codes=["M"]) == {"total": 0, "pms": []}
+    assert [pm["task_id"] for pm in service.overdue(["7"], codes=["Q"])["pms"]] == ["late"]
+
+
+def test_no_filter_and_every_filter_both_mean_everything(tmp_path):
+    """An empty list is an absent parameter, not "show nothing"."""
+
+    service = _three_cadences(tmp_path)
+    window = dict(asset_ids=["7"], start_date="2026-09-01", end_date="2026-09-30")
+
+    everything = [e["task_id"] for e in service.events(**window)]
+    assert [e["task_id"] for e in service.events(**window, codes=[])] == everything
+    assert [e["task_id"] for e in service.events(**window, codes=None)] == everything
+
+
+def test_a_cadence_is_matched_whatever_case_it_is_asked_for_in(tmp_path):
+    service = _three_cadences(tmp_path)
+
+    events = service.events(
+        asset_ids=["7"], start_date="2026-09-01", end_date="2026-09-30", codes=["m"]
+    )
+
+    assert [e["task_id"] for e in events if not e.get("is_projected")] == ["m1"]
+
+
+def test_the_codes_endpoint(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.pm_calendar_service._ensure_schema()
+    module.pm_calendar_service.repo.upsert_tasks([
+        _pm("1", "7", "Pump", "2026-08-01", completed="2026-08-02"),
+    ])
+    client = _signed_in(module)
+
+    found = client.get("/pm-calendar/api/codes?assets=7")
+    assert found.status_code == 200
+    assert found.get_json()["codes"] == [{"code": "Q", "count": 1}]
+
+    assert client.get("/pm-calendar/api/codes").status_code == 400
+
+
+def test_the_endpoints_pass_the_cadence_filter_through(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    seen = {}
+
+    def spy(name, result):
+        def recorder(*args, **kwargs):
+            seen[name] = kwargs.get("codes")
+            return result
+        return recorder
+
+    monkeypatch.setattr(module.pm_calendar_service, "events", spy("events", []))
+    monkeypatch.setattr(module.pm_calendar_service, "summary", spy("summary", {}))
+    monkeypatch.setattr(module.pm_calendar_service, "overdue", spy("overdue", {"total": 0, "pms": []}))
+    client = _signed_in(module)
+
+    window = "&start=2026-09-01&end=2026-09-30"
+    client.get("/pm-calendar/api/events?assets=7&codes=M,none" + window)
+    client.get("/pm-calendar/api/summary?assets=7&codes=M,none")
+    client.get("/pm-calendar/api/overdue?assets=7&codes=M,none")
+    assert seen == {"events": ["M", "none"], "summary": ["M", "none"], "overdue": ["M", "none"]}
+
+    # Absent means no filter, and so does an empty one.
+    client.get("/pm-calendar/api/events?assets=7" + window)
+    assert seen["events"] is None
+    client.get("/pm-calendar/api/events?assets=7&codes=" + window)
+    assert seen["events"] is None
 
 
 def test_a_pm_due_today_counts_in_the_year_to_date_figures(tmp_path):
@@ -1742,6 +2409,35 @@ def test_the_last_done_endpoint(monkeypatch, tmp_path):
     assert client.get("/pm-calendar/api/last-completed?assets=").status_code == 400
 
 
+def test_the_overdue_endpoint(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    module.pm_calendar_service._ensure_schema()
+    module.pm_calendar_service.repo.upsert_tasks([
+        {
+            "task_id": "late", "asset_id": "7", "asset_number": "7",
+            "asset_name": "Pump", "task_name": "7 - M - Pump lube",
+            "status_raw": "open", "due_date": "2026-08-01T07:00:00+00:00",
+            "completed_date": None, "is_completed": 0,
+        },
+    ])
+    client = _signed_in(module)
+
+    found = client.get("/pm-calendar/api/overdue?assets=7")
+    assert found.status_code == 200
+    payload = found.get_json()
+    assert payload["total"] == 1
+    assert [pm["task_id"] for pm in payload["pms"]] == ["late"]
+    # The row carries what the list draws: the asset, the name and the date.
+    assert payload["pms"][0]["asset_name"] == "Pump"
+    assert payload["pms"][0]["due_date"].startswith("2026-08-01")
+
+    assert client.get("/pm-calendar/api/overdue?assets=8").get_json() == {"total": 0, "pms": []}
+    # Required, for the same reason last-completed requires it: without a
+    # selection this is the whole table's backlog.
+    assert client.get("/pm-calendar/api/overdue").status_code == 400
+    assert client.get("/pm-calendar/api/overdue?assets=").status_code == 400
+
+
 # ----------------------------------------------------------------------
 # Hiding sub-assets from a parent chip's expanded view
 # ----------------------------------------------------------------------
@@ -2153,10 +2849,12 @@ def test_an_estimate_lists_the_names_its_line_has_had(tmp_path):
 def test_an_estimate_names_the_occurrence_it_was_calculated_from(tmp_path):
     """What the day dialog's "Based on ..." button jumps to.
 
-    The completion date is what the arithmetic uses; the due date is where
-    that occurrence's pill is actually drawn, so both travel with the
-    estimate -- a jump that landed on the completion date would open a day
-    with nothing on it whenever a PM was finished late.
+    `anchor_shown_date` is where that occurrence's pill is drawn, which for
+    a completed one is the day it was completed. It used to be the due date,
+    and the warning here used to be that landing on the completion date
+    would open an empty day -- moving completed PMs onto their completion
+    date turns that around. The completion date still travels separately,
+    because it is what the label says and what the cadence counts from.
     """
 
     service = PmCalendarService(tmp_path / "pm.db")
@@ -2182,7 +2880,8 @@ def test_an_estimate_names_the_occurrence_it_was_calculated_from(tmp_path):
 
     assert estimate["anchor_task_id"] == "2"
     assert estimate["anchor_completed_date"] == "2026-08-24"
-    assert estimate["anchor_due_date"] == "2026-08-21"
+    # Due the 21st, finished the 24th, drawn on the 24th.
+    assert estimate["anchor_shown_date"] == "2026-08-24"
     assert estimate["anchor_task_name"] == "777 - M - Press lube"
     # And the estimate itself counts from the completion, not the due date.
     assert estimate["due_date"] == "2026-10-19"  # 2026-08-24 + 56
@@ -2217,7 +2916,8 @@ def test_an_estimate_on_a_never_completed_line_points_at_its_due_date(tmp_path):
     )[0]
 
     assert estimate["anchor_task_id"] == "2"
-    assert estimate["anchor_due_date"] == "2026-10-23"
+    # Never completed, so it is drawn where it is due.
+    assert estimate["anchor_shown_date"] == "2026-10-23"
     assert estimate["anchor_completed_date"] is None
 
 
@@ -2230,7 +2930,7 @@ def test_the_anchor_details_are_only_on_estimates(tmp_path):
     real = [e for e in events if not e.get("is_projected")]
 
     assert real
-    assert all("anchor_due_date" not in e for e in real)
+    assert all("anchor_shown_date" not in e for e in real)
 
 
 def test_a_line_with_one_name_has_nothing_to_expand(tmp_path):
