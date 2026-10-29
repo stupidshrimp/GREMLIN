@@ -4,6 +4,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/life_data_analysis.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/standard_disposition.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/page_tour.css') }}">
+  {# Limble's web app, for the disposition form's "Open in Limble" link (standard_common.js). #}
+  <meta name="gremlin-limble-app-url" content="{{ limble_app_url }}">
 {% endblock %}
 
 {% block content %}

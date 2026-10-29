@@ -12,6 +12,13 @@
   // enforces the same rule on its own, this only keeps the page from offering an
   // action that would be refused.
   const CAN_EDIT = document.querySelector('meta[name="gremlin-can-edit"]')?.content === "true";
+  // Limble's web app, rendered by the server from LIMBLE_APP_URL. A work order
+  // opens there by its task ID, as the PM calendar's links open one.
+  const LIMBLE_APP_URL = document.querySelector('meta[name="gremlin-limble-app-url"]')?.content || "";
+  const limbleTaskUrl = (taskId) =>
+    LIMBLE_APP_URL && taskId !== null && taskId !== undefined && String(taskId).trim() !== ""
+      ? `${LIMBLE_APP_URL}/taskList?taskID=${encodeURIComponent(String(taskId).trim())}`
+      : null;
   const $ = (id) => document.getElementById(id);
 
   function el(tag, attrs, children) {
@@ -357,6 +364,7 @@
   window.GremlinStandard = {
     API,
     CAN_EDIT,
+    limbleTaskUrl,
     $,
     el,
     svg,

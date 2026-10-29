@@ -31,7 +31,7 @@
 (function () {
   "use strict";
 
-  const { API, CAN_EDIT, el, day, fmt, postJson, showToast } = window.GremlinStandard;
+  const { API, CAN_EDIT, el, day, fmt, postJson, showToast, limbleTaskUrl } = window.GremlinStandard;
 
   const NARRATIVE = [
     ["area_affected", "Area affected"],
@@ -259,7 +259,17 @@
       const narrativeEmpty = NARRATIVE.every(([key]) => blank(row[key]));
       const blocks = [
         el("div", { class: "std-record-head" }, [
-          el("p", { class: "std-record-task", text: `Task ${row.task_id ?? "—"}` }),
+          el("p", { class: "std-record-task" }, [
+            `Task ${row.task_id ?? "—"}`,
+            // The work order itself, in Limble, in a tab of its own.
+            limbleTaskUrl(row.task_id) ? el("a", {
+              class: "std-limble-link",
+              href: limbleTaskUrl(row.task_id),
+              target: "_blank",
+              rel: "noopener noreferrer",
+              title: `Open task ${row.task_id} in Limble (new tab)`,
+            }, ["Open in Limble", el("span", { class: "std-limble-arrow", "aria-hidden": "true", text: "↗" })]) : null,
+          ]),
           el("h3", { id: id("title"), text: row.task_name || row.request_title || "(no title)" }),
         ]),
         facts,

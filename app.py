@@ -439,15 +439,19 @@ PAGES = [
     # records are corrected rather than analysed. Placed straight after the two
     # Analysis entries so that heading comes next down the rail.
     #
-    # It sits inside Life Data Analysis's section, so it needs no
-    # "withheld_from_department" of its own: an Operations & Maintenance account
-    # is kept out of it by that section, and the sidebar drops it with the rest.
+    # It sits inside Life Data Analysis's section, so an Operations &
+    # Maintenance account is kept out of it, its endpoints included, by that
+    # section, and the sidebar drops it with the rest. Its own entry says the
+    # same thing the other way round, so the rule is written where the page is:
+    # dispositioning is Facilities' work, and an account recorded as "all
+    # departments" covers Facilities too. Editors and administrators only.
     {
         "route": "/life-data-analysis/disposition",
         "template": "disposition.html",
         "title": "Disposition",
         "icon": ICONS["database"],
         "group": NAV_GROUP_DATA,
+        "department": "facilities",
         "role": "editor",
     },
     {
@@ -1916,6 +1920,8 @@ def perform_analysis():
     return render_template(
         "perform_analysis.html",
         page_title="Perform an Analysis",
+        # The disposition form that opens over the page links each work order to Limble.
+        limble_app_url=_limble_app_url(),
     )
 
 
@@ -1938,7 +1944,7 @@ def disposition():
             ),
             403,
         )
-    return render_template("disposition.html", page_title="Disposition")
+    return render_template("disposition.html", page_title="Disposition", limble_app_url=_limble_app_url())
 
 
 @app.route("/life-data-analysis/failure-classification")
@@ -3163,10 +3169,18 @@ def reliability_links():
         "reliability_links.html",
         page_title="Reliability Links",
     )
-# Limble's web app, where the calendar's "Open in Limble" links go. Not the
-# API host (LIMBLE_BASE_URL): an account on one of Limble's regional instances
-# sets LIMBLE_APP_URL to its own app host.
+# Limble's web app, where the "Open in Limble" links go (the calendar's, and the
+# disposition form's). Not the API host (LIMBLE_BASE_URL): an account on one of
+# Limble's regional instances sets LIMBLE_APP_URL to its own app host.
 DEFAULT_LIMBLE_APP_URL = "https://app.limblecmms.com"
+
+
+def _limble_app_url() -> str:
+    """Limble's web app host, from LIMBLE_APP_URL, without a trailing slash."""
+
+    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
+    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
+    return (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
 
 
 @app.route("/pm-calendar")
@@ -3217,13 +3231,10 @@ def pm_task_tracker():
     names every department, so who that account belongs to does not narrow it.
     """
 
-    # The same restricted, cached .env read the sync uses -- LIMBLE_* only.
-    load_dotenv_files(only_prefix=LIMBLE_ENV_PREFIX)
-    limble_app_url = (os.getenv("LIMBLE_APP_URL") or DEFAULT_LIMBLE_APP_URL).strip().rstrip("/")
     return render_template(
         "pm_calendar.html",
         page_title="PM Task Tracker",
-        limble_app_url=limble_app_url,
+        limble_app_url=_limble_app_url(),
     )
 
 

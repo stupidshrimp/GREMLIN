@@ -62,6 +62,9 @@ LIST_COLUMNS: dict[str, tuple[str, str]] = {
     "component": ("w.component_code", "w.component_code COLLATE NOCASE"),
     "mechanism": ("w.failure_mechanism_code", "w.failure_mechanism_code COLLATE NOCASE"),
     "mode": ("w.failure_mode_code", "w.failure_mode_code COLLATE NOCASE"),
+    # Who saved the disposition the work order has now: an engineer's username,
+    # "Migration", or "Disposition helper (who ran it)"; blank if nobody has.
+    "edited_by": ("w.decided_by", "w.decided_by COLLATE NOCASE"),
 }
 # The code list behind each coded column, for the names its filter lists.
 LIST_COLUMN_CODE_LISTS = {

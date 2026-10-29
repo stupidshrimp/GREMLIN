@@ -22,7 +22,12 @@ confirm or change those choices.
 
 There is one page for each job. **Disposition** shows an asset's work orders on
 the left and the one picked on the right, in the disposition form; Save & next
-moves down the list. A bar over the two (sticky below the top bar) switches the
+moves down the list. Each work order opens in Limble from its card (**Open in
+Limble**, a new tab at `LIMBLE_APP_URL/taskList?taskID=…`, as the PM calendar's
+links do) and from the arrow beside its task number in the list, and the list's
+**Last edited by** column says who saved the disposition it has now (an
+engineer, "Migration", or "Disposition helper (who ran it)"), sortable and
+filterable like the rest. A bar over the two (sticky below the top bar) switches the
 view: **Side by side**; **Disposition**, the form alone across the page with the
 work order's record on the left (kept in view as the page scrolls) and its
 fields on the right, the work order's place in the list and the ones before and
@@ -76,7 +81,11 @@ the Weibull shows.
 
 Both pages follow Life Data Analysis's access rules: reads for anyone who may see
 Life Data Analysis, every write (a disposition, a code, a saved Weibull run, an
-adjustment, a numbered report) for editors, recorded against the account. A
+adjustment, a numbered report) for editors, recorded against the account.
+Dispositioning is Facilities' work: the Disposition page is for editors and
+administrators recorded as Facilities or as all departments, and Operations,
+Maintenance and Operations & Maintenance accounts are kept out of it, and of
+every Life Data Analysis endpoint, whatever their role. A
 Weibull fit can be previewed by any reader; saving it needs an editor.
 
 ### The analyses, on the population

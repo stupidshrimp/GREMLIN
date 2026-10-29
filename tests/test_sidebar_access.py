@@ -661,6 +661,35 @@ def test_a_viewer_gets_disposition_locked_with_the_role_it_needs(monkeypatch, tm
     assert client.get("/life-data-analysis/disposition").status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("department", "role", "opens"),
+    [
+        ("facilities", "editor", True),
+        ("facilities", "admin", True),
+        ("all", "editor", True),
+        ("all", "admin", True),
+        ("facilities", "viewer", False),
+        ("all", "viewer", False),
+        ("operations", "editor", False),
+        ("maintenance", "admin", False),
+        ("operations_maintenance", "editor", False),
+    ],
+)
+def test_disposition_is_for_facilities_editors_and_admins(monkeypatch, tmp_path, department, role, opens):
+    """Facilities' work: Facilities accounts (and "all departments", which
+    covers Facilities) at editor or above. Nobody else saves a disposition
+    either, from the page or from Perform an Analysis's pop-up."""
+    module = _app(monkeypatch, tmp_path)
+    client = _client(module, department=department, role=role)
+    assert (client.get("/life-data-analysis/disposition").status_code == 200) is opens
+    # Let through to the save's own checks (which refuse an empty one), or refused at the door.
+    saved = client.post("/life-data-analysis/api/dispositions/save", json={"dispositions": []})
+    assert (saved.status_code not in (401, 403)) is opens, saved.status_code
+    labels = [label for _, labels, _ in _sections(client) for label in labels]
+    # In the sidebar for the department, locked for a viewer; gone for the rest.
+    assert ("Disposition" in labels) is (department in ("facilities", "all"))
+
+
 def test_a_visitor_gets_disposition_struck_through_and_refused(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     client = module.app.test_client()

@@ -335,6 +335,27 @@ class DispositionEditorTests(StandardDispositionFixture):
         self.assertNotIn("order", held)
         self.assertEqual(self.std.disposition_page(PFS, ids=[])["rows"], [])
 
+    def test_the_list_says_who_last_edited_each_work_order(self):
+        self.add_record(1, PFS, "Oven filter clogged", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")
+        self.add_record(3, PFS, "Activator pump", "2024-01-03", "2024-01-03")
+        self.std.save_dispositions([{"mapped_record_id": 1, **coded()}], decided_by="tim")
+        self.std.save_dispositions([{"mapped_record_id": 2, **coded()}], decided_by="jose")
+        # The one who saved last, not the first.
+        self.std.save_dispositions([{"mapped_record_id": 1, **coded(mode="UST")}], decided_by="ana")
+
+        def ids(**view):
+            return [row["mapped_record_id"] for row in self.std.disposition_page(PFS, **view)["rows"]]
+
+        page = self.std.disposition_page(PFS)
+        self.assertEqual({row["mapped_record_id"]: row["disposition"]["decided_by"] for row in page["rows"]}, {1: "ana", 2: "jose", 3: None})
+        # Sorted by name, nobody last; filtered by one, or by the blank.
+        self.assertEqual(ids(sort="edited_by"), [1, 2, 3])
+        self.assertEqual(ids(sort="edited_by", direction="desc"), [2, 1, 3])
+        self.assertEqual(ids(filters={"edited_by": ["jose", ""]}), [3, 2])
+        values = self.std.list_column_values(PFS, "edited_by")["values"]
+        self.assertEqual([(item["value"], item["count"]) for item in values], [("ana", 1), ("jose", 1), ("", 1)])
+
     def test_the_list_sorts_and_filters_every_row_not_just_the_page(self):
         self.add_record(1, PFS, "Oven filter clogged", "2024-01-01", "2024-01-01")
         self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")

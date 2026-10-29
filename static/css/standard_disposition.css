@@ -236,6 +236,7 @@ table.lda-table tbody tr.std-row.is-selected:nth-child(even) td { background: va
 table.lda-table td.std-title { min-width: 16ch; max-width: 40ch; overflow-wrap: anywhere; }
 table.lda-table td.std-nowrap { white-space: nowrap; }
 table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wrap: anywhere; }
+table.lda-table td.std-edited-by { min-width: 10ch; max-width: 22ch; overflow-wrap: anywhere; color: var(--muted); }
 
 /* The Disposition list's column filters: what is narrowing it, and the count of
    work orders beside each value in a column's menu. */
@@ -284,6 +285,10 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
 .std-record-text { display: grid; gap: 0.75rem; font-size: 0.88rem; }
 .std-record-head { display: grid; gap: 0.1rem; }
 .std-record-task {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.7rem;
   margin: 0;
   font-size: 0.72rem;
   font-weight: 700;
@@ -291,6 +296,41 @@ table.lda-table td.std-sub-asset { min-width: 12ch; max-width: 26ch; overflow-wr
   text-transform: uppercase;
   color: var(--muted);
 }
+/* The work order in Limble: a small pill beside its task number. */
+.std-limble-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--brand-ink);
+  text-decoration: none;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.std-limble-link:hover { background: var(--brand-tint-soft); border-color: var(--brand-tint-strong); }
+.std-limble-link:focus-visible { outline: 2px solid var(--forest-700); outline-offset: 2px; }
+.std-limble-arrow { font-size: 0.8rem; line-height: 1; }
+/* The same, as an arrow beside a task number in the list. */
+.std-limble-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin-left: 0.3rem;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  line-height: 1;
+  color: var(--muted);
+  text-decoration: none;
+  vertical-align: 1px;
+}
+.std-limble-icon:hover { background: var(--brand-tint); color: var(--brand-ink); }
 .std-record-text h3 { margin: 0; font-size: 1.05rem; color: var(--forest-900); overflow-wrap: anywhere; }
 .std-facts {
   display: grid;

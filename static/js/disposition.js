@@ -73,6 +73,7 @@
     { key: "component", label: "Component" },
     { key: "mechanism", label: "Mech.", title: "Failure mechanism" },
     { key: "mode", label: "Mode", title: "Failure mode" },
+    { key: "edited_by", label: "Last edited by", title: "Who saved the disposition it has now" },
   ];
 
   // What the list is showing, as the server reads it: the asset, Show, search,
@@ -188,7 +189,22 @@
           }
         },
       }, [
-        el("td", { class: "std-nowrap", text: String(row.task_id ?? "") }),
+        el("td", { class: "std-nowrap" }, [
+          String(row.task_id ?? ""),
+          // Its own link, so opening it in Limble doesn't pick the row as well.
+          G.limbleTaskUrl(row.task_id) ? el("a", {
+            class: "std-limble-icon",
+            href: G.limbleTaskUrl(row.task_id),
+            target: "_blank",
+            rel: "noopener noreferrer",
+            title: `Open task ${row.task_id} in Limble (new tab)`,
+            "aria-label": `Open task ${row.task_id} in Limble`,
+            tabindex: "-1",
+            onclick: (event) => event.stopPropagation(),
+            onkeydown: (event) => event.stopPropagation(),
+            text: "↗",
+          }) : null,
+        ]),
         el("td", { class: "std-nowrap", text: day(row.created_date || row.completed_date) }),
         el("td", { class: "std-title", text: row.task_name || row.request_title || "" }),
         el("td", {}, Form.categoryChip(d.disposition_category, d.source)),
@@ -197,6 +213,11 @@
         el("td", { text: [d.component_code, d.part_code].filter(Boolean).join(" › ") }),
         el("td", { text: d.failure_mechanism_code || "" }),
         el("td", { text: d.failure_mode_code || "" }),
+        el("td", {
+          class: "std-edited-by",
+          text: d.decided_by || "",
+          title: d.decided_by && d.decided_at ? `Saved by ${d.decided_by} on ${day(d.decided_at)}` : null,
+        }),
       ]));
     });
     drawRecordNav();
