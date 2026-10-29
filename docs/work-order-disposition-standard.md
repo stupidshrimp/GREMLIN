@@ -28,6 +28,11 @@ work order's record on the left (kept in view as the page scrolls) and its
 fields on the right, the work order's place in the list and the ones before and
 after it in the bar, across pages too; or **Work orders**, the list alone across
 the page, where picking a work order opens it in the Disposition view. The
+list holds still while it is worked through: opened (or its Show, search,
+filters or sort changed), it comes with the order of every work order it holds,
+and each later page is read as that order's slice, so saving work orders out of
+"Only not reviewed" never makes the next page skip any. Save & next on a page's
+last work order goes on to the next page's first. The
 browser remembers the view picked on the bar. The change is a view transition
 where the browser has one (the card that stays grows or shrinks into place, the
 others slide out and in), a short rise-in otherwise, and none for anyone who has

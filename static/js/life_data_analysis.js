@@ -1175,13 +1175,17 @@
     const notCoded = (pareto && pareto.not_coded) || { count: 0 };
     const notCodedNote = $("lda-pareto-not-coded");
     notCodedNote.hidden = !notCoded.count;
+    // A work order on a whole component names no part, and needs nothing more.
+    const byPart = Boolean(pareto && pareto.group_by === "part");
     const notCodedWhat = fitting
       ? `failure${notCoded.count === 1 ? "" : "s"} with no component or mechanism`
-      : `work order${notCoded.count === 1 ? "" : "s"} not coded on ${pareto.label.toLowerCase()}`;
+      : byPart
+        ? `work order${notCoded.count === 1 ? "" : "s"} on the whole component (no part named)`
+        : `work order${notCoded.count === 1 ? "" : "s"} not coded on ${pareto.label.toLowerCase()}`;
     notCodedNote.textContent = notCoded.count
       ? `${notCoded.count} ${notCodedWhat} ` +
-        `(${fmt(notCoded.downtime_hours)} h downtime) ${notCoded.count === 1 ? "is" : "are"} left out of the bars; ` +
-        "disposition them to bring them in."
+        `(${fmt(notCoded.downtime_hours)} h downtime) ${notCoded.count === 1 ? "is" : "are"} left out of the bars` +
+        (byPart ? "." : "; disposition them to bring them in.")
       : "";
     const metric = state.metric;
     const { ctx, width: W, height: H } = setupCanvas(canvas, fitting ? 360 : 340);

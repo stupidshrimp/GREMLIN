@@ -10,7 +10,7 @@
 import random
 import sqlite3
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from services.life_data_service import LifeDataService
@@ -177,6 +177,22 @@ class KeptPopulationTests(StandardDispositionFixture):
     def test_a_kept_population_is_its_databases_alone(self):
         self.summary()
         self.assertTrue(any(key[0][0] == str(self.db_path) for key in _LOADED))
+
+    def test_the_rankings_saved_fits_are_read_once_per_database_state(self):
+        self.analysis.run_weibull(
+            {"assets": [PFS], "components": ["Filter"]}, analysis_cutoff=date(2024, 12, 31), save=True, run_by="tim"
+        )
+        reads = []
+        original = self.analysis._saved_payload
+
+        def counted(*args, **kwargs):
+            reads.append(1)
+            return original(*args, **kwargs)
+
+        self.analysis._saved_payload = counted
+        self.summary()
+        self.summary()
+        self.assertEqual(len(reads), 1)
 
 
 class KeptTreeTests(StandardDispositionFixture):

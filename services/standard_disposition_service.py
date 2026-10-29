@@ -18,7 +18,7 @@ import math
 import re
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from services import disposition_standard as std
 from services.standard_disposition_schema import (
@@ -72,6 +72,10 @@ LIST_COLUMN_CODE_LISTS = {
 LIST_DEFAULT_ORDER = (
     f"gremlin_sort_datetime({_FOUND_SQL}) IS NULL, gremlin_sort_datetime({_FOUND_SQL}) DESC, m.mapped_record_id DESC"
 )
+# "As the work order has it now", for a value a workbook did not keep.
+_AS_NOW = object()
+# Most work orders one page of a held list may be read by (a page is 50).
+LIST_IDS_LIMIT = 500
 # Most values one column filter may name, and most a column's filter lists.
 LIST_FILTER_LIMIT = 1000
 LIST_VALUES_LIMIT = 1000
@@ -114,6 +118,9 @@ EXCEL_DISPOSITION_COLUMNS = (
 # upload can tell a row nobody touched from one somebody changed, and leaves a
 # disposition saved in GREMLIN since the download alone.
 EXCEL_VERSION_COLUMN = "disposition_version"
+# The version cell of a row nobody had dispositioned when it was downloaded:
+# this, then the record class the row showed, which a save since may change.
+EXCEL_UNDECIDED_VERSION = "undecided:"
 EXCEL_COLUMNS = EXCEL_RECORD_COLUMNS + EXCEL_DISPOSITION_COLUMNS + (EXCEL_VERSION_COLUMN,)
 # Headings a person may have retyped a column's to, read as that column.
 EXCEL_HEADER_ALIASES = {
@@ -540,9 +547,10 @@ class StandardDispositionService:
                     "(untick Active) to take it off the dropdowns while they keep reading it."
                 )
             # An emptied list is seeded again on the next start (seed_code_lists), which
-            # would bring back every starting code the team deleted from it.
+            # would bring back every starting code the team deleted from it. A list
+            # that starts empty (parts) has nothing to bring back.
             remaining = conn.execute("SELECT COUNT(*) FROM disposition_code WHERE code_list = ?", (code_list,)).fetchone()[0]
-            if int(remaining) <= 1:
+            if int(remaining) <= 1 and std.SEED_CODES.get(code_list):
                 raise ValueError(
                     f"{code} is the last code in the {label} list, and a list is never left empty. Add its "
                     "replacement first, or retire it (untick Active)."
@@ -619,7 +627,18 @@ class StandardDispositionService:
             int(fields["is_active"]),
             updated_by,
         )
-        if existing:
+        if existing and fields["code_list"] in std.NAMED_CODE_LISTS:
+            # A component or part is edited as a name and a description: any ISO
+            # reference, meaning or order it was saved with before is kept as it was.
+            conn.execute(
+                """
+                UPDATE disposition_code
+                SET name = ?, description = ?, is_active = ?, updated_by = ?, updated_at = datetime('now')
+                WHERE disposition_code_id = ?
+                """,
+                (fields["name"], fields["description"], int(fields["is_active"]), updated_by, int(existing[0])),
+            )
+        elif existing:
             conn.execute(
                 """
                 UPDATE disposition_code
@@ -678,15 +697,22 @@ class StandardDispositionService:
                     "SELECT MAX(sort_order) FROM disposition_code WHERE code_list = ?", (fields["code_list"],)
                 ).fetchone()[0]
                 fields["sort_order"] = int(last or 0) + 10
-            if fields["code_list"] in std.NAMED_CODE_LISTS and fields["code"] is None:
+            if fields["code_list"] in std.NAMED_CODE_LISTS:
                 rows = conn.execute(
                     "SELECT code, name FROM disposition_code WHERE code_list = ?", (fields["code_list"],)
                 ).fetchall()
-                same = next((row for row in rows if row[1].casefold() == fields["name"].casefold()), None)
-                if same is not None:
+                # Added, or renamed, to another one's name: a name it already had is left be.
+                current = next((row for row in rows if row[0] == fields["code"]), None)
+                renamed = current is None or current[1].casefold() != fields["name"].casefold()
+                same = next(
+                    (row for row in rows if row[0] != fields["code"] and row[1].casefold() == fields["name"].casefold()),
+                    None,
+                )
+                if same is not None and renamed:
                     label = std.CODE_LIST_LABELS[fields["code_list"]].lower()
                     raise ValueError(f"The {label} list already has {same[1]!r}; use that one, or name this one differently.")
-                fields["code"] = std.code_from_name(fields["name"], [row[0] for row in rows])
+                if fields["code"] is None:
+                    fields["code"] = std.code_from_name(fields["name"], [row[0] for row in rows])
             default_cause = fields["default_cause_code"]
             if default_cause is not None:
                 cause = conn.execute(
@@ -1268,12 +1294,21 @@ class StandardDispositionService:
         direction: str | None = None,
         page: int = 0,
         page_size: int = DISPOSITION_PAGE_SIZE,
+        with_order: bool = False,
+        ids: Sequence[int] | None = None,
     ) -> dict[str, Any]:
         """One page of an asset's work orders with their standard dispositions.
 
         Newest first, unless ``sort`` names one of LIST_COLUMNS; ``filters`` keeps
         the rows whose column shows one of the values named for it. Both apply to
         every row in the selection, not only the page on screen.
+
+        A list being worked through is held still: ``with_order`` hands back every
+        work order it holds, in its order, as ``order``, and a later page is read
+        by ``ids`` -- that order's slice, in that order, whatever has been saved
+        since. Otherwise a save that takes a work order out of the selection (a
+        "not reviewed" one, dispositioned) moves every later one up a place, and
+        the next page, counted afresh, skips as many as were saved.
         """
 
         if scope not in DISPOSITION_SCOPES:
@@ -1281,13 +1316,32 @@ class StandardDispositionService:
         filters = self.clean_list_filters(filters)
         sort = sort if sort in LIST_COLUMNS else None
         direction = "desc" if (direction or "").lower() == "desc" else "asc"
-        where, params = self._list_where(asset_number, scope, search, filters)
+        pinned = [int(record_id) for record_id in ids][:LIST_IDS_LIMIT] if ids is not None else None
+        if pinned is not None:
+            # Still the asset's own work orders, however the ids were come by.
+            where = f"WHERE TRIM(m.asset_number) = ? AND m.mapped_record_id IN ({','.join('?' * len(pinned)) or 'NULL'})"
+            params = [asset_number, *pinned]
+        else:
+            where, params = self._list_where(asset_number, scope, search, filters)
         token = self.life.change_token()
+        order: list[int] | None = None
         with self.life.read_transaction() as conn:
             codebook = load_codebook(conn)
             tree = self.asset_tree(conn, token=token)
             self._register_labels(conn, tree)
-            total = int(conn.execute(f"SELECT COUNT(*) {self.RECORD_FROM} {where}", params).fetchone()[0])
+            if with_order and pinned is None:
+                order = [
+                    int(row[0])
+                    for row in conn.execute(
+                        f"SELECT m.mapped_record_id {self.RECORD_FROM} {where} ORDER BY {self._list_order(sort, direction)}",
+                        params,
+                    )
+                ]
+                total = len(order)
+            elif pinned is not None:
+                total = len(pinned)
+            else:
+                total = int(conn.execute(f"SELECT COUNT(*) {self.RECORD_FROM} {where}", params).fetchone()[0])
             counts = conn.execute(
                 f"""
                 SELECT COUNT(*) AS all_count,
@@ -1301,14 +1355,21 @@ class StandardDispositionService:
             ).fetchone()
             max_page = max(0, math.ceil(total / page_size) - 1) if total else 0
             page = min(max(0, int(page)), max_page)
-            rows = conn.execute(
-                f"""
-                SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where}
-                ORDER BY {self._list_order(sort, direction)}
-                LIMIT ? OFFSET ?
-                """,
-                [*params, page_size, page * page_size],
-            ).fetchall()
+            if pinned is not None:
+                place = {record_id: index for index, record_id in enumerate(pinned)}
+                rows = sorted(
+                    conn.execute(f"SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where}", params).fetchall(),
+                    key=lambda row: place[int(row["mapped_record_id"])],
+                )
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT {self.RECORD_COLUMNS} {self.RECORD_FROM} {where}
+                    ORDER BY {self._list_order(sort, direction)}
+                    LIMIT ? OFFSET ?
+                    """,
+                    [*params, page_size, page * page_size],
+                ).fetchall()
             records = [self.record_dict(row, codebook) for row in rows]
             self._add_plant_times(conn, records)
         for record in records:
@@ -1325,6 +1386,7 @@ class StandardDispositionService:
             "max_page_index": max_page,
             "page_size": page_size,
             "displayed_count": total,
+            **({"order": order} if order is not None else {}),
             "counts": {
                 "all": int(counts["all_count"] or 0),
                 "not_reviewed": int(counts["not_reviewed"] or 0),
@@ -1896,7 +1958,11 @@ class StandardDispositionService:
                 "legacy_disposition": legacy or None,
                 "review_flag": disposition["review_flag"],
                 **self._excel_values(record),
-                EXCEL_VERSION_COLUMN: record["disposition_version"],
+                EXCEL_VERSION_COLUMN: (
+                    record["disposition_version"]
+                    if record["disposition_version"] is not None
+                    else f"{EXCEL_UNDECIDED_VERSION}{record['record_class'] or ''}"
+                ),
             }
             sheet_rows.append([values.get(column) for column in EXCEL_COLUMNS])
 
@@ -2024,6 +2090,8 @@ class StandardDispositionService:
         foreign: dict[int, list[int]] = {}
         row_of: dict[int, int] = {}
         matched: list[tuple[int, dict[str, Any], dict[str, str | None], int | None | str]] = []
+        # The record class each undecided row showed when it was downloaded, by work order.
+        shown_class: dict[int, str | None] = {}
         for row_number, values in table.rows:
             uploaded = {column: read_value(column, self._excel_cell(table.cell(values, column))) for column in present}
             raw_id = self._excel_cell(table.cell(values, "mapped_record_id"))
@@ -2074,10 +2142,14 @@ class StandardDispositionService:
             version: int | None | str = "absent"
             if has_version:
                 raw_version = self._excel_cell(table.cell(values, EXCEL_VERSION_COLUMN))
-                try:
-                    version = int(raw_version) if raw_version is not None else None
-                except ValueError:
-                    version = "absent"
+                if raw_version is not None and raw_version.startswith(EXCEL_UNDECIDED_VERSION):
+                    version = None
+                    shown_class[mapped_record_id] = raw_version[len(EXCEL_UNDECIDED_VERSION):] or None
+                else:
+                    try:
+                        version = int(raw_version) if raw_version is not None else None
+                    except ValueError:
+                        version = "absent"
             matched.append((row_number, record, uploaded, version))
 
         if foreign:
@@ -2097,9 +2169,19 @@ class StandardDispositionService:
                 unchanged += 1
                 continue
             if version != "absent" and version != record["disposition_version"]:
-                before = downloaded.get(version) if version is not None else self._undecided_values(record)
+                before = (
+                    downloaded.get(version)
+                    if version is not None
+                    else self._undecided_values(record, shown_class.get(record["mapped_record_id"], _AS_NOW))
+                )
                 if before is not None:
-                    if all(uploaded[column] == before[column] for column in present):
+                    # A migrated disposition kept no record class, so the one the
+                    # workbook showed beside it is not known: that column can't tell.
+                    if all(
+                        uploaded[column] == before[column]
+                        for column in present
+                        if not (column == "record_class" and before[column] is None)
+                    ):
                         kept.append(task_of(record))
                         continue
                     disposition = record["disposition"]
@@ -2252,10 +2334,15 @@ class StandardDispositionService:
                     found[row["wo_disposition_id"]] = {key: self._excel_cell(value) for key, value in values.items()}
         return found
 
-    def _undecided_values(self, record: Mapping[str, Any]) -> dict[str, str | None]:
-        """A workbook row for a work order nobody had dispositioned when it was downloaded."""
+    def _undecided_values(self, record: Mapping[str, Any], record_class: Any = None) -> dict[str, str | None]:
+        """A workbook row for a work order nobody had dispositioned when it was downloaded.
+
+        Its record class is the one the row showed then, which its version cell
+        keeps; a workbook from before that cell held it is taken to have shown
+        the class the work order has now (``_AS_NOW``).
+        """
 
         values = {column: None for column in EXCEL_DISPOSITION_COLUMNS}
         values["disposition_category"] = std.NOT_REVIEWED
-        values["record_class"] = self._excel_cell(record["record_class"])
+        values["record_class"] = self._excel_cell(record["record_class"] if record_class is _AS_NOW else record_class)
         return values

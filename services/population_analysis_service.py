@@ -951,17 +951,23 @@ class PopulationAnalysisService:
     def _is_pm(self, record: Mapping[str, Any], population: std.Population) -> bool:
         """Whether a record is a PM on the population: planned work at one of its locations, on one of its items.
 
-        A PM_RESET counts when it renewed one of the population's components; a PM
-        that renewed nothing (dispositioned NON_FAILURE, or not reviewed yet) counts
-        as planned work at that location when its record class says PM and it is
-        not coded to another component.
+        A PM_RESET counts when it renewed one of the population's components, or a
+        part of one; a PM that renewed nothing (dispositioned NON_FAILURE, or not
+        reviewed yet) counts as planned work at that location when its record class
+        says PM and it is not coded to another component.
         """
 
         if population.locations and record["location"] not in population.locations:
             return False
         disposition = record["disposition"]
         if record["category"] == std.PM_RESET:
-            return not population.components or bool(set(disposition["renewed_items"]) & set(population.components))
+            if not population.components:
+                return True
+            renewed = set(disposition["renewed_items"])
+            # A PM that replaced a part names the part's component, not the renewed items.
+            if disposition.get("part_code") and disposition["component_code"]:
+                renewed.add(disposition["component_code"])
+            return bool(renewed & set(population.components))
         if record["category"] not in (std.NON_FAILURE, std.NOT_REVIEWED):
             return False
         if (record["record_class"] or "").upper() not in std.PM_RECORD_CLASSES:
@@ -1904,12 +1910,12 @@ class PopulationAnalysisService:
         ):
             try:
                 selection = json.loads(row["selection_json"] or "{}")
-                key = _selection_key(selection)
+                saved_key = _selection_key(selection)
             except ValueError:
                 continue
-            if key in seen:
+            if saved_key in seen:
                 continue
-            seen.add(key)
+            seen.add(saved_key)
             if std.Population.from_mapping(selection).narrows_patterns_only():
                 # Saved before the Weibull stopped reading mode, cause and action.
                 continue

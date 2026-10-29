@@ -97,7 +97,8 @@ class TheDownloadTests(DispositionWorkbookFixture):
         self.assertEqual(sheet.cell(1, last).value, EXCEL_VERSION_COLUMN)
         self.assertTrue(sheet.column_dimensions[openpyxl.utils.get_column_letter(last)].hidden)
         self.assertIsNotNone(sheet.cell(self.row(sheet, 501), last).value)
-        self.assertIsNone(sheet.cell(self.row(sheet, 502), last).value)
+        # A row nobody had dispositioned keeps the record class it showed.
+        self.assertEqual(sheet.cell(self.row(sheet, 502), last).value, "undecided:CORRECTIVE_WO")
 
 
 class HeadingsAndColumnsTests(DispositionWorkbookFixture):
@@ -257,6 +258,18 @@ class StaleWorkbookTests(DispositionWorkbookFixture):
         self.assertEqual(self.saved(501)["failure_mechanism_code"], "PLUG")
         self.assertEqual(self.saved(503)["disposition_category"], "NON_FAILURE")
         self.assertEqual(self.saved(502)["component_code"], "Belt")
+
+    def test_an_untouched_undecided_row_keeps_a_teammates_corrected_record_class(self):
+        workbook, sheet = self.download()
+        # Nobody had dispositioned 502; a teammate does, correcting its record class to PM.
+        self.std.save_dispositions(
+            [{"mapped_record_id": 502, **coded("NON_FAILURE", mode="NFF", action="INSPECT_ONLY", record_class="PM")}],
+            decided_by="tim",
+        )
+        self.fill(sheet, 503, **self.belt_failure())
+        outcome = self.upload(workbook)
+        self.assertEqual((outcome["saved"], outcome["kept_newer"]), (1, ["502"]))
+        self.assertEqual(self.std.disposition_record(502)["record_class"], "PM")
 
     def test_a_row_changed_in_both_places_is_refused_not_overwritten(self):
         workbook, sheet = self.download()

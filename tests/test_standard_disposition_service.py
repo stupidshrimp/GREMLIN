@@ -314,6 +314,27 @@ class DispositionEditorTests(StandardDispositionFixture):
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, scope="not_reviewed")["rows"]], [2])
         self.assertEqual([row["mapped_record_id"] for row in self.std.disposition_page(PFS, search="belt")["rows"]], [2])
 
+    def test_a_list_being_worked_through_holds_still_as_it_is_saved(self):
+        for record_id in range(1, 7):
+            self.add_record(record_id, PFS, f"Work order {record_id}", f"2024-01-0{record_id}", f"2024-01-0{record_id}")
+        opened = self.std.disposition_page(PFS, scope="not_reviewed", page_size=2, with_order=True)
+        self.assertEqual(opened["order"], [6, 5, 4, 3, 2, 1])
+        self.assertEqual([row["mapped_record_id"] for row in opened["rows"]], [6, 5])
+        # Both on the first page dispositioned: counted afresh, the second page
+        # would now be 2 and 1, and 4 and 3 would never be seen.
+        self.std.save_dispositions([{"mapped_record_id": 6, **coded()}, {"mapped_record_id": 5, **coded()}])
+        afresh = self.std.disposition_page(PFS, scope="not_reviewed", page_size=2, page=1)
+        self.assertEqual([row["mapped_record_id"] for row in afresh["rows"]], [2, 1])
+        held = self.std.disposition_page(PFS, ids=opened["order"][2:4])
+        self.assertEqual([row["mapped_record_id"] for row in held["rows"]], [4, 3])
+        # Read by the held order, a saved one still shows, as it is now; another asset's never does.
+        self.add_record(9, S09, "Filed under the sub-asset", "2024-01-05", "2024-01-05")
+        held = self.std.disposition_page(PFS, ids=[5, 9, 2])
+        self.assertEqual([row["mapped_record_id"] for row in held["rows"]], [5, 2])
+        self.assertEqual(held["rows"][0]["disposition"]["disposition_category"], "FAILURE")
+        self.assertNotIn("order", held)
+        self.assertEqual(self.std.disposition_page(PFS, ids=[])["rows"], [])
+
     def test_the_list_sorts_and_filters_every_row_not_just_the_page(self):
         self.add_record(1, PFS, "Oven filter clogged", "2024-01-01", "2024-01-01")
         self.add_record(2, PFS, "Belt squeal", "2024-01-02", "2024-01-02")
@@ -489,6 +510,25 @@ class MigrationTests(StandardDispositionFixture):
 
     def reopen(self):
         return StandardDispositionService(LifeDataService(self.db_path, refresh_on_startup=False))
+
+    def test_a_migrated_row_left_alone_in_a_workbook_keeps_a_teammates_confirmation(self):
+        # A migrated disposition keeps no record class, which must not read as the
+        # workbook's row changing it.
+        import openpyxl
+
+        self.add_record(601, PFS, "Legacy failure", "2024-01-01", "2024-01-01")
+        self.legacy(601, "INCLUDED_FAILURE", mode="m", mechanism="x")
+        service = self.reopen()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "dispositions.xlsx"
+        service.export_excel(PFS, path)
+        service.save_dispositions([{"mapped_record_id": 601, **coded()}], decided_by="tim")
+        workbook = openpyxl.load_workbook(path)
+        workbook.save(path)
+        outcome = service.import_excel(PFS, path, decided_by="jose")
+        self.assertEqual((outcome["saved"], outcome["kept_newer"]), (0, ["601"]))
+        self.assertEqual(service.disposition_record(601)["disposition"]["decided_by"], "tim")
 
     def test_each_legacy_category_maps_and_keeps_its_text(self):
         for record_id, category in enumerate(std.LEGACY_CATEGORY_MAP, start=1):

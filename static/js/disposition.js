@@ -50,6 +50,10 @@
     suggestions: new Map(),
     // The workspace's view: "split", "focus" (the disposition alone) or "list".
     view: "split",
+    // The list held still while it is worked through: every work order it held
+    // when it was opened, in order (see load), and how many make a page.
+    order: null,
+    pageSize: 50,
   };
   const HELPER_KEY = "gremlin.disposition.helper";
 
@@ -89,15 +93,43 @@
   // `selectId` is the work order to open once the page is in: LAST for the page's
   // last, null for its first, undefined for the one open now. `step` says which
   // way that moved through the list, for the slide it comes in with.
+  //
+  // The list holds still while it is worked through. Opened afresh (a new asset,
+  // Show, search, filter or sort, or a reload), it comes with the order of every
+  // work order it holds; each page after that is read as that order's slice,
+  // whatever has been saved since. Counted afresh instead, "Only not reviewed"
+  // would lose each work order saved from it, and the next page would skip as many.
   const LAST = "last";
   async function load(selectId, step) {
     if (!state.asset) return;
     const token = ++state.token;
     beginLoading("Loading work orders…");
     try {
-      const data = await getJson(`${API}/dispositions?${listParams({ page: String(state.page) })}`);
+      let url;
+      let lastPage = 0;
+      if (state.order) {
+        lastPage = Math.max(0, Math.ceil(state.order.length / state.pageSize) - 1);
+        state.page = Math.min(Math.max(0, state.page), lastPage);
+        const ids = state.order.slice(state.page * state.pageSize, (state.page + 1) * state.pageSize);
+        url = `${API}/dispositions?${new URLSearchParams({ asset: state.asset, ids: ids.join(",") })}`;
+      } else {
+        url = `${API}/dispositions?${listParams({ page: String(state.page), order: "1" })}`;
+      }
+      const data = await getJson(url);
       if (token !== state.token) return;
       clearBanner();
+      if (data.order) {
+        state.order = data.order;
+        state.pageSize = data.page_size || state.pageSize;
+      } else {
+        // A page of the held list: its place in it is the held list's, not the server's count.
+        Object.assign(data, {
+          page_index: state.page,
+          max_page_index: lastPage,
+          page_size: state.pageSize,
+          displayed_count: state.order.length,
+        });
+      }
       state.data = data;
       state.options = data.options;
       state.suggestions.clear();
@@ -221,6 +253,7 @@
     if (change.filters !== undefined) state.filters = change.filters;
     state.page = 0;
     state.form = null;
+    state.order = null;
     load(state.selectedId);
   }
 
@@ -508,6 +541,7 @@
   }
 
   // The work order before or after the open one, over the edge of the page too.
+  // Says whether there was one to move to.
   function stepRecord(delta) {
     const list = rows();
     const index = list.findIndex((row) => row.mapped_record_id === state.selectedId);
@@ -515,13 +549,14 @@
     const target = index >= 0 ? list[index + delta] : null;
     if (target) {
       selectRecord(target.mapped_record_id, { direction });
-      return;
+      return true;
     }
     const page = state.page + delta;
-    if (!state.data || page < 0 || page > state.data.max_page_index || !confirmDiscard()) return;
+    if (!state.data || page < 0 || page > state.data.max_page_index || !confirmDiscard()) return false;
     state.page = page;
     state.form = null;
     load(delta > 0 ? null : LAST, direction);
+    return true;
   }
 
   // The work order opened sliding in from the side it was stepped to.
@@ -595,14 +630,11 @@
     const row = currentRow();
     if (!row) return clearEditor();
     markSelectedRow();
-    const list = rows();
-    const index = list.findIndex((item) => item.mapped_record_id === id);
-    const nextId = index >= 0 && index + 1 < list.length ? list[index + 1].mapped_record_id : null;
     state.form = Form.create({
       row,
       options: state.options,
-      onSave: (payload) => save(payload, row.mapped_record_id),
-      onSaveNext: (payload) => save(payload, nextId === null ? row.mapped_record_id : nextId),
+      onSave: (payload) => save(payload, false),
+      onSaveNext: (payload) => save(payload, true),
       // A code added from one of the form's fields: the page's lists, and the
       // next work order opened, have it too.
       onCodeListsChanged: (codeLists) => {
@@ -833,6 +865,7 @@
       $("disp-helper-apply").disabled = true;
       helperState.preview = null;
       state.form = null;
+      state.order = null;
       await load(state.selectedId);
       loadRuns();
     } catch (err) {
@@ -892,6 +925,7 @@
         "success"
       );
       state.form = null;
+      state.order = null;
       await load(state.selectedId);
       loadRuns();
     } catch (err) {
@@ -1028,7 +1062,9 @@
   // A save hands back the record as the list holds it, so only that row changes:
   // the list, its counts and the editor options stay as they are, rather than the
   // whole page being read again. The next record opens from the list in memory.
-  async function save(payload, nextId) {
+  // `andNext` moves on to the work order after it in the list, onto the next
+  // page when it was the last of this one.
+  async function save(payload, andNext) {
     const row = currentRow();
     beginLoading("Saving…");
     try {
@@ -1037,12 +1073,13 @@
       state.form = null;
       const saved = (result.records || []).find((record) => record.mapped_record_id === payload.mapped_record_id);
       if (!saved || !replaceRow(saved)) {
-        await load(nextId);
+        await load(payload.mapped_record_id);
+        if (andNext) stepRecord(1);
         return;
       }
       renderTable();
-      const moved = nextId !== null && nextId !== saved.mapped_record_id;
-      selectRecord(moved ? nextId : saved.mapped_record_id, { force: true, direction: moved ? "next" : null });
+      if (andNext && stepRecord(1)) return;
+      selectRecord(saved.mapped_record_id, { force: true });
     } finally {
       endLoading();
     }
@@ -1124,6 +1161,7 @@
         headers: { Accept: "application/json" },
       });
       state.form = null;
+      state.order = null;
       await load(state.selectedId);
       // After the list is read again, which clears the banner, unless reading
       // it failed and the banner says so.
@@ -1576,14 +1614,7 @@
     return row;
   }
 
-  // Each list's active codes, the ones a disposition may be given.
-  function activeCodes(codeLists) {
-    const active = {};
-    Object.entries(codeLists).forEach(([key, list]) => {
-      active[key] = list.codes.filter((entry) => entry.is_active);
-    });
-    return active;
-  }
+  const activeCodes = Form.activeCodes;
 
   // A change to the code lists reaches the open work order at once: its
   // dropdowns offer the lists as they now are, with everything typed kept, and a
@@ -1799,6 +1830,7 @@
         state.asset = asset;
         state.page = 0;
         state.form = null;
+        state.order = null;
         state.selectedId = null;
         // Filters name another asset's values; the sort still applies.
         state.filters = {};
@@ -1832,6 +1864,7 @@
       state.scope = event.target.value;
       state.page = 0;
       state.form = null;
+      state.order = null;
       load(null);
     });
     let searchDebounce = null;
@@ -1845,6 +1878,7 @@
         state.search = event.target.value.trim();
         state.page = 0;
         state.form = null;
+        state.order = null;
         load(null);
       }, 350);
     });

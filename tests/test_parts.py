@@ -198,6 +198,35 @@ class PartServiceTests(StandardDispositionFixture):
         with self.assertRaisesRegex(ValueError, "The part list already has 'O-ring'; use that one"):
             self.std.put_code({"code_list": "PART", "name": "o-RING"})
 
+    def test_renaming_to_another_ones_name_is_refused_and_keeping_its_own_is_not(self):
+        with self.assertRaisesRegex(ValueError, "The component list already has 'Bearing'"):
+            self.std.put_code({"code_list": "COMPONENT", "code": "Belt", "name": "bearing"})
+        self.std.put_code({"code_list": "COMPONENT", "code": "Belt", "name": "Belt", "description": "Drive belt"})
+        self.assertEqual(self.std.codebook().entry(std.COMPONENT, "Belt").description, "Drive belt")
+
+    def test_editing_a_component_keeps_what_it_was_saved_with_before(self):
+        with self.life.write_connection() as conn:
+            conn.execute("UPDATE disposition_code SET iso_ref = '9.9', sort_order = 70 WHERE code_list = 'COMPONENT' AND code = 'Belt'")
+        self.std.put_code({"code_list": "COMPONENT", "code": "Belt", "name": "Belt", "description": "Drive belt"})
+        entry = self.std.codebook().entry(std.COMPONENT, "Belt")
+        self.assertEqual((entry.description, entry.iso_ref, entry.sort_order), ("Drive belt", "9.9", 70))
+
+    def test_the_last_part_can_be_deleted_since_parts_start_empty(self):
+        self.std.put_code({"code_list": "PART", "name": "O-rnig"})
+        self.std.delete_code("PART", "ORnig")
+        self.assertEqual(self.std.code_lists()["PART"]["codes"], [])
+
+    def test_a_pm_reset_naming_a_part_is_a_pm_on_its_component(self):
+        self.std.put_code({"code_list": "PART", "name": "Filter element"})
+        self.add_record(704, PFS, "PM replace compressor filter", "2024-03-01", "2024-03-01", record_class="PM")
+        self.add_record(705, PFS, "Compressor filter clogged", "2024-04-01", "2024-04-01")
+        self.std.save_dispositions([
+            {"mapped_record_id": 704, **coded("PM_RESET", component="HVAC", action="REPLACE", part_code="FilterElement")},
+            {"mapped_record_id": 705, **coded(component="HVAC")},
+        ])
+        result = self.analysis.pm_effectiveness({"assets": [PFS], "components": ["HVAC"]})
+        self.assertEqual([row["pm_mapped_record_id"] for row in result["rows"]], [704])
+
     def test_a_code_meant_to_be_new_never_changes_one_already_listed(self):
         before = self.std.codebook().entry(std.FAILURE_MECHANISM, "LEAK")
         with self.assertRaisesRegex(ValueError, "already has code LEAK \\(Leak\\)"):

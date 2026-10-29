@@ -145,6 +145,16 @@
     return 3;
   }
 
+  // Each list's active codes, the ones a disposition may be given, from every
+  // list as /code-lists hands them back.
+  function activeCodes(codeLists) {
+    const active = {};
+    Object.entries(codeLists).forEach(([key, list]) => {
+      active[key] = list.codes.filter((entry) => entry.is_active);
+    });
+    return active;
+  }
+
   let formSeq = 0;
 
   /* One record's form. `options` is what /dispositions hands back for the
@@ -809,11 +819,7 @@
     // The lists as the server now has them: the active codes are offered here
     // at once, and the page hears of every list.
     function codeListsChanged(codeLists) {
-      const active = {};
-      Object.entries(codeLists).forEach(([key, list]) => {
-        active[key] = list.codes.filter((entry) => entry.is_active);
-      });
-      options = { ...options, code_lists: active };
+      options = { ...options, code_lists: activeCodes(codeLists) };
       if (onCodeListsChanged) onCodeListsChanged(codeLists);
     }
 
@@ -1115,6 +1121,11 @@
           text: option.label,
           onclick: () => {
             draft.disposition_category = option.code;
+            // A failure's renewed items are the other items it renewed: the
+            // component a PM reset started the list with is not one of them.
+            if (option.code === "FAILURE" && draft.component_code) {
+              draft.renewed_items = draft.renewed_items.filter((item) => item !== draft.component_code);
+            }
             // A refusal was about the category it was saved as.
             error = null;
             render();
@@ -1489,5 +1500,5 @@
     };
   }
 
-  window.GremlinDispositionForm = { create, categoryChip };
+  window.GremlinDispositionForm = { create, categoryChip, activeCodes };
 })();

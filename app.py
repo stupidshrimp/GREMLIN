@@ -2695,7 +2695,21 @@ def api_dispositions():
         page_index = max(0, int(request.values.get("page", 0)))
     except (TypeError, ValueError):
         page_index = 0
-    page = service.disposition_page(asset_number, page=page_index, **_disposition_list_view())
+    # A page of the list as it was opened, by the work orders its order named
+    # there (see disposition_page): "ids" given, even empty, reads those alone.
+    ids = None
+    if "ids" in request.values:
+        try:
+            ids = [int(text) for text in request.values.get("ids", "").split(",") if text.strip()]
+        except ValueError:
+            raise LifeDataApiError("The work orders asked for could not be read. Reload the page.", status_code=400) from None
+    page = service.disposition_page(
+        asset_number,
+        page=page_index,
+        with_order=request.values.get("order") == "1",
+        ids=ids,
+        **_disposition_list_view(),
+    )
     return jsonify({**page, "options": service.editor_options(asset_number)})
 
 

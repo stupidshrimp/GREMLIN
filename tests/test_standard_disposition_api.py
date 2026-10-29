@@ -375,3 +375,16 @@ def test_an_editor_asks_whether_a_new_component_is_one_already_listed(monkeypatc
     added = editor.post(f"{API}/code-lists", json={"code_list": "COMPONENT", "name": "Air compressor"}).get_json()
     assert added["code"] == "AirCompressor"
     assert any(code["code"] == "AirCompressor" for code in added["code_lists"]["COMPONENT"]["codes"])
+
+
+def test_the_disposition_list_comes_with_its_order_and_pages_by_it(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    editor = _client(module, role="editor")
+    opened = editor.get(f"{API}/dispositions?asset={PFS}&order=1").get_json()
+    order = opened["order"]
+    assert order and [row["mapped_record_id"] for row in opened["rows"]] == order[: len(opened["rows"])]
+    held = editor.get(f"{API}/dispositions?asset={PFS}&ids={','.join(map(str, reversed(order)))}").get_json()
+    assert [row["mapped_record_id"] for row in held["rows"]] == list(reversed(order))
+    assert "order" not in held and "options" in held
+    assert editor.get(f"{API}/dispositions?asset={PFS}&ids=1,x").status_code == 400
