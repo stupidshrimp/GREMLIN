@@ -797,6 +797,8 @@ table.lda-table td.std-edited-by { min-width: 10ch; max-width: 22ch; overflow-wr
 }
 .cl-similar-text { display: grid; gap: 0.1rem; flex: 1; min-width: 0; }
 .cl-similar-why { font-size: 0.76rem; color: var(--brand-ink); }
+.cl-similar-code { margin-left: 0.4rem; vertical-align: 1px; }
+.std-add-other { display: grid; gap: 0.1rem; margin-top: 0.5rem; }
 .cl-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
 .cl-form-actions .cl-spacer { flex: 1; }
 .cl-form-actions button { padding: 0.45rem 1.1rem; font-size: 0.86rem; }

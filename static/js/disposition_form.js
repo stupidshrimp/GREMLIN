@@ -576,6 +576,8 @@
         .then((data) => {
           check.status = "done";
           check.matches = data.matches || [];
+          // For a component, the parts it is; for a part, the components.
+          check.other = data.other_level || null;
         })
         .catch((err) => {
           check.status = "error";
@@ -607,21 +609,24 @@
       }
     }
 
-    function freshMatches() {
+    // How many codes a check found that the new one may be, on its list and the other level's.
+    const lookalikes = (check) => check.matches.length + (check.other ? check.other.matches.length : 0);
+
+    // Whether the codes it may be have been found, for what is typed now.
+    function lookalikesShown() {
       const check = adding.check;
-      return check && check.status === "done" && check.key === addKey(adding.values) ? check.matches : [];
+      return Boolean(check && check.status === "done" && check.key === addKey(adding.values) && lookalikes(check));
     }
 
     function addLabel() {
       const noun = LIST_NOUNS[adding.list];
       if (adding.saving) return "Adding…";
-      return freshMatches().length ? "Add it anyway" : `Add ${noun}`;
+      return lookalikesShown() ? "Add it anyway" : `Add ${noun}`;
     }
 
     function similarBlock() {
       const a = adding;
       const noun = LIST_NOUNS[a.list];
-      const named = NAMED_LISTS.includes(a.list);
       const block = el("div", { class: "std-add-similar", id: addId("similar"), "aria-live": "polite" });
       const check = a.check;
       if (!check) return block;
@@ -636,16 +641,65 @@
         block.appendChild(el("p", { class: "lda-hint", text: `The ${noun} list could not be checked for one like it.` }));
         return block;
       }
-      if (!check.matches.length) {
+      if (!lookalikes(check)) {
         block.appendChild(el("p", { class: "std-add-none", text: `Nothing like it on the ${noun} list.` }));
         return block;
       }
       a.seen = check.key;
-      block.appendChild(el("p", { class: "std-add-lead" }, [
-        el("strong", { text: `Already on the ${noun} list?` }),
-        ` ${check.matches.length === 1 ? "This one" : "These"} may be the same thing.`,
-      ]));
-      block.appendChild(el("ul", { class: "std-add-matches" }, check.matches.map((match) => el("li", {
+      if (check.matches.length) {
+        block.appendChild(el("p", { class: "std-add-lead" }, [
+          el("strong", { text: `Already on the ${noun} list?` }),
+          ` ${check.matches.length === 1 ? "This one" : "These"} may be the same thing.`,
+        ]));
+        block.appendChild(matchList(check.matches));
+      }
+      if (check.other && check.other.matches.length) block.appendChild(otherLevel(check.other));
+      return block;
+    }
+
+    // A component typed as a part, or a part as a component: the same thing on
+    // the other level. A part's component is set from here; a component that is
+    // a part is said to be one, since its component has to be picked first.
+    function otherLevel(other) {
+      const a = adding;
+      const noun = LIST_NOUNS[a.list];
+      const otherNoun = LIST_NOUNS[other.code_list];
+      const settable = other.code_list === "COMPONENT" && a.field === "part";
+      return el("div", { class: "std-add-other" }, [
+        el("p", { class: "std-add-lead" }, [
+          el("strong", { text: `Already a ${otherNoun}.` }),
+          settable
+            ? ` If it is that ${otherNoun}, use it as the ${otherNoun}; add it as a ${noun} only if it is one as well.`
+            : ` If it is that ${otherNoun}, pick the component it is in above and choose it under Part; add it as a ${noun} only if it is one as well.`,
+        ]),
+        el("ul", { class: "std-add-matches" }, other.matches.map((match) => el("li", { class: "std-add-match" }, [
+          el("div", { class: "std-add-match-text" }, [
+            el("span", { class: "std-add-match-name" }, [el("span", { text: match.name })]),
+            match.description ? el("span", { class: "std-add-match-desc", text: match.description }) : null,
+            (match.reasons || []).length ? el("span", { class: "std-add-match-why", text: match.reasons.join(" · ") }) : null,
+          ]),
+          settable && match.is_active
+            ? el("button", {
+              type: "button",
+              class: "btn-secondary std-add-use",
+              text: "Use as the component",
+              onclick: () => {
+                clearTimeout(checkTimer);
+                adding = null;
+                draft.component_code = match.code;
+                focusNext = id("component");
+                render();
+              },
+            })
+            : null,
+        ]))),
+      ]);
+    }
+
+    function matchList(matches) {
+      const a = adding;
+      const named = NAMED_LISTS.includes(a.list);
+      return el("ul", { class: "std-add-matches" }, matches.map((match) => el("li", {
         class: "std-add-match" + (match.is_active ? "" : " is-retired"),
       }, [
         el("div", { class: "std-add-match-text" }, [
@@ -671,8 +725,7 @@
             },
           })
           : el("span", { class: "std-add-retired", text: "Retired: an editor can bring it back from Code lists." }),
-      ]))));
-      return block;
+      ])));
     }
 
     function addPanel() {
@@ -796,7 +849,7 @@
       showCheck();
       const check = await checkSimilar();
       if (adding !== a) return;
-      if (check && check.status === "done" && check.matches.length && !seenBefore) {
+      if (check && check.status === "done" && lookalikes(check) && !seenBefore) {
         a.saving = false;
         showCheck();
         return;
@@ -811,6 +864,8 @@
           renews_item: a.values.renews_item,
           is_active: true,
           is_new: true,
+          // The codes it may be were shown, and it is added anyway.
+          confirmed_new: lookalikesShown(),
         });
         codeListsChanged(data.code_lists);
         if (adding !== a) return;
@@ -821,7 +876,16 @@
       } catch (err) {
         a.saving = false;
         if (adding !== a) return;
-        a.error = err && err.toastShown ? null : (err && err.message) || `The ${noun} could not be added.`;
+        const similar = err && err.payload && err.payload.similar;
+        if (similar) {
+          // The server found codes it may be (one added since the check, say): shown, to add anyway.
+          const found = { key: addKey(a.values), status: "done", matches: similar.matches || [], other: similar.other_level || null };
+          found.promise = Promise.resolve(found);
+          a.check = found;
+          a.error = null;
+        } else {
+          a.error = err && err.toastShown ? null : (err && err.message) || `The ${noun} could not be added.`;
+        }
         render();
       }
     }

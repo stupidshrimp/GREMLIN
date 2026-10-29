@@ -184,6 +184,8 @@ class PartServiceTests(StandardDispositionFixture):
         code = self.std.put_code({
             "code_list": "COMPONENT", "name": "Air compressor", "description": "Plant air",
             "iso_ref": "9.9", "semantic": "UNKNOWN", "sort_order": 5,
+            # Like HVAC / compressor / chiller, and added anyway.
+            "confirmed_new": True,
         })
         self.assertEqual(code, "AirCompressor")
         entry = self.std.codebook().entry(std.COMPONENT, code)
@@ -191,7 +193,8 @@ class PartServiceTests(StandardDispositionFixture):
         names = [item["name"].lower() for item in self.std.code_lists()["COMPONENT"]["codes"]]
         self.assertEqual(names, sorted(names))
         self.assertTrue(self.std.code_lists()["PART"]["named"])
-        self.assertEqual(self.std.put_code({"code_list": "PART", "name": "Filter"}), "Filter")
+        # A part named as a listed component, added anyway.
+        self.assertEqual(self.std.put_code({"code_list": "PART", "name": "Filter", "confirmed_new": True}), "Filter")
 
     def test_the_same_name_twice_is_refused(self):
         self.std.put_code({"code_list": "PART", "name": "O-ring"})
@@ -237,8 +240,40 @@ class PartServiceTests(StandardDispositionFixture):
         self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "CAVX", "name": "Cavitation erosion", "is_new": True})
         self.assertEqual(self.std.codebook().entry(std.FAILURE_MECHANISM, "CAVX").sort_order, last + 10)
 
+    def test_a_new_code_like_one_listed_is_refused_until_added_anyway(self):
+        from services.standard_disposition_service import SimilarCodesExist
+
+        # Any list: a mechanism "Leaks" is the Leak already listed.
+        with self.assertRaises(SimilarCodesExist) as refused:
+            self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "LKS", "name": "Leaks", "is_new": True})
+        self.assertRegex(str(refused.exception), r"^The failure mechanism list already has a code like 'Leaks': LEAK Leak \(")
+        self.assertEqual([match["code"] for match in refused.exception.similar["matches"]], ["LEAK"])
+        self.assertIsNone(self.std.codebook().entry(std.FAILURE_MECHANISM, "LKS"))
+        # Seen, and added anyway.
+        self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "LKS", "name": "Leaks", "is_new": True, "confirmed_new": True})
+        self.assertIsNotNone(self.std.codebook().entry(std.FAILURE_MECHANISM, "LKS"))
+        # A typo of a part: refused.
+        self.std.put_code({"code_list": "PART", "name": "Filter element"})
+        with self.assertRaisesRegex(SimilarCodesExist, "Filter element \\(spelled almost the same\\)"):
+            self.std.put_code({"code_list": "PART", "name": "Fliter element"})
+        # Nothing like it: added at once; changing a listed code is never asked about.
+        self.assertEqual(self.std.put_code({"code_list": "PART", "name": "Drive shaft key"}), "DriveShaftKey")
+        self.std.put_code({"code_list": "FAILURE_MECHANISM", "code": "LEAK", "name": "Leak", "description": "Fluid escaping"})
+
+    def test_a_part_named_as_a_component_is_asked_about(self):
+        from services.standard_disposition_service import SimilarCodesExist
+
+        with self.assertRaises(SimilarCodesExist) as refused:
+            self.std.put_code({"code_list": "PART", "name": "Belts"})
+        self.assertRegex(str(refused.exception), r"^'Belts' is already a component: Belt \(")
+        self.assertEqual(refused.exception.similar["matches"], [])
+        self.assertEqual(refused.exception.similar["other_level"]["code_list"], "COMPONENT")
+        self.assertEqual([match["code"] for match in refused.exception.similar["other_level"]["matches"]], ["Belt"])
+        # A part that shares a word with a component is what a part is.
+        self.assertEqual(self.std.put_code({"code_list": "PART", "name": "Drive belt"}), "DriveBelt")
+
     def test_the_form_offers_first_the_parts_used_with_a_component(self):
-        for name in ("Filter element", "O-ring", "Belt"):
+        for name in ("Filter element", "O-ring", "Drive belt"):
             self.std.put_code({"code_list": "PART", "name": name})
         self.add_record(703, PFS, "Compressor O-ring leak", "2024-03-01", "2024-03-01")
         self.std.save_dispositions([

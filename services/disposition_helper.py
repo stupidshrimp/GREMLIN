@@ -1769,7 +1769,18 @@ class DispositionHelper:
         codebook = self.records.codebook()
         meaning, status = self._code_meaning()
         matches = text.similar_codes(codebook, code_list, name, description, meaning=meaning)
-        return {"code_list": code_list, "matches": matches, "meaning": status}
+        # A component that is already a part, or a part already a component.
+        other, other_matches = text.other_level_codes(codebook, code_list, name)
+        return {
+            "code_list": code_list,
+            "matches": matches,
+            "meaning": status,
+            "other_level": {
+                "code_list": other,
+                "label": std.CODE_LIST_LABELS[other],
+                "matches": other_matches,
+            } if other_matches else None,
+        }
 
     def _code_meaning(self) -> tuple[Any, dict[str, Any]]:
         """How alike in meaning a text is to each of some others, by the local model, or None without it."""

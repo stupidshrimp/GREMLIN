@@ -635,6 +635,13 @@ def _phrases_in(stems: list[str], words: list[str], lexicon: Lexicon, field_name
 # many are offered.
 SIMILAR_FLOOR = 0.45
 SIMILAR_LIMIT = 5
+# A match this close is the same code under another spelling, word order or
+# plural, not merely one like it. Where nobody can answer "add it anyway" (a
+# workbook upload), a new code this close to one listed is refused.
+DUPLICATE_SCORE = 0.85
+# The other level a component or part may have been meant for: a new part
+# named as a listed component is likely that component, and the other way round.
+OTHER_LEVEL = {std.COMPONENT: std.PART, std.PART: std.COMPONENT}
 
 
 def _slips(one: str, other: str) -> int:
@@ -809,3 +816,29 @@ def similar_codes(
             })
     found.sort(key=lambda match: (-match["score"], match["name"].lower()))
     return found[:limit]
+
+
+def other_level_codes(codebook: std.CodeBook, code_list: str, name: str) -> tuple[str | None, list[dict[str, Any]]]:
+    """For a new component, the parts it is; for a new part, the components.
+
+    Only the same thing under another spelling (``DUPLICATE_SCORE``): a part
+    sharing a word with its component ("Compressor filter" in "Compressor")
+    is what a part is, not a mistake.
+    """
+
+    other = OTHER_LEVEL.get(code_list)
+    if other is None:
+        return None, []
+    return other, [match for match in similar_codes(codebook, other, name) if match["score"] >= DUPLICATE_SCORE]
+
+
+def describe_matches(code_list: str, matches: Sequence[Mapping[str, Any]]) -> str:
+    """Matches as a sentence names them: "Filter element (spelled almost the same), VIB Vibration (the same name)"."""
+
+    named = code_list in std.NAMED_CODE_LISTS
+    parts = []
+    for match in matches:
+        label = match["name"] if named else f"{match['code']} {match['name']}"
+        why = (match.get("reasons") or ["much alike"])[0]
+        parts.append(f"{label} ({why[0].lower()}{why[1:]})" + ("" if match.get("is_active", True) else ", retired"))
+    return ", ".join(parts)

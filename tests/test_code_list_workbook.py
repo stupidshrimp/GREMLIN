@@ -136,6 +136,37 @@ class UploadTests(CodeListWorkbookFixture):
         with self.life.connect() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM disposition_code WHERE updated_by = 'ana'").fetchone()[0], 0)
 
+    def test_a_new_code_already_listed_under_another_spelling_is_refused(self):
+        rows = self.download()
+        # The Leak already listed, as a plural.
+        leaks = self.fill(rows, code_list="FAILURE_MECHANISM", code="LKS", name="Leaks")
+        # Two spellings of one new part, the second a typo of the first.
+        self.fill(rows, code_list="PART", name="Filter element")
+        typo = self.fill(rows, code_list="PART", name="Fliter element")
+        # A part named as a listed component.
+        belts = self.fill(rows, code_list="PART", name="Belts")
+        sheet_row = lambda row: rows.index(row) + 1
+        with self.assertRaises(ValueError) as refused:
+            self.upload(rows)
+        message = str(refused.exception)
+        self.assertIn(
+            f"Row {sheet_row(leaks)} (Failure mechanism LKS): 'Leaks' is already on the failure mechanism list as "
+            "LEAK Leak (", message,
+        )
+        self.assertIn(f"Row {sheet_row(typo)} (Part FliterElement): 'Fliter element' is already on the part list as "
+                      "Filter element (spelled almost the same)", message)
+        self.assertIn(f"Row {sheet_row(belts)} (Part Belts): 'Belts' is already a component: Belt (", message)
+        self.assertIn("add it from the Code lists dialog on the Disposition page, where it can be added anyway", message)
+        self.assertIsNone(self.code("PART", "FilterElement"))
+
+    def test_a_new_code_merely_like_one_listed_is_added_and_named(self):
+        rows = self.download()
+        self.fill(rows, code_list="COMPONENT", name="Air compressor")
+        outcome = self.upload(rows)
+        self.assertEqual([item["code"] for item in outcome["added"]], ["AirCompressor"])
+        self.assertEqual([(item["code"], item["list_label"]) for item in outcome["lookalikes"]], [("AirCompressor", "Component")])
+        self.assertIn("HVAC / compressor / chiller", outcome["lookalikes"][0]["like"])
+
     def test_new_codes_are_added_and_changed_ones_saved(self):
         rows = self.download()
         header = rows[0].index

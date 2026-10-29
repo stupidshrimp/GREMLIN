@@ -169,6 +169,20 @@
       scroll.appendChild(dev.buildTable(["List", "Code", "Name"], items.map((item) => [item.list_label, item.code, item.name])));
       box.appendChild(scroll);
     });
+    // New codes the disposition helper reads as like codes already listed: added
+    // (one that is the same code under another spelling is refused instead), and
+    // named here so the team can check they are not the same thing twice.
+    const lookalikes = outcome.lookalikes || [];
+    if (lookalikes.length) {
+      box.appendChild(el("h3", null, "Added, but like codes already listed"));
+      box.appendChild(el("p", "dev-muted", "Check these are not codes the lists already have; retire any that are."));
+      const scroll = el("div", "dev-table-scroll");
+      scroll.appendChild(dev.buildTable(
+        ["List", "Code", "Name", "Like"],
+        lookalikes.map((item) => [item.list_label, item.code, item.name, item.like]),
+      ));
+      box.appendChild(scroll);
+    }
   }
 
   async function load() {
@@ -198,7 +212,12 @@
       draw(outcome.code_lists);
       drawResult(outcome);
       const changed = (outcome.added || []).length + (outcome.updated || []).length;
-      dev.showStatus(changed ? `Saved ${file.name}.` : `${file.name} matches the lists already; nothing to save.`);
+      const alike = (outcome.lookalikes || []).length;
+      dev.showStatus(
+        changed
+          ? `Saved ${file.name}.${alike ? ` ${alike} new code${alike === 1 ? " is" : "s are"} like codes already listed; see below.` : ""}`
+          : `${file.name} matches the lists already; nothing to save.`
+      );
     } catch (err) {
       dev.showStatus(err.message, true);
     } finally {

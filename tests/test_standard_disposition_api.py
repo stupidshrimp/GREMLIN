@@ -371,8 +371,15 @@ def test_an_editor_asks_whether_a_new_component_is_one_already_listed(monkeypatc
     found = editor.post(f"{API}/code-lists/similar", json={"code_list": "COMPONENT", "name": "Air compressor"}).get_json()
     assert found["matches"][0]["code"] == "HVAC"
     assert _client(module).post(f"{API}/code-lists/similar", json={"code_list": "COMPONENT", "name": "x"}).status_code in (401, 403)
-    # Added by name alone, a component comes back with the code made for it.
-    added = editor.post(f"{API}/code-lists", json={"code_list": "COMPONENT", "name": "Air compressor"}).get_json()
+    # Added without looking, it is refused with the codes it may be, for the page to show.
+    refused = editor.post(f"{API}/code-lists", json={"code_list": "COMPONENT", "name": "Air compressor"})
+    assert refused.status_code == 409
+    assert refused.get_json()["similar"]["matches"][0]["code"] == "HVAC"
+    assert "already has a code like 'Air compressor'" in refused.get_json()["error"]
+    # Added anyway, by name alone, a component comes back with the code made for it.
+    added = editor.post(
+        f"{API}/code-lists", json={"code_list": "COMPONENT", "name": "Air compressor", "confirmed_new": True}
+    ).get_json()
     assert added["code"] == "AirCompressor"
     assert any(code["code"] == "AirCompressor" for code in added["code_lists"]["COMPONENT"]["codes"])
 

@@ -1499,38 +1499,63 @@
     if (!named) fields.push(field("Order", inputs.sort_order));
     fields.push(toggle("Status", inputs.is_active, "Active, offered on the code fields"));
 
-    // Before a new component or part is added, the codes already listed that it
-    // may simply be, as the disposition helper finds them. Add again adds it anyway.
+    // Before any new code is added, the codes already listed that it may simply
+    // be, as the disposition helper finds them (and, for a component or part, the
+    // other level's). Add again adds it anyway; the server asks the same.
     const addLabel = isNew ? `Add ${noun}` : "Save changes";
     const similar = el("div", { class: "cl-similar", "aria-live": "polite" });
     let similarSeen = null;
     const similarKey = () => JSON.stringify([inputs.name.value.trim().toLowerCase(), inputs.description.value.trim().toLowerCase()]);
-    function showSimilar(matches) {
-      similar.innerHTML = "";
-      if (!matches.length) return;
-      similar.appendChild(el("p", { class: "cl-similar-lead" }, [
-        el("strong", { text: `Already on the ${noun} list?` }),
-        ` ${matches.length === 1 ? "This one" : "These"} may be the same thing; add yours only if it is not.`,
-      ]));
-      similar.appendChild(el("ul", { class: "cl-similar-list" }, matches.map((match) => el("li", {}, [
-        el("div", { class: "cl-similar-text" }, [
-          el("span", { class: "cl-name" }, [
-            match.name,
-            match.is_active ? null : el("span", { class: "cl-chip is-retired", text: "Retired" }),
-          ]),
-          match.description ? el("span", { class: "cl-desc", text: match.description }) : null,
-          (match.reasons || []).length ? el("span", { class: "cl-similar-why", text: match.reasons.join(" · ") }) : null,
+    const listed = (matches, listLabel, otherList) => el("ul", { class: "cl-similar-list" }, matches.map((match) => el("li", {}, [
+      el("div", { class: "cl-similar-text" }, [
+        el("span", { class: "cl-name" }, [
+          match.name,
+          named || otherList ? null : el("span", { class: "cl-code-pill cl-similar-code", text: match.code }),
+          match.is_active ? null : el("span", { class: "cl-chip is-retired", text: "Retired" }),
         ]),
-        el("button", {
-          type: "button",
-          class: "cl-edit-btn",
-          text: "Open it",
-          title: `Close this form and open ${match.name}`,
-          onclick: () => openCodeForm(match.code),
-        }),
-      ]))));
+        match.description ? el("span", { class: "cl-desc", text: match.description }) : null,
+        (match.reasons || []).length ? el("span", { class: "cl-similar-why", text: match.reasons.join(" · ") }) : null,
+      ]),
+      el("button", {
+        type: "button",
+        class: "cl-edit-btn",
+        text: "Open it",
+        title: `Close this form and open ${match.name}${otherList ? ` on the ${listLabel.toLowerCase()} list` : ""}`,
+        onclick: () => {
+          if (otherList && otherList !== codeState.active) {
+            if (!mayLeaveCodeForm()) return;
+            codeState.active = otherList;
+            closeCodeForm();
+            renderCodeLists();
+            openCodeForm(match.code, { discard: true });
+          } else {
+            openCodeForm(match.code);
+          }
+        },
+      }),
+    ])));
+    // Says whether there was anything to show.
+    function showSimilar(found) {
+      similar.innerHTML = "";
+      const matches = (found && found.matches) || [];
+      const other = found && found.other_level;
+      if (matches.length) {
+        similar.appendChild(el("p", { class: "cl-similar-lead" }, [
+          el("strong", { text: `Already on the ${noun === "code" ? `${list.label.toLowerCase()} list` : `${noun} list`}?` }),
+          ` ${matches.length === 1 ? "This one" : "These"} may be the same thing; add yours only if it is not.`,
+        ]));
+        similar.appendChild(listed(matches, list.label));
+      }
+      if (other && other.matches.length) {
+        similar.appendChild(el("p", { class: "cl-similar-lead" }, [
+          el("strong", { text: `Already a ${other.label.toLowerCase()}.` }),
+          ` If it is that ${other.label.toLowerCase()}, use it as one; add it as a ${noun} only if it is one as well.`,
+        ]));
+        similar.appendChild(listed(other.matches, other.label, other.code_list));
+      }
+      return Boolean(similar.firstChild);
     }
-    if (isNew && named) {
+    if (isNew) {
       [inputs.name, inputs.description].forEach((input) => input.addEventListener("input", () => {
         if (similarSeen === null) return;
         similarSeen = null;
@@ -1567,14 +1592,13 @@
         const typed = named ? null : inputs.code.value.trim();
         submit.disabled = true;
         try {
-          if (isNew && named && inputs.name.value.trim() && similarSeen !== similarKey()) {
+          if (isNew && inputs.name.value.trim() && similarSeen !== similarKey()) {
             const found = await postJson(`${API}/code-lists/similar`, {
               code_list: listKey,
               name: inputs.name.value,
               description: inputs.description.value,
             });
-            showSimilar(found.matches || []);
-            if ((found.matches || []).length) {
+            if (showSimilar(found)) {
               similarSeen = similarKey();
               submit.textContent = "Add it anyway";
               return;
@@ -1584,6 +1608,8 @@
             code_list: listKey,
             code: isNew ? typed : entry.code,
             is_new: isNew,
+            // The look-alikes shown and added anyway, or none found.
+            confirmed_new: isNew && similarSeen === similarKey(),
             name: inputs.name.value,
             description: inputs.description.value,
             iso_ref: inputs.iso_ref.value,
@@ -1606,7 +1632,13 @@
             "success"
           );
         } catch (err) {
-          if (!err.toastShown) showToast(err.message, "error");
+          // Look-alikes the server found (one added since the check, say): shown, to add anyway.
+          if (err.payload && err.payload.similar && showSimilar(err.payload.similar)) {
+            similarSeen = similarKey();
+            submit.textContent = "Add it anyway";
+          } else if (!err.toastShown) {
+            showToast(err.message, "error");
+          }
         } finally {
           submit.disabled = false;
         }

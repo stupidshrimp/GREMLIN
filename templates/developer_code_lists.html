@@ -78,6 +78,13 @@
           under them, and new rows, can be filled in, sorted and filtered. Headings retyped in other
           capitals or as this page shows them (List, Means, Order, Active) still read, as does a meaning
           typed as its label (Unknown, Induced).</li>
+        <li>Each new code is read by the disposition helper against the codes already
+          listed (and against the new ones above it in the sheet). One that is a listed code
+          under another spelling, word order or plural (<em>Leaks</em> for Leak, <em>Fliter</em>
+          for Filter), or a part named as a listed component, is refused; if it really is a
+          different code, add it from the Code lists dialog on the Disposition page, which shows
+          the codes it is like and lets it be added anyway. One merely like a listed code is
+          added, and named after the upload so it can be checked.</li>
         <li>Every row is checked before anything is saved. One refused row refuses the
           upload and nothing changes; every refused row is listed, so they can all be
           fixed at once.</li>

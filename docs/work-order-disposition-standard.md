@@ -237,6 +237,29 @@ first, each with why; retired ones too, marked. They are shown as the name is
 typed, each with **Use this**; with any showing, the button reads **Add it
 anyway**, and an Add pressed before they were shown shows them first.
 
+The check runs for **every list** (mechanism, mode, cause and action as much as
+component and part), wherever a code is added:
+
+* **From a field on the form, and from the Code lists dialog**, as above.
+* **On the server**, for any code that would be added however it came
+  (`StandardDispositionService.put_code`): one the helper's wording check finds
+  like a listed code is refused with `409` and the codes it may be
+  (`SimilarCodesExist`), unless it comes with `confirmed_new` — what the two
+  pages send once the look-alikes have been shown and it is added anyway. So no
+  page, old tab or script adds a look-alike unseen.
+* **Across the two levels.** A new part that is a listed component under another
+  spelling ("Electric motors" for the component Electric motor), or a new
+  component that is a listed part, is asked about too: the form offers **Use as
+  the component** for a part that is one. A part merely sharing a word with a
+  component ("Compressor filter") is what a part is, and is not asked about.
+* **In the code-list workbook** (Developer > Code lists), which can't ask "add it
+  anyway": a new code that is a listed one under another spelling, word order or
+  plural (a match of 0.85 or more: the same name, a slip of the keys, the same
+  words), or a part that is a listed component, refuses its row, saying the
+  dialog can add it anyway if it really is different. Each new row is also read
+  against the new rows above it, so two spellings of one new code are caught. A
+  new code merely like a listed one is added and named after the upload.
+
 ## Keeping it fast
 
 Measured on a plant-sized database (43,000 work orders, 3,098 dispositioned on

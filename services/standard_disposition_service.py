@@ -20,6 +20,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
+from services import disposition_helper_text as helper_text
 from services import disposition_standard as std
 from services.standard_disposition_schema import (
     AssetTree,
@@ -77,6 +78,18 @@ LIST_DEFAULT_ORDER = (
 )
 # "As the work order has it now", for a value a workbook did not keep.
 _AS_NOW = object()
+
+
+class SimilarCodesExist(ValueError):
+    """A new code refused because the disposition helper reads it as one already listed.
+
+    ``similar`` is what the helper's check hands a page (``code_list``,
+    ``matches``, ``other_level``), so it can show them and offer "add it anyway".
+    """
+
+    def __init__(self, message: str, similar: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.similar = dict(similar)
 # Most work orders one page of a held list may be read by (a page is 50).
 LIST_IDS_LIMIT = 500
 # Most values one column filter may name, and most a column's filter lists.
@@ -681,6 +694,12 @@ class StandardDispositionService:
         list, in any capitals: that is the same item twice. ``is_new`` says the
         code is meant to be added, so one already on the list is refused rather
         than changed, and a new code with no order given goes after the last.
+
+        Any code added, whichever list and however it came, is first read by the
+        disposition helper against the codes already listed (and, for a component
+        or part, the other level's): one it may simply be refuses the add with
+        ``SimilarCodesExist``, naming them, unless ``confirmed_new`` says somebody
+        has seen them and is adding it anyway.
         """
 
         fields = dict(self._code_fields(values))
@@ -724,8 +743,46 @@ class StandardDispositionService:
                 ).fetchone()
                 if cause is None:
                     raise ValueError(f"Default cause {default_cause!r} is not in the failure cause list.")
+            adding = conn.execute(
+                "SELECT 1 FROM disposition_code WHERE code_list = ? AND code = ?", (fields["code_list"], fields["code"])
+            ).fetchone() is None
+            if adding and not values.get("confirmed_new"):
+                self._refuse_lookalikes(load_codebook(conn), fields)
             self._write_code(conn, fields, updated_by)
         return fields["code"]
+
+    @staticmethod
+    def _refuse_lookalikes(codebook: std.CodeBook, fields: Mapping[str, Any]) -> None:
+        """Refuse a new code the disposition helper reads as one already listed."""
+
+        code_list = fields["code_list"]
+        matches = helper_text.similar_codes(codebook, code_list, fields["name"], fields["description"])
+        other, other_matches = helper_text.other_level_codes(codebook, code_list, fields["name"])
+        if not matches and not other_matches:
+            return
+        label = std.CODE_LIST_LABELS[code_list].lower()
+        if matches:
+            message = (
+                f"The {label} list already has {'a code' if len(matches) == 1 else 'codes'} like "
+                f"{fields['name']!r}: {helper_text.describe_matches(code_list, matches)}. Use "
+                f"{'that' if len(matches) == 1 else 'one of those'}, or add it anyway if it really is different."
+            )
+        else:
+            other_label = std.CODE_LIST_LABELS[other].lower()
+            message = (
+                f"{fields['name']!r} is already a {other_label}: {helper_text.describe_matches(other, other_matches)}. "
+                f"If it is that {other_label}, pick it as the {other_label}; if it really is a {label} as well, "
+                f"add it anyway."
+            )
+        raise SimilarCodesExist(message, {
+            "code_list": code_list,
+            "matches": matches,
+            "other_level": {
+                "code_list": other,
+                "label": std.CODE_LIST_LABELS[other],
+                "matches": other_matches,
+            } if other_matches else None,
+        })
 
     def _code_use_counts(self, conn: sqlite3.Connection) -> dict[tuple[str, str], int]:
         """How many work orders' current dispositions use each code, counted as ``code_uses`` counts one."""
@@ -1021,6 +1078,7 @@ class StandardDispositionService:
             cause = fields["default_cause_code"]
             if cause is not None and cause not in causes:
                 problems.append((row_number, f"{where}: default cause {cause!r} is not in the failure cause list."))
+        lookalikes = self._workbook_lookalikes(codebook, existing, uploaded, problems)
         if problems:
             # Sheet order, though the default causes are checked last.
             problems.sort(key=lambda problem: problem[0])
@@ -1064,8 +1122,66 @@ class StandardDispositionService:
             "unchanged": matched - len(updated),
             "not_in_workbook": len(existing) - matched,
             "columns_not_read": table.unread,
+            # Added, though the disposition helper reads them as like codes listed.
+            "lookalikes": lookalikes,
             "code_lists": self.code_lists(),
         }
+
+    @staticmethod
+    def _workbook_lookalikes(
+        codebook: std.CodeBook,
+        existing: Mapping[tuple[str, str], std.CodeEntry],
+        uploaded: Sequence[tuple[int, str, Mapping[str, Any], bool]],
+        problems: list[tuple[int, str]],
+    ) -> list[dict[str, Any]]:
+        """The workbook's new codes, read by the disposition helper against the codes listed.
+
+        A workbook can't be asked "add it anyway", so a new code that is one
+        already listed under another spelling, word order or plural
+        (``DUPLICATE_SCORE``) -- or, for a component or part, is the other
+        level's -- is refused with its row, saying where it can be added anyway.
+        A new code merely like one listed is added, and named in what comes
+        back. Each is read against the codes before it in the sheet as well, so
+        two spellings of one new code are caught too.
+        """
+
+        working = [entry for entry in existing.values()]
+        found: list[dict[str, Any]] = []
+        for row_number, where, fields, _ in uploaded:
+            code_list = fields["code_list"]
+            if (code_list, fields["code"]) in existing:
+                continue
+            book = std.CodeBook(working)
+            matches = helper_text.similar_codes(book, code_list, fields["name"], fields["description"])
+            close = [match for match in matches if match["score"] >= helper_text.DUPLICATE_SCORE]
+            other, other_close = helper_text.other_level_codes(book, code_list, fields["name"])
+            escape = (
+                "If it really is a different one, add it from the Code lists dialog on the Disposition page, "
+                "where it can be added anyway."
+            )
+            if close:
+                problems.append((row_number, (
+                    f"{where}: {fields['name']!r} is already on the {std.CODE_LIST_LABELS[code_list].lower()} list as "
+                    f"{helper_text.describe_matches(code_list, close)}. Use that code instead. {escape}"
+                )))
+            elif other_close:
+                problems.append((row_number, (
+                    f"{where}: {fields['name']!r} is already a {std.CODE_LIST_LABELS[other].lower()}: "
+                    f"{helper_text.describe_matches(other, other_close)}. {escape}"
+                )))
+            elif matches:
+                found.append({
+                    "code_list": code_list,
+                    "list_label": std.CODE_LIST_LABELS[code_list],
+                    "code": fields["code"],
+                    "name": fields["name"],
+                    "like": helper_text.describe_matches(code_list, matches),
+                })
+            working.append(std.CodeEntry(**{key: fields[key] for key in (
+                "code_list", "code", "name", "description", "iso_ref", "default_cause_code", "renews_item",
+                "semantic", "sort_order", "is_active",
+            )}))
+        return found
 
     # ------------------------------------------------------------------ #
     # Disposition editor

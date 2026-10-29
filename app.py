@@ -35,7 +35,7 @@ from services.life_data_service import (
     WeibullFitError,
 )
 from services.population_analysis_service import PopulationAnalysisService
-from services.standard_disposition_service import StandardDispositionService
+from services.standard_disposition_service import SimilarCodesExist, StandardDispositionService
 from services.disposition_helper import DEFAULT_BATCH_CONFIDENCE, DispositionHelper
 from services.bug_reports import (
     DEFAULT_BUG_DB_PATH,
@@ -2639,7 +2639,12 @@ def api_save_code():
         raise LifeDataApiError("Send the code as JSON.", status_code=400)
     service = _standard_service()
     # The code saved: for a component or part added by name, the one made from it.
-    code = service.put_code(payload, updated_by=_username())
+    try:
+        code = service.put_code(payload, updated_by=_username())
+    except SimilarCodesExist as exc:
+        # Codes already listed that the new one may be: the page shows them, and
+        # sends the code again with confirmed_new if it is added anyway.
+        return jsonify({"error": str(exc), "similar": exc.similar}), 409
     return jsonify({"code_lists": service.code_lists(), "code": code})
 
 
