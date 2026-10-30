@@ -1694,6 +1694,16 @@ SEARCH_ENTRIES = [
         "keywords": ["repeat window", "repeat failure", "repair quality", "scheduled hours"],
     },
     {
+        "label": "How the disposition helper works",
+        "url": "/standards-and-documentation/documentation#site-helper",
+        "kind": "function",
+        "context": "Standards and Documentation",
+        "keywords": [
+            "auto-disposition", "autofill", "auto fill", "suggestions", "confidence", "calibration",
+            "duplicate codes", "similar codes", "add it anyway", "look-alike", "fake ai",
+        ],
+    },
+    {
         "label": "How GREMLIN works",
         "url": "/standards-and-documentation/documentation#how-gremlin-works",
         "kind": "function",

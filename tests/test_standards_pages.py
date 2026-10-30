@@ -205,6 +205,17 @@ def test_every_search_entry_into_the_page_names_a_tab_or_something_in_one(module
         ), entry["label"]
 
 
+def test_the_disposition_helper_is_explained_where_the_disposition_page_points(documentation):
+    """The helper's card, on the How GREMLIN Works tab, says how it fills a work
+    order in and how it checks new codes; the Disposition page's helper bar
+    links straight to it."""
+    cards = _cards(_panel(documentation, "how-gremlin-works"))
+    helper = cards["site-helper"]
+    for heading in ("Filling in a disposition", "What the percentage means", "Checking new codes for duplicates"):
+        assert heading in helper, heading
+    assert "#site-helper" in (TEMPLATES / "disposition.html").read_text()
+
+
 def test_every_figure_is_named_for_assistive_tech(documentation):
     """An inline SVG is a picture to a screen reader unless it says what it shows."""
     documentation = _main(documentation)

@@ -133,21 +133,214 @@
       <p>
         Editors open Disposition and pick an asset: its work orders are listed
         on the left, and the one picked opens on the right with its request,
-        notes and narrative above the fields. Each takes a category, and then
-        where it failed (sub-asset), what (component), how (failure mechanism,
-        mode and cause), what was done (action), how sure the record is
-        (evidence), its record class, and a note; Save &amp; next moves down
-        the list. Saving keeps the previous decision as history. The list can
-        be narrowed to the work orders not reviewed yet, or to those carried
-        over from the REL categories that still need confirming, and the same
-        work orders can be downloaded to Excel, filled in there and uploaded.
+        notes and narrative above the fields, and a link to open it in Limble.
+        The bar above them switches to the disposition alone across the page,
+        or the list alone. Each work order takes a category, and then where it
+        failed (sub-asset), what (component, and the part within it when it was
+        one), how (failure mechanism, mode and cause), what was done (action),
+        how sure the record is (evidence), its record class, and a note; Save
+        &amp; next moves down the list. Saving keeps the previous decision as
+        history, and the list says who last edited each one. The list can be
+        narrowed to the work orders not reviewed yet, to those carried over from
+        the REL categories that still need confirming, or to those the helper
+        dispositioned, and the same work orders can be downloaded to Excel,
+        filled in there and uploaded.
       </p>
       <p>
-        The code lists the fields offer (components, mechanisms, modes, causes
-        and actions) belong to the team and are edited from the Disposition
-        page; a code that is retired keeps reading on the records that use it.
-        What each category means for the analyses is on the Analysis tab, in
+        Every code field is a search: type any part of a code, its name or its
+        description. The code lists the fields offer (components, parts,
+        mechanisms, modes, causes and actions) belong to the team and are edited
+        from the Disposition page, or added straight from a field when nothing
+        on the list fits; a code that is retired keeps reading on the records
+        that use it. The disposition helper can fill a work order in, and checks
+        every new code for one already listed: see
+        <a href="#site-helper">The disposition helper</a>. What each category
+        means for the analyses is on the Analysis tab, in
         <a href="#analysis-common">What every analysis reads</a>.
+      </p>
+    </section>
+  {% endcall %}
+
+  {% call std.doc_card(
+      "site-helper",
+      "The disposition helper",
+      "How it fills in a disposition, what its percentages mean, and how it stops the same code being added twice.",
+      eyebrow="Records") %}
+    <p>
+      The disposition helper is not a chatbot. It is a set of text-matching rules
+      and statistics learnt from the dispositions your team has already made, and
+      it runs on the GREMLIN server: no work order text leaves the plant. Where
+      the server has the optional small language model installed, it also
+      recognises wording that means the same thing in other words. It does two
+      jobs: it fills in a work order's disposition for an engineer to check, and
+      it checks every new code against the codes already listed.
+    </p>
+
+    {% call std.figure("S2", "How the helper fills in a disposition. Two kinds of evidence are weighed for every field, blended, and turned into a percentage measured against the team's own decisions; the percentage decides what happens next. Nothing is saved until an engineer saves it, except by a backlog run, which marks what it saves Auto.") %}
+    <svg viewBox="0 0 760 266" role="img" aria-labelledby="fig-s2-title fig-s2-desc">
+      <title id="fig-s2-title">How the disposition helper fills in a disposition</title>
+      <desc id="fig-s2-desc">A work order's text is compared with similar work orders already dispositioned, which vote for their codes, and read for what it says outright, such as code-list words and maintenance phrases. The two are blended into a score, which calibration turns into a percentage: at 50 percent or more the field is filled in on the form, below 50 percent it is offered beside the field, and at 90 percent or more a backlog run may save it marked Auto.</desc>
+      <defs>
+        <marker id="fig-s2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path class="fig-arrow-head" d="M0 0 L10 5 L0 10 Z"/>
+        </marker>
+      </defs>
+      <rect class="fig-box-strong" x="8" y="44" width="140" height="74" rx="10"/>
+      <text class="fig-text-strong" x="78" y="70" text-anchor="middle">This work order</text>
+      <text class="fig-text-small" x="78" y="88" text-anchor="middle">title, request, notes,</text>
+      <text class="fig-text-small" x="78" y="102" text-anchor="middle">failure narrative</text>
+      <path class="fig-arrow" d="M148 70 L186 44" marker-end="url(#fig-s2-arrow)"/>
+      <path class="fig-arrow" d="M148 92 L186 118" marker-end="url(#fig-s2-arrow)"/>
+
+      <rect class="fig-box" x="190" y="8" width="206" height="66" rx="10"/>
+      <text class="fig-text-strong" x="293" y="30" text-anchor="middle">Similar work orders vote</text>
+      <text class="fig-text-small" x="293" y="47" text-anchor="middle">the 25 most alike already decided;</text>
+      <text class="fig-text-small" x="293" y="62" text-anchor="middle">same asset counts 1.5×</text>
+      <rect class="fig-box" x="190" y="88" width="206" height="66" rx="10"/>
+      <text class="fig-text-strong" x="293" y="110" text-anchor="middle">What it says outright</text>
+      <text class="fig-text-small" x="293" y="127" text-anchor="middle">code-list words, "S09", "clogged";</text>
+      <text class="fig-text-small" x="293" y="142" text-anchor="middle">"no leaks" counts against Leak</text>
+      <path class="fig-arrow" d="M396 41 L430 70" marker-end="url(#fig-s2-arrow)"/>
+      <path class="fig-arrow" d="M396 121 L430 92" marker-end="url(#fig-s2-arrow)"/>
+
+      <rect class="fig-box-accent" x="434" y="48" width="140" height="66" rx="10"/>
+      <text class="fig-text-strong" x="504" y="72" text-anchor="middle">Blend</text>
+      <text class="fig-text-small" x="504" y="89" text-anchor="middle">agree: sure;</text>
+      <text class="fig-text-small" x="504" y="104" text-anchor="middle">disagree or thin: not</text>
+      <path class="fig-arrow" d="M574 81 H602" marker-end="url(#fig-s2-arrow)"/>
+
+      <rect class="fig-box-accent" x="606" y="48" width="146" height="66" rx="10"/>
+      <text class="fig-text-strong" x="679" y="72" text-anchor="middle">A calibrated %</text>
+      <text class="fig-text-small" x="679" y="89" text-anchor="middle">how often a score like</text>
+      <text class="fig-text-small" x="679" y="104" text-anchor="middle">this one was right</text>
+
+      <path class="fig-arrow" d="M679 114 V168 H126 V188" marker-end="url(#fig-s2-arrow)"/>
+      <path class="fig-arrow" d="M380 168 V188" marker-end="url(#fig-s2-arrow)"/>
+      <path class="fig-arrow" d="M634 168 V188" marker-end="url(#fig-s2-arrow)"/>
+      <rect class="fig-box-strong" x="8" y="192" width="236" height="66" rx="10"/>
+      <text class="fig-text-strong" x="126" y="216" text-anchor="middle">50% or more</text>
+      <text class="fig-text-small" x="126" y="233" text-anchor="middle">filled in on the form,</text>
+      <text class="fig-text-small" x="126" y="248" text-anchor="middle">ready to check and save</text>
+      <rect class="fig-box" x="262" y="192" width="236" height="66" rx="10"/>
+      <text class="fig-text-strong" x="380" y="216" text-anchor="middle">Under 50%</text>
+      <text class="fig-text-small" x="380" y="233" text-anchor="middle">offered beside the field,</text>
+      <text class="fig-text-small" x="380" y="248" text-anchor="middle">as a button to use it</text>
+      <rect class="fig-box" x="516" y="192" width="236" height="66" rx="10"/>
+      <text class="fig-text-strong" x="634" y="216" text-anchor="middle">90% or more</text>
+      <text class="fig-text-small" x="634" y="233" text-anchor="middle">a backlog run may save it,</text>
+      <text class="fig-text-small" x="634" y="248" text-anchor="middle">marked Auto, to confirm</text>
+    </svg>
+    {% endcall %}
+
+    <section class="std-section">
+      <h4>Filling in a disposition</h4>
+      <p>
+        For each field it fills (category, sub-asset, component, failure
+        mechanism, failure mode and action) the helper weighs two kinds of
+        evidence.
+      </p>
+      <ol>
+        <li>
+          <strong>Similar work orders vote.</strong> Every work order already
+          dispositioned is indexed by its words and the ideas read from them.
+          Common words such as "replaced" or "PM" count for little; specific ones
+          such as "S09" or "flame rod" count for a lot. The 25 work orders most
+          like this one each vote for the codes they were given, weighted by how
+          alike they are. A vote from the same asset counts 1.5 times; one carried
+          over from the REL categories counts 0.6 times, since it was made under
+          the old categories; one from a work order of another category counts
+          for less. If "dry-off tripped" has been coded S09, Burner, Signal fault
+          a dozen times, the thirteenth is suggested the same. With the language
+          model installed, how alike two work orders are is 80% their wording and
+          20% their meaning.
+        </li>
+        <li>
+          <strong>What the work order says outright.</strong> A word from the
+          code lists, or from the helper's list of maintenance phrases, is
+          evidence on its own: "clogged" points to Plugged, "won't light" to Fail
+          to start, "replaced" to Replace. It reads negation, so "no leaks found"
+          counts against Leak. The sub-asset is read from its number ("S09"), its
+          name, or the asset the work order was logged against. This is what
+          carries a work order unlike any seen before, or a code nobody has used
+          yet.
+        </li>
+      </ol>
+      <p>
+        The two are blended by how much of each there is. When the votes and the
+        wording agree the helper is sure; when they disagree, or there is little
+        of either, it is not, and a single weak vote never reads as sure. The
+        failure cause then follows the mechanism's default unless the work order
+        and its look-alikes agree on another, a PM reset is given the items it
+        renewed, and the evidence is Explicit when the work order names the item
+        and its condition, Inferred otherwise. Every suggestion goes through the
+        same rules a save does.
+      </p>
+      <h5>What the percentage means</h5>
+      <p>
+        The helper re-reads up to 400 of the work orders the team has already
+        decided, each as if it were new (without itself in the index), and
+        counts how often a suggestion at each score matched the engineer's
+        decision. That count is the percentage beside each field: <strong>90%
+        means nine in ten suggestions that scored like this one were
+        right.</strong> Until 40 work orders have been decided it cannot measure
+        itself; it then shows 85% of its raw score, marked as an estimate, and a
+        backlog run is refused. <em>How accurate is it?</em> on the Disposition
+        page shows the same measurement, field by field.
+      </p>
+      <h5>What you see</h5>
+      <ul>
+        <li><strong>The Auto-disposition switch</strong> on the Disposition page turns it on. Each work order you open is read, and every field the helper is at least 50% sure of is filled in, with its percentage beside it. A field it is less sure of shows its suggestion beside the field as a button.</li>
+        <li><strong>A panel above the fields</strong> says what it read, the alternatives it weighed, and the similar work orders that voted, each with how alike it is.</li>
+        <li><strong>It never fills over an engineer's disposition</strong>; it only offers its view beside each field. Nothing is saved until you save, and a save keeps the suggestion it was made from, so the helper can be measured in real use.</li>
+        <li><strong>Auto-disposition the backlog…</strong> previews, then saves, the not-reviewed work orders it is at least 90% sure of (the bar can be lowered, not below 60%), up to 1,000 a run. Each is marked Auto with a review flag, listed under Show: Auto-dispositioned until an engineer saves it, and the whole run can be undone at once.</li>
+        <li><strong>Possible duplicate work orders:</strong> a work order on the same asset that reads at least 60% the same and was logged within 3 days is pointed out, with a button to mark this one a duplicate of it. The helper never makes that call itself, nor chooses Held.</li>
+      </ul>
+      <div class="std-note is-caution">
+        <p class="std-note-title">Its limits</p>
+        <p>
+          It learns only from the team's own dispositions, so it gets better as
+          more are made, and a short or oddly worded work order gets a low
+          percentage. It suggests a component but not yet a part.
+        </p>
+      </div>
+    </section>
+
+    <section class="std-section">
+      <h4>Checking new codes for duplicates</h4>
+      <p>
+        Before any code is added, on any list (component, part, failure
+        mechanism, mode, cause or action), the helper compares its name and
+        description with every code already on that list and scores each from 0
+        to 1. Codes scoring 0.45 or more are shown, the five best first, each with
+        why:
+      </p>
+      <div class="std-table-scroll">
+        <table class="std-table">
+          <caption class="visually-hidden">What the duplicate check reads as alike</caption>
+          <thead>
+            <tr><th scope="col">Reason shown</th><th scope="col">Example</th><th scope="col" class="is-numeric">Score</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>The same name</strong>, ignoring capitals and punctuation</td><td>"O ring" and O-ring</td><td class="is-numeric">1.0</td></tr>
+            <tr><td><strong>Spelled almost the same</strong>: one slip in a word of 4 to 7 letters, two in a longer one, in the whole name or one word of it</td><td>"Fliter housing" and Filter</td><td class="is-numeric">0.85</td></tr>
+            <tr><td><strong>Shares the words</strong>, plurals read as one: a word few codes use counts for most, the description for less than the name</td><td>"Hydraulic pumps" and Pump, hydraulic</td><td class="is-numeric">up to 1.0</td></tr>
+            <tr><td><strong>One of its names</strong>: a part of a name written with slashes, or for a component one of the helper's maintenance phrases</td><td>"Air compressor" and HVAC / compressor / chiller</td><td class="is-numeric">0.75</td></tr>
+            <tr><td><strong>Means much the same</strong> (with the language model installed)</td><td>"Flame sensor" and Burner / flame rod / igniter</td><td class="is-numeric">up to 0.9</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Where it runs:</p>
+      <ul>
+        <li><strong>On the Disposition form and in the Code lists dialog,</strong> the look-alikes appear as the name is typed, each with <em>Use this</em> (or <em>Open it</em> in the dialog). While any show, the button reads <em>Add it anyway</em>.</li>
+        <li><strong>On the server, for every new code however it comes:</strong> one like a listed code is refused unless the person adding it has seen the look-alikes and chosen <em>Add it anyway</em>, so an old browser tab can't add one unseen.</li>
+        <li><strong>Between components and parts:</strong> a new part that is a listed component under another spelling ("Electric motors" for the component Electric motor), or a new component that is a listed part, is asked about too, and the form offers <em>Use as the component</em>. A part that only shares a word with a component, such as "Compressor filter", is what a part is and is not asked about.</li>
+        <li><strong>In the code-list workbook</strong> (Developer &gt; Code lists), which can't ask "add it anyway": a new code scoring 0.85 or more (a plural, a slip of the keys, the same words reordered) refuses its row, as does a part that is a listed component, and the row says to add it from the Code lists dialog if it really is different. Each new row is also checked against the new rows above it. A new code merely like a listed one is added and listed after the upload for someone to check.</li>
+      </ul>
+      <p>
+        Retired codes are compared too, marked Retired, so a code retired once
+        is not added again under its own name. The check stops <em>new</em>
+        duplicates only: look-alikes already on the lists stay until someone
+        retires one of them.
       </p>
     </section>
   {% endcall %}

@@ -1248,6 +1248,7 @@ table.std-helper-table tbody th { text-align: left; font-weight: 600; white-spac
 }
 .std-helper-sim-how { grid-column: 2 / -1; color: var(--muted); font-size: 0.74rem; font-style: italic; }
 .std-helper-meaning { flex: 1 1 100%; margin: 0; font-size: 0.8rem; }
+.std-helper-docs { align-self: center; font-size: 0.84rem; font-weight: 600; color: var(--brand-ink); }
 table.std-helper-table td.std-helper-plain { color: var(--muted); }
 
 @media (max-width: 560px) {
