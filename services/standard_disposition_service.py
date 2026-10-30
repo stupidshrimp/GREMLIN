@@ -1078,6 +1078,7 @@ class StandardDispositionService:
             cause = fields["default_cause_code"]
             if cause is not None and cause not in causes:
                 problems.append((row_number, f"{where}: default cause {cause!r} is not in the failure cause list."))
+        self._workbook_renamed_onto_another(existing, uploaded, problems)
         lookalikes = self._workbook_lookalikes(codebook, existing, uploaded, problems)
         if problems:
             # Sheet order, though the default causes are checked last.
@@ -1126,6 +1127,38 @@ class StandardDispositionService:
             "lookalikes": lookalikes,
             "code_lists": self.code_lists(),
         }
+
+    @staticmethod
+    def _workbook_renamed_onto_another(
+        existing: Mapping[tuple[str, str], std.CodeEntry],
+        uploaded: Sequence[tuple[int, str, Mapping[str, Any], bool]],
+        problems: list[tuple[int, str]],
+    ) -> None:
+        """Refuse a component or part the workbook renames to another one's name, as ``put_code`` does.
+
+        A new code is read by ``_workbook_lookalikes``; this is the listed one
+        whose name the sheet changes onto a name the list will already have.
+        """
+
+        for code_list in std.NAMED_CODE_LISTS:
+            rows = [(row_number, where, fields) for row_number, where, fields, _ in uploaded if fields["code_list"] == code_list]
+            final = {code: entry.name for (listed, code), entry in existing.items() if listed == code_list}
+            final.update({fields["code"]: fields["name"] for _, _, fields in rows})
+            label = std.CODE_LIST_LABELS[code_list].lower()
+            for row_number, where, fields in rows:
+                before = existing.get((code_list, fields["code"]))
+                if before is None or before.name.casefold() == fields["name"].casefold():
+                    continue
+                same = next(
+                    (code for code, name in final.items()
+                     if code != fields["code"] and name.casefold() == fields["name"].casefold()),
+                    None,
+                )
+                if same is not None:
+                    problems.append((row_number, (
+                        f"{where}: the {label} list already has {final[same]!r} ({same}); use that one, or name "
+                        "this one differently."
+                    )))
 
     @staticmethod
     def _workbook_lookalikes(
@@ -1292,7 +1325,9 @@ class StandardDispositionService:
             named = [value for value in values if value]
             matches = []
             if named:
-                matches.append(f"{value_sql} IN ({', '.join('?' * len(named))})")
+                # Trimmed, as list_column_values lists the values: a title stored with a
+                # trailing space is offered as "Replace belt" and must match it.
+                matches.append(f"TRIM({value_sql}) IN ({', '.join('?' * len(named))})")
                 params.extend(named)
             if "" in values:
                 matches.append(f"NULLIF(TRIM({value_sql}), '') IS NULL")
@@ -1723,7 +1758,14 @@ class StandardDispositionService:
                 if chosen_class not in self._record_classes():
                     raise ValueError(f"Record class must be one of {', '.join(self._record_classes())}.")
             if "linked_wo" in values and "linked_mapped_record_id" not in values:
-                values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
+                typed = _clean(values.get("linked_wo"))
+                kept = record["linked_mapped_record_id"] if record["wo_disposition_id"] is not None else None
+                if typed is not None and kept is not None and self._excel_cell(record["linked_task_id"]) == typed.lstrip("#"):
+                    # The task the record already links to: kept as linked, rather than
+                    # looked up again by a task ID another record may have taken since.
+                    values["linked_mapped_record_id"] = kept
+                else:
+                    values["linked_mapped_record_id"] = self._resolve_linked(conn, values.get("linked_wo"), asset_number)
             previous = self._disposition_dict(record) if record["wo_disposition_id"] is not None else None
             normalized = std.normalize_disposition(
                 values,

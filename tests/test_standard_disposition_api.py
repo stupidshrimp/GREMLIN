@@ -395,3 +395,13 @@ def test_the_disposition_list_comes_with_its_order_and_pages_by_it(monkeypatch, 
     assert [row["mapped_record_id"] for row in held["rows"]] == list(reversed(order))
     assert "order" not in held and "options" in held
     assert editor.get(f"{API}/dispositions?asset={PFS}&ids=1,x").status_code == 400
+
+
+def test_an_id_too_large_for_the_database_names_nothing_rather_than_failing(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    _seed(module)
+    editor = _client(module, role="editor")
+    page = editor.get(f"{API}/dispositions?asset={PFS}&ids=99999999999999999999")
+    assert page.status_code == 200 and page.get_json()["rows"] == []
+    undone = editor.post(f"{API}/disposition-helper/undo", json={"helper_run_id": 99999999999999999999})
+    assert undone.status_code == 404

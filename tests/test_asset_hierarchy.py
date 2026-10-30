@@ -306,6 +306,11 @@ class CuratedNumberTests(unittest.TestCase):
     def test_the_pm_calendar_stands_in_until_the_sync_has_stored_the_list(self):
         self.assertIn(("4002-S11", 1), self.offered(hierarchy=LIMBLE_ASSETS))
 
+    def test_an_asset_removed_from_limble_does_not_come_back_from_the_calendars_copy(self):
+        # The sync's list no longer has the riser bank; the calendar's older copy still does.
+        RawRepository(self.life.db_path).replace_limble_assets([asset for asset in LIMBLE_ASSETS if asset["asset_id"] != "4111"])
+        self.assertNotIn(("4002-S11", 1), self.offered(hierarchy=LIMBLE_ASSETS))
+
     def test_the_analysis_reaches_the_sub_assets_work_orders(self):
         records = StandardDispositionService(self.life)
         analysis = PopulationAnalysisService(self.life, records)
@@ -468,3 +473,23 @@ def test_the_api_reads_the_pm_calendars_hierarchy(monkeypatch, tmp_path):
     module.pm_calendar_service.repo.ensure_schema()
     module.pm_calendar_service.repo.replace_assets(PM_HIERARCHY)
     assert offered() == [SANDER, OVEN, BURNER]
+
+
+
+def test_the_asset_index_finds_an_asset_however_its_id_is_spelled():
+    """Limble's /assets can spell an id as a float or with spaces; a parent is
+    found by the id as _asset_parent_id spells it."""
+    from services.ingestion_service import AssetIndex
+
+    index = AssetIndex.from_assets([
+        {"assetID": 4002.0, "name": "4002 Panel Finishing System", "parentAssetID": 0},
+        {"assetID": " 4009 ", "name": "4002-S09 Dry-off oven", "parentAssetID": 4002.0},
+    ])
+    record: dict = {}
+    index.enrich(record, "4009")
+    assert record["Immediate Parent Asset Name"] == "4002 Panel Finishing System"
+    assert record["Root Asset Name"] == "4002 Panel Finishing System"
+    assert record["WO Asset Level"] == 1
+    parent: dict = {}
+    index.enrich(parent, 4002)
+    assert parent["Asset Has Children"] == 1

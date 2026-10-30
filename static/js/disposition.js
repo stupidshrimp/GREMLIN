@@ -391,7 +391,9 @@
         const commit = () => {
           const kept = boxes.filter((b) => b.box.checked).map((b) => b.value);
           const filters = { ...state.filters };
-          if (kept.length === boxes.length && !data.truncated) delete filters[column.key];
+          // Every listed value ticked keeps every row, the ones whose value a cut-short
+          // list leaves out included: naming the listed ones would drop those.
+          if (kept.length === boxes.length) delete filters[column.key];
           else filters[column.key] = kept;
           closeMenu();
           applyView({ filters });

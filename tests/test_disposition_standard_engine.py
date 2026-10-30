@@ -219,6 +219,18 @@ def test_a_failure_fixed_without_renewal_ends_the_life_and_starts_none():
     assert analysis.recurrent_streams == [("L", "Filter", "")]
 
 
+def test_only_a_failure_the_population_counts_flags_its_stream_recurrent():
+    # A LOOS failure set right by ADJUST, on a Filter + CONT population: it is not
+    # this population's failure, so not its recurrence either.
+    events = [
+        pm_reset("L", "2025-01-01", ["Filter"]),
+        failure("L", "Filter", "2025-01-11", mechanism="LOOS", action="ADJUST"),
+        failure("L", "Filter", "2025-02-10", action="REPLACE"),
+    ]
+    analysis = build_renewal_intervals(events, FILTER_CONT, cutoff=at("2025-03-12"))
+    assert analysis.recurrent_streams == []
+
+
 def test_a_pm_reset_resets_only_the_items_it_lists():
     events = [
         pm_reset("L", "2025-01-01", ["Filter"]),

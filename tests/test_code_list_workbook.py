@@ -159,6 +159,15 @@ class UploadTests(CodeListWorkbookFixture):
         self.assertIn("add it from the Code lists dialog on the Disposition page, where it can be added anyway", message)
         self.assertIsNone(self.code("PART", "FilterElement"))
 
+    def test_a_component_renamed_onto_another_ones_name_is_refused(self):
+        rows = self.download()
+        header = rows[0].index
+        belt = self.row(rows, "COMPONENT", "Belt")
+        belt[header("name")] = "bearing"
+        with self.assertRaisesRegex(ValueError, r"Row \d+ \(Component Belt\): the component list already has 'Bearing' \(Bearing\)"):
+            self.upload(rows)
+        self.assertEqual(self.code("COMPONENT", "Belt")["name"], "Belt")
+
     def test_a_new_code_merely_like_one_listed_is_added_and_named(self):
         rows = self.download()
         self.fill(rows, code_list="COMPONENT", name="Air compressor")

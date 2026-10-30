@@ -453,9 +453,12 @@ class AssetTree:
         # id, and each asset's parent only when the parent is on the list.
         by_id: dict[str, Mapping[str, Any]] = {}
         sources = []
+        # The sync's copy is every asset Limble has, so the PM calendar's is read
+        # only without it: merged in, an asset since removed from Limble would
+        # come back from the calendar's older copy as somebody's sub-asset.
         for source, rows in (
             ("gremlin", [{"asset_id": a, "asset_name": n, "parent_asset_id": p} for a, n, p in stored]),
-            ("pm_calendar", [{"asset_id": a, "asset_name": n, "parent_asset_id": p} for a, n, p in calendar]),
+            ("pm_calendar", [] if stored else [{"asset_id": a, "asset_name": n, "parent_asset_id": p} for a, n, p in calendar]),
         ):
             if rows:
                 sources.append(source)

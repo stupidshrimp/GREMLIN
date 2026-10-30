@@ -677,7 +677,8 @@ class AssetIndex:
             asset_id = asset.get("assetID")
             if asset_id in (None, ""):
                 continue
-            by_id[str(asset_id)] = asset
+            # Keyed as _asset_parent_id spells a parent, so "4002.0" or " 4002 " finds 4002.
+            by_id[_asset_id_text(asset_id)] = asset
             parent = _asset_parent_id(asset)
             if parent:
                 has_children.add(parent)
@@ -686,7 +687,8 @@ class AssetIndex:
     def enrich(self, record: dict[str, Any], asset_id: Any) -> None:
         if asset_id in (None, "") or not self._by_id:
             return
-        asset = self._by_id.get(str(asset_id))
+        asset_key = _asset_id_text(asset_id)
+        asset = self._by_id.get(asset_key)
         if asset is None:
             return
         name = asset.get("name")
@@ -700,13 +702,13 @@ class AssetIndex:
             if parent and parent.get("name") not in (None, ""):
                 record["Immediate Parent Asset Name"] = parent.get("name")
 
-        root, depth = self._resolve_root(str(asset_id))
+        root, depth = self._resolve_root(asset_key)
         if root is not None:
             record["Root Asset ID"] = root.get("assetID")
             if root.get("name") not in (None, ""):
                 record["Root Asset Name"] = root.get("name")
         record["WO Asset Level"] = depth
-        record["Asset Has Children"] = 1 if str(asset_id) in self._has_children else 0
+        record["Asset Has Children"] = 1 if asset_key in self._has_children else 0
 
     def _resolve_root(self, asset_id: str) -> tuple[dict[str, Any] | None, int]:
         """Walk parents to the root; return (root_asset, depth_from_root)."""

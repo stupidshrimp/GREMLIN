@@ -1135,9 +1135,11 @@ def build_renewal_intervals(
                 analysis.stream_events.append(event)
 
             if touch.primary:
-                if not event.renews_item:
-                    recurrent = True
                 counted = population.counts_as_failure(event, unknown_mechanism_as)
+                # Only a failure this population counts flags the stream: one of another
+                # mechanism, or an induced one taken as a suspension, is not its recurrence.
+                if counted and not event.renews_item:
+                    recurrent = True
                 if population.unknown_mechanism_decides(event):
                     analysis.unknown_decided.append(event)
                 effect = FAILURE_END if counted else (SUSPENSION_END if event.renews_item else None)

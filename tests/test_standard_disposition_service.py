@@ -414,6 +414,31 @@ class DispositionEditorTests(StandardDispositionFixture):
         with self.assertRaises(ValueError):
             self.std.list_column_values(PFS, "bogus")
 
+    def test_a_value_stored_with_spaces_round_it_is_filtered_as_its_menu_lists_it(self):
+        self.add_record(1, PFS, "Replace belt ", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Oven filter clogged", "2024-01-02", "2024-01-02")
+        values = [item["value"] for item in self.std.list_column_values(PFS, "title")["values"]]
+        self.assertIn("Replace belt", values)
+        kept = self.std.disposition_page(PFS, filters={"title": ["Replace belt"]})["rows"]
+        self.assertEqual([row["mapped_record_id"] for row in kept], [1])
+
+    def test_an_unchanged_duplicate_link_keeps_the_record_it_points_to(self):
+        self.add_record(1, PFS, "Belt squeal", "2024-01-01", "2024-01-01")
+        self.add_record(2, PFS, "Belt squeal again", "2024-01-02", "2024-01-02")
+        self.std.save_dispositions([{"mapped_record_id": 2, "disposition_category": "DUPLICATE_MISFILED", "linked_wo": "1"}])
+        self.assertEqual(self.std.disposition_record(2)["disposition"]["linked_mapped_record_id"], 1)
+        # Another record with task ID 1 turns up on the asset since.
+        self.add_record(9, PFS, "Same task ID", "2024-01-03", "2024-01-03")
+        with self.life.write_connection() as conn:
+            conn.execute("UPDATE mapped_cmms_record SET task_id = '1' WHERE mapped_record_id = 9")
+        # Only the note changes: the link stays on the record it named, rather
+        # than being refused as naming two records, or moved.
+        self.std.save_dispositions([{
+            "mapped_record_id": 2, "disposition_category": "DUPLICATE_MISFILED", "linked_wo": "1",
+            "disposition_note": "Same squeal",
+        }])
+        self.assertEqual(self.std.disposition_record(2)["disposition"]["linked_mapped_record_id"], 1)
+
     def test_a_duplicate_link_must_name_a_real_work_order(self):
         self.add_record(1, PFS, "One", "2024-01-01", "2024-01-01")
         with self.assertRaisesRegex(ValueError, "No work order with task ID 999"):

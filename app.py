@@ -2724,6 +2724,8 @@ def api_dispositions():
             ids = [int(text) for text in request.values.get("ids", "").split(",") if text.strip()]
         except ValueError:
             raise LifeDataApiError("The work orders asked for could not be read. Reload the page.", status_code=400) from None
+        # An id SQLite cannot hold names no record, rather than a server error.
+        ids = [value for value in ids if -(2**63) <= value < 2**63]
     page = service.disposition_page(
         asset_number,
         page=page_index,
@@ -2937,6 +2939,8 @@ def api_disposition_helper_undo():
         helper_run_id = int(payload.get("helper_run_id"))
     except (TypeError, ValueError):
         raise LifeDataApiError("Name the run to undo.", status_code=400) from None
+    if not -(2**63) <= helper_run_id < 2**63:
+        raise LifeDataApiError("That disposition helper run was not found.", status_code=404)
     try:
         return jsonify(_disposition_helper().undo_run(helper_run_id, undone_by=_username()))
     except LookupError as exc:
